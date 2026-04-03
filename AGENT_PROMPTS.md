@@ -34,6 +34,16 @@ Your task:
 - Flag any scope that exceeds what the Linear issue requests
 - Flag any conflict with existing architecture
 
+Anti-bias checks (MANDATORY):
+- **ADR stress test:** Does this feature put pressure on any existing ADR? If an accepted
+  decision makes this feature significantly harder, flag the cost — not to overturn the ADR,
+  but to surface the tradeoff explicitly.
+- **Simpler alternative:** For every major decision, document at least one rejected alternative
+  and WHY it was rejected. If you can't articulate why the alternative is worse, your decision
+  may be premature.
+- **Assumption inventory:** List every assumption the brainstorm relies on. Mark each as
+  "verified" (checked against code/docs) or "assumed" (needs validation during implementation).
+
 After writing, self-review using the document-review skill (design, security, scope,
 coherence, feasibility personas). Iterate until at least 4/5 personas pass.
 
@@ -205,11 +215,26 @@ Review the PR diff against these criteria:
 **Best practices:** Naming consistency, error propagation, no unwrap() on fallible
   operations, proper use of tracing, serde attributes, etc.
 
-**New gotchas:** If you find a pattern that could cause bugs in future code, append
-  it to docs/knowledge/gotchas.md with appropriate tags and severity.
+Anti-bias checks (MANDATORY — challenge the pipeline, not just the code):
 
-**New conventions:** If you notice the code follows an implicit pattern not yet documented
-  in conventions.md, append it to docs/knowledge/conventions.md with tags and examples.
+**Premise challenge:** Re-read the brainstorm's core decisions. Are they still sound
+  given what the implementation revealed? Could the same outcome be achieved more simply?
+  Is there unnecessary complexity that the brainstorm introduced and the plan faithfully
+  carried forward? Do NOT rubber-stamp just because "the brainstorm said so."
+
+**Workaround detection:** Is any code working around a limitation rather than solving it?
+  If so, flag it — workarounds that get merged become permanent. Ask: "is this the real fix
+  or a workaround that should be a separate issue?"
+
+**Convention validity:** Before writing a new convention to conventions.md, verify the
+  pattern exists in at least 5 files. Fewer than 5 could be coincidence.
+
+Knowledge updates (with expiry dates):
+**New gotchas:** If you find a pattern that could cause bugs in future code, append
+  it to docs/knowledge/gotchas.md with tags, severity, added date, and 90-day expiry.
+
+**New conventions:** If you notice the code follows an implicit pattern documented in
+  5+ files, append it to docs/knowledge/conventions.md with tags, added date, and 120-day expiry.
 
 Output:
 - If issues found: post review comments on PR, request changes, move Linear to "In Development"
@@ -243,24 +268,36 @@ Your task:
    - Are edge cases from the brainstorm doc covered?
    - Generate new smoke tests for any uncovered scenarios.
 
-4. Quality gates (from .pipeline/config.json):
+4. Adversarial testing (MANDATORY — try to break the feature):
+   - Use the feature in ways the brainstorm and plan did NOT anticipate.
+   - What happens with unexpected input? Empty strings, nulls, extremely long values,
+     special characters, concurrent requests?
+   - What happens when dependencies fail? LLM returns garbage, network drops, SQLite is locked?
+   - What happens at boundaries? First item, last item, zero items, maximum items?
+   - Do NOT only test the happy path. If you can only think of happy-path tests,
+     your testing is insufficient.
+
+5. Quality gates (from .pipeline/config.json):
    - All tests pass
    - No regressions in existing tests
    - Smoke tests generated from brainstorm pass
+   - At least one adversarial test per new code path
 
-5. If failures found:
+6. If failures found:
    - Check against qa-patterns.md — is this a known flaky test?
    - For genuine failures: log each as a new Linear bug issue, linked to the parent feature.
      Include: failing test name, error output, expected vs actual, reproduction steps.
    - Move parent Linear issue back to "In Development"
 
-6. If all pass:
+7. If all pass:
    - Comment on PR with QA results summary
    - Move Linear issue to "Building"
 
-7. Update knowledge:
+8. Update knowledge (with expiry dates):
    - If you discovered a new flaky test or recurring pattern, append to docs/knowledge/qa-patterns.md
+     with added date and appropriate expiry (60 days for open, 90 days for active rule)
    - If a previously open pattern is now resolved, update its status to "resolved"
+   - Check for expired "open" entries — file them as Linear bugs (workarounds are not fixes)
 
 Output: QA report comment on PR, Linear state updated.
 ```
@@ -344,26 +381,45 @@ Your analysis:
 
 3. **Convention drift:**
    - Are there patterns the review agent flags repeatedly that aren't in conventions.md?
-   - If so, extract them into conventions.md.
+   - If so, extract them into conventions.md (must be observed in 5+ files).
 
 4. **Human override analysis:**
    - Check git log for commits by humans that modify agent-produced files.
    - Diff the human version against the agent version.
    - Extract the lesson: what did the agent miss or get wrong?
 
-5. **Stale knowledge cleanup:**
-   - Are there gotchas marked as resolved that should be removed?
-   - Are there qa-patterns that haven't been seen in 30+ days?
-   - Are there learned rules that are now redundant (covered by gotchas or conventions)?
+5. **Expiry verification (CRITICAL — prevents confirmation bias):**
+   - Scan ALL knowledge files for entries past their expiry date.
+   - For each expired entry, DO NOT auto-renew. Instead:
+     a. **Gotchas (90-day expiry):** grep the codebase — does the pattern still exist?
+        Does the rule still apply? If the code has changed and the gotcha no longer applies,
+        mark as "expired — no longer relevant" and remove.
+     b. **Conventions (120-day expiry):** check if the pattern still exists in 5+ files.
+        If the codebase has drifted away from the convention, remove it — don't force
+        conformance to a dead pattern.
+     c. **Learned rules (60-day expiry):** check pipeline-metrics.md — has the problem
+        recurred since the rule was added? If not, the rule may be unnecessary overhead.
+        Remove it and monitor.
+     d. **QA patterns "open" (60-day expiry):** these are bugs masquerading as patterns.
+        File as Linear bug issues and mark as "escalated."
+   - Log all verification decisions in the retrospective summary.
+
+6. **Confirmation bias audit:**
+   - Are any knowledge entries self-reinforcing? (e.g., a gotcha that only exists because
+     agents followed a convention that was itself based on the gotcha)
+   - Are there learned rules that contradict each other across agents?
+   - Has any piece of knowledge been renewed 3+ times without being challenged?
+     If so, flag for human review — it may be institutionalized cargo cult.
 
 Output:
-- Append new rules to .pipeline/learned-rules/{agent}.md for affected agents
-- Append new conventions to docs/knowledge/conventions.md
-- Mark stale entries in gotchas/qa-patterns as resolved
+- Propose new rules to .pipeline/learned-rules/{agent}.md (HUMAN APPROVAL REQUIRED)
+- Propose new conventions to docs/knowledge/conventions.md (HUMAN APPROVAL REQUIRED)
+- Remove expired/invalid entries from gotchas, conventions, qa-patterns, learned-rules
 - Post summary to Slack with:
   - Top 3 systemic issues found
-  - Rules added (which agent, what rule)
-  - Conventions added
-  - Stale entries cleaned up
+  - Rules proposed (which agent, what rule) — pending human approval
+  - Conventions proposed — pending human approval
+  - Expired entries removed (with verification reasoning)
+  - Confirmation bias flags (if any)
   - Overall pipeline health score (features completed / features attempted)
 ```
