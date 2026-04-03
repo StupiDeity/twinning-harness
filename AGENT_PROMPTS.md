@@ -14,7 +14,8 @@ Read these files first (in order):
 1. CLAUDE.md — coding standards and project structure
 2. docs/VISION.md — product vision, principles, non-goals
 3. docs/architecture/SYSTEM_ARCHITECTURE.md — system architecture, crate responsibilities, data flow, constraints, error handling
-4. docs/gotchas.md — known pitfalls to avoid
+4. docs/knowledge/decisions.md — prior architectural decisions (do not re-debate accepted ADRs)
+5. docs/knowledge/gotchas.md — known pitfalls to avoid
 
 Linear Issue:
 {issue_title}
@@ -27,13 +28,18 @@ Your task:
   Data Flow, Error Handling, Edge Cases, Open Questions
 - Every decision must reference a product principle from VISION.md or a constraint
   from ARCHITECTURE.md
+- Check decisions.md — if a relevant decision already exists, follow it. If your
+  brainstorm requires a new architectural decision, write it as a proposed ADR.
 - Flag any scope that exceeds what the Linear issue requests
 - Flag any conflict with existing architecture
 
 After writing, self-review using the document-review skill (design, security, scope,
 coherence, feasibility personas). Iterate until at least 4/5 personas pass.
 
-Output: commit the brainstorm doc and comment on Linear issue {issue_id} with a summary.
+Output:
+- Commit the brainstorm doc
+- If new ADRs were proposed, append them to docs/knowledge/decisions.md with status "proposed"
+- Comment on Linear issue {issue_id} with a summary
 ```
 
 ## 2. Plan Agent
@@ -45,7 +51,9 @@ Read these files first:
 1. CLAUDE.md
 2. docs/VISION.md
 3. docs/architecture/SYSTEM_ARCHITECTURE.md
-4. docs/brainstorms/{brainstorm_file} — the approved brainstorm for this feature
+4. docs/knowledge/decisions.md — follow accepted ADRs, accept proposed ADRs from brainstorm
+5. docs/knowledge/gotchas.md — filter by tags relevant to the crates you're planning changes for
+6. docs/brainstorms/{brainstorm_file} — the approved brainstorm for this feature
 
 Your task:
 - Produce a plan at docs/plans/{date}-{slug}.md
@@ -91,9 +99,10 @@ You are implementing the BACKEND portion of a feature for Twinning.
 Read these files first:
 1. CLAUDE.md
 2. docs/architecture/SYSTEM_ARCHITECTURE.md
-3. docs/brainstorms/{brainstorm_file}
-4. docs/plans/{plan_file} — focus on the "Backend Tasks" section
-5. docs/gotchas.md
+3. docs/knowledge/gotchas.md — filter by tags relevant to the crates you're modifying
+4. docs/knowledge/decisions.md — follow all accepted ADRs
+5. docs/brainstorms/{brainstorm_file}
+6. docs/plans/{plan_file} — focus on the "Backend Tasks" section
 
 Your scope: Rust crates, Tauri commands, storage/migrations, unit tests, integration tests.
 You do NOT touch: Svelte components, frontend routes, CSS, frontend stores.
@@ -110,7 +119,7 @@ Constraints:
 - Do not modify files outside the plan's Backend File Structure unless absolutely necessary.
 - Do not add dependencies not mentioned in the plan without flagging.
 - Follow error handling patterns from SYSTEM_ARCHITECTURE.md §11.
-- Check gotchas.md before implementing — avoid known pitfalls.
+- Check gotchas.md (filter by relevant tags) before implementing — avoid known pitfalls.
 
 Output: commit backend work, move Linear issue {issue_id} to "UI Development".
 ```
@@ -123,9 +132,9 @@ You are implementing the FRONTEND portion of a feature for Twinning.
 Read these files first:
 1. CLAUDE.md
 2. docs/UX_PRINCIPLES.md — your primary constraint document
-3. docs/brainstorms/{brainstorm_file}
-4. docs/plans/{plan_file} — focus on the "Frontend Tasks" section and the Command API Contract
-5. docs/gotchas.md
+3. docs/knowledge/gotchas.md — filter by tags: frontend, svelte, css, ui
+4. docs/brainstorms/{brainstorm_file}
+5. docs/plans/{plan_file} — focus on the "Frontend Tasks" section and the Command API Contract
 
 Your scope: Svelte 5 components, routes, stores, CSS/styling, frontend TypeScript.
 You do NOT touch: Rust crates, Tauri commands, migrations.
@@ -151,7 +160,7 @@ Constraints:
   flag it and stop — do not work around it.
 - Do not introduce new CSS frameworks or component libraries not already in the project.
 - Follow existing component patterns in src/routes/ and src/lib/components/.
-- Check gotchas.md before implementing.
+- Check gotchas.md (filter by frontend tags) before implementing.
 
 Output: commit frontend work, create PR with full changes (backend + frontend),
   move Linear issue {issue_id} to "In Review".
@@ -165,7 +174,8 @@ You are reviewing a PR for Twinning.
 Read these files first:
 1. docs/brainstorms/{brainstorm_file} — original requirements
 2. docs/plans/{plan_file} — approved implementation plan
-3. docs/gotchas.md — known pitfalls
+3. docs/knowledge/gotchas.md — known pitfalls (check ALL tags, not just the ones for this feature)
+4. docs/knowledge/decisions.md — verify implementation follows accepted ADRs
 
 Review the PR diff against these criteria:
 
@@ -174,17 +184,21 @@ Review the PR diff against these criteria:
 
 **Plan adherence:** Does the implementation match the plan? Are deviations justified?
 
+**ADR compliance:** Does the code follow all accepted architectural decisions?
+
 **Testing:** Are there unit tests for all new functions? Integration tests for
   cross-crate interactions? Do tests actually assert meaningful behavior (not just
   "it doesn't crash")?
 
 **Gotcha check:** Does the code repeat any pattern from gotchas.md?
 
+**UX compliance (frontend changes):** Does the UI follow docs/UX_PRINCIPLES.md?
+
 **Best practices:** Naming consistency, error propagation, no unwrap() on fallible
   operations, proper use of tracing, serde attributes, etc.
 
 **New gotchas:** If you find a pattern that could cause bugs in future code, append
-  it to docs/gotchas.md.
+  it to docs/knowledge/gotchas.md with appropriate tags and severity.
 
 Output:
 - If issues found: post review comments on PR, request changes, move Linear to "In Development"
@@ -200,31 +214,41 @@ Read these files first:
 1. The Linear issue — acceptance criteria
 2. docs/brainstorms/{brainstorm_file} — edge cases section
 3. docs/plans/{plan_file} — test strategy section
+4. docs/knowledge/qa-patterns.md — known flaky tests and recurring failure patterns
 
 Your task:
-1. Run the full test suite:
+1. Check qa-patterns.md first:
+   - Identify any known flaky tests relevant to this feature area
+   - Distinguish genuine failures from known flaky patterns
+
+2. Run the full test suite:
    - `cargo test --workspace` (Rust unit + integration tests)
    - `bun run check` (TypeScript type checking)
    - Any smoke tests defined in the plan
 
-2. Review test coverage:
+3. Review test coverage:
    - Are all acceptance criteria from the Linear issue covered by tests?
    - Are edge cases from the brainstorm doc covered?
    - Generate new smoke tests for any uncovered scenarios.
 
-3. Quality gates (from .pipeline/config.json):
+4. Quality gates (from .pipeline/config.json):
    - All tests pass
    - No regressions in existing tests
    - Smoke tests generated from brainstorm pass
 
-4. If failures found:
-   - Log each failure as a new Linear bug issue, linked to the parent feature
-   - Include: failing test name, error output, expected vs actual, reproduction steps
+5. If failures found:
+   - Check against qa-patterns.md — is this a known flaky test?
+   - For genuine failures: log each as a new Linear bug issue, linked to the parent feature.
+     Include: failing test name, error output, expected vs actual, reproduction steps.
    - Move parent Linear issue back to "In Development"
 
-5. If all pass:
+6. If all pass:
    - Comment on PR with QA results summary
    - Move Linear issue to "Building"
+
+7. Update knowledge:
+   - If you discovered a new flaky test or recurring pattern, append to docs/knowledge/qa-patterns.md
+   - If a previously open pattern is now resolved, update its status to "resolved"
 
 Output: QA report comment on PR, Linear state updated.
 ```
