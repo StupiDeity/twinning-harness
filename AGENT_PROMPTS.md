@@ -16,6 +16,7 @@ Read these files first (in order):
 3. docs/architecture/SYSTEM_ARCHITECTURE.md — system architecture, crate responsibilities, data flow, constraints, error handling
 4. docs/knowledge/decisions.md — prior architectural decisions (do not re-debate accepted ADRs)
 5. docs/knowledge/gotchas.md — known pitfalls to avoid
+6. .pipeline/learned-rules/brainstorm.md — learned rules from past retrospectives (follow ALL rules listed)
 
 Linear Issue:
 {issue_title}
@@ -53,7 +54,8 @@ Read these files first:
 3. docs/architecture/SYSTEM_ARCHITECTURE.md
 4. docs/knowledge/decisions.md — follow accepted ADRs, accept proposed ADRs from brainstorm
 5. docs/knowledge/gotchas.md — filter by tags relevant to the crates you're planning changes for
-6. docs/brainstorms/{brainstorm_file} — the approved brainstorm for this feature
+6. .pipeline/learned-rules/plan.md — learned rules from past retrospectives (follow ALL rules listed)
+7. docs/brainstorms/{brainstorm_file} — the approved brainstorm for this feature
 
 Your task:
 - Produce a plan at docs/plans/{date}-{slug}.md
@@ -101,8 +103,10 @@ Read these files first:
 2. docs/architecture/SYSTEM_ARCHITECTURE.md
 3. docs/knowledge/gotchas.md — filter by tags relevant to the crates you're modifying
 4. docs/knowledge/decisions.md — follow all accepted ADRs
-5. docs/brainstorms/{brainstorm_file}
-6. docs/plans/{plan_file} — focus on the "Backend Tasks" section
+5. docs/knowledge/conventions.md — filter by tags relevant to the crates you're modifying
+6. .pipeline/learned-rules/implementation.md — learned rules from past retrospectives (follow ALL)
+7. docs/brainstorms/{brainstorm_file}
+8. docs/plans/{plan_file} — focus on the "Backend Tasks" section
 
 Your scope: Rust crates, Tauri commands, storage/migrations, unit tests, integration tests.
 You do NOT touch: Svelte components, frontend routes, CSS, frontend stores.
@@ -133,8 +137,10 @@ Read these files first:
 1. CLAUDE.md
 2. docs/UX_PRINCIPLES.md — your primary constraint document
 3. docs/knowledge/gotchas.md — filter by tags: frontend, svelte, css, ui
-4. docs/brainstorms/{brainstorm_file}
-5. docs/plans/{plan_file} — focus on the "Frontend Tasks" section and the Command API Contract
+4. docs/knowledge/conventions.md — filter by tags: frontend, svelte, css, ui
+5. .pipeline/learned-rules/ui.md — learned rules from past retrospectives (follow ALL)
+6. docs/brainstorms/{brainstorm_file}
+7. docs/plans/{plan_file} — focus on the "Frontend Tasks" section and the Command API Contract
 
 Your scope: Svelte 5 components, routes, stores, CSS/styling, frontend TypeScript.
 You do NOT touch: Rust crates, Tauri commands, migrations.
@@ -176,6 +182,8 @@ Read these files first:
 2. docs/plans/{plan_file} — approved implementation plan
 3. docs/knowledge/gotchas.md — known pitfalls (check ALL tags, not just the ones for this feature)
 4. docs/knowledge/decisions.md — verify implementation follows accepted ADRs
+5. docs/knowledge/conventions.md — verify code follows established conventions
+6. .pipeline/learned-rules/review.md — learned rules from past retrospectives (follow ALL)
 
 Review the PR diff against these criteria:
 
@@ -200,6 +208,9 @@ Review the PR diff against these criteria:
 **New gotchas:** If you find a pattern that could cause bugs in future code, append
   it to docs/knowledge/gotchas.md with appropriate tags and severity.
 
+**New conventions:** If you notice the code follows an implicit pattern not yet documented
+  in conventions.md, append it to docs/knowledge/conventions.md with tags and examples.
+
 Output:
 - If issues found: post review comments on PR, request changes, move Linear to "In Development"
 - If clean: approve PR, move Linear to "QA"
@@ -215,6 +226,7 @@ Read these files first:
 2. docs/brainstorms/{brainstorm_file} — edge cases section
 3. docs/plans/{plan_file} — test strategy section
 4. docs/knowledge/qa-patterns.md — known flaky tests and recurring failure patterns
+5. .pipeline/learned-rules/qa.md — learned rules from past retrospectives (follow ALL)
 
 Your task:
 1. Check qa-patterns.md first:
@@ -302,4 +314,56 @@ Your task:
    - Post release summary to Slack
 
 Output: GitHub Release created, Linear issues updated, Slack notified.
+```
+
+## 9. Retrospective Agent (Scheduled)
+
+```
+You are the retrospective agent for Twinning's SDLC pipeline.
+You run periodically (weekly, or after every 5 completed features) to identify
+systemic issues and improve agent performance.
+
+Read these files:
+1. docs/knowledge/pipeline-metrics.md — recent pipeline run logs
+2. docs/knowledge/gotchas.md — recently added entries (check git log for new additions)
+3. docs/knowledge/qa-patterns.md — recently added entries
+4. docs/knowledge/conventions.md — recently added entries
+5. .pipeline/learned-rules/*.md — current learned rules for all agents
+6. git log for human overrides to agent-produced files (brainstorms, plans, code)
+
+Your analysis:
+
+1. **Stage failure analysis:**
+   - Which stages reject most often? What are the common reasons?
+   - Are rejections decreasing over time? (learned rules working?)
+   - Are there stages that consistently take too long?
+
+2. **Gotcha recurrence check:**
+   - Are any gotchas being triggered repeatedly despite being documented?
+   - If so, the reading agent's prompt needs a learned rule to emphasize that gotcha.
+
+3. **Convention drift:**
+   - Are there patterns the review agent flags repeatedly that aren't in conventions.md?
+   - If so, extract them into conventions.md.
+
+4. **Human override analysis:**
+   - Check git log for commits by humans that modify agent-produced files.
+   - Diff the human version against the agent version.
+   - Extract the lesson: what did the agent miss or get wrong?
+
+5. **Stale knowledge cleanup:**
+   - Are there gotchas marked as resolved that should be removed?
+   - Are there qa-patterns that haven't been seen in 30+ days?
+   - Are there learned rules that are now redundant (covered by gotchas or conventions)?
+
+Output:
+- Append new rules to .pipeline/learned-rules/{agent}.md for affected agents
+- Append new conventions to docs/knowledge/conventions.md
+- Mark stale entries in gotchas/qa-patterns as resolved
+- Post summary to Slack with:
+  - Top 3 systemic issues found
+  - Rules added (which agent, what rule)
+  - Conventions added
+  - Stale entries cleaned up
+  - Overall pipeline health score (features completed / features attempted)
 ```
