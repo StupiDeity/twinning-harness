@@ -67,6 +67,15 @@ Read these files first:
 6. .pipeline/learned-rules/plan.md — learned rules from past retrospectives (follow ALL rules listed)
 7. docs/brainstorms/{brainstorm_file} — the approved brainstorm for this feature
 
+Anti-anchoring check (MANDATORY — before you start planning):
+- **Problem restatement:** Restate the problem from the user's perspective in one sentence.
+  Does the brainstorm's solution actually address this problem, or does it address a
+  technical sub-problem the brainstorm invented? If the brainstorm reframed the problem,
+  is the reframing justified?
+- **Solution proportionality:** Is the proposed solution proportional to the problem?
+  A one-line config change shouldn't need a new crate. A retry mechanism shouldn't need
+  a queue system. If the brainstorm's solution feels heavy for the problem, flag it.
+
 Your task:
 - Produce a plan at docs/plans/{date}-{slug}.md
 - Follow the format of existing plans (see docs/plans/ for examples)
@@ -225,6 +234,20 @@ Anti-bias checks (MANDATORY — challenge the pipeline, not just the code):
 **Workaround detection:** Is any code working around a limitation rather than solving it?
   If so, flag it — workarounds that get merged become permanent. Ask: "is this the real fix
   or a workaround that should be a separate issue?"
+
+**Simplicity check (complexity ratchet prevention):**
+  - Could this PR be 30% smaller and still achieve the goal?
+  - Is there any abstraction that's only used once? Single-use abstractions are premature.
+  - Are there files that could be deleted instead of modified?
+  - Does this PR increase the number of crates, modules, or indirection layers?
+    If yes, is the increase justified by the plan, or did the implementation agent gold-plate?
+
+**Scope enforcement (HARD REJECT — no exceptions):**
+  - Check every file in the PR diff against the plan's File Structure section.
+  - Any file modified that is NOT listed in the plan is an automatic rejection.
+  - The implementation agent must not touch code outside the plan's scope.
+  - If adjacent code genuinely needs fixing, log it as a new Linear issue — do not fix
+    it in this PR. "While I'm here" changes are the #1 source of untested regressions.
 
 **Convention validity:** Before writing a new convention to conventions.md, verify the
   pattern exists in at least 5 files. Fewer than 5 could be coincidence.
@@ -411,6 +434,28 @@ Your analysis:
    - Has any piece of knowledge been renewed 3+ times without being challenged?
      If so, flag for human review — it may be institutionalized cargo cult.
 
+7. **Recency bias check:**
+   - Categorize all learned rules by failure domain: data_parsing, state_management,
+     api_integration, ui_rendering, build_config, testing, other.
+   - If any single domain has >40% of all active learned rules, flag it as potential
+     recency bias — the pipeline may be over-indexed on whatever broke recently while
+     blind to other risk categories.
+   - Check if recent rules cluster around a single incident. If 3+ rules trace back to
+     the same PR/feature, consider whether one higher-level rule would replace all of them.
+
+8. **Survivorship bias check:**
+   - Review pipeline-metrics.md for entries with outcome "abandoned" or "stalled."
+   - What types of features fail to complete the pipeline? Is there a pattern?
+   - Are there stages that consistently stall certain types of work (e.g., brainstorm
+     always stalls on infrastructure changes, QA always stalls on frontend features)?
+   - These patterns are invisible if you only analyze completed features.
+
+9. **Knowledge budget enforcement:**
+   - Count entries in each knowledge file against the budget limits in config.json.
+   - If a file is at capacity and a new entry needs to be added, identify the least
+     relevant existing entry (oldest, least triggered, most narrowly scoped) for removal.
+   - Flag budget overflows to human for final decision on what to keep vs remove.
+
 Output:
 - Propose new rules to .pipeline/learned-rules/{agent}.md (HUMAN APPROVAL REQUIRED)
 - Propose new conventions to docs/knowledge/conventions.md (HUMAN APPROVAL REQUIRED)
@@ -421,5 +466,8 @@ Output:
   - Conventions proposed — pending human approval
   - Expired entries removed (with verification reasoning)
   - Confirmation bias flags (if any)
+  - Recency bias flags (domain distribution, incident clustering)
+  - Survivorship analysis (abandoned features, stall patterns)
+  - Knowledge budget status (entries per file vs limits)
   - Overall pipeline health score (features completed / features attempted)
 ```
