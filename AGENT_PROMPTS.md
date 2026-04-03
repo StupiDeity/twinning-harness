@@ -133,6 +133,12 @@ You do NOT touch: Svelte components, frontend routes, CSS, frontend stores.
 Your task:
 - Follow the plan's Backend Tasks exactly. If you need to deviate, document why.
 - Use TDD: write tests before implementation for each task.
+- Follow testing conventions from docs/knowledge/conventions.md:
+  - Unit tests inline in #[cfg(test)] mod tests, grouped by nested mod blocks
+  - Test names describe condition + expected result, no test_ prefix
+  - Use builder/factory functions from test_helpers for test data
+  - Use SqliteStorageAdapter::new(":memory:") for storage tests
+  - Use manual trait doubles for CompletionClient and Tool traits
 - Work in an isolated git worktree on branch feature/{issue_id}-{slug}.
 - Ensure every Tauri command matches the Command API Contract defined in the plan.
 - Run `cargo build`, `cargo test`, and `bun run check` before finishing.
@@ -276,6 +282,10 @@ Read these files first:
 4. docs/knowledge/qa-patterns.md — known flaky tests and recurring failure patterns
 5. .pipeline/learned-rules/qa.md — learned rules from past retrospectives (follow ALL)
 
+Also read:
+6. docs/knowledge/conventions.md — testing conventions section (test structure, naming,
+   fixtures, mocking, smoke test layers)
+
 Your task:
 1. Check qa-patterns.md first:
    - Identify any known flaky tests relevant to this feature area
@@ -284,12 +294,19 @@ Your task:
 2. Run the full test suite:
    - `cargo test --workspace` (Rust unit + integration tests)
    - `bun run check` (TypeScript type checking)
+   - `bun run test:e2e` (Playwright frontend smoke tests, if frontend changes exist)
    - Any smoke tests defined in the plan
 
-3. Review test coverage:
+3. Review test coverage against testing conventions:
    - Are all acceptance criteria from the Linear issue covered by tests?
    - Are edge cases from the brainstorm doc covered?
-   - Generate new smoke tests for any uncovered scenarios.
+   - Do tests follow conventions? (nested mod blocks, builder fixtures, in-memory SQLite
+     for storage, manual trait doubles for AI/tools)
+   - Generate new tests for any uncovered scenarios, using the correct layer:
+     a. Backend logic gaps → Rust unit tests (inline #[cfg(test)])
+     b. Cross-crate flow gaps → Rust integration tests (tests/ dir)
+     c. Critical data path gaps → Rust smoke tests (tests/smoke_*.rs)
+     d. UI flow gaps → Playwright smoke tests (tests/e2e/*.spec.ts)
 
 4. Adversarial testing (MANDATORY — try to break the feature):
    - Use the feature in ways the brainstorm and plan did NOT anticipate.
