@@ -44,9 +44,29 @@ main() {
 
   [[ -d "$dir" ]] || { printf 'proceed\n'; return 0; }
 
-  # 1) Canonical match: any existing doc mentions the Linear ID (e.g. "ENG-5").
-  local canonical
-  canonical="$(grep -ril -m1 -E "\\b${issue_id}\\b" "$dir" 2>/dev/null | head -1 || true)"
+  # 1) Canonical match: an existing doc declares this Linear ID as its subject.
+  # Require the ID to appear in YAML frontmatter (`linear: <ID>`) or in the first H1
+  # heading. A passing mention in prose ("e.g. ENG-5") is NOT a canonical claim.
+  # See .pipeline/learned-rules/brainstorm.md rule B-001 for the incident this guards.
+  local canonical=""
+  while IFS= read -r -d '' f; do
+    # Frontmatter: `linear: ENG-5` on its own line within the first 20 lines.
+    if awk -v id="$issue_id" '
+      NR==1 && $0=="---" { in_fm=1; next }
+      in_fm && $0=="---" { exit 1 }
+      in_fm && $0 ~ "^linear:[[:space:]]+" id "[[:space:]]*$" { exit 0 }
+      NR>20 { exit 1 }
+    ' "$f"; then
+      canonical="$f"; break
+    fi
+    # Title fallback: `# ENG-5: …` or `# … [ENG-5] …` in the first H1 we see.
+    if awk -v id="$issue_id" '
+      /^# / { if ($0 ~ "(^|[^A-Z0-9])" id "([^A-Z0-9-]|$)") exit 0; exit 1 }
+      NR>30 { exit 1 }
+    ' "$f"; then
+      canonical="$f"; break
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
   if [[ -n "$canonical" ]]; then
     printf 'link:%s\n' "${canonical#"$REPO_ROOT/"}"
     return 0
