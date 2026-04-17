@@ -20,3 +20,33 @@
 **Evidence:** [link to PR/issue/commit that triggered this rule]
 
 -->
+
+### Rule B-001: Verify every named code artifact against the repo before asserting it exists
+**Added:** 2026-04-17
+**Expires:** 2026-06-16
+**Last verified:** 2026-04-17
+**Source:** Human review of ENG-5 brainstorm (docs/brainstorms/2026-04-17-improve-task-quality-design.md). The brainstorm self-review passed 4/5 personas but the feasibility persona validated against prior design docs rather than the Rust code, and shipped three codebase-fact errors:
+- Called `EntityStore.find_by_name_and_type()`; actual name is `find_entity_by_name_and_type` at `crates/twinning-core/src/storage/mod.rs:149`.
+- Called `EntityStore.get_entity_edges()`; no such method — edges live on a separate `EdgeStore` trait via `get_edges_for_entity(entity_id)` at `storage/mod.rs:160-179`.
+- Claimed "SQL full-text search on evidence"; FTS5 is wired only for `episodic_fts` (`crates/twinning-storage/src/schema.rs:350-370`), not evidence. This conflicted with the doc's "No Schema Changes Required" claim.
+- Referenced `run_incremental()` coordinator entrypoint; only `run_bootstrap` exists (`crates/twinning-pipeline/src/coordinator.rs:61`).
+
+**Rule:** For every method, trait, module path, struct field, SQL table/column, SQL function, file path, crate, or coordinator entrypoint named in the brainstorm, open the current code and quote a `path:line` reference in the Assumption Inventory. Treat prior design docs as intent statements, never as proof of existence. If a referenced item does not exist, mark the assumption "assumed" and list the exact file that must be modified or created. Coordinator generic bounds (`<S: Trait1 + Trait2 + ...>`) must be enumerated explicitly — "follows the existing pattern" is not sufficient when adding a new trait dependency.
+
+**Why:** Without this rule, feasibility review validates the brainstorm's internal consistency but not its contact with reality. Design docs describe past intent; they drift. Code is the only source of truth for method names, trait bounds, schema columns, and entrypoint signatures. A brainstorm that names non-existent methods will either fail at compile time (wasting a plan + implementation cycle) or silently be "fixed" by the implementation agent inventing different code than the brainstorm asked for.
+
+**Evidence:** commit `d33dc2d chore(pipeline): brainstorm for ENG-5`; gaps surfaced in document-review pass dated 2026-04-17.
+
+---
+
+### Rule B-002: Declare Linear issue ownership via YAML frontmatter, not prose
+**Added:** 2026-04-17
+**Expires:** 2026-06-16
+**Last verified:** 2026-04-17
+**Source:** ENG-5 plan stage misfire. `reconcile.sh` used `grep -ril "\bENG-5\b"` over all plan docs, which matched `docs/plans/2026-04-17-pipeline-automated-harness.md` line 4 ("pick up a Linear issue (e.g. ENG-5)"). The plan stage emitted `outcome=linked` and skipped writing an ENG-5 plan. ENG-5 entered `stage:implementing` with no plan doc.
+
+**Rule:** Every brainstorm and plan doc MUST begin with YAML frontmatter `---\nlinear: {ISSUE_ID}\n...\n---`. The reconcile step only treats a doc as a canonical claim on an issue when the ID appears in frontmatter or the first H1; prose mentions are ignored.
+
+**Why:** Grep-over-body matches false-positive on any doc that incidentally mentions the issue ID (examples, cross-references, prior work). The reconcile result "link" silently prevents the plan agent from running, and the skip is invisible until the feature ships buggy.
+
+**Evidence:** `.pipeline/bin/reconcile.sh` pre-patch; `docs/knowledge/pipeline-metrics.md` line `2026-04-17T10:15:50Z event=stage-end issue=ENG-5 stage=plan outcome=linked notes="doc=docs/plans/2026-04-17-pipeline-automated-harness.md"`. Fix in `.pipeline/bin/reconcile.sh` (frontmatter + H1 matcher).

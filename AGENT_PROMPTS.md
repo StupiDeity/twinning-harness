@@ -67,9 +67,26 @@ Anti-bias checks (MANDATORY):
   may be premature.
 - **Assumption inventory:** List every assumption the brainstorm relies on. Mark each as
   "verified" (checked against code/docs) or "assumed" (needs validation during implementation).
+- **Codebase-fact verification (MANDATORY):** Every named method, trait, module path, struct
+  field, column, SQL function (e.g. FTS5), file, crate, or coordinator entrypoint referenced
+  in the brainstorm MUST be verified against the current code. For each one, open the file
+  and quote a `path:line` reference in the Assumption Inventory. Do NOT trust prior design
+  docs for code-level facts — designs describe intent, code is truth. If a referenced item
+  does not exist yet, mark the assumption "assumed" and list the exact file that must be
+  modified or created. This guards against the ENG-5 class of errors where the brainstorm
+  called `EntityStore.find_by_name_and_type()` (actual: `find_entity_by_name_and_type`),
+  referenced `run_incremental()` (does not exist), and claimed "SQL full-text search on
+  evidence" (FTS5 is wired only for episodic).
+
+Frontmatter (REQUIRED): The brainstorm doc MUST start with YAML frontmatter containing
+`linear: {issue_id}` on its own line. The reconcile step uses this as the canonical signal
+that a doc claims an issue; prose mentions elsewhere are ignored.
 
 After writing, self-review using the document-review skill (design, security, scope,
-coherence, feasibility personas). Iterate until at least 4/5 personas pass.
+coherence, feasibility, **product** personas). Iterate until at least 5/6 personas pass
+AND there are zero P0-severity findings from the feasibility persona (codebase-fact errors
+are always P0). If any P0 remains after 3 iterations, stop and post a Linear comment
+flagging for human review.
 
 Output:
 - Commit the brainstorm doc
