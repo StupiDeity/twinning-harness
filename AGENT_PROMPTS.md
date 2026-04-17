@@ -2,6 +2,30 @@
 
 > Each pipeline stage dispatches an agent with a structured prompt.
 > These templates define what each agent receives.
+>
+> **State transitions are owned by the orchestrator, not the agent.**
+> Agents produce artifacts (docs, commits, PRs) and exit cleanly. The orchestrator
+> (`.pipeline/bin/run-stage.sh`) swaps the `stage:<name>` label on Linear after a
+> successful stage run. Any "move Linear issue to X" / "update state to X" language
+> in the output sections below should be read as **"apply `stage:<x>` label (the
+> orchestrator will do this for you on successful exit)."**
+>
+> Mapping from historical state names → current stage labels:
+>
+> | Legacy state name            | Current stage label     |
+> |------------------------------|-------------------------|
+> | Brainstorming                | `stage:brainstorming`   |
+> | Planning / Planning Complete | `stage:planning`        |
+> | In Development               | `stage:implementing`    |
+> | UI Development               | `stage:ui`              |
+> | In Review                    | `stage:reviewing`       |
+> | QA                           | `stage:qa`              |
+> | Building                     | `stage:building`        |
+> | Released                     | `stage:released` (+ Linear status `Done`) |
+>
+> Knowledge-file writes (gotchas, conventions, decisions, learned-rules) **must go
+> through a PR** from the agent's working branch, not direct commits on `main`.
+> CODEOWNERS enforces human review on those paths.
 
 ---
 
