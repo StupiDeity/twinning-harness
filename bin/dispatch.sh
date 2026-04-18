@@ -12,13 +12,13 @@ allowed_tools_for() {
   case "$1" in
     brainstorm)     printf 'Read,Write,Edit,Grep,Glob,TaskCreate,WebFetch' ;;
     plan)           printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git log:*),Bash(git diff:*)' ;;
-    implement)      printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Bash' ;;
-    ui)             printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Bash' ;;
-    review)         printf 'Read,Grep,Glob,TaskCreate,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr review:*)' ;;
-    qa)             printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Bash' ;;
-    build)          printf 'Read,Grep,Glob,Bash(gh run:*),Bash(gh pr merge:*)' ;;
-    release)        printf 'Read,Grep,Glob,Bash(gh release:*),Bash(git tag:*),Bash(git push:*)' ;;
-    retrospective)  printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git log:*)' ;;
+    implement)      printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(rustc:*),Bash(jq:*),Bash(awk:*)' ;;
+    ui)             printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*)' ;;
+    review)         printf 'Read,Grep,Glob,TaskCreate,Agent,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue create:*)' ;;
+    qa)             printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue list:*)' ;;
+    build)          printf 'Read,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*)' ;;
+    release)        printf 'Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(gh release view:*),Bash(gh release list:*),Bash(jq:*)' ;;
+    retrospective)  printf 'Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash .pipeline/bin/metrics.sh:*)' ;;
     *)              die "no allowed-tools profile for stage: $1" ;;
   esac
 }

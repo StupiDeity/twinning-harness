@@ -33,13 +33,35 @@ slugify() {
 }
 
 # Extract the fenced ``` block that follows a "## N. <Name>" header.
+# Schema invariant: every stage section must have exactly TWO column-0 fences (the
+# opening and closing of the prompt body). A mismatched count means AGENT_PROMPTS.md
+# was edited in a way that breaks prompt extraction — die loudly rather than ship a
+# silently-truncated prompt to the agent.
 extract_block() {
   local section="$1" prompts="$PIPELINE_ROOT/AGENT_PROMPTS.md"
+
+  # Schema check: count column-0 fences in the section.
+  local fence_count
+  fence_count="$(awk -v section="$section" '
+    /^## / {
+      if (in_section) { exit }
+      line = $0
+      sub(/^## /, "", line)
+      if (line == section) { in_section=1 }
+      next
+    }
+    in_section && /^```/ { count++ }
+    END { print count+0 }
+  ' "$prompts")"
+
+  if [[ "$fence_count" != "2" ]]; then
+    die "AGENT_PROMPTS.md schema error: section '$section' has $fence_count column-0 fences (expected 2). Check for stray \`\`\` lines or a missing closing fence."
+  fi
+
   awk -v section="$section" '
     BEGIN { in_section=0; in_block=0; fence_count=0 }
     /^## / {
       if (in_section) { exit }
-      # Strip "## " prefix and compare.
       line = $0
       sub(/^## /, "", line)
       if (line == section) { in_section=1 }
@@ -54,10 +76,39 @@ extract_block() {
 }
 
 find_doc() {
-  # Best-effort: find a file in the given dir whose name contains the issue id
-  # (case-insensitive) or the slug. Prints the relative path or "".
+  # Canonical-first: find the doc that declares `linear: <ID>` in YAML frontmatter
+  # (same rule as reconcile.sh and scope-check.sh). Only if no frontmatter match
+  # exists do we fall back to filename-contains (for legacy docs pre-dating the
+  # frontmatter convention). Prints a repo-relative path or "".
   local dir="$1" issue_id="$2" slug="$3"
   if [[ ! -d "$dir" ]]; then printf ''; return; fi
+
+  # 1) Canonical: linear: <ID> in frontmatter.
+  local f
+  while IFS= read -r -d '' f; do
+    if awk -v id="$issue_id" '
+      NR==1 && $0=="---" { in_fm=1; next }
+      in_fm && $0=="---" { exit 1 }
+      in_fm && $0 ~ "^linear:[[:space:]]+" id "[[:space:]]*$" { exit 0 }
+      NR>20 { exit 1 }
+    ' "$f"; then
+      printf '%s' "${f#"$REPO_ROOT/"}"
+      return
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
+
+  # 2) Title fallback: `# ENG-5: …` in the first H1.
+  while IFS= read -r -d '' f; do
+    if awk -v id="$issue_id" '
+      /^# / { if ($0 ~ "(^|[^A-Z0-9])" id "([^A-Z0-9-]|$)") exit 0; exit 1 }
+      NR>30 { exit 1 }
+    ' "$f"; then
+      printf '%s' "${f#"$REPO_ROOT/"}"
+      return
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
+
+  # 3) Legacy fallback: filename contains issue_id, then slug.
   local match
   match="$(find "$dir" -maxdepth 1 -type f -iname "*${issue_id}*.md" 2>/dev/null | head -1)"
   if [[ -z "$match" && -n "$slug" ]]; then
@@ -72,7 +123,7 @@ find_doc() {
 
 main() {
   local stage="${1:-}" issue_id="${2:-}"
-  [[ -n "$stage" && -n "$issue_id" ]] || die "usage: render-prompt.sh <stage> <issue_id>"
+  [[ -n "$stage" ]] || die "usage: render-prompt.sh <stage> <issue_id|release-meta>"
 
   local section
   section="$(lookup_section "$stage")"
@@ -81,6 +132,28 @@ main() {
   local block
   block="$(extract_block "$section")"
   [[ -n "$block" ]] || die "could not extract block for section: $section"
+
+  # Release stage is cross-issue: it has no single owning Linear issue. Render with
+  # release metadata (version/tag/prev_tag) supplied via env by run-release-observer.sh.
+  if [[ "$stage" == "release" ]]; then
+    local version="${PIPELINE_RELEASE_VERSION:-}"
+    local tag="${PIPELINE_RELEASE_TAG:-}"
+    local prev_tag="${PIPELINE_RELEASE_PREV_TAG:-}"
+    [[ -n "$version" && -n "$tag" ]] || die "release stage needs PIPELINE_RELEASE_VERSION and PIPELINE_RELEASE_TAG env"
+    # Resolve prev_tag if not provided.
+    if [[ -z "$prev_tag" ]]; then
+      prev_tag="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 "${tag}^" 2>/dev/null \
+        || git -C "$REPO_ROOT" rev-list --max-parents=0 HEAD | head -1)"
+    fi
+    printf '%s' "$block" \
+      | sed \
+        -e "s|{version}|$version|g" \
+        -e "s|{tag}|$tag|g" \
+        -e "s|{prev_tag}|$prev_tag|g"
+    return 0
+  fi
+
+  [[ -n "$issue_id" ]] || die "stage=$stage requires <issue_id>"
 
   # Fetch issue metadata.
   local issue_json title description date slug
@@ -96,19 +169,25 @@ main() {
 
   # Interpolate. Using python for safe substitution (handles multiline description).
   # Falls back to sed if python unavailable.
+  local issue_id_lower branch_name
+  issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
+  branch_name="feature/${issue_id_lower}-${slug}"
+
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$block" "$issue_id" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" <<'PY'
+    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" <<'PY'
 import sys
-tmpl, issue_id, title, description, date, slug, brainstorm_file, plan_file = sys.argv[1:]
+tmpl, issue_id, issue_id_lower, title, description, date, slug, brainstorm_file, plan_file, branch_name = sys.argv[1:]
 out = tmpl
 repl = {
   "{issue_id}": issue_id,
+  "{issue_id_lower}": issue_id_lower,
   "{issue_title}": title,
   "{issue_description}": description,
   "{date}": date,
   "{slug}": slug,
   "{brainstorm_file}": brainstorm_file,
   "{plan_file}": plan_file,
+  "{branch_name}": branch_name,
 }
 for k, v in repl.items():
   out = out.replace(k, v)
@@ -118,10 +197,12 @@ PY
     printf '%s' "$block" \
       | sed \
         -e "s|{issue_id}|$issue_id|g" \
+        -e "s|{issue_id_lower}|$issue_id_lower|g" \
         -e "s|{date}|$date|g" \
         -e "s|{slug}|$slug|g" \
         -e "s|{brainstorm_file}|$brainstorm_file|g" \
-        -e "s|{plan_file}|$plan_file|g"
+        -e "s|{plan_file}|$plan_file|g" \
+        -e "s|{branch_name}|$branch_name|g"
     # title and description may contain sed metacharacters — fall back users: install python3.
   fi
 }

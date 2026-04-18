@@ -106,6 +106,10 @@ add_label() {
     return 0
   fi
 
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] would add label $label_name to $ident"
+    return 0
+  fi
   local q='mutation($id: String!, $labelId: String!) { issueAddLabel(id: $id, labelId: $labelId) { success } }'
   local vars
   vars="$(jq -cn --arg id "$issue_uuid" --arg labelId "$label_uuid" '{id:$id, labelId:$labelId}')"
@@ -125,6 +129,10 @@ remove_label() {
     return 0
   fi
 
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] would remove label $label_name from $ident"
+    return 0
+  fi
   local q='mutation($id: String!, $labelId: String!) { issueRemoveLabel(id: $id, labelId: $labelId) { success } }'
   local vars
   vars="$(jq -cn --arg id "$issue_uuid" --arg labelId "$label_uuid" '{id:$id, labelId:$labelId}')"
@@ -175,6 +183,10 @@ transition_state() {
     return 0
   fi
 
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] would transition $ident: $current -> $state_name"
+    return 0
+  fi
   local q='mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }'
   local vars
   vars="$(jq -cn --arg id "$issue_uuid" --arg stateId "$state_uuid" '{id:$id, stateId:$stateId}')"
@@ -186,6 +198,10 @@ add_comment() {
   local ident="$1" body="$2"
   local issue_uuid
   issue_uuid="$(_resolve_issue_uuid "$ident")"
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] would comment on $ident: ${body:0:80}..."
+    return 0
+  fi
   local q='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
   local vars
   vars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"

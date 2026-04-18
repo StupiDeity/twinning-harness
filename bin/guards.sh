@@ -32,15 +32,19 @@ count_marker() {
 
 check() {
   local ident="$1"
-  local review_threshold gotcha_threshold rule_threshold
+  local review_threshold gotcha_threshold rule_threshold qa_threshold
   review_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.review_rejections_per_feature')"
   gotcha_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.gotcha_trigger_count')"
   rule_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.learned_rule_renewals')"
+  qa_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.qa_rejections_per_feature')"
+  # Default qa threshold if the key is absent in older configs.
+  [[ "$qa_threshold" == "null" || -z "$qa_threshold" ]] && qa_threshold=2
 
-  local rev got rule
+  local rev got rule qa
   rev="$(count_marker "$ident" review_rejection)"
   got="$(count_marker "$ident" gotcha_triggered)"
   rule="$(count_marker "$ident" learned_rule_renewal)"
+  qa="$(count_marker "$ident" qa_rejection)"
 
   local tripped=""
   if (( rev >= review_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:reviewed; then
@@ -52,19 +56,22 @@ check() {
   if (( rule >= rule_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:rule-reviewed; then
     tripped+="learned_rule_renewal($rule>=$rule_threshold) "
   fi
+  if (( qa >= qa_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:reviewed; then
+    tripped+="qa_rejection($qa>=$qa_threshold) "
+  fi
 
   if [[ -n "$tripped" ]]; then
     log "guards: tripped on $ident: $tripped"
     printf '%s\n' "$tripped"
     exit 10
   fi
-  log "guards: clear on $ident (rev=$rev got=$got rule=$rule)"
+  log "guards: clear on $ident (rev=$rev got=$got rule=$rule qa=$qa)"
 }
 
 bump() {
   local ident="$1" counter="$2"
   case "$counter" in
-    review_rejection|gotcha_triggered|learned_rule_renewal) ;;
+    review_rejection|gotcha_triggered|learned_rule_renewal|qa_rejection) ;;
     *) die "unknown counter: $counter" ;;
   esac
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "<!-- pipeline-metric: $counter --> Counter bumped by guards.sh."
