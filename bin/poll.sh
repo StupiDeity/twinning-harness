@@ -73,13 +73,15 @@ main() {
     local arg; arg="$(stage_arg_for_label "$stage_label")"
     [[ -z "$arg" ]] && continue
 
-    # Find the most-recently-updated issue at this stage that isn't paused and isn't Done.
+    # Find the most-recently-updated issue at this stage that isn't paused, isn't
+    # abandoned, and isn't Done.
     local pick
     pick="$(bash "$SCRIPT_DIR/linear.sh" list-issues-with-label "$stage_label" \
       | jq -r '
         [.data.issues.nodes[]
          | select(.state.name != "Done")
          | select([.labels.nodes[].name] | index("pipeline:paused") | not)
+         | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
          | .identifier] | first // ""')"
     if [[ -n "$pick" ]]; then
       jq -nc \
@@ -100,6 +102,7 @@ main() {
       [.data.issues.nodes[]
        | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
        | select([.labels.nodes[].name] | index("pipeline:paused") | not)
+       | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
        | .identifier] | first // ""')"
   if [[ -n "$inbox_pick" ]]; then
     jq -nc \

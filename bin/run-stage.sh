@@ -171,6 +171,62 @@ main() {
   fi
   rm -f "$prompt_file"
 
+  # Post-review: premise-failure loopback to brainstorming.
+  # The review agent applies `pipeline:premise-failure` when it concludes the brainstorm
+  # itself was wrong. The orchestrator handles the state transition so the review agent
+  # never touches stage labels directly (preamble contract).
+  if [[ "$stage" == "review" ]]; then
+    if bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:premise-failure"; then
+      log "review: premise-failure flagged — looping back to stage:brainstorming"
+      bash "$SCRIPT_DIR/linear.sh" swap-stage "$ident" "brainstorming"
+      bash "$SCRIPT_DIR/linear.sh" add-label    "$ident" "pipeline:supersede"
+      bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:premise-failure"
+      bash "$SCRIPT_DIR/linear.sh" add-comment  "$ident" \
+        "Pipeline: premise-failure loopback → brainstorming. \`pipeline:supersede\` applied so the next brainstorm regenerates (rather than linking the existing doc)."
+      t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "premise-failure" "$duration" "loopback=brainstorming"
+      exit 0
+    fi
+  fi
+
+  # Post-implement / post-ui guards:
+  #   (a) scope-check: no files outside plan File Structure were touched.
+  #   (b) no-pr-check: implement stage must NOT have opened a PR (UI stage opens the PR).
+  if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
+    local issue_id_lower slug title branch
+    issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$ident")"
+    title="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" | jq -r '.data.issue.title // ""')"
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')"
+    branch="feature/${issue_id_lower}-${slug}"
+
+    if ! bash "$SCRIPT_DIR/scope-check.sh" "$ident" "$branch"; then
+      t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "scope-violation" "$duration" "branch=$branch"
+      bash "$SCRIPT_DIR/slack.sh" warn "Stage $stage scope violation for $ident on $branch"
+      bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
+        "Pipeline: \`$stage\` stage was halted due to scope violation on \`$branch\`. Files modified outside the plan's File Structure section. Review the branch diff and either (a) extend the plan's File Structure to include the new scope, or (b) revert the out-of-scope edits and re-run."
+      exit 21
+    fi
+
+    # Scan for Gotcha-hit commit trailers and bump the per-issue counter.
+    # Non-blocking: telemetry only. Retrospective reads both the aggregate git log
+    # AND the per-issue counter.
+    bash "$SCRIPT_DIR/scan-gotcha-trailers.sh" "$ident" "$branch" || true
+
+    if [[ "$stage" == "implement" ]]; then
+      if command -v gh >/dev/null 2>&1; then
+        local pr_count
+        pr_count="$(gh pr list --head "$branch" --state open --json number --jq 'length' 2>/dev/null || printf '0')"
+        if (( pr_count > 0 )); then
+          t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+          bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "pr-opened-too-early" "$duration" "branch=$branch"
+          bash "$SCRIPT_DIR/slack.sh" warn "Implement stage opened a PR on $branch (UI stage should own PR creation)"
+          exit 22
+        fi
+      fi
+    fi
+  fi
+
   # Advance label.
   local nxt
   nxt="$(next_stage "$stage")"
