@@ -105,17 +105,20 @@ if [[ -z "$issue_id" ]]; then
 fi
 
 if [[ "$entry_action" == "apply-stage-label" ]]; then
-  label_suffix="$(case "$stage" in
-    brainstorm) echo brainstorming ;;
-    plan)       echo planning ;;
-    implement)  echo implementing ;;
-    ui)         echo ui ;;
-    review)     echo reviewing ;;
-    qa)         echo qa ;;
-    build)      echo building ;;
-    release)    echo released ;;
-    *)          echo "$stage" ;;
-  esac)"
+  # Note: inline `case` inside `$( ... )` trips bash 3.2 (macOS default) — the
+  # `)` after each pattern closes the command substitution early. Assign
+  # directly in the case body instead.
+  case "$stage" in
+    brainstorm) label_suffix=brainstorming ;;
+    plan)       label_suffix=planning ;;
+    implement)  label_suffix=implementing ;;
+    ui)         label_suffix=ui ;;
+    review)     label_suffix=reviewing ;;
+    qa)         label_suffix=qa ;;
+    build)      label_suffix=building ;;
+    release)    label_suffix=released ;;
+    *)          label_suffix="$stage" ;;
+  esac
   active_state="$(config_get '.linear.native_states.active')"
   bash "$SCRIPT_DIR/linear.sh" transition-state "$issue_id" "$active_state"
   bash "$SCRIPT_DIR/linear.sh" add-label "$issue_id" "stage:$label_suffix"
