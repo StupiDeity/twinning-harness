@@ -19,3 +19,5 @@
 {"ts":"2026-04-19T19:04:15Z","event":"stage-end","issue_id":"ENG-5","stage":"qa","outcome":"success","duration_ms":948000,"notes":"next=building"}
 {"ts":"2026-04-19T19:10:58Z","event":"stage-start","issue_id":"ENG-5","stage":"build","outcome":"dispatching","duration_ms":0,"notes":""}
 {"ts":"2026-04-19T19:15:58Z","event":"stage-end","issue_id":"ENG-5","stage":"build","outcome":"success","duration_ms":357000,"notes":"next=released"}
+{"ts":"2026-04-19T20:03:37Z","event":"stage-start","issue_id":"ENG-12","stage":"brainstorm","outcome":"dispatching","duration_ms":0,"notes":""}
+{"ts":"2026-04-19T20:25:11Z","event":"stage-end","issue_id":"ENG-12","stage":"brainstorm","outcome":"success","duration_ms":1353000,"notes":"next=planning"}
