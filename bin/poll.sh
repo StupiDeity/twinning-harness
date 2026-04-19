@@ -82,6 +82,7 @@ main() {
          | select(.state.name != "Done")
          | select([.labels.nodes[].name] | index("pipeline:paused") | not)
          | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
+         | select([.labels.nodes[].name] | index("pipeline:scope-approval-needed") | not)
          | .identifier] | first // ""')"
     if [[ -n "$pick" ]]; then
       jq -nc \

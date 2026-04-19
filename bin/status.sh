@@ -161,7 +161,7 @@ show_metrics() {
   ' | awk -F'\t' -v red="$C_RED" -v yel="$C_YEL" -v rst="$C_RST" '{
     col = "";
     if ($5 == "failed" || $5 == "scope-violation" || $5 == "pr-opened-too-early" || $5 == "premise-failure") col = red;
-    else if ($5 == "linked" || $5 == "paused") col = yel;
+    else if ($5 == "linked" || $5 == "paused" || $5 == "scope-approval-pending" || $5 == "scope-approval-replay") col = yel;
     reset = col ? rst : "";
     dur_s = ($6 > 0) ? sprintf("%ds", $6/1000) : "-";
     printf "  %s%s  %s/%s  %s  %-7s  dur=%-6s  %s%s\n", col, $1, $3, $4, $2, $5, dur_s, $7, reset

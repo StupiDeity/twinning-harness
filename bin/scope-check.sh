@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 # Verify the implement/ui agent's diff against the plan's File Structure section.
 # Usage: scope-check.sh <issue_id> <branch>
-# Exit 0: all changed files are in plan scope (or there are no changes).
-# Exit 1: one or more files out of plan scope (list printed to stdout).
+# Exit 0: all changed files are in plan scope (or only benign escapes).
+# Exit 1: one or more files out of plan scope at the NOTABLE tier (list printed to stdout).
 # Exit 2: plan not found, or File Structure unparseable.
+# Exit 3: one or more files out of plan scope at the SEVERE tier (list printed to stdout).
+#
+# Tiers (applied to files NOT matching the plan's allowed files/dirs):
+#   - BENIGN (silently allowed, counted toward exit 0):
+#       * `.pipeline/metrics/**`   — orchestrator-owned telemetry
+#       * `Cargo.lock`              — lockfile churn from in-scope dep edits
+#       * `docs/knowledge/**`       — learned-rules / knowledge-doc updates
+#       * `crates/<name>/tests/**`  — integration tests under an in-scope crate
+#   - NOTABLE: top-level path segment (e.g. `crates`, `src-tauri`, `src`) matches
+#     the top segment of SOME allowed path. "Adjacent to declared scope."
+#   - SEVERE: file is unrelated to any declared scope.
+#
+# Output on stdout (when tiers fire): one line per file, prefixed by `<tier>\t`.
 #
 # Parsing rule (best-effort, tolerant):
 #   - Locate the plan doc canonically by `linear: <ID>` frontmatter.
@@ -11,12 +24,6 @@
 #     heading and the next heading of the same-or-shallower depth.
 #   - Collect (a) file-path tokens (contain `/` + a `.<ext>`) and (b) directory-prefix
 #     tokens (ending in `/`). Both are normalised to repo-relative paths.
-#   - A changed file is in-scope iff it equals any file token exactly OR falls under
-#     any directory token.
-#
-# Rationale: plans declare scope as prose; a tolerant parser catches the 95% case
-# (unrelated-crate edits) without forcing a structured schema. For the 5% where a
-# plan needs to grant a broad scope, the plan lists the parent directory.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +58,33 @@ extract_scope_section() {
   ' "$plan"
 }
 
+# Does $1 look benign regardless of plan?
+is_benign() {
+  local f="$1"
+  case "$f" in
+    .pipeline/metrics/*) return 0 ;;
+    Cargo.lock)          return 0 ;;
+    docs/knowledge/*)    return 0 ;;
+  esac
+  # Integration tests under an in-scope crate.
+  # Requires $allowed_files / $allowed_dirs from main scope.
+  if [[ "$f" =~ ^(crates/[^/]+)/tests/ ]]; then
+    local crate_dir="${BASH_REMATCH[1]}"
+    if grep -qE "^${crate_dir}/" <<<"$allowed_files$allowed_dirs" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Does $1 share its top-level path segment with any allowed token?
+is_notable() {
+  local f="$1"
+  local top="${f%%/*}"
+  [[ -z "$top" || "$top" == "$f" ]] && return 1
+  grep -qE "^${top}/" <<<"$allowed_files$allowed_dirs" 2>/dev/null
+}
+
 main() {
   local issue_id="${1:-}" branch="${2:-}"
   [[ -n "$issue_id" && -n "$branch" ]] || die "usage: scope-check.sh <issue_id> <branch>"
@@ -64,7 +98,6 @@ main() {
   body="$(extract_scope_section "$plan")"
   [[ -n "$body" ]] || { log "scope-check: File Structure section empty/missing"; exit 2; }
 
-  # Collect allowed tokens (files + directories), stripping `backticks`, commas, parens.
   local allowed_files allowed_dirs
   allowed_files="$(grep -oE '([a-zA-Z0-9_./-]+/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+' <<<"$body" | sort -u)"
   allowed_dirs="$(grep -oE '([a-zA-Z0-9_.-]+/){1,}' <<<"$body" \
@@ -75,35 +108,49 @@ main() {
     exit 2
   fi
 
-  # Diff the branch against main.
   local changed
   changed="$(git -C "$REPO_ROOT" diff --name-only "main...${branch}" 2>/dev/null || true)"
   [[ -n "$changed" ]] || { log "scope-check: no file changes on $branch"; exit 0; }
 
-  local out_of_scope=""
+  local notable="" severe="" benign_count=0
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    # Exact file match?
     if [[ -n "$allowed_files" ]] && grep -qxF "$f" <<<"$allowed_files"; then
       continue
     fi
-    # Directory prefix match?
     local in_dir=0 d
     while IFS= read -r d; do
       [[ -z "$d" ]] && continue
       [[ "$f" == "$d"* ]] && { in_dir=1; break; }
     done <<<"$allowed_dirs"
     (( in_dir )) && continue
-    out_of_scope+="$f"$'\n'
+
+    if is_benign "$f"; then
+      benign_count=$((benign_count + 1))
+      log "scope-check: benign escape: $f"
+      continue
+    fi
+    if is_notable "$f"; then
+      notable+="notable	$f"$'\n'
+    else
+      severe+="severe	$f"$'\n'
+    fi
   done <<<"$changed"
 
-  if [[ -n "$out_of_scope" ]]; then
-    log "scope-check: out-of-scope files on $branch:"
-    printf '%s' "$out_of_scope"
+  if [[ -n "$severe" ]]; then
+    log "scope-check: SEVERE out-of-scope files on $branch:"
+    printf '%s' "$severe"
+    [[ -n "$notable" ]] && printf '%s' "$notable"
+    exit 3
+  fi
+
+  if [[ -n "$notable" ]]; then
+    log "scope-check: NOTABLE out-of-scope files on $branch (awaiting approval):"
+    printf '%s' "$notable"
     exit 1
   fi
 
-  log "scope-check: all $(wc -l <<<"$changed" | tr -d ' ') changed files in plan scope"
+  log "scope-check: pass (benign_escapes=$benign_count)"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

@@ -32,6 +32,7 @@ declare -a LABEL_SPECS=(
   "pipeline:reviewed|#84CC16|Human-gate ack: review-rejection threshold acknowledged, resume pipeline"
   "pipeline:knowledge-reviewed|#10B981|Human-gate ack: gotcha trigger threshold acknowledged, resume pipeline"
   "pipeline:rule-reviewed|#14B8A6|Human-gate ack: learned-rule renewal threshold acknowledged, resume pipeline"
+  "pipeline:scope-approval-needed|#FBBF24|Pipeline: scope-check saw notable (adjacent-to-scope) edits; remove label to approve and resume"
 )
 
 label_exists() {
