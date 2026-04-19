@@ -1,36 +1,86 @@
 # Pipeline Operator Guide
 
 > The pipeline is an automated SDLC harness that takes Linear issues through brainstorm →
-> plan → implement → UI → review → QA → build → release. It runs on GitHub Actions
-> and dispatches headless `claude -p` agents.
+> plan → implement → UI → review → QA → build → release. It runs locally on the Mac
+> Studio via a launchd LaunchAgent and dispatches headless `claude -p` agents. GitHub
+> Actions remains available for manual `workflow_dispatch` runs.
 
 ## Architecture at a glance
 
 ```
-Linear (source of truth)           GitHub Actions (runtime)
+Linear (source of truth)           Local runtime (Mac Studio)
 ───────────────────────            ──────────────────────────────
- Issue status  ─────┐               ┌───  .github/workflows/pipeline.yml
- Labels       ──────┤  Linear API   │       ↓ every 15 min
-                    ├────────────────┼────► .pipeline/bin/poll.sh
- Comments     ──────┘               │       ↓ decides (issue, stage)
+ Issue status  ─────┐               ┌───  launchd: com.twinning.pipeline
+ Labels       ──────┤  Linear API   │       ↓ every 5 min (StartInterval=300)
+                    ├────────────────┼────► .pipeline/bin/run-local.sh
+ Comments     ──────┘               │       ↓ lock + env + pause-check
+                                    │       ↓
+                                    ├────► .pipeline/bin/poll.sh
+                                    │       ↓ decides (issue, stage)
                                     │       ↓
                                     └────► .pipeline/bin/run-stage.sh
                                             ↓ renders prompt
-                                            ↓ calls: claude -p
+                                            ↓ calls: claude -p   (subscription auth)
                                             ↓ commits docs / opens PRs
                                             ↓ swaps stage:* label
 ```
 
 ## Required secrets
 
-Configure under repo → Settings → Secrets → Actions:
+**Local runtime** — put in `.pipeline/.env.local` (gitignored; see `.env.local.example`):
+
+| Var | Required | Purpose |
+|---|---|---|
+| `LINEAR_API_KEY` | Yes | Linear GraphQL auth. Personal API key (Settings → API). |
+| `PIPELINE_SLACK_WEBHOOK_URL` | No | Slack incoming webhook. If omitted, `slack.sh` no-ops. |
+
+`claude -p` uses the logged-in subscription session on the Mac Studio; no `ANTHROPIC_API_KEY` is needed locally.
+
+**GitHub Actions manual dispatch** — configure under repo → Settings → Secrets → Actions:
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `LINEAR_API_KEY` | Yes | Linear GraphQL auth. Personal API key (Settings → API). |
-| `ANTHROPIC_API_KEY` | Yes | Headless `claude -p` invocations. |
+| `LINEAR_API_KEY` | Yes | As above. |
+| `ANTHROPIC_API_KEY` | Yes | Required in CI because the runner has no subscription session. |
 | `PIPELINE_GH_PAT` | No | Fine-grained PAT with contents+pull-requests write, used so that pushes from the pipeline trigger other workflows (default `GITHUB_TOKEN` does not). |
-| `PIPELINE_SLACK_WEBHOOK_URL` | No | Slack incoming webhook. If omitted, `slack.sh` no-ops. |
+| `PIPELINE_SLACK_WEBHOOK_URL` | No | Slack incoming webhook. |
+
+## Local runtime (Mac Studio / launchd)
+
+Install once on the Mac Studio:
+
+```bash
+cp .pipeline/.env.local.example .pipeline/.env.local
+# edit .pipeline/.env.local — paste LINEAR_API_KEY
+bash .pipeline/bin/install-launchd.sh
+```
+
+The installer renders `.pipeline/launchd/com.twinning.pipeline.plist.template` into
+`~/Library/LaunchAgents/com.twinning.pipeline.plist`, loads the agent, and kicks
+the first tick. From then on the agent fires every 5 min; sleep/logout pauses it,
+wake resumes it on the next interval.
+
+Observe:
+
+```bash
+launchctl list | grep com.twinning.pipeline                          # status / last exit
+tail -f logs/pipeline/local-$(date -u +%Y-%m-%d).log                  # per-tick rolling log
+tail -f logs/pipeline/launchd.err.log                                 # anything launchd captured
+bash .pipeline/bin/status.sh                                          # dashboard (works regardless of runtime)
+```
+
+Stop / uninstall:
+
+```bash
+bash .pipeline/bin/uninstall-launchd.sh
+```
+
+### Circuit breaker
+
+`run-local.sh` counts consecutive `run-stage.sh` failures in
+`.pipeline/.consecutive-failures`. After **3** in a row it sets
+`orchestrator.paused = true` in `config.json` and subsequent ticks skip until a
+human resets the flag. Success clears the counter.
 
 ## Quickstart: run a specific issue
 
@@ -65,8 +115,9 @@ Edit `.pipeline/config.json` and set:
 "orchestrator": { "paused": true, ... }
 ```
 
-Commit and push. `poll.sh` will exit with an `idle` record and no stages will dispatch.
-Revert the flag to resume.
+Local runtime reads `config.json` at the start of each tick, so the change takes
+effect within 5 minutes with no commit required. For GHA `workflow_dispatch` runs
+to respect it, commit and push. Revert the flag to resume.
 
 ## Reading metrics
 
@@ -90,11 +141,12 @@ Commit the updated `.pipeline/schemas/linear-ids.json` if the set of states or l
 
 ## Failure playbook
 
-1. **Workflow run red?** Open the GitHub Actions run. The failing step's log is the source of truth.
-2. **Stage dispatched but Linear state didn't advance?** Check `docs/knowledge/pipeline-metrics.md` for the last event on that issue. If `outcome=failed`, find the `log=` path in the notes and read the agent transcript.
-3. **Issue stuck in `stage:X` for hours?** Inspect the issue's Linear comments — `guards.sh` and `reconcile.sh` post diagnostic comments. If nothing there, trigger `workflow_dispatch` with the explicit stage to retry.
-4. **Unexpected Linear writes or label flips?** Check git history on `.pipeline/schemas/linear-ids.json` — a stale cache is the most common cause of wrong-target mutations.
-5. **Kill switch:** flip `orchestrator.paused: true` in `config.json`.
+1. **Tick failing on the Mac Studio?** Read `logs/pipeline/local-YYYY-MM-DD.log` for the wrapper's view, then the per-stage transcript under `logs/pipeline/<ISSUE>-<stage>-<ts>.log`.
+2. **Circuit breaker tripped?** `orchestrator.paused` will be `true` and `.pipeline/.consecutive-failures` will be ≥3. Diagnose the underlying stage failures, then flip `paused` back to `false`. The counter is cleared on the next successful tick.
+3. **Stage dispatched but Linear state didn't advance?** Check `docs/knowledge/pipeline-metrics.md` for the last event on that issue. If `outcome=failed`, find the `log=` path in the notes and read the agent transcript.
+4. **Issue stuck in `stage:X` for hours?** Inspect the issue's Linear comments — `guards.sh` and `reconcile.sh` post diagnostic comments. If nothing there, trigger `workflow_dispatch` with the explicit stage to retry.
+5. **Unexpected Linear writes or label flips?** Check git history on `.pipeline/schemas/linear-ids.json` — a stale cache is the most common cause of wrong-target mutations.
+6. **Kill switch:** flip `orchestrator.paused: true` in `config.json` (local takes effect next tick; commit+push for GHA).
 
 ## Dry-run mode
 

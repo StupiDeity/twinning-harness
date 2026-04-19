@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.twinning.pipeline</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>{{REPO_ROOT}}/.pipeline/bin/run-local.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>{{REPO_ROOT}}</string>
+
+  <!-- Fire every 5 minutes, coalesced across sleep. -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <!-- Run once on login so we don't wait up to 5 min after a reboot. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Don't flood the system if we crash in a loop. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>{{REPO_ROOT}}/logs/pipeline/launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>{{REPO_ROOT}}/logs/pipeline/launchd.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>{{HOME}}</string>
+  </dict>
+</dict>
+</plist>

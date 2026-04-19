@@ -40,7 +40,8 @@ main() {
   fi
 
   require_bin claude
-  require_env ANTHROPIC_API_KEY
+  # Auth: ANTHROPIC_API_KEY for CI/headless; claude CLI subscription session for local.
+  # Don't require either here — claude errors at invocation time if no auth is available.
 
   local cmd=(claude -p --allowed-tools "$tools")
   if [[ -n "$log_file" ]]; then
