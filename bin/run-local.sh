@@ -187,7 +187,12 @@ ensure_worktree() {
   else
     log "creating new branch $branch and worktree at $path from origin/main"
     git -C "$REPO_ROOT" fetch origin main
-    git -C "$REPO_ROOT" worktree add "$path" -b "$branch" origin/main
+    # --no-track: branching off a remote-tracking ref (origin/main) otherwise wires
+    # the new branch's upstream to origin/main, which makes later `git push` fail
+    # with "upstream branch of your current branch does not match the name" under
+    # the default push.default=simple. The first push below uses `-u origin HEAD` to
+    # set the correct upstream to origin/<branch>.
+    git -C "$REPO_ROOT" worktree add --no-track "$path" -b "$branch" origin/main
   fi
 }
 
@@ -329,7 +334,11 @@ if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
       -c user.name="$BOT_NAME" \
       -c user.email="$BOT_EMAIL" \
       commit -m "chore(pipeline): $stage for $issue_id"
-    git -C "$dispatch_cwd" push
+    # -u origin HEAD: sets (or retargets) upstream to origin/<current-branch>. Without
+    # this, `git push` inherits push.default=simple behaviour and refuses when the
+    # branch was created off origin/main (see ensure_worktree above). Idempotent for
+    # already-correctly-tracked branches.
+    git -C "$dispatch_cwd" push -u origin HEAD
   else
     log "no in-scope artifacts to commit"
   fi
