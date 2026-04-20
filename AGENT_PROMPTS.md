@@ -604,6 +604,10 @@ Decision path (apply exactly one):
   C. **Approved** (no `critical`, < threshold `major`, ensemble all-pass):
      - `gh pr review --approve` with a summary comment.
      - Orchestrator advances to `stage:qa`.
+     - Note: this bot approval does NOT satisfy branch protection on `main`.
+       The PR cannot merge until a human Code Owner also approves (per
+       ENG-13 D-007). The bot's `--auto` from the build stage queues the
+       merge; it fires when the human approval lands.
 
 Do NOT change the Linear stage label yourself. The orchestrator owns state transitions.
 
@@ -775,8 +779,12 @@ Preconditions (MANDATORY — all must be true; fail fast on any false):
       Zero open PRs means UI stage never opened one. More than one means something is
       wrong with the orchestrator.
 
-  P2. **Review was approved** (not just submitted):
-        gh pr view <N> --json reviewDecision --jq '.reviewDecision == "APPROVED"'
+  P2. **Review was approved by a non-bot Code Owner** (bot self-approval does NOT count):
+        gh pr view <N> --json reviews --jq \
+          '[.reviews[] | select(.state == "APPROVED" and (.author.login | test("\\[bot\\]$") | not))] | length >= 1'
+      If this returns false, the PR is not ready; do NOT merge. Post a Linear
+      comment noting "awaiting human Code Owner approval" and exit. The
+      orchestrator will retry on the next tick.
 
   P3. **No outstanding review comments in "CHANGES_REQUESTED" state:**
         gh pr view <N> --json reviews --jq \
@@ -817,14 +825,20 @@ Configuration audit (READ-ONLY — no edits in this stage):
   `<!-- pipeline-metric: build_config_flag -->` and included in the summary. They do
   NOT automatically block the merge — humans decide via `pipeline:paused` / resume.
 
-Merge strategy (FIXED — no alternative):
-  - `gh pr merge <N> --squash --auto --delete-branch`
-  - Squash is required so semantic-release's commit parser sees ONE conventional
-    commit per feature, not a bundle. The squash commit message = the PR title (P7).
-  - `--auto` queues the merge to fire once required checks pass (belt-and-braces
-    with P5).
-  - `--delete-branch` removes `{branch_name}` post-merge so UI stage does not
-    accidentally pick up a stale ref on the next feature.
+Merge strategy (FIXED — no alternative; per ENG-13 D-008):
+  - `gh pr merge <N> --merge --auto --delete-branch -t "<conventional-title>" -b "<body>"`
+    where <conventional-title> is the PR title (which P7 ensures is conventional-commits
+    formatted).
+  - Use `--merge` (regular merge commit), NOT `--squash`. Regular merges preserve
+    feature-branch history reachable from main via the merge commit's second parent,
+    which is load-bearing for retrospective archaeology (`git log --all` queries).
+  - `--auto` queues the merge to fire once required checks pass (P5) AND a human
+    Code Owner has approved (P2 strengthened).
+  - `--delete-branch` removes `{branch_name}` post-merge. The periodic
+    `cleanup-worktrees.sh` sweep detects the merged state and removes the local
+    worktree on a subsequent tick.
+  - Do NOT perform any worktree cleanup here — it is centralized in the sweep
+    for uniformity.
 
 Post-merge verification (MANDATORY):
   - `gh run list --branch main --workflow release.yml --limit 1` — confirm the release
@@ -859,9 +873,10 @@ Decision path (apply exactly one):
      - Post Linear summary: merge SHA, release workflow run ID, any config flags.
      - Slack info notification.
 
-Do NOT change the Linear stage label. The orchestrator advances to `stage:released`
-on successful exit (a trivial transition since release work happens in semantic-release
-+ the next pipeline stage).
+Do NOT change the Linear stage label or Linear native state. The orchestrator
+advances to `stage:released` on successful exit. Linear state stays at `In Review`
+until cleanup-worktrees.sh detects the actual PR merge on a subsequent tick and
+transitions to `Done`. Per ENG-13 D-014.
 
 Output:
 - PR merged (SHA recorded in Linear comment).
@@ -971,7 +986,7 @@ Error handling:
 Output:
 - Per-issue Linear comments posted (one per covered issue).
 - Slack summary posted.
-- pipeline-metrics.md entry written.
+- events.jsonl entry written (via `.pipeline/bin/metrics.sh` → `~/.twinning-pipeline/metrics/events.jsonl`).
 - No edits to any source files. You are a read-only observer plus Linear/Slack writer.
 ```
 
@@ -994,7 +1009,7 @@ Schedule & invocation:
     after opening it so guards.sh counters reset for any rule-renewal thresholds.
 
 Read these files (in order):
-1. docs/knowledge/pipeline-metrics.md — every event since the last retrospective
+1. ~/.twinning-pipeline/metrics/events.jsonl — every event since the last retrospective (JSONL, one event per line; parse with `jq`)
 2. docs/knowledge/gotchas.md — current entries + commit log for additions
 3. docs/knowledge/qa-patterns.md — current entries + commit log for additions
 4. docs/knowledge/conventions.md — current entries + commit log for additions
@@ -1019,7 +1034,7 @@ Your analysis (every pass below must produce at least "none found" — silent sk
 is a P0 meta-finding against the retrospective itself):
 
 1. **Stage failure analysis:**
-   - Parse pipeline-metrics.md events: which stages produced outcome ∈
+   - Parse events.jsonl events: which stages produced outcome ∈
      {failed, paused, scope-violation, pr-opened-too-early, premise-failure,
       merge_conflict, reconcile-human, guards-tripped} most often?
    - Compare this period's counts vs the previous period.
@@ -1066,7 +1081,7 @@ is a P0 meta-finding against the retrospective itself):
         If no → propose removal. If yes → propose renewal with fresh `Last verified:`.
      b. **Conventions (120-day):** recount files matching the pattern. <5 files →
         propose removal. ≥5 → propose renewal.
-     c. **Learned rules (60-day):** check pipeline-metrics.md — has the rule-related
+     c. **Learned rules (60-day):** check events.jsonl — has the rule-related
         problem recurred since `Added:`? No → propose removal. Yes → propose renewal.
      d. **QA patterns with status=open (60-day):** these are bugs masquerading as
         patterns. Propose filing a Linear Bug and marking `status: escalated`.
