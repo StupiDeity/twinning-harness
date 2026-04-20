@@ -118,38 +118,8 @@ main() {
     exit 10
   fi
 
-  # Reconcile (brainstorm/plan only).
-  if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
-    local reconcile_kind
-    [[ "$stage" == "brainstorm" ]] && reconcile_kind="brainstorm" || reconcile_kind="plan"
-    local decision
-    decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$ident" "$reconcile_kind")"
-    case "$decision" in
-      proceed)
-        log "reconcile: proceed"
-        ;;
-      link:*)
-        local doc_path="${decision#link:}"
-        log "reconcile: linking to existing $doc_path"
-        bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-          "Pipeline reconcile: existing $reconcile_kind doc is canonical: \`$doc_path\`. Advancing without regeneration."
-        local nxt; nxt="$(next_stage "$stage")"
-        [[ -n "$nxt" ]] && advance_label "$ident" "$stage" "$nxt"
-        bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "linked" 0 "doc=$doc_path"
-        return 0
-        ;;
-      human)
-        log "reconcile: human required"
-        bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-          "Pipeline reconcile: an existing $reconcile_kind doc appears to cover this topic. Apply one of: \`pipeline:supersede\` (generate fresh and retire the old), \`pipeline:extend\` (generate fresh, referencing the old), or \`pipeline:ignore\` (link the old as canonical). Until a label is applied, this issue is paused."
-        bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "reconcile-human" 0
-        exit 12
-        ;;
-      *)
-        die "unexpected reconcile output: $decision"
-        ;;
-    esac
-  fi
+  # Reconcile is now performed in run-local.sh before this script is called,
+  # so that link:/human decisions don't create empty worktrees. See ENG-13 D-009.
 
   # Scope-approval replay: if this is implement/ui and the user just cleared
   # `pipeline:scope-approval-needed` (state file exists, label absent), skip the
