@@ -176,7 +176,7 @@ if [[ "$reconcile_decision" == "proceed" ]]; then
   # Legacy-branch coexistence: if a feature/<issue> branch already exists
   # locally or on origin, use the old flow for this issue.
   ident_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
-  if git -C "$REPO_ROOT" rev-parse --verify "refs/heads/feature/${ident_lower}-"* >/dev/null 2>&1 \
+  if [[ -n "$(git -C "$REPO_ROOT" branch --list "feature/${ident_lower}-*" 2>/dev/null)" ]] \
      || git -C "$REPO_ROOT" ls-remote --heads origin "feature/${ident_lower}-*" 2>/dev/null | grep -q "feature/"; then
     log "legacy feature/* branch detected for $issue_id — using old flow (no worktree)"
   else
