@@ -29,6 +29,8 @@ LOCK_DIR="$TWINNING_DIR/.run-local.lock"
 ENV_FILE="$PIPELINE_ROOT/.env.local"
 FAIL_COUNTER="$TWINNING_DIR/.consecutive-failures"
 FAIL_THRESHOLD=3
+TICK_COUNTER="$TWINNING_DIR/.tick-counter"
+CLEANUP_EVERY_N_TICKS=10
 LOG_DIR="$REPO_ROOT/logs/pipeline"
 LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
@@ -334,5 +336,17 @@ if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
 else
   log "no artifacts to commit"
 fi
+
+# Periodic worktree sweep (every N ticks).
+tick_count=0
+if [[ -f "$TICK_COUNTER" ]]; then
+  tick_count="$(cat "$TICK_COUNTER")"
+fi
+tick_count=$((tick_count + 1))
+if (( tick_count % CLEANUP_EVERY_N_TICKS == 0 )); then
+  log "periodic sweep: running cleanup-worktrees.sh"
+  bash "$SCRIPT_DIR/cleanup-worktrees.sh" || log "cleanup-worktrees.sh exited nonzero (non-fatal)"
+fi
+printf '%s\n' "$tick_count" > "$TICK_COUNTER"
 
 log "== tick end (success) =="
