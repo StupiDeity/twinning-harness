@@ -186,11 +186,9 @@ main() {
   #   (a) scope-check: no files outside plan File Structure were touched.
   #   (b) no-pr-check: implement stage must NOT have opened a PR (UI stage opens the PR).
   if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
-    local issue_id_lower slug title branch
-    issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$ident")"
-    title="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" | jq -r '.data.issue.title // ""')"
-    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')"
-    branch="feature/${issue_id_lower}-${slug}"
+    local branch
+    branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident")"
+    [[ -n "$branch" ]] || die "could not resolve branch name for $ident"
 
     local approval_state_file="$(issue_dir "$ident")/scope-approval"
     local scope_out scope_rc=0
