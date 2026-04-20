@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.twinning.retrospective</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>{{REPO_ROOT}}/.pipeline/bin/run-retrospective-local.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>{{REPO_ROOT}}</string>
+
+  <!-- Fire Mondays at 09:00 local time. launchd coalesces a missed firing
+       (Mac asleep/off at 09:00) and runs it when the Mac wakes, as long as
+       RunAtLoad isn't forcing a firing at every login. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <!-- We do NOT want RunAtLoad here: a reboot on a Wednesday should not fire
+       an out-of-band retrospective. Missed Monday firings are handled by
+       launchd's catch-up behavior when the Mac returns from sleep. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Don't thrash if the script fails repeatedly. -->
+  <key>ThrottleInterval</key>
+  <integer>3600</integer>
+
+  <key>StandardOutPath</key>
+  <string>{{REPO_ROOT}}/logs/pipeline/retrospective-launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>{{REPO_ROOT}}/logs/pipeline/retrospective-launchd.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>{{HOME}}</string>
+  </dict>
+</dict>
+</plist>

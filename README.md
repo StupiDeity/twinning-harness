@@ -1,9 +1,11 @@
 # Pipeline Operator Guide
 
 > The pipeline is an automated SDLC harness that takes Linear issues through brainstorm →
-> plan → implement → UI → review → QA → build → release. It runs locally on the Mac
-> Studio via a launchd LaunchAgent and dispatches headless `claude -p` agents. GitHub
-> Actions remains available for manual `workflow_dispatch` runs.
+> plan → implement → UI → review → QA → build → release. It runs **entirely locally** on
+> the Mac Studio via two launchd LaunchAgents and dispatches headless `claude -p` agents
+> using the logged-in Claude subscription session. CI (`.github/workflows/release.yml`)
+> only handles semantic-release version bumps and Mac/Windows binary builds — it never
+> invokes an agent and never needs `ANTHROPIC_API_KEY`.
 
 ## Architecture at a glance
 
@@ -34,16 +36,13 @@ Linear (source of truth)           Local runtime (Mac Studio)
 | `LINEAR_API_KEY` | Yes | Linear GraphQL auth. Personal API key (Settings → API). |
 | `PIPELINE_SLACK_WEBHOOK_URL` | No | Slack incoming webhook. If omitted, `slack.sh` no-ops. |
 
-`claude -p` uses the logged-in subscription session on the Mac Studio; no `ANTHROPIC_API_KEY` is needed locally.
+`claude -p` uses the logged-in subscription session on the Mac Studio; `ANTHROPIC_API_KEY` is **never** set — we deliberately avoid burning API tokens on top of the subscription. If the `claude` CLI session expires, all stages fail until `claude login` is re-run.
 
-**GitHub Actions manual dispatch** — configure under repo → Settings → Secrets → Actions:
+**GitHub Actions** — CI only runs `release.yml` (semantic-release + native binaries); no agent stages run in CI. Secrets needed under repo → Settings → Secrets → Actions:
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `LINEAR_API_KEY` | Yes | As above. |
-| `ANTHROPIC_API_KEY` | Yes | Required in CI because the runner has no subscription session. |
-| `PIPELINE_GH_PAT` | No | Fine-grained PAT with contents+pull-requests write, used so that pushes from the pipeline trigger other workflows (default `GITHUB_TOKEN` does not). |
-| `PIPELINE_SLACK_WEBHOOK_URL` | No | Slack incoming webhook. |
+| `PIPELINE_GH_PAT` | No | Fine-grained PAT with contents+pull-requests write, used by semantic-release to push the release commit to main. |
 
 ## Local runtime (Mac Studio / launchd)
 
@@ -55,10 +54,17 @@ cp .pipeline/.env.local.example .pipeline/.env.local
 bash .pipeline/bin/install-launchd.sh
 ```
 
-The installer renders `.pipeline/launchd/com.twinning.pipeline.plist.template` into
-`~/Library/LaunchAgents/com.twinning.pipeline.plist`, loads the agent, and kicks
-the first tick. From then on the agent fires every 5 min; sleep/logout pauses it,
-wake resumes it on the next interval.
+The installer renders **both** launchd plist templates into `~/Library/LaunchAgents/`
+and loads the agents:
+
+| Agent | Cadence | What it does |
+|---|---|---|
+| `com.twinning.pipeline` | Every 5 min (`StartInterval=300`) | Runs `run-local.sh`: per-issue stage dispatch + release-watcher (detects new GitHub releases and invokes `on-new-release.sh` for the stage:building sweep and the release observer agent). |
+| `com.twinning.retrospective` | Mondays 09:00 local (`StartCalendarInterval`) | Runs `run-retrospective-local.sh`: invokes the retrospective agent, opens a PR with any proposed rule/knowledge changes. |
+
+Sleep/logout pauses both; wake resumes them on the next interval. A missed Monday
+retrospective firing is handled by launchd's calendar-interval catch-up when the
+Mac comes back online.
 
 Observe:
 
@@ -82,16 +88,25 @@ bash .pipeline/bin/uninstall-launchd.sh
 `orchestrator.paused = true` in `config.json` and subsequent ticks skip until a
 human resets the flag. Success clears the counter.
 
-## Quickstart: run a specific issue
+## Quickstart: run a specific issue / stage manually
+
+Everything is local — there's no `gh workflow run` path anymore. Kick the full
+per-tick poller once (it picks up whatever Linear says is next):
 
 ```bash
-gh workflow run pipeline.yml -f issue_id=ENG-5 -f stage=brainstorm
+bash .pipeline/bin/run-local.sh
 ```
 
-Or kick the poller manually:
+Or run one specific stage against one issue, bypassing the poller:
 
 ```bash
-gh workflow run pipeline.yml
+bash .pipeline/bin/run-stage.sh ENG-5 brainstorm
+```
+
+Run a weekly retrospective on demand:
+
+```bash
+bash .pipeline/bin/run-retrospective-local.sh
 ```
 
 ## Controlling an issue with labels
@@ -116,8 +131,7 @@ Edit `.pipeline/config.json` and set:
 ```
 
 Local runtime reads `config.json` at the start of each tick, so the change takes
-effect within 5 minutes with no commit required. For GHA `workflow_dispatch` runs
-to respect it, commit and push. Revert the flag to resume.
+effect within 5 minutes with no commit required. Revert the flag to resume.
 
 ## Reading metrics
 
@@ -150,7 +164,7 @@ Commit the updated `.pipeline/schemas/linear-ids.json` if the set of states or l
 
 ## Dry-run mode
 
-Set `PIPELINE_DRY_RUN=1` (or pass `dry_run: true` to `workflow_dispatch`) to exercise the harness without calling Claude or mutating Linear. `dispatch.sh` will print what it would invoke, `slack.sh` will no-op, `linear.sh` will suppress mutations but still perform reads.
+Set `PIPELINE_DRY_RUN=1` to exercise the harness without calling Claude or mutating Linear. `dispatch.sh` will print what it would invoke, `slack.sh` will no-op, `linear.sh` will suppress mutations but still perform reads.
 
 ```bash
 PIPELINE_DRY_RUN=1 LINEAR_API_KEY=... bash .pipeline/bin/run-stage.sh ENG-5 brainstorm
@@ -158,8 +172,7 @@ PIPELINE_DRY_RUN=1 LINEAR_API_KEY=... bash .pipeline/bin/run-stage.sh ENG-5 brai
 
 ## Phase 2 (future) — not yet wired
 
-- Linear webhook → `repository_dispatch` for instant pickup instead of 15-minute cron.
-- Dedicated retrospective runner invoking the retrospective agent on schedule.
+- Linear webhook → local HTTP listener for instant pickup instead of 5-minute poll.
 - Slack bot commands (approve/pause/resume) that write back to Linear.
 
 ## Minimal contributor workflow

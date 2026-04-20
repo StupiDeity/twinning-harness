@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Render the launchd plist template with absolute paths for this checkout and
-# load it as a user LaunchAgent. Idempotent: bootout any previous version first.
+# Render and load both pipeline LaunchAgents:
+#   - com.twinning.pipeline       (every 5 min; main per-issue tick + release watcher)
+#   - com.twinning.retrospective  (weekly Mon 09:00; retrospective agent + PR)
+# Idempotent: bootout any previous version first.
 #
 # Usage: bash .pipeline/bin/install-launchd.sh
 
@@ -9,50 +11,56 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-LABEL="com.twinning.pipeline"
-TEMPLATE="$PIPELINE_ROOT/launchd/${LABEL}.plist.template"
 TARGET_DIR="$HOME/Library/LaunchAgents"
-TARGET="$TARGET_DIR/${LABEL}.plist"
 DOMAIN="gui/$(id -u)"
-
-[[ -f "$TEMPLATE" ]] || die "plist template missing: $TEMPLATE"
 
 mkdir -p "$TARGET_DIR"
 mkdir -p "$REPO_ROOT/logs/pipeline"
 
-# Render.
-sed \
-  -e "s|{{REPO_ROOT}}|$REPO_ROOT|g" \
-  -e "s|{{HOME}}|$HOME|g" \
-  "$TEMPLATE" > "$TARGET"
+# $1=label, $2=kickstart(1|0). We kickstart the 5-min pipeline so it runs once
+# immediately; the retrospective runs on calendar schedule only.
+install_plist() {
+  local label="$1" kickstart="$2"
+  local template="$PIPELINE_ROOT/launchd/${label}.plist.template"
+  local target="$TARGET_DIR/${label}.plist"
 
-log "rendered $TARGET"
+  [[ -f "$template" ]] || die "plist template missing: $template"
 
-# Idempotent reload: bootout if loaded, then bootstrap.
-if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-  log "unloading previous agent"
-  launchctl bootout "$DOMAIN/$LABEL"
-fi
+  sed \
+    -e "s|{{REPO_ROOT}}|$REPO_ROOT|g" \
+    -e "s|{{HOME}}|$HOME|g" \
+    "$template" > "$target"
+  log "rendered $target"
 
-launchctl bootstrap "$DOMAIN" "$TARGET"
-log "loaded $LABEL into $DOMAIN"
+  if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
+    log "unloading previous agent $label"
+    launchctl bootout "$DOMAIN/$label"
+  fi
 
-# Kick one tick immediately so we don't wait up to StartInterval.
-launchctl kickstart -k "$DOMAIN/$LABEL"
-log "kickstarted first tick"
+  launchctl bootstrap "$DOMAIN" "$target"
+  log "loaded $label into $DOMAIN"
+
+  if [[ "$kickstart" == "1" ]]; then
+    launchctl kickstart -k "$DOMAIN/$label"
+    log "kickstarted $label"
+  fi
+}
+
+install_plist "com.twinning.pipeline"      1
+install_plist "com.twinning.retrospective" 0
 
 cat <<EOF
 
-Pipeline LaunchAgent installed.
-  Label:      $LABEL
-  Domain:     $DOMAIN
-  Plist:      $TARGET
-  Interval:   every 5 minutes (StartInterval=300)
-  Logs:       $REPO_ROOT/logs/pipeline/launchd.{out,err}.log
-              $REPO_ROOT/logs/pipeline/local-YYYY-MM-DD.log
+Pipeline LaunchAgents installed.
+  com.twinning.pipeline       — every 5 min, main tick + release watcher
+  com.twinning.retrospective  — weekly Mon 09:00, retrospective agent + PR
+  Domain:  $DOMAIN
+  Logs:    $REPO_ROOT/logs/pipeline/launchd.{out,err}.log
+           $REPO_ROOT/logs/pipeline/retrospective-launchd.{out,err}.log
+           $REPO_ROOT/logs/pipeline/local-YYYY-MM-DD.log
 
 Useful:
-  launchctl list | grep $LABEL        # see last-exit-status / pid
+  launchctl list | grep com.twinning
   tail -f $REPO_ROOT/logs/pipeline/local-\$(date -u +%Y-%m-%d).log
-  bash .pipeline/bin/uninstall-launchd.sh   # stop & remove
+  bash .pipeline/bin/uninstall-launchd.sh    # stop & remove both
 EOF
