@@ -100,6 +100,8 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 require_env LINEAR_API_KEY
 require_env GH_APP_ID GH_APP_INSTALLATION_ID GH_APP_PRIVATE_KEY_PATH
+require_bin shasum
+assert_stage_allowlist_coverage
 GITHUB_TOKEN="$(bash "$SCRIPT_DIR/gh-app-token.sh")"
 export GITHUB_TOKEN
 log "minted GitHub App installation token (~1h TTL)"
