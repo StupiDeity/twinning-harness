@@ -76,13 +76,15 @@ printf 'R  docs/plans/2026-04-20-eng-14-new.md\0docs/plans/2026-04-20-eng-14-old
 printf '?? docs/plans/2026-04-20-eng-1-foo.md\0' \
   | assert_partition eng_1_does_not_match_eng_14 plan ENG-14 0 1 0
 
-# 10: stage_output_paths dies on unknown stage
-if stage_output_paths "bogus-stage" >/dev/null 2>&1; then
+# 10: stage_output_paths dies on unknown stage. `die` calls `exit 1`, so
+# wrap in `( ... )` subshells to prevent the exit from killing the harness.
+case10_out="$( ( stage_output_paths "bogus-stage" >/dev/null ) 2>&1 || true )"
+case10_rc="$( ( stage_output_paths "bogus-stage" >/dev/null ) 2>/dev/null; printf '%s' $? )"
+if [[ "$case10_rc" == "0" ]]; then
   printf 'FAIL: assertion_dies_on_missing_stage — expected non-zero exit\n' >&2; exit 1
 fi
-case10_err="$(stage_output_paths "bogus-stage" 2>&1 >/dev/null || true)"
-if [[ "$case10_err" != *"unknown stage"* ]]; then
-  printf 'FAIL: assertion_dies_on_missing_stage — stderr missing "unknown stage": %s\n' "$case10_err" >&2; exit 1
+if [[ "$case10_out" != *"unknown stage"* ]]; then
+  printf 'FAIL: assertion_dies_on_missing_stage — stderr missing "unknown stage": %s\n' "$case10_out" >&2; exit 1
 fi
 printf 'OK: assertion_dies_on_missing_stage\n'
 
