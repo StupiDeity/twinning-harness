@@ -34,6 +34,69 @@ LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
 BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
 
+stage_output_paths() {
+  local stage="$1" issue_id="$2"
+  # Always-staged (common to all stages).
+  local common=()
+  # Per-stage allowlists. Directory entries end in /.
+  case "$stage" in
+    brainstorm)
+      printf 'docs/brainstorms/\n'
+      printf 'docs/knowledge/decisions.md\n'
+      ;;
+    plan)
+      printf 'docs/plans/\n'
+      ;;
+    implement|ui|qa)
+      # Implement/UI/QA commit their own work via Bash(git:*); run-local
+      # sweep here should ONLY pick up anything the agent left behind. Keep
+      # the allowlist broad for these so legitimate edits aren't dropped.
+      printf 'src/\n'
+      printf 'src-tauri/\n'
+      printf 'crates/\n'
+      printf 'tests/\n'
+      printf 'docs/\n'
+      printf 'package.json\n'
+      printf 'package-lock.json\n'
+      printf 'bun.lock\n'
+      printf 'bun.lockb\n'
+      printf 'Cargo.toml\n'
+      printf 'Cargo.lock\n'
+      ;;
+    retrospective)
+      printf '.pipeline/learned-rules/\n'
+      printf 'docs/knowledge/gotchas.md\n'
+      printf 'docs/knowledge/qa-patterns.md\n'
+      printf 'docs/knowledge/conventions.md\n'
+      printf 'docs/knowledge/decisions.md\n'
+      printf '.pipeline/AGENT_PROMPTS.md\n'
+      printf '.pipeline/config.json\n'
+      printf '.github/workflows/\n'
+      ;;
+    review|build|release)
+      # Read-mostly stages; nothing to sweep.
+      ;;
+    *)
+      ;;
+  esac
+}
+
+stage_in_scope() {
+  # $1=dirty_path, $2=stage, $3=issue_id
+  local path="$1" stage="$2" issue_id="$3"
+  while IFS= read -r allow; do
+    [[ -z "$allow" ]] && continue
+    if [[ "$allow" == */ ]]; then
+      # Directory prefix match with path boundary.
+      [[ "$path" == "$allow"* ]] && return 0
+    else
+      # Exact file match.
+      [[ "$path" == "$allow" ]] && return 0
+    fi
+  done < <(stage_output_paths "$stage" "$issue_id")
+  return 1
+}
+
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     printf '%s\n' $$ > "$LOCK_DIR/pid"
@@ -239,13 +302,35 @@ fi
 rm -f "$FAIL_COUNTER"
 
 if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
-  log "committing pipeline artifacts for $issue_id / $stage in $dispatch_cwd"
-  git -C "$dispatch_cwd" add -A
-  git -C "$dispatch_cwd" \
-    -c user.name="$BOT_NAME" \
-    -c user.email="$BOT_EMAIL" \
-    commit -m "chore(pipeline): $stage for $issue_id"
-  git -C "$dispatch_cwd" push
+  # D-001 allowlist: only stage files the stage is expected to produce.
+  in_scope=()
+  out_of_scope=()
+  while IFS= read -r line; do
+    # Porcelain format: "XY path" where XY is 2-char status.
+    path="${line:3}"
+    if stage_in_scope "$path" "$stage" "$issue_id"; then
+      in_scope+=("$path")
+    else
+      out_of_scope+=("$path")
+    fi
+  done < <(git -C "$dispatch_cwd" status --porcelain)
+
+  if (( ${#out_of_scope[@]} > 0 )); then
+    log "sweep: ${#out_of_scope[@]} out-of-scope dirty paths (NOT staged): ${out_of_scope[*]}"
+    bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" "observed" 0 "count=${#out_of_scope[@]}"
+  fi
+
+  if (( ${#in_scope[@]} > 0 )); then
+    log "sweep: staging ${#in_scope[@]} in-scope paths for $issue_id / $stage"
+    (cd "$dispatch_cwd" && git add -- "${in_scope[@]}")
+    git -C "$dispatch_cwd" \
+      -c user.name="$BOT_NAME" \
+      -c user.email="$BOT_EMAIL" \
+      commit -m "chore(pipeline): $stage for $issue_id"
+    git -C "$dispatch_cwd" push
+  else
+    log "no in-scope artifacts to commit"
+  fi
 else
   log "no artifacts to commit"
 fi
