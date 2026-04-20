@@ -11,6 +11,8 @@
 #       * `.pipeline/metrics/**`   — orchestrator-owned telemetry
 #       * `Cargo.lock`              — lockfile churn from in-scope dep edits
 #       * `docs/knowledge/**`       — learned-rules / knowledge-doc updates
+#       * `docs/plans/**`           — plan docs (cannot self-reference pre-creation)
+#       * `docs/brainstorms/**`     — brainstorm docs (authored before the plan)
 #       * `crates/<name>/tests/**`  — integration tests under an in-scope crate
 #   - NOTABLE: top-level path segment (e.g. `crates`, `src-tauri`, `src`) matches
 #     the top segment of SOME allowed path. "Adjacent to declared scope."
@@ -31,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 find_canonical_plan() {
-  local issue_id="$1" f
+  local issue_id="$1" root="$2" f
   while IFS= read -r -d '' f; do
     if awk -v id="$issue_id" '
       NR==1 && $0=="---" { in_fm=1; next }
@@ -42,7 +44,7 @@ find_canonical_plan() {
       printf '%s\n' "$f"
       return 0
     fi
-  done < <(find "$REPO_ROOT/docs/plans" -maxdepth 1 -type f -name '*.md' -print0)
+  done < <(find "$root/docs/plans" -maxdepth 1 -type f -name '*.md' -print0)
   return 1
 }
 
@@ -65,6 +67,8 @@ is_benign() {
     .pipeline/metrics/*) return 0 ;;
     Cargo.lock)          return 0 ;;
     docs/knowledge/*)    return 0 ;;
+    docs/plans/*)        return 0 ;;
+    docs/brainstorms/*)  return 0 ;;
   esac
   # Integration tests under an in-scope crate.
   # Requires $allowed_files / $allowed_dirs from main scope.
@@ -89,10 +93,17 @@ main() {
   local issue_id="${1:-}" branch="${2:-}"
   [[ -n "$issue_id" && -n "$branch" ]] || die "usage: scope-check.sh <issue_id> <branch>"
 
+  # In the worktree flow, run-stage.sh invokes scope-check with cwd inside the
+  # per-issue worktree, where the plan has been committed on the feature branch
+  # but not merged to main. Resolve plans from that worktree, not from the shared
+  # $REPO_ROOT (which points at main via SCRIPT_DIR/../..).
+  local worktree_root
+  worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$REPO_ROOT")"
+
   local plan
-  plan="$(find_canonical_plan "$issue_id")" \
+  plan="$(find_canonical_plan "$issue_id" "$worktree_root")" \
     || { log "scope-check: no canonical plan for $issue_id"; exit 2; }
-  log "scope-check: plan=${plan#"$REPO_ROOT/"} branch=$branch"
+  log "scope-check: plan=${plan#"$worktree_root/"} branch=$branch"
 
   local body
   body="$(extract_scope_section "$plan")"
@@ -109,7 +120,7 @@ main() {
   fi
 
   local changed
-  changed="$(git -C "$REPO_ROOT" diff --name-only "main...${branch}" 2>/dev/null || true)"
+  changed="$(git -C "$worktree_root" diff --name-only "main...${branch}" 2>/dev/null || true)"
   [[ -n "$changed" ]] || { log "scope-check: no file changes on $branch"; exit 0; }
 
   local notable="" severe="" benign_count=0
