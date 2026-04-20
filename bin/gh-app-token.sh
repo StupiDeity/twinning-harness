@@ -19,9 +19,38 @@ require_bin openssl curl jq
 KEY_PATH="${GH_APP_PRIVATE_KEY_PATH/#\~/$HOME}"
 [[ -r "$KEY_PATH" ]] || die "private key not readable: $KEY_PATH"
 
+b64url() {
+  # Base64url: standard base64, then replace +/= → -_(stripped).
+  openssl base64 -e -A | tr '+/' '-_' | tr -d '='
+}
+
+mint_jwt() {
+  local now exp header payload signing_input signature
+  now="$(date +%s)"
+  exp="$((now + 540))"  # 9 min; GH allows up to 10.
+  header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
+  payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$now" "$exp" "$GH_APP_ID" | b64url)"
+  signing_input="${header}.${payload}"
+  signature="$(printf '%s' "$signing_input" \
+    | openssl dgst -sha256 -sign "$KEY_PATH" \
+    | b64url)"
+  printf '%s.%s' "$signing_input" "$signature"
+}
+
 main() {
-  printf 'TODO: mint token\n' >&2
-  exit 99
+  local jwt response token
+  jwt="$(mint_jwt)"
+  response="$(curl -sS -X POST \
+    -H "Authorization: Bearer $jwt" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/app/installations/${GH_APP_INSTALLATION_ID}/access_tokens")"
+
+  token="$(jq -r '.token // empty' <<<"$response")"
+  if [[ -z "$token" ]]; then
+    die "token exchange failed: $(jq -c '{message, documentation_url, status}' <<<"$response" 2>/dev/null || echo "$response")"
+  fi
+  printf '%s\n' "$token"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
