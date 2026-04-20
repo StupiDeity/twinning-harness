@@ -214,16 +214,52 @@ has_comment_since() {
 
 add_comment() {
   local ident="$1" body="$2"
-  local issue_uuid
-  issue_uuid="$(_resolve_issue_uuid "$ident")"
+
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
     log "[DRY_RUN] would comment on $ident: ${body:0:80}..."
     return 0
   fi
-  local q='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
-  local vars
-  vars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
-  linear_query "$q" "$vars" >/dev/null
+
+  # Normalize body for dedup: strip ISO timestamps + git SHAs so that
+  # reworded-only-by-timestamp comments (ENG-14 TDD evidence pattern) dedup.
+  local norm_body
+  norm_body="$(printf '%s' "$body" \
+    | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<TS>/g' \
+    | sed -E 's/[0-9a-f]{7,40}/<SHA>/g')"
+  local new_hash
+  new_hash="$(printf '%s' "$norm_body" | shasum -a 256 | awk '{print $1}')"
+
+  # Fetch last 10 comments, normalize, hash, compare.
+  local q='query($id: String!) { issue(id: $id) { comments(first: 10, orderBy: updatedAt) { nodes { body } } } }'
+  local vars resp
+  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
+  resp="$(linear_query "$q" "$vars")"
+
+  local dup_found=0
+  while IFS= read -r b64; do
+    [[ -z "$b64" ]] && continue
+    local prev_body prev_norm prev_hash
+    prev_body="$(printf '%s' "$b64" | base64 -d 2>/dev/null)"
+    prev_norm="$(printf '%s' "$prev_body" \
+      | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<TS>/g' \
+      | sed -E 's/[0-9a-f]{7,40}/<SHA>/g')"
+    prev_hash="$(printf '%s' "$prev_norm" | shasum -a 256 | awk '{print $1}')"
+    if [[ "$prev_hash" == "$new_hash" ]]; then
+      dup_found=1; break
+    fi
+  done < <(jq -r '.data.issue.comments.nodes[]? | .body | @base64' <<<"$resp")
+
+  if (( dup_found == 1 )); then
+    log "add-comment: duplicate suppressed on $ident (hash=${new_hash:0:12}...)"
+    return 0
+  fi
+
+  local issue_uuid
+  issue_uuid="$(_resolve_issue_uuid "$ident")"
+  local m='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
+  local mvars
+  mvars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
+  linear_query "$m" "$mvars" >/dev/null
   log "commented on $ident"
 }
 
