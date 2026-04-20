@@ -21,9 +21,6 @@ issue_dir() {
   [[ -n "$issue" ]] || die "issue_dir: missing issue id"
   printf '%s/%s' "$TWINNING_DIR" "$issue"
 }
-ISSUE_STATE_DIR="$TWINNING_DIR"  # issue-specific paths under $ISSUE_STATE_DIR/ENG-N/
-export ISSUE_STATE_DIR
-
 # Compute a stable sha256 over the set of files that drive pipeline
 # behavior from the main dev dir. Intentionally excludes metrics/ and
 # learned-rules/ (churn every tick). Emits a single hex digest, no
@@ -38,11 +35,11 @@ compute_pipeline_content_hash() {
       find "$REPO_ROOT/.pipeline/bin" -type f -name '*.sh' 2>/dev/null
       printf '%s\n' "$REPO_ROOT/.pipeline/config.json"
       printf '%s\n' "$REPO_ROOT/.pipeline/AGENT_PROMPTS.md"
-    } | sort
+    } | LC_ALL=C sort
   )"
   # shasum each, then hash the concatenation of per-file digests.
   printf '%s\n' "$files" \
-    | xargs -I{} shasum -a 256 {} 2>/dev/null \
+    | xargs -I{} shasum -a 256 {} \
     | awk '{print $1}' \
     | shasum -a 256 \
     | awk '{print $1}'
