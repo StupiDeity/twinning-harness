@@ -24,7 +24,7 @@ _cf_branch_head_sha() {
   local branch="$1"
   [[ -z "$branch" ]] && { printf ''; return 0; }
   git -C "$REPO_ROOT" ls-remote origin "$branch" 2>/dev/null \
-    | awk '{print $1}' | head -1
+    | awk '{print $1}' | head -1 || true
 }
 
 # Atomic write: tmp + rename.
@@ -60,7 +60,7 @@ classify_failure() {
 
   # Auto-escalation: retry-immediately with matching evidence → increment, escalate at >=2.
   local effective_policy="$base_policy" retry_count=0 effective_reason="$reason"
-  if [[ "$base_policy" == "retry-immediately" ]] && [[ -n "$prior_policy" ]]; then
+  if [[ "$base_policy" == "retry-immediately" ]] && [[ "$prior_policy" == "retry-immediately" ]]; then
     if [[ "$prior_hash" == "$current_hash" ]] && [[ "$prior_sha" == "$current_sha" ]]; then
       retry_count=$((prior_count + 1))
       if (( retry_count >= 2 )); then
@@ -100,11 +100,11 @@ classify_failure() {
   case "$effective_policy" in
     skip-until-code-changes)
       bash "$_CFS_SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:skip-until-human-acts" 2>/dev/null || true
-      bash "$_CFS_SCRIPT_DIR/linear.sh" add-label    "$issue" "pipeline:skip-until-code-changes"
+      bash "$_CFS_SCRIPT_DIR/linear.sh" add-label    "$issue" "pipeline:skip-until-code-changes" || true
       ;;
     skip-until-human-acts)
       bash "$_CFS_SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:skip-until-code-changes" 2>/dev/null || true
-      bash "$_CFS_SCRIPT_DIR/linear.sh" add-label    "$issue" "pipeline:skip-until-human-acts"
+      bash "$_CFS_SCRIPT_DIR/linear.sh" add-label    "$issue" "pipeline:skip-until-human-acts" || true
       ;;
   esac
 
@@ -126,13 +126,13 @@ classify_failure() {
   esac
   comment_body+="$(printf '\n\n**Evidence:**\n- pipeline_content_hash: `%s`\n- branch_head_sha: `%s`\n' "$current_hash" "${current_sha:-<none>}")"
 
-  bash "$_CFS_SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"
+  bash "$_CFS_SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body" || true
 
   # Slack.
   bash "$_CFS_SCRIPT_DIR/slack.sh" warn "Stage $stage on $issue → $effective_policy (exit=$exit_code, retry=$retry_count)" || true
 
   # Metric event.
   bash "$_CFS_SCRIPT_DIR/metrics.sh" stage-end "$issue" "$stage" "$effective_policy" 0 \
-    "exit=$exit_code${subcode:+ subcode=$subcode} retry_count=$retry_count branch=${branch:-none}"
+    "exit=$exit_code${subcode:+ subcode=$subcode} retry_count=$retry_count branch=${branch:-none}" || true
 }
 export -f classify_failure
