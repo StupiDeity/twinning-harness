@@ -159,14 +159,42 @@ if [[ "$entry_action" == "apply-stage-label" ]]; then
   bash "$SCRIPT_DIR/linear.sh" add-label "$issue_id" "stage:$label_suffix"
 fi
 
-# Run reconcile inline for brainstorm/plan stages. If decision is link: or
-# human, short-circuit here (handled by run-stage for label/comment side
-# effects). Only `proceed` goes on to create a worktree.
 reconcile_decision="proceed"
 if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
   reconcile_decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$issue_id" "$stage")"
   log "reconcile decision: $reconcile_decision"
 fi
+
+# Handle link: and human reconcile outcomes before deciding to create a
+# worktree. These paths short-circuit: no dispatch, no worktree, just
+# Linear side effects + metrics. Per ENG-13 D-009 and recovery of the
+# side-effect logic that used to live in run-stage.sh:121-151.
+case "$reconcile_decision" in
+  link:*)
+    doc_path="${reconcile_decision#link:}"
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
+      "Pipeline reconcile: existing $stage doc is canonical: \`$doc_path\`. Advancing without regeneration."
+    # Advance the stage label to the next happy-path stage.
+    case "$stage" in
+      brainstorm) nxt_label="planning" ;;
+      plan)       nxt_label="implementing" ;;
+      *)          nxt_label="" ;;
+    esac
+    if [[ -n "$nxt_label" ]]; then
+      bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$nxt_label"
+    fi
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" "linked" 0 "doc=$doc_path"
+    log "== tick end (reconcile linked) =="
+    exit 0
+    ;;
+  human)
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
+      "Pipeline reconcile: an existing $stage doc appears to cover this topic. Apply one of: \`pipeline:supersede\` (generate fresh and retire the old), \`pipeline:extend\` (generate fresh, referencing the old), or \`pipeline:ignore\` (link the old as canonical). Until a label is applied, this issue is paused."
+    bash "$SCRIPT_DIR/metrics.sh" stage-start "$issue_id" "$stage" "reconcile-human" 0
+    log "== tick end (reconcile human gate) =="
+    exit 0
+    ;;
+esac
 
 # Determine branch name and worktree path. Only for new-model branches; for
 # legacy feature/* in-flight, skip worktree creation and fall through.
