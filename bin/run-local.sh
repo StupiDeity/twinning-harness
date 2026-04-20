@@ -25,9 +25,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-LOCK_DIR="$PIPELINE_ROOT/.run-local.lock"
+LOCK_DIR="$TWINNING_DIR/.run-local.lock"
 ENV_FILE="$PIPELINE_ROOT/.env.local"
-FAIL_COUNTER="$PIPELINE_ROOT/.consecutive-failures"
+FAIL_COUNTER="$TWINNING_DIR/.consecutive-failures"
 FAIL_THRESHOLD=3
 LOG_DIR="$REPO_ROOT/logs/pipeline"
 LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
@@ -64,6 +64,8 @@ trip_breaker() {
     log "trip_breaker: could not find '\"paused\": false' in $CONFIG; leaving as-is"
   fi
 }
+
+mkdir -p "$TWINNING_DIR"
 
 if ! acquire_lock; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
