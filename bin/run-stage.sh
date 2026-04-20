@@ -159,7 +159,7 @@ main() {
   # treat the notable tier as approved.
   local skip_dispatch=0
   if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
-    local _approval_state="$REPO_ROOT/.pipeline/.scope-approval/${ident}"
+    local _approval_state="$TWINNING_DIR/scope-approval/${ident}"
     if [[ -f "$_approval_state" ]] \
        && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
       log "scope-approval: label cleared; skipping agent dispatch for $stage replay"
@@ -219,7 +219,7 @@ main() {
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')"
     branch="feature/${issue_id_lower}-${slug}"
 
-    local approval_state_file="$REPO_ROOT/.pipeline/.scope-approval/${ident}"
+    local approval_state_file="$TWINNING_DIR/scope-approval/${ident}"
     local scope_out scope_rc=0
     scope_out="$(bash "$SCRIPT_DIR/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
 
