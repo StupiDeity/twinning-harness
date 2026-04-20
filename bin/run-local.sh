@@ -236,6 +236,17 @@ if [[ -n "$worktree_path" ]]; then
   dispatch_cwd="$worktree_path"
 fi
 
+# Tick-start dirty-path snapshot for self-leak detection (ENG-14 D-4).
+# Any out-of-scope path present at end-of-tick that is NOT in this
+# snapshot must have been introduced by the bot — hard-fail on first
+# occurrence after partition.
+snapshot_file="$(mktemp -t twinning-snapshot.XXXXXX)"
+TWINNING_SWEEP_TMPS+=("$snapshot_file")
+git -C "$dispatch_cwd" status -z --porcelain \
+  | tr '\0' '\n' \
+  | sed 's/^...//' \
+  | sort -u > "$snapshot_file"
+
 set +e
 (cd "$dispatch_cwd" && bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage")
 rc=$?
