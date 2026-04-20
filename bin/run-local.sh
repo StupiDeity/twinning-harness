@@ -162,14 +162,14 @@ if [[ "$paused" == "true" ]]; then
   exit 0
 fi
 
-# ─── Worktree resolution (ENG-13) ───────────────────────────────────────
-WORKTREES_ROOT="$TWINNING_DIR/worktrees"
-mkdir -p "$WORKTREES_ROOT"
-
+# ─── Worktree resolution (ENG-15: per-issue dir layout) ────────────────
+# Worktrees now live under ~/.twinning-pipeline/ENG-N/worktree/ alongside
+# issue-state.json + scope-approval. Parent is created on demand.
 resolve_worktree_path() {
-  # Given a branch name like "feat/eng-13-foo" → "$WORKTREES_ROOT/feat-eng-13-foo"
-  local branch="$1"
-  printf '%s/%s' "$WORKTREES_ROOT" "${branch//\//-}"
+  # $1 = branch name (unused, kept for call-site compat), $2 = issue id
+  local branch="$1" issue="$2"
+  [[ -n "$issue" ]] || die "resolve_worktree_path: issue id required"
+  printf '%s/worktree' "$(issue_dir "$issue")"
 }
 
 ensure_worktree() {
@@ -279,7 +279,8 @@ if [[ "$reconcile_decision" == "proceed" ]]; then
     log "legacy feature/* branch detected for $issue_id — using old flow (no worktree)"
   else
     branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
-    worktree_path="$(resolve_worktree_path "$branch")"
+    worktree_path="$(resolve_worktree_path "$branch" "$issue_id")"
+    mkdir -p "$(dirname "$worktree_path")"
     ensure_worktree "$branch" "$worktree_path"
   fi
 fi

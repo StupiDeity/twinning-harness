@@ -12,6 +12,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=classify-failure.sh
+source "$SCRIPT_DIR/classify-failure.sh"
 
 next_stage() {
   # Canonical happy-path advancement.
@@ -115,11 +117,8 @@ main() {
   if ! bash "$SCRIPT_DIR/guards.sh" check "$ident" 2>/dev/null; then
     local tripped
     tripped="$(bash "$SCRIPT_DIR/guards.sh" check "$ident" 2>&1 || true)"
-    log "guards tripped: $tripped"
-    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-      "Pipeline paused: human review required ($tripped). Apply the corresponding pipeline:*-reviewed label to resume."
-    bash "$SCRIPT_DIR/slack.sh" warn "Issue $ident paused pending human review: $tripped"
-    bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "guards-tripped" 0 "$tripped"
+    classify_failure "$ident" "$stage" "skip-until-human-acts" \
+      "guards tripped: $tripped" 10
     exit 10
   fi
 
@@ -134,7 +133,7 @@ main() {
   # treat the notable tier as approved.
   local skip_dispatch=0
   if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
-    local _approval_state="$TWINNING_DIR/scope-approval/${ident}"
+    local _approval_state="$(issue_dir "$ident")/scope-approval"
     if [[ -f "$_approval_state" ]] \
        && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
       log "scope-approval: label cleared; skipping agent dispatch for $stage replay"
@@ -155,9 +154,8 @@ main() {
 
     # Dispatch.
     if ! bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$prompt_file" "$log_file"; then
-      t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "failed" "$duration" "log=$log_file"
-      bash "$SCRIPT_DIR/slack.sh" error "Stage $stage failed for $ident (log: $log_file)"
+      classify_failure "$ident" "$stage" "retry-immediately" \
+        "dispatch failed (see $log_file)" 20
       rm -f "$prompt_file"
       exit 20
     fi
@@ -194,7 +192,7 @@ main() {
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')"
     branch="feature/${issue_id_lower}-${slug}"
 
-    local approval_state_file="$TWINNING_DIR/scope-approval/${ident}"
+    local approval_state_file="$(issue_dir "$ident")/scope-approval"
     local scope_out scope_rc=0
     scope_out="$(bash "$SCRIPT_DIR/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
 
@@ -217,45 +215,39 @@ main() {
           printf 'issue=%s\nbranch=%s\napplied_at=%s\n' \
             "$ident" "$branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$approval_state_file"
           printf '%s\n' "$notable_files" >> "$approval_state_file"
-          if ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
-            bash "$SCRIPT_DIR/linear.sh" add-label "$ident" "pipeline:scope-approval-needed"
-            local fs_patch
-            fs_patch="$(printf -- '- `%s`\n' $notable_files)"
-            bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-              "Pipeline: \`$stage\` stage is awaiting scope approval on \`$branch\`. The following files were modified outside the plan's File Structure but live in directories adjacent to declared scope:
+
+          local fs_patch
+          fs_patch="$(printf -- '- `%s`\n' $notable_files)"
+          local reason
+          reason="scope-approval pending on $branch (notable files listed in halt comment)"
+          classify_failure "$ident" "$stage" "skip-until-human-acts" "$reason" 0
+          # Update the dedicated scope-approval sig comment with the file list.
+          bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "scope-approval/$stage/$ident" "$ident" \
+            "Pipeline: \`$stage\` stage is awaiting scope approval on \`$branch\`. The following files were modified outside the plan's File Structure but live in directories adjacent to declared scope:
 
 $fs_patch
 
 To approve and resume, add these entries to the plan's File Structure section and **remove the \`pipeline:scope-approval-needed\` label**. To reject, revert the out-of-scope edits and re-run. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)"
-            bash "$SCRIPT_DIR/slack.sh" warn "Stage $stage on $ident: scope approval needed ($branch)"
+          # Also keep the existing scope-approval-needed label for backward compat.
+          if ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
+            bash "$SCRIPT_DIR/linear.sh" add-label "$ident" "pipeline:scope-approval-needed"
           fi
-          t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-          bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "scope-approval-pending" "$duration" "branch=$branch"
           exit 0
         fi
         ;;
       3)
-        t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-        bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "scope-violation" "$duration" "branch=$branch"
-        bash "$SCRIPT_DIR/slack.sh" warn "Stage $stage scope violation for $ident on $branch"
         local severe_files
         severe_files="$(grep -E '^severe	' <<<"$scope_out" | awk -F'\t' '{print $2}' | sort -u)"
         local severe_patch
         severe_patch="$(printf -- '- `%s`\n' $severe_files)"
-        bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-          "Pipeline: \`$stage\` stage was halted due to a SEVERE scope violation on \`$branch\`. The following files live in directories the plan never declares:
-
-$severe_patch
-
-Review the branch diff and either (a) extend the plan's File Structure to include the new scope, or (b) revert the out-of-scope edits and re-run."
+        classify_failure "$ident" "$stage" "skip-until-human-acts" \
+          "SEVERE scope violation on $branch: $(tr '\n' ' ' <<<"$severe_patch")" 21 3
         exit 21
         ;;
       *)
-        t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-        bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "scope-violation" "$duration" "branch=$branch rc=$scope_rc"
-        bash "$SCRIPT_DIR/slack.sh" warn "Stage $stage scope-check error for $ident on $branch (rc=$scope_rc)"
-        bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-          "Pipeline: \`$stage\` stage halted — scope-check returned rc=$scope_rc (likely plan not found or File Structure unparseable). Investigate before re-running."
+        classify_failure "$ident" "$stage" "skip-until-code-changes" \
+          "scope-check rc=$scope_rc (likely plan not found or File Structure unparseable)" \
+          21 "$scope_rc"
         exit 21
         ;;
     esac
@@ -270,9 +262,8 @@ Review the branch diff and either (a) extend the plan's File Structure to includ
         local pr_count
         pr_count="$(gh pr list --head "$branch" --state open --json number --jq 'length' 2>/dev/null || printf '0')"
         if (( pr_count > 0 )); then
-          t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-          bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "pr-opened-too-early" "$duration" "branch=$branch"
-          bash "$SCRIPT_DIR/slack.sh" warn "Implement stage opened a PR on $branch (UI stage should own PR creation)"
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "implement stage opened a PR on $branch — UI stage should own PR creation" 22
           exit 22
         fi
       fi
@@ -289,12 +280,8 @@ Review the branch diff and either (a) extend the plan's File Structure to includ
     case "$stage" in
       brainstorm|plan|implement|ui|review|qa|build)
         if ! bash "$SCRIPT_DIR/linear.sh" has-comment-since "$ident" "$t0_iso"; then
-          log "post-stage: no Linear comment on $ident since $t0_iso — completion checklist violated"
-          t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-          bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "linear-comment-missing" "$duration" "since=$t0_iso"
-          bash "$SCRIPT_DIR/slack.sh" warn "Stage $stage for $ident exited without posting a Linear comment (checklist step 5 violated)"
-          bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-            "Pipeline halt: \`$stage\` agent exited without posting a Linear comment. The completion checklist in AGENT_PROMPTS.md requires the Linear comment as the final step — skipping it almost always means the agent exited before finishing self-review or self-validation. Re-run the stage to resume. <!-- pipeline-metric: linear_comment_missing -->"
+          classify_failure "$ident" "$stage" "retry-immediately" \
+            "agent exited without posting a Linear comment (completion checklist violated)" 23
           exit 23
         fi
         ;;
@@ -311,6 +298,12 @@ Review the branch diff and either (a) extend the plan's File Structure to includ
   t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
   bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" "next=$nxt"
   log "stage $stage complete for $ident (next: ${nxt:-terminal})"
+
+  # Success path: clear any prior failure state + skip labels so this issue
+  # re-enters the normal scheduling pool without manual intervention.
+  rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
+  bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
+  bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

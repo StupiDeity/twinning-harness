@@ -214,17 +214,97 @@ has_comment_since() {
 
 add_comment() {
   local ident="$1" body="$2"
-  local issue_uuid
-  issue_uuid="$(_resolve_issue_uuid "$ident")"
+
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
     log "[DRY_RUN] would comment on $ident: ${body:0:80}..."
     return 0
   fi
-  local q='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
-  local vars
-  vars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
-  linear_query "$q" "$vars" >/dev/null
+
+  # Normalize body for dedup: strip ISO timestamps + git SHAs so that
+  # reworded-only-by-timestamp comments (ENG-14 TDD evidence pattern) dedup.
+  local norm_body
+  norm_body="$(printf '%s' "$body" \
+    | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<TS>/g' \
+    | sed -E 's/[0-9a-f]{7,40}/<SHA>/g')"
+  local new_hash
+  new_hash="$(printf '%s' "$norm_body" | shasum -a 256 | awk '{print $1}')"
+
+  # Fetch last 10 comments, normalize, hash, compare.
+  local q='query($id: String!) { issue(id: $id) { comments(first: 10, orderBy: updatedAt) { nodes { body } } } }'
+  local vars resp
+  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
+  resp="$(linear_query "$q" "$vars")"
+
+  local dup_found=0
+  while IFS= read -r b64; do
+    [[ -z "$b64" ]] && continue
+    local prev_body prev_norm prev_hash
+    prev_body="$(printf '%s' "$b64" | base64 -d 2>/dev/null)"
+    prev_norm="$(printf '%s' "$prev_body" \
+      | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<TS>/g' \
+      | sed -E 's/[0-9a-f]{7,40}/<SHA>/g')"
+    prev_hash="$(printf '%s' "$prev_norm" | shasum -a 256 | awk '{print $1}')"
+    if [[ "$prev_hash" == "$new_hash" ]]; then
+      dup_found=1; break
+    fi
+  done < <(jq -r '.data.issue.comments.nodes[]? | .body | @base64' <<<"$resp")
+
+  if (( dup_found == 1 )); then
+    log "add-comment: duplicate suppressed on $ident (hash=${new_hash:0:12}...)"
+    return 0
+  fi
+
+  local issue_uuid
+  issue_uuid="$(_resolve_issue_uuid "$ident")"
+  local m='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
+  local mvars
+  mvars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
+  linear_query "$m" "$mvars" >/dev/null
   log "commented on $ident"
+}
+
+add_or_update_comment() {
+  # $1 = sig (e.g., "halt/implement/ENG-14")
+  # $2 = ident (e.g., "ENG-14")
+  # $3 = body (Markdown)
+  local sig="$1" ident="$2" body="$3"
+  [[ -n "$sig" && -n "$ident" && -n "$body" ]] \
+    || die "add-or-update-comment: all three of <sig> <ident> <body> required"
+
+  local marker="<!-- pipeline-sig: $sig -->"
+  if ! grep -qF "$marker" <<<"$body"; then
+    body+=$'\n\n'"$marker"
+  fi
+
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] would upsert $sig on $ident: ${body:0:80}..."
+    return 0
+  fi
+
+  local issue_uuid
+  issue_uuid="$(_resolve_issue_uuid "$ident")"
+
+  # Look for an existing comment carrying the sig.
+  local q='query($id: String!) { issue(id: $id) { comments(first: 50, orderBy: updatedAt) { nodes { id body } } } }'
+  local vars resp existing_id
+  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
+  resp="$(linear_query "$q" "$vars")"
+  existing_id="$(jq -r --arg m "$marker" \
+    '[.data.issue.comments.nodes[]? | select(.body | contains($m)) | .id] | first // ""' <<<"$resp")"
+
+  if [[ -n "$existing_id" ]]; then
+    local mu='mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success } }'
+    local mvars
+    mvars="$(jq -cn --arg id "$existing_id" --arg body "$body" '{id:$id, body:$body}')"
+    linear_query "$mu" "$mvars" >/dev/null
+    log "updated-in-place $sig on $ident (comment=$existing_id)"
+  else
+    local mc='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
+    local mcvars
+    mcvars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
+    linear_query "$mc" "$mcvars" >/dev/null
+    log "created $sig on $ident"
+  fi
 }
 
 refresh_cache() {
@@ -285,6 +365,7 @@ main() {
     swap-stage)             swap_stage "$@" ;;
     transition-state)       transition_state "$@" ;;
     add-comment)            add_comment "$@" ;;
+    add-or-update-comment) add_or_update_comment "$@" ;;
     stage-of)               stage_of "$@" ;;
     has-label)              has_label "$@" ;;
     has-comment-since)      has_comment_since "$@" ;;

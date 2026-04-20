@@ -35,6 +35,63 @@ stage_arg_for_label() {
   grep -E "^${1}=" <<<"$STAGE_LABEL_TO_STAGE_ARG" | head -1 | cut -d= -f2-
 }
 
+# Return 0 iff the candidate should be INCLUDED (i.e., not currently in a
+# resolved-but-cleared skip state). Side effects: if the skip state's evidence
+# has changed, deletes the state file and removes the label. For orphan
+# labels (no state file), removes the label and includes the candidate.
+# For orphan state files (label absent), deletes the state file.
+_poll_evaluate_skip() {
+  local ident="$1" labels_json="$2"
+  local state_file; state_file="$(issue_dir "$ident")/issue-state.json"
+  local has_code_label has_human_label
+  has_code_label="$(jq -r --arg n "pipeline:skip-until-code-changes" \
+    '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
+  has_human_label="$(jq -r --arg n "pipeline:skip-until-human-acts" \
+    '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
+
+  # No skip label AND no state file → normal eligible candidate.
+  if [[ "$has_code_label" != "true" && "$has_human_label" != "true" ]]; then
+    if [[ -f "$state_file" ]]; then
+      log "poll: orphan state file for $ident (no skip label); removing"
+      rm -f "$state_file"
+    fi
+    return 0
+  fi
+
+  # Label without file → orphan; remove label, include.
+  if [[ ! -f "$state_file" ]]; then
+    log "poll: orphan skip label on $ident (no state file); clearing"
+    [[ "$has_code_label" == "true" ]]  && bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" || true
+    [[ "$has_human_label" == "true" ]] && bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   || true
+    return 0
+  fi
+
+  # skip-until-human-acts: label present → still skipped. Include NOT allowed.
+  if [[ "$has_human_label" == "true" ]]; then
+    return 1
+  fi
+
+  # skip-until-code-changes: recompute evidence; include iff changed.
+  local prev_hash prev_sha branch current_hash current_sha
+  prev_hash="$(jq -r '.evidence.pipeline_content_hash // ""' "$state_file")"
+  prev_sha="$(jq -r '.evidence.branch_head_sha // ""'       "$state_file")"
+  branch="$(jq -r '.branch // ""'                            "$state_file")"
+  current_hash="$(compute_pipeline_content_hash)"
+  if [[ -n "$branch" ]]; then
+    current_sha="$(git -C "$REPO_ROOT" ls-remote origin "$branch" 2>/dev/null | awk '{print $1}' | head -1 || true)"
+  else
+    current_sha=""
+  fi
+
+  if [[ "$prev_hash" != "$current_hash" ]] || [[ "$prev_sha" != "$current_sha" ]]; then
+    log "poll: evidence changed for $ident; clearing skip state"
+    rm -f "$state_file"
+    bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" || true
+    return 0
+  fi
+  return 1
+}
+
 idle() {
   local reason="${1:-}"
   bash "$SCRIPT_DIR/metrics.sh" poll-tick "" "" "idle" 0 "$reason" || true
@@ -73,17 +130,31 @@ main() {
     local arg; arg="$(stage_arg_for_label "$stage_label")"
     [[ -z "$arg" ]] && continue
 
-    # Find the most-recently-updated issue at this stage that isn't paused, isn't
-    # abandoned, and isn't Done.
-    local pick
-    pick="$(bash "$SCRIPT_DIR/linear.sh" list-issues-with-label "$stage_label" \
-      | jq -r '
+    # Enumerate candidates + labels; helper decides include/exclude.
+    local cand_json
+    cand_json="$(bash "$SCRIPT_DIR/linear.sh" list-issues-with-label "$stage_label" \
+      | jq -c '
         [.data.issues.nodes[]
          | select(.state.name != "Done")
          | select([.labels.nodes[].name] | index("pipeline:paused") | not)
          | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
          | select([.labels.nodes[].name] | index("pipeline:scope-approval-needed") | not)
-         | .identifier] | first // ""')"
+         | {identifier: .identifier, labels: [.labels.nodes[].name]}]')"
+
+    local pick=""
+    local candidates_count
+    candidates_count="$(jq 'length' <<<"$cand_json")"
+    local i=0
+    while (( i < candidates_count )); do
+      local ident labels_json
+      ident="$(jq -r ".[$i].identifier" <<<"$cand_json")"
+      labels_json="$(jq -c ".[$i].labels" <<<"$cand_json")"
+      if _poll_evaluate_skip "$ident" "$labels_json"; then
+        pick="$ident"; break
+      fi
+      i=$((i+1))
+    done
+
     if [[ -n "$pick" ]]; then
       jq -nc \
         --arg issue_id "$pick" \
