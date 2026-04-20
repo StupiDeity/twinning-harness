@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run a single pipeline stage against a Linear issue.
 # Usage: run-stage.sh <issue_id> <stage>
-# Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=reconcile-human, 20=dispatch-failed.
+# Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=reconcile-human, 20=dispatch-failed,
+#             21=scope-violation, 22=pr-opened-too-early, 23=linear-comment-missing.
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -98,8 +99,9 @@ main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
 
-  local t0 t1 duration
+  local t0 t0_iso t1 duration
   t0="$(date +%s)"
+  t0_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # Preconditions.
   verify_preconditions "$ident" "$stage" || {
@@ -275,6 +277,28 @@ Review the branch diff and either (a) extend the plan's File Structure to includ
         fi
       fi
     fi
+  fi
+
+  # Post-stage Linear-comment assertion. The "Completion checklist" in each agent prompt
+  # makes the Linear comment the final mandatory step; this check confirms the agent
+  # actually ran that step rather than exiting early after self-review. Skip for
+  # scope-approval replays (the original dispatch already posted) and for `release`
+  # (terminal stage with variable comment patterns). If missing, fail with exit 23 so
+  # the retrospective loop catches it instead of the pipeline silently marking success.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      brainstorm|plan|implement|ui|review|qa|build)
+        if ! bash "$SCRIPT_DIR/linear.sh" has-comment-since "$ident" "$t0_iso"; then
+          log "post-stage: no Linear comment on $ident since $t0_iso — completion checklist violated"
+          t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+          bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "linear-comment-missing" "$duration" "since=$t0_iso"
+          bash "$SCRIPT_DIR/slack.sh" warn "Stage $stage for $ident exited without posting a Linear comment (checklist step 5 violated)"
+          bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
+            "Pipeline halt: \`$stage\` agent exited without posting a Linear comment. The completion checklist in AGENT_PROMPTS.md requires the Linear comment as the final step — skipping it almost always means the agent exited before finishing self-review or self-validation. Re-run the stage to resume. <!-- pipeline-metric: linear_comment_missing -->"
+          exit 23
+        fi
+        ;;
+    esac
   fi
 
   # Advance label.

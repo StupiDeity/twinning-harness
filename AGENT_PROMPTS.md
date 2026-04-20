@@ -82,16 +82,33 @@ Frontmatter (REQUIRED): The brainstorm doc MUST start with YAML frontmatter cont
 `linear: {issue_id}` on its own line. The reconcile step uses this as the canonical signal
 that a doc claims an issue; prose mentions elsewhere are ignored.
 
-After writing, self-review using the document-review skill (design, security, scope,
-coherence, feasibility, **product** personas). Iterate until at least 5/6 personas pass
-AND there are zero P0-severity findings from the feasibility persona (codebase-fact errors
-are always P0). If any P0 remains after 3 iterations, stop and post a Linear comment
-flagging for human review.
+## Completion checklist (ordered — do every step in order, and do NOT exit before step 5)
 
-Output:
-- Commit the brainstorm doc
-- If new ADRs were proposed, append them to docs/knowledge/decisions.md with status "proposed"
-- Comment on Linear issue {issue_id} with a summary
+1. **Write the brainstorm doc** at `docs/brainstorms/{date}-{slug}-design.md`, including the
+   `linear: {issue_id}` YAML frontmatter.
+2. **Run all 6 personas** via the document-review skill, in this exact order:
+   design → security → scope → coherence → product → **feasibility**.
+   Feasibility runs LAST because it is the gating persona (codebase-fact errors are always P0).
+   Do not stop after 5/6 just because the threshold in step 3 has been hit — skipping feasibility
+   is a stage failure.
+3. **Iterate until the gate passes**: at least 5/6 personas return PASS AND feasibility
+   returns zero P0 findings. Iterate at most 3 times. If any P0 remains after iteration 3,
+   set status = `escalate` and proceed to step 5 with an escalation comment rather than a
+   success comment. Do NOT silently exit.
+4. **Commit artifacts**: the brainstorm doc, plus any new ADRs appended to
+   `docs/knowledge/decisions.md` with status `proposed`.
+5. **Post the Linear comment on {issue_id}** — this is the LAST step and is MANDATORY.
+   The stage is not complete until this runs successfully. The comment must include:
+   - the brainstorm doc URL,
+   - the full 6-row persona pass/fail table (one row per persona — missing rows indicate
+     a skipped persona, which is a failure),
+   - a one-line summary: either "zero P0s, proceeding to planning" (success path) or
+     an escalation summary tagged `<!-- pipeline-metric: brainstorm_escalate -->` citing
+     the unresolved P0s (escalate path).
+   Post via `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"` or the equivalent
+   Linear MCP tool. If the comment fails to post, retry once, then fail the stage rather
+   than exit clean. The pipeline verifies this comment exists before marking the stage
+   successful; an exit without a Linear comment will be caught and flagged.
 ```
 
 ## 2. Plan Agent
@@ -218,22 +235,38 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
   - **product** — plan actually delivers what the Linear issue asked for, in language
     the user would recognise. Flag plans that solve an adjacent technical problem.
 
-Iterate until at least 4/5 personas pass AND there are zero P0 findings. The following
-are always P0:
-  - codebase-fact errors (feasibility),
-  - missing or malformed Command API Contract block when any Tauri command changes,
-  - a task missing `depends_on` or `touches` metadata,
-  - a Failure Mode row with no named test,
-  - any File Structure entry that feasibility cannot locate or justify as new.
-If any P0 remains after 3 iterations, stop and post a Linear comment flagging for human
-review; do NOT commit an unresolved plan.
+## Completion checklist (ordered — do every step in order, and do NOT exit before step 5)
 
-Output:
-- Commit the plan doc directly to `main` with message `chore(pipeline): plan for {issue_id}`.
-  Plans and brainstorms are direct-commit to main; only knowledge-file changes (gotchas,
-  conventions, decisions, learned-rules) go through PRs with CODEOWNERS.
-- Post a Linear comment on {issue_id} with the plan URL and the persona pass/fail summary.
-- Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
+1. **Write the plan doc** at `docs/plans/{date}-{slug}.md` with required YAML frontmatter
+   (`linear`, `date`, `topic`).
+2. **Run all 5 personas** via the document-review skill. Feasibility includes codebase-fact
+   verification: every named method, trait, module path, struct field, SQL column, file, or
+   entrypoint must be verified against current code with a `path:line` reference in the
+   plan. Missing any persona row is a stage failure.
+3. **Iterate until the gate passes**: at least 4/5 personas PASS AND zero P0 findings
+   across all personas. The following are always P0:
+   - codebase-fact errors (feasibility),
+   - missing or malformed Command API Contract block when any Tauri command changes,
+   - a task missing `depends_on` or `touches` metadata,
+   - a Failure Mode row with no named test,
+   - any File Structure entry that feasibility cannot locate or justify as new.
+   Iterate at most 3 times. If any P0 remains after iteration 3, set status = `escalate`
+   and proceed to step 5 with an escalation comment — do NOT commit an unresolved plan,
+   but do NOT silently exit either.
+4. **Commit artifacts** (success path only): plan doc on the feature branch with message
+   `chore(pipeline): plan for {issue_id}`. Plans and brainstorms stay on the feature branch
+   and reach main via the normal merge flow; do not attempt direct-to-main pushes. Only
+   knowledge-file changes go through PRs with CODEOWNERS. Do NOT change the Linear stage
+   label — the orchestrator swaps it on successful exit.
+5. **Post the Linear comment on {issue_id}** — this is the LAST step and is MANDATORY.
+   The stage is not complete until this runs successfully. The comment must include the
+   plan URL and the full persona pass/fail table (one row per persona), plus either a
+   success summary or an escalation summary tagged
+   `<!-- pipeline-metric: plan_escalate -->` if step 3 hit iteration 3. Post via
+   `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"` or the equivalent Linear
+   MCP tool. If the comment fails to post, retry once, then fail the stage. The pipeline
+   verifies this comment exists before marking the stage successful; an exit without a
+   Linear comment will be caught and flagged.
 ```
 
 ## 3. Implementation Agent (Backend)
