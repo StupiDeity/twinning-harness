@@ -227,6 +227,50 @@ add_comment() {
   log "commented on $ident"
 }
 
+add_or_update_comment() {
+  # $1 = sig (e.g., "halt/implement/ENG-14")
+  # $2 = ident (e.g., "ENG-14")
+  # $3 = body (Markdown)
+  local sig="$1" ident="$2" body="$3"
+  [[ -n "$sig" && -n "$ident" && -n "$body" ]] \
+    || die "add-or-update-comment: all three of <sig> <ident> <body> required"
+
+  local marker="<!-- pipeline-sig: $sig -->"
+  if ! grep -qF "$marker" <<<"$body"; then
+    body+=$'\n\n'"$marker"
+  fi
+
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] would upsert $sig on $ident: ${body:0:80}..."
+    return 0
+  fi
+
+  local issue_uuid
+  issue_uuid="$(_resolve_issue_uuid "$ident")"
+
+  # Look for an existing comment carrying the sig.
+  local q='query($id: String!) { issue(id: $id) { comments(first: 50, orderBy: updatedAt) { nodes { id body } } } }'
+  local vars resp existing_id
+  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
+  resp="$(linear_query "$q" "$vars")"
+  existing_id="$(jq -r --arg m "$marker" \
+    '[.data.issue.comments.nodes[]? | select(.body | contains($m)) | .id] | first // ""' <<<"$resp")"
+
+  if [[ -n "$existing_id" ]]; then
+    local mu='mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success } }'
+    local mvars
+    mvars="$(jq -cn --arg id "$existing_id" --arg body "$body" '{id:$id, body:$body}')"
+    linear_query "$mu" "$mvars" >/dev/null
+    log "updated-in-place $sig on $ident (comment=$existing_id)"
+  else
+    local mc='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
+    local mcvars
+    mcvars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
+    linear_query "$mc" "$mcvars" >/dev/null
+    log "created $sig on $ident"
+  fi
+}
+
 refresh_cache() {
   require_env LINEAR_API_KEY
   local team_id
@@ -285,6 +329,7 @@ main() {
     swap-stage)             swap_stage "$@" ;;
     transition-state)       transition_state "$@" ;;
     add-comment)            add_comment "$@" ;;
+    add-or-update-comment) add_or_update_comment "$@" ;;
     stage-of)               stage_of "$@" ;;
     has-label)              has_label "$@" ;;
     has-comment-since)      has_comment_since "$@" ;;
