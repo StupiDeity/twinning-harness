@@ -304,6 +304,77 @@ if (( observed_count > 0 )); then
   done < "$out_scope_file"
 fi
 
+# Precedence: self-leak (hard-fail) > leaked-in-scope (counter+conditional
+# trip) > in-scope commit > observed bucketed (info only). Brainstorm OQ-4.
+
+# 1. Self-leak has highest severity. Emit metric, trip breaker, exit.
+if (( ${#self_leak_hashes[@]} > 0 )); then
+  leak_csv=""
+  for h in "${self_leak_hashes[@]}"; do
+    leak_csv="${leak_csv:+${leak_csv},}${h}"
+  done
+  bash "$SCRIPT_DIR/metrics.sh" sweep-self-leak-out-of-scope "$issue_id" "$stage" \
+    "self-leak" 0 "count=${#self_leak_hashes[@]} hashes=${leak_csv}" \
+    || log "metrics.sh sweep-self-leak-out-of-scope emission failed (non-blocking)"
+  log "SELF-LEAK: ${#self_leak_hashes[@]} bot-introduced out-of-scope path(s); tripping breaker (in-scope paths NOT committed)"
+  if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
+    trip_breaker
+    exit 1
+  fi
+fi
+
+# 2. Leaked-in-scope: soft failure. Emit metric, increment counter, trip
+#    breaker only at threshold, exit. Leaves in-scope paths un-committed.
+if (( leaked_count > 0 )); then
+  leaked_hashes=""
+  while IFS= read -r -d '' p; do
+    h="$(sha12 "$p")"
+    leaked_hashes="${leaked_hashes:+${leaked_hashes},}${h}"
+  done < "$leaked_file"
+  bash "$SCRIPT_DIR/metrics.sh" sweep-leaked-in-scope "$issue_id" "$stage" \
+    "leak" 0 "count=${leaked_count} hashes=${leaked_hashes}" \
+    || log "metrics.sh sweep-leaked-in-scope emission failed (non-blocking)"
+  if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
+    fc="$(cat "$FAIL_COUNTER" 2>/dev/null || echo 0)"
+    fc=$((fc + 1))
+    printf '%s\n' "$fc" > "$FAIL_COUNTER"
+    log "sweep-leaked-in-scope: $leaked_count path(s); consecutive failures = $fc (in-scope paths NOT committed)"
+    if (( fc >= FAIL_THRESHOLD )); then
+      trip_breaker
+    fi
+    exit 1
+  fi
+fi
+
+# 3. Clean tick: commit in-scope artifacts if any.
+if (( in_scope_count > 0 )); then
+  if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
+    log "[DRY_RUN] would git add -- ($in_scope_count paths):"
+    tr '\0' '\n' < "$in_scope_file" | sed 's/^/[DRY_RUN]   /' >&2
+  else
+    log "committing pipeline artifacts for $issue_id / $stage ($in_scope_count paths)"
+    (cd "$dispatch_cwd" && xargs -0 git add -- < "$in_scope_file")
+    git -C "$dispatch_cwd" \
+      -c user.name="$BOT_NAME" \
+      -c user.email="$BOT_EMAIL" \
+      commit -m "chore(pipeline): $stage for $issue_id"
+    git -C "$dispatch_cwd" push
+  fi
+else
+  log "no in-scope artifacts to commit"
+fi
+
+# 4. Observed bucketed (info only — user concurrent work, no breaker).
+if (( ${#observed_buckets[@]} > 0 )); then
+  observed_buckets_csv=""
+  for b in "${observed_buckets[@]}"; do
+    observed_buckets_csv="${observed_buckets_csv:+${observed_buckets_csv},}${b}"
+  done
+  bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" \
+    "observed" 0 "count=${#observed_buckets[@]} buckets=${observed_buckets_csv}" \
+    || log "metrics.sh sweep-observed-out-of-scope emission failed (non-blocking)"
+fi
+
 # Periodic worktree sweep (every N ticks).
 tick_count=0
 if [[ -f "$TICK_COUNTER" ]]; then
