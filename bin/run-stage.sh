@@ -298,6 +298,12 @@ To approve and resume, add these entries to the plan's File Structure section an
   t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
   bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" "next=$nxt"
   log "stage $stage complete for $ident (next: ${nxt:-terminal})"
+
+  # Success path: clear any prior failure state + skip labels so this issue
+  # re-enters the normal scheduling pool without manual intervention.
+  rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
+  bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
+  bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
