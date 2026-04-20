@@ -265,38 +265,43 @@ fi
 
 rm -f "$FAIL_COUNTER"
 
-if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
-  # D-001 allowlist: only stage files the stage is expected to produce.
-  in_scope=()
-  out_of_scope=()
-  while IFS= read -r line; do
-    # Porcelain format: "XY path" where XY is 2-char status.
-    path="${line:3}"
-    if stage_in_scope "$path" "$stage" "$issue_id"; then
-      in_scope+=("$path")
+# 3-stream partition sweep (ENG-14 D-3).
+in_scope_file="$(mktemp -t twinning-inscope.XXXXXX)"
+leaked_file="$(mktemp -t twinning-leaked.XXXXXX)"
+out_scope_file="$(mktemp -t twinning-outscope.XXXXXX)"
+TWINNING_SWEEP_TMPS+=("$in_scope_file" "$leaked_file" "$out_scope_file")
+: > "$in_scope_file" "$leaked_file" "$out_scope_file"
+
+git -C "$dispatch_cwd" status -z --porcelain \
+  | partition_dirty_paths "$stage" "$issue_id" \
+      3>"$in_scope_file" 4>"$leaked_file" 5>"$out_scope_file"
+
+in_scope_count="$(tr -cd '\0' < "$in_scope_file" | wc -c | tr -d ' ')"
+leaked_count="$(tr -cd '\0' < "$leaked_file" | wc -c | tr -d ' ')"
+observed_count="$(tr -cd '\0' < "$out_scope_file" | wc -c | tr -d ' ')"
+
+# Classify out-of-scope into bucketed-observed (pre-existing, present in
+# tick-start snapshot) vs self-leak (NEW since tick start). Task 10 decides
+# what to do with each.
+observed_buckets=()
+self_leak_hashes=()
+if (( observed_count > 0 )); then
+  while IFS= read -r -d '' p; do
+    if grep -qxF -- "$p" "$snapshot_file"; then
+      b="$(bucket_for_path "$p")"
+      if (( ${#observed_buckets[@]} == 0 )); then
+        observed_buckets+=("$b")
+      else
+        seen=0
+        for existing in "${observed_buckets[@]}"; do
+          [[ "$existing" == "$b" ]] && { seen=1; break; }
+        done
+        (( seen )) || observed_buckets+=("$b")
+      fi
     else
-      out_of_scope+=("$path")
+      self_leak_hashes+=("$(sha12 "$p")")
     fi
-  done < <(git -C "$dispatch_cwd" status --porcelain)
-
-  if (( ${#out_of_scope[@]} > 0 )); then
-    log "sweep: ${#out_of_scope[@]} out-of-scope dirty paths (NOT staged): ${out_of_scope[*]}"
-    bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" "observed" 0 "count=${#out_of_scope[@]}"
-  fi
-
-  if (( ${#in_scope[@]} > 0 )); then
-    log "sweep: staging ${#in_scope[@]} in-scope paths for $issue_id / $stage"
-    (cd "$dispatch_cwd" && git add -- "${in_scope[@]}")
-    git -C "$dispatch_cwd" \
-      -c user.name="$BOT_NAME" \
-      -c user.email="$BOT_EMAIL" \
-      commit -m "chore(pipeline): $stage for $issue_id"
-    git -C "$dispatch_cwd" push
-  else
-    log "no in-scope artifacts to commit"
-  fi
-else
-  log "no artifacts to commit"
+  done < "$out_scope_file"
 fi
 
 # Periodic worktree sweep (every N ticks).
