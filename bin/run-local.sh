@@ -24,6 +24,8 @@ export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=run-local-helpers.sh
+source "$SCRIPT_DIR/run-local-helpers.sh"
 
 LOCK_DIR="$TWINNING_DIR/.run-local.lock"
 ENV_FILE="$PIPELINE_ROOT/.env.local"
@@ -35,69 +37,6 @@ LOG_DIR="$REPO_ROOT/logs/pipeline"
 LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
 BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
-
-stage_output_paths() {
-  local stage="$1" issue_id="$2"
-  # Always-staged (common to all stages).
-  local common=()
-  # Per-stage allowlists. Directory entries end in /.
-  case "$stage" in
-    brainstorm)
-      printf 'docs/brainstorms/\n'
-      printf 'docs/knowledge/decisions.md\n'
-      ;;
-    plan)
-      printf 'docs/plans/\n'
-      ;;
-    implement|ui|qa)
-      # Implement/UI/QA commit their own work via Bash(git:*); run-local
-      # sweep here should ONLY pick up anything the agent left behind. Keep
-      # the allowlist broad for these so legitimate edits aren't dropped.
-      printf 'src/\n'
-      printf 'src-tauri/\n'
-      printf 'crates/\n'
-      printf 'tests/\n'
-      printf 'docs/\n'
-      printf 'package.json\n'
-      printf 'package-lock.json\n'
-      printf 'bun.lock\n'
-      printf 'bun.lockb\n'
-      printf 'Cargo.toml\n'
-      printf 'Cargo.lock\n'
-      ;;
-    retrospective)
-      printf '.pipeline/learned-rules/\n'
-      printf 'docs/knowledge/gotchas.md\n'
-      printf 'docs/knowledge/qa-patterns.md\n'
-      printf 'docs/knowledge/conventions.md\n'
-      printf 'docs/knowledge/decisions.md\n'
-      printf '.pipeline/AGENT_PROMPTS.md\n'
-      printf '.pipeline/config.json\n'
-      printf '.github/workflows/\n'
-      ;;
-    review|build|release)
-      # Read-mostly stages; nothing to sweep.
-      ;;
-    *)
-      ;;
-  esac
-}
-
-stage_in_scope() {
-  # $1=dirty_path, $2=stage, $3=issue_id
-  local path="$1" stage="$2" issue_id="$3"
-  while IFS= read -r allow; do
-    [[ -z "$allow" ]] && continue
-    if [[ "$allow" == */ ]]; then
-      # Directory prefix match with path boundary.
-      [[ "$path" == "$allow"* ]] && return 0
-    else
-      # Exact file match.
-      [[ "$path" == "$allow" ]] && return 0
-    fi
-  done < <(stage_output_paths "$stage" "$issue_id")
-  return 1
-}
 
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -136,7 +75,17 @@ if ! acquire_lock; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
   exit 0
 fi
-trap 'rm -rf "$LOCK_DIR"' EXIT
+
+# Bash traps are NOT stacked — a later `trap ... EXIT` REPLACES this one.
+# Register sweep tempfiles in TWINNING_SWEEP_TMPS so they are reaped here.
+TWINNING_SWEEP_TMPS=()
+cleanup_on_exit() {
+  rm -rf "$LOCK_DIR"
+  if (( ${#TWINNING_SWEEP_TMPS[@]} > 0 )); then
+    rm -f "${TWINNING_SWEEP_TMPS[@]}"
+  fi
+}
+trap cleanup_on_exit EXIT
 
 mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG_FILE") 2>&1
