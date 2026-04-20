@@ -25,11 +25,14 @@ b64url() {
 }
 
 mint_jwt() {
-  local now exp header payload signing_input signature
+  local now iat exp header payload signing_input signature
   now="$(date +%s)"
+  # iat deliberately set 60s in the past to absorb client↔GitHub clock skew
+  # (per GitHub App JWT guidance).
+  iat="$((now - 60))"
   exp="$((now + 540))"  # 9 min; GH allows up to 10.
   header="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)"
-  payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$now" "$exp" "$GH_APP_ID" | b64url)"
+  payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$iat" "$exp" "$GH_APP_ID" | b64url)"
   signing_input="${header}.${payload}"
   signature="$(printf '%s' "$signing_input" \
     | openssl dgst -sha256 -sign "$KEY_PATH" \
@@ -46,9 +49,9 @@ main() {
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/app/installations/${GH_APP_INSTALLATION_ID}/access_tokens")"
 
-  token="$(jq -r '.token // empty' <<<"$response")"
+  token="$(jq -r '.token // empty' <<<"$response" 2>/dev/null || true)"
   if [[ -z "$token" ]]; then
-    die "token exchange failed: $(jq -c '{message, documentation_url, status}' <<<"$response" 2>/dev/null || echo "$response")"
+    die "token exchange failed: $(jq -c '{message, documentation_url, status}' <<<"$response" 2>/dev/null || printf '%s' "$response")"
   fi
   printf '%s\n' "$token"
 }
