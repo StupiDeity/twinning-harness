@@ -29,6 +29,12 @@
 
 ---
 
+## Pipeline comment dedup convention
+
+**Comment dedup (ENG-15):** Use `.pipeline/bin/linear.sh add-or-update-comment <sig> <ident> <body>` for any comment that is a logical "latest state" update — TDD-evidence, completion-checklist, progress notes. The `<sig>` is `tdd-evidence/<stage>/<issue>` for TDD-evidence, `completion/<stage>/<issue>` for completion-checklist, and should follow the pattern `<class>/<stage>/<issue>` for new classes. Ad-hoc one-shot comments may continue to use `add-comment` — the hash-dedup safety net suppresses exact-content duplicates automatically.
+
+---
+
 ## 1. Brainstorm Agent
 
 ```
@@ -105,7 +111,7 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    - a one-line summary: either "zero P0s, proceeding to planning" (success path) or
      an escalation summary tagged `<!-- pipeline-metric: brainstorm_escalate -->` citing
      the unresolved P0s (escalate path).
-   Post via `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"` or the equivalent
+   Post via `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" {issue_id} "<body>"` or the equivalent
    Linear MCP tool. If the comment fails to post, retry once, then fail the stage rather
    than exit clean. The pipeline verifies this comment exists before marking the stage
    successful; an exit without a Linear comment will be caught and flagged.
@@ -263,7 +269,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    plan URL and the full persona pass/fail table (one row per persona), plus either a
    success summary or an escalation summary tagged
    `<!-- pipeline-metric: plan_escalate -->` if step 3 hit iteration 3. Post via
-   `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"` or the equivalent Linear
+   `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" {issue_id} "<body>"` or the equivalent Linear
    MCP tool. If the comment fails to post, retry once, then fail the stage. The pipeline
    verifies this comment exists before marking the stage successful; an exit without a
    Linear comment will be caught and flagged.
@@ -363,6 +369,7 @@ Post a single Linear comment on {issue_id} containing:
   - Test-file changes vs source-file changes, as `+<N> test / +<M> src` lines.
   - Each plan task ticked with its commit SHAs or explicit deviation.
   - `api-contract` verification summary (per-command drift check: pass/fail).
+Post via `bash .pipeline/bin/linear.sh add-or-update-comment "tdd-evidence/implement/{issue_id}" {issue_id} "<body>"`.
 
 Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
@@ -513,6 +520,7 @@ Output:
 - Open the PR per the template above.
 - Post a single Linear comment on {issue_id} with: the PR URL, the per-component
   checklist scores, the second-reviewer verdict, and gate-command results.
+  Post via `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" {issue_id} "<body>"`.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 ```
 
