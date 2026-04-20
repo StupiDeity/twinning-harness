@@ -2,6 +2,9 @@
 # Invoke the Claude Code CLI headlessly with a rendered prompt.
 # Usage: dispatch.sh <stage> <prompt_file> [<log_file>]
 # In PIPELINE_DRY_RUN=1, echoes what it would do without calling claude.
+#
+# CWD is the feature's worktree when called from run-local.sh (ENG-13 D-011),
+# or the main repo root for legacy feature/* branches.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

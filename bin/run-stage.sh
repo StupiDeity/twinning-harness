@@ -83,11 +83,14 @@ advance_label() {
   prefix="$(config_get '.linear.stage_label_prefix')"
   bash "$SCRIPT_DIR/linear.sh" swap-stage "$ident" "$nxt"
 
-  # Release transition: also flip Linear status to Done.
-  if [[ "$nxt" == "released" ]]; then
-    local done_state
-    done_state="$(config_get '.linear.native_states.done')"
-    bash "$SCRIPT_DIR/linear.sh" transition-state "$ident" "$done_state"
+  # Per ENG-13 D-014: Linear native state transitions.
+  # - stage:reviewing applied → In Review (PR just opened in UI stage).
+  # - stage:released does NOT transition to Done here; Done is set by
+  #   cleanup-worktrees.sh when the PR actually merges.
+  if [[ "$nxt" == "reviewing" ]]; then
+    local in_review_state
+    in_review_state="$(config_get '.linear.native_states.in_review')"
+    bash "$SCRIPT_DIR/linear.sh" transition-state "$ident" "$in_review_state"
   fi
 }
 
@@ -118,38 +121,8 @@ main() {
     exit 10
   fi
 
-  # Reconcile (brainstorm/plan only).
-  if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
-    local reconcile_kind
-    [[ "$stage" == "brainstorm" ]] && reconcile_kind="brainstorm" || reconcile_kind="plan"
-    local decision
-    decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$ident" "$reconcile_kind")"
-    case "$decision" in
-      proceed)
-        log "reconcile: proceed"
-        ;;
-      link:*)
-        local doc_path="${decision#link:}"
-        log "reconcile: linking to existing $doc_path"
-        bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-          "Pipeline reconcile: existing $reconcile_kind doc is canonical: \`$doc_path\`. Advancing without regeneration."
-        local nxt; nxt="$(next_stage "$stage")"
-        [[ -n "$nxt" ]] && advance_label "$ident" "$stage" "$nxt"
-        bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "linked" 0 "doc=$doc_path"
-        return 0
-        ;;
-      human)
-        log "reconcile: human required"
-        bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
-          "Pipeline reconcile: an existing $reconcile_kind doc appears to cover this topic. Apply one of: \`pipeline:supersede\` (generate fresh and retire the old), \`pipeline:extend\` (generate fresh, referencing the old), or \`pipeline:ignore\` (link the old as canonical). Until a label is applied, this issue is paused."
-        bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "reconcile-human" 0
-        exit 12
-        ;;
-      *)
-        die "unexpected reconcile output: $decision"
-        ;;
-    esac
-  fi
+  # Reconcile is now performed in run-local.sh before this script is called,
+  # so that link:/human decisions don't create empty worktrees. See ENG-13 D-009.
 
   # Scope-approval replay: if this is implement/ui and the user just cleared
   # `pipeline:scope-approval-needed` (state file exists, label absent), skip the
@@ -159,7 +132,7 @@ main() {
   # treat the notable tier as approved.
   local skip_dispatch=0
   if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
-    local _approval_state="$REPO_ROOT/.pipeline/.scope-approval/${ident}"
+    local _approval_state="$TWINNING_DIR/scope-approval/${ident}"
     if [[ -f "$_approval_state" ]] \
        && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
       log "scope-approval: label cleared; skipping agent dispatch for $stage replay"
@@ -219,7 +192,7 @@ main() {
     slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')"
     branch="feature/${issue_id_lower}-${slug}"
 
-    local approval_state_file="$REPO_ROOT/.pipeline/.scope-approval/${ident}"
+    local approval_state_file="$TWINNING_DIR/scope-approval/${ident}"
     local scope_out scope_rc=0
     scope_out="$(bash "$SCRIPT_DIR/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
 

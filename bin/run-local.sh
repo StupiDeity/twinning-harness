@@ -25,14 +25,79 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-LOCK_DIR="$PIPELINE_ROOT/.run-local.lock"
+LOCK_DIR="$TWINNING_DIR/.run-local.lock"
 ENV_FILE="$PIPELINE_ROOT/.env.local"
-FAIL_COUNTER="$PIPELINE_ROOT/.consecutive-failures"
+FAIL_COUNTER="$TWINNING_DIR/.consecutive-failures"
 FAIL_THRESHOLD=3
+TICK_COUNTER="$TWINNING_DIR/.tick-counter"
+CLEANUP_EVERY_N_TICKS=10
 LOG_DIR="$REPO_ROOT/logs/pipeline"
 LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
 BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
+
+stage_output_paths() {
+  local stage="$1" issue_id="$2"
+  # Always-staged (common to all stages).
+  local common=()
+  # Per-stage allowlists. Directory entries end in /.
+  case "$stage" in
+    brainstorm)
+      printf 'docs/brainstorms/\n'
+      printf 'docs/knowledge/decisions.md\n'
+      ;;
+    plan)
+      printf 'docs/plans/\n'
+      ;;
+    implement|ui|qa)
+      # Implement/UI/QA commit their own work via Bash(git:*); run-local
+      # sweep here should ONLY pick up anything the agent left behind. Keep
+      # the allowlist broad for these so legitimate edits aren't dropped.
+      printf 'src/\n'
+      printf 'src-tauri/\n'
+      printf 'crates/\n'
+      printf 'tests/\n'
+      printf 'docs/\n'
+      printf 'package.json\n'
+      printf 'package-lock.json\n'
+      printf 'bun.lock\n'
+      printf 'bun.lockb\n'
+      printf 'Cargo.toml\n'
+      printf 'Cargo.lock\n'
+      ;;
+    retrospective)
+      printf '.pipeline/learned-rules/\n'
+      printf 'docs/knowledge/gotchas.md\n'
+      printf 'docs/knowledge/qa-patterns.md\n'
+      printf 'docs/knowledge/conventions.md\n'
+      printf 'docs/knowledge/decisions.md\n'
+      printf '.pipeline/AGENT_PROMPTS.md\n'
+      printf '.pipeline/config.json\n'
+      printf '.github/workflows/\n'
+      ;;
+    review|build|release)
+      # Read-mostly stages; nothing to sweep.
+      ;;
+    *)
+      ;;
+  esac
+}
+
+stage_in_scope() {
+  # $1=dirty_path, $2=stage, $3=issue_id
+  local path="$1" stage="$2" issue_id="$3"
+  while IFS= read -r allow; do
+    [[ -z "$allow" ]] && continue
+    if [[ "$allow" == */ ]]; then
+      # Directory prefix match with path boundary.
+      [[ "$path" == "$allow"* ]] && return 0
+    else
+      # Exact file match.
+      [[ "$path" == "$allow" ]] && return 0
+    fi
+  done < <(stage_output_paths "$stage" "$issue_id")
+  return 1
+}
 
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -65,6 +130,8 @@ trip_breaker() {
   fi
 }
 
+mkdir -p "$TWINNING_DIR"
+
 if ! acquire_lock; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
   exit 0
@@ -83,6 +150,10 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 require_env LINEAR_API_KEY
+require_env GH_APP_ID GH_APP_INSTALLATION_ID GH_APP_PRIVATE_KEY_PATH
+GITHUB_TOKEN="$(bash "$SCRIPT_DIR/gh-app-token.sh")"
+export GITHUB_TOKEN
+log "minted GitHub App installation token (~1h TTL)"
 
 paused="$(config_get '.orchestrator.paused')"
 if [[ "$paused" == "true" ]]; then
@@ -90,6 +161,35 @@ if [[ "$paused" == "true" ]]; then
   log "reset with: jq '.orchestrator.paused=false' $CONFIG > /tmp/c && mv /tmp/c $CONFIG"
   exit 0
 fi
+
+# ─── Worktree resolution (ENG-13) ───────────────────────────────────────
+WORKTREES_ROOT="$TWINNING_DIR/worktrees"
+mkdir -p "$WORKTREES_ROOT"
+
+resolve_worktree_path() {
+  # Given a branch name like "feat/eng-13-foo" → "$WORKTREES_ROOT/feat-eng-13-foo"
+  local branch="$1"
+  printf '%s/%s' "$WORKTREES_ROOT" "${branch//\//-}"
+}
+
+ensure_worktree() {
+  local branch="$1" path="$2"
+  if [[ -d "$path/.git" ]] || [[ -f "$path/.git" ]]; then
+    log "worktree exists: $path"
+    return 0
+  fi
+  if git -C "$REPO_ROOT" rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
+    log "branch exists locally; creating worktree at $path pointing at $branch"
+    git -C "$REPO_ROOT" worktree add "$path" "$branch"
+  elif git -C "$REPO_ROOT" rev-parse --verify "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    log "branch exists on origin; creating worktree at $path tracking origin/$branch"
+    git -C "$REPO_ROOT" worktree add "$path" -b "$branch" "origin/$branch"
+  else
+    log "creating new branch $branch and worktree at $path from origin/main"
+    git -C "$REPO_ROOT" fetch origin main
+    git -C "$REPO_ROOT" worktree add "$path" -b "$branch" origin/main
+  fi
+}
 
 cd "$REPO_ROOT"
 
@@ -124,8 +224,69 @@ if [[ "$entry_action" == "apply-stage-label" ]]; then
   bash "$SCRIPT_DIR/linear.sh" add-label "$issue_id" "stage:$label_suffix"
 fi
 
+reconcile_decision="proceed"
+if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
+  reconcile_decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$issue_id" "$stage")"
+  log "reconcile decision: $reconcile_decision"
+fi
+
+# Handle link: and human reconcile outcomes before deciding to create a
+# worktree. These paths short-circuit: no dispatch, no worktree, just
+# Linear side effects + metrics. Per ENG-13 D-009 and recovery of the
+# side-effect logic that used to live in run-stage.sh:121-151.
+case "$reconcile_decision" in
+  link:*)
+    doc_path="${reconcile_decision#link:}"
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
+      "Pipeline reconcile: existing $stage doc is canonical: \`$doc_path\`. Advancing without regeneration."
+    # Advance the stage label to the next happy-path stage.
+    case "$stage" in
+      brainstorm) nxt_label="planning" ;;
+      plan)       nxt_label="implementing" ;;
+      *)          nxt_label="" ;;
+    esac
+    if [[ -n "$nxt_label" ]]; then
+      bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$nxt_label"
+    fi
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" "linked" 0 "doc=$doc_path"
+    log "== tick end (reconcile linked) =="
+    exit 0
+    ;;
+  human)
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
+      "Pipeline reconcile: an existing $stage doc appears to cover this topic. Apply one of: \`pipeline:supersede\` (generate fresh and retire the old), \`pipeline:extend\` (generate fresh, referencing the old), or \`pipeline:ignore\` (link the old as canonical). Until a label is applied, this issue is paused."
+    bash "$SCRIPT_DIR/metrics.sh" stage-start "$issue_id" "$stage" "reconcile-human" 0
+    log "== tick end (reconcile human gate) =="
+    exit 0
+    ;;
+esac
+
+# Determine branch name and worktree path. Only for new-model branches; for
+# legacy feature/* in-flight, skip worktree creation and fall through.
+branch=""
+worktree_path=""
+if [[ "$reconcile_decision" == "proceed" ]]; then
+  # Legacy-branch coexistence: if a feature/<issue> branch already exists
+  # locally or on origin, use the old flow for this issue.
+  ident_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
+  if [[ -n "$(git -C "$REPO_ROOT" branch --list "feature/${ident_lower}-*" 2>/dev/null)" ]] \
+     || git -C "$REPO_ROOT" ls-remote --heads origin "feature/${ident_lower}-*" 2>/dev/null | grep -q "feature/"; then
+    log "legacy feature/* branch detected for $issue_id — using old flow (no worktree)"
+  else
+    branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
+    worktree_path="$(resolve_worktree_path "$branch")"
+    ensure_worktree "$branch" "$worktree_path"
+  fi
+fi
+
+# Dispatch run-stage.sh from the worktree if one was resolved, else from main.
+dispatch_cwd="$REPO_ROOT"
+if [[ -n "$worktree_path" ]]; then
+  dispatch_cwd="$worktree_path"
+fi
+
 set +e
-bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage"
+(cd "$dispatch_cwd" && bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage")
 rc=$?
 set -e
 
@@ -142,16 +303,50 @@ fi
 
 rm -f "$FAIL_COUNTER"
 
-if [[ -n "$(git status --porcelain)" ]]; then
-  log "committing pipeline artifacts for $issue_id / $stage"
-  git add -A
-  git \
-    -c user.name="$BOT_NAME" \
-    -c user.email="$BOT_EMAIL" \
-    commit -m "chore(pipeline): $stage for $issue_id"
-  git push
+if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
+  # D-001 allowlist: only stage files the stage is expected to produce.
+  in_scope=()
+  out_of_scope=()
+  while IFS= read -r line; do
+    # Porcelain format: "XY path" where XY is 2-char status.
+    path="${line:3}"
+    if stage_in_scope "$path" "$stage" "$issue_id"; then
+      in_scope+=("$path")
+    else
+      out_of_scope+=("$path")
+    fi
+  done < <(git -C "$dispatch_cwd" status --porcelain)
+
+  if (( ${#out_of_scope[@]} > 0 )); then
+    log "sweep: ${#out_of_scope[@]} out-of-scope dirty paths (NOT staged): ${out_of_scope[*]}"
+    bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" "observed" 0 "count=${#out_of_scope[@]}"
+  fi
+
+  if (( ${#in_scope[@]} > 0 )); then
+    log "sweep: staging ${#in_scope[@]} in-scope paths for $issue_id / $stage"
+    (cd "$dispatch_cwd" && git add -- "${in_scope[@]}")
+    git -C "$dispatch_cwd" \
+      -c user.name="$BOT_NAME" \
+      -c user.email="$BOT_EMAIL" \
+      commit -m "chore(pipeline): $stage for $issue_id"
+    git -C "$dispatch_cwd" push
+  else
+    log "no in-scope artifacts to commit"
+  fi
 else
   log "no artifacts to commit"
 fi
+
+# Periodic worktree sweep (every N ticks).
+tick_count=0
+if [[ -f "$TICK_COUNTER" ]]; then
+  tick_count="$(cat "$TICK_COUNTER")"
+fi
+tick_count=$((tick_count + 1))
+if (( tick_count % CLEANUP_EVERY_N_TICKS == 0 )); then
+  log "periodic sweep: running cleanup-worktrees.sh"
+  bash "$SCRIPT_DIR/cleanup-worktrees.sh" || log "cleanup-worktrees.sh exited nonzero (non-fatal)"
+fi
+printf '%s\n' "$tick_count" > "$TICK_COUNTER"
 
 log "== tick end (success) =="
