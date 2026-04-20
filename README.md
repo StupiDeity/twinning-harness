@@ -184,3 +184,59 @@ When you want the pipeline to build a feature:
 3. Watch the issue comments for progress; PRs will be opened by the bot.
 4. When a reconcile or guard requires you, add the appropriate label.
 5. Review + merge the final PR like any other.
+
+## Per-Issue State Directory (ENG-15)
+
+All per-issue state lives under `~/.twinning-pipeline/ENG-N/`:
+
+````
+~/.twinning-pipeline/
+├── .consecutive-failures    # global breaker counter
+├── .run-local.lock/         # global tick lock
+├── .tick-counter            # global tick counter
+├── github.pem               # GitHub App private key
+├── metrics/
+│   └── events.jsonl         # pipeline-wide telemetry
+└── ENG-N/                   # one dir per in-flight issue
+    ├── worktree/            # git worktree for the feature branch
+    ├── issue-state.json     # retry memory (ENG-15) — see schema below
+    └── scope-approval       # optional, legacy scope-approval state
+````
+
+### issue-state.json schema
+
+Written by `classify_failure` at every failure exit site in `run-stage.sh`; read by `poll.sh` on every tick; deleted on stage success.
+
+```json
+{
+  "issue": "ENG-N",
+  "stage": "implement",
+  "policy": "skip-until-code-changes | skip-until-human-acts | retry-immediately",
+  "reason": "human-readable cause copied into the Linear halt comment",
+  "exit_code": 21,
+  "exit_subcode": 2,
+  "recorded_at": "2026-04-20T10:38:39Z",
+  "retry_count": 0,
+  "branch": "feat/eng-N-slug",
+  "evidence": {
+    "pipeline_content_hash": "sha256 of .pipeline/{bin/**, config.json, AGENT_PROMPTS.md}",
+    "branch_head_sha": "git ls-remote origin <branch> at failure time"
+  }
+}
+```
+
+## Pipeline Comment Sig Registry (ENG-15)
+
+Every pipeline-authored Linear comment that represents a "current state" of some (issue, stage, class) carries a hidden marker so repeats edit-in-place instead of accumulating.
+
+| Class | Sig | Emitted by |
+|---|---|---|
+| Halt / skip | `halt/<stage>/<issue>` | classify_failure in classify-failure.sh |
+| Scope approval pending | `scope-approval/<stage>/<issue>` | run-stage.sh (scope-check rc=1) |
+| Linear-comment-missing | `halt/linear-comment-missing/<stage>/<issue>` | run-stage.sh exit-23 path (via classify_failure) |
+| TDD evidence | `tdd-evidence/<stage>/<issue>` | implement + ui agents |
+| Completion checklist | `completion/<stage>/<issue>` | all stage agents |
+| Reconcile notice | `reconcile/<stage>/<issue>` | run-local.sh reconcile |
+| Release enrichment | `release-enrichment/<version>/<issue>` | release agent |
+
+New classes should follow `<class>/<stage>/<issue>`.
