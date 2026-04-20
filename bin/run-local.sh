@@ -187,7 +187,12 @@ ensure_worktree() {
   else
     log "creating new branch $branch and worktree at $path from origin/main"
     git -C "$REPO_ROOT" fetch origin main
-    git -C "$REPO_ROOT" worktree add "$path" -b "$branch" origin/main
+    # --no-track: branching off a remote-tracking ref (origin/main) otherwise wires
+    # the new branch's upstream to origin/main, which makes later `git push` fail
+    # with "upstream branch of your current branch does not match the name" under
+    # the default push.default=simple. The first push below uses `-u origin HEAD` to
+    # set the correct upstream to origin/<branch>.
+    git -C "$REPO_ROOT" worktree add --no-track "$path" -b "$branch" origin/main
   fi
 }
 
@@ -329,12 +334,41 @@ if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
       -c user.name="$BOT_NAME" \
       -c user.email="$BOT_EMAIL" \
       commit -m "chore(pipeline): $stage for $issue_id"
-    git -C "$dispatch_cwd" push
+    # -u origin HEAD: sets (or retargets) upstream to origin/<current-branch>. Without
+    # this, `git push` inherits push.default=simple behaviour and refuses when the
+    # branch was created off origin/main (see ensure_worktree above). Idempotent for
+    # already-correctly-tracked branches.
+    git -C "$dispatch_cwd" push -u origin HEAD
   else
     log "no in-scope artifacts to commit"
   fi
 else
   log "no artifacts to commit"
+fi
+
+# Release watcher: detect newly-published GitHub releases and trigger the local
+# on-new-release handler (sweep + observer agent). Replaces the old
+# pipeline-release.yml workflow. Cheap: one `gh api` call per tick.
+LAST_RELEASE_FILE="$TWINNING_DIR/last-observed-release"
+if command -v gh >/dev/null 2>&1; then
+  latest_release_json="$(gh release list --limit 1 --json tagName,name 2>/dev/null || printf '[]')"
+  latest_tag="$(jq -r '.[0].tagName // ""' <<<"$latest_release_json")"
+  if [[ -n "$latest_tag" ]]; then
+    prev_tag=""
+    [[ -f "$LAST_RELEASE_FILE" ]] && prev_tag="$(cat "$LAST_RELEASE_FILE")"
+    if [[ "$latest_tag" != "$prev_tag" ]]; then
+      # Version is the tag minus the leading `v`.
+      latest_version="${latest_tag#v}"
+      log "release watcher: detected new release $latest_tag (was: ${prev_tag:-none})"
+      if bash "$SCRIPT_DIR/on-new-release.sh" "$latest_version" "$latest_tag"; then
+        printf '%s\n' "$latest_tag" > "$LAST_RELEASE_FILE"
+      else
+        log "on-new-release.sh exited nonzero for $latest_tag; will retry next tick"
+      fi
+    fi
+  fi
+else
+  log "release watcher: gh CLI not on PATH; skipping"
 fi
 
 # Periodic worktree sweep (every N ticks).

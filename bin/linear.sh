@@ -14,6 +14,7 @@
 #   linear.sh refresh-cache
 #   linear.sh stage-of <ENG-n>   # prints current stage:* label name (or empty)
 #   linear.sh has-label <ENG-n> <label_name>   # exit 0 if present, 1 otherwise
+#   linear.sh has-comment-since <ENG-n> <iso8601_ts>   # exit 0 if a comment exists whose createdAt >= ts, 1 otherwise
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -194,6 +195,23 @@ transition_state() {
   log "transitioned $ident: $current -> $state_name"
 }
 
+has_comment_since() {
+  # Exit 0 iff the issue has at least one comment with createdAt >= the provided ISO8601
+  # timestamp. Used by run-stage.sh to verify the agent honored the "Post Linear comment"
+  # completion-checklist step.
+  local ident="$1" since="$2"
+  [[ -n "$since" ]] || die "has-comment-since requires a timestamp"
+  local q='query($id: String!) { issue(id: $id) { comments(first: 50) { nodes { createdAt } } } }'
+  local vars resp
+  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
+  resp="$(linear_query "$q" "$vars")"
+  # Lex-compare ISO8601 strings (Linear normalises to Z, same length). jq -e returns
+  # nonzero if no element matches.
+  jq -e --arg since "$since" \
+    '[.data.issue.comments.nodes[]? | select(.createdAt >= $since)] | length > 0' \
+    >/dev/null 2>&1 <<<"$resp"
+}
+
 add_comment() {
   local ident="$1" body="$2"
   local issue_uuid
@@ -269,6 +287,7 @@ main() {
     add-comment)            add_comment "$@" ;;
     stage-of)               stage_of "$@" ;;
     has-label)              has_label "$@" ;;
+    has-comment-since)      has_comment_since "$@" ;;
     refresh-cache)          refresh_cache ;;
     *)                      die "unknown command: $cmd (see linear.sh header)" ;;
   esac

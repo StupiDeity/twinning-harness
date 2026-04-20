@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unload the pipeline LaunchAgent and remove its plist. Idempotent.
+# Unload both pipeline LaunchAgents and remove their plists. Idempotent.
 # Usage: bash .pipeline/bin/uninstall-launchd.sh
 
 set -euo pipefail
@@ -7,18 +7,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-LABEL="com.twinning.pipeline"
-TARGET="$HOME/Library/LaunchAgents/${LABEL}.plist"
+TARGET_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 
-if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-  launchctl bootout "$DOMAIN/$LABEL"
-  log "unloaded $LABEL"
-else
-  log "$LABEL was not loaded"
-fi
+uninstall_plist() {
+  local label="$1"
+  local target="$TARGET_DIR/${label}.plist"
 
-if [[ -f "$TARGET" ]]; then
-  rm -f "$TARGET"
-  log "removed $TARGET"
-fi
+  if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
+    launchctl bootout "$DOMAIN/$label"
+    log "unloaded $label"
+  else
+    log "$label was not loaded"
+  fi
+
+  if [[ -f "$target" ]]; then
+    rm -f "$target"
+    log "removed $target"
+  fi
+}
+
+uninstall_plist "com.twinning.pipeline"
+uninstall_plist "com.twinning.retrospective"
