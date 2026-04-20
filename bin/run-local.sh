@@ -85,6 +85,10 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 require_env LINEAR_API_KEY
+require_env GH_APP_ID GH_APP_INSTALLATION_ID GH_APP_PRIVATE_KEY_PATH
+GITHUB_TOKEN="$(bash "$SCRIPT_DIR/gh-app-token.sh")"
+export GITHUB_TOKEN
+log "minted GitHub App installation token (~1h TTL)"
 
 paused="$(config_get '.orchestrator.paused')"
 if [[ "$paused" == "true" ]]; then
@@ -92,6 +96,35 @@ if [[ "$paused" == "true" ]]; then
   log "reset with: jq '.orchestrator.paused=false' $CONFIG > /tmp/c && mv /tmp/c $CONFIG"
   exit 0
 fi
+
+# ─── Worktree resolution (ENG-13) ───────────────────────────────────────
+WORKTREES_ROOT="$TWINNING_DIR/worktrees"
+mkdir -p "$WORKTREES_ROOT"
+
+resolve_worktree_path() {
+  # Given a branch name like "feat/eng-13-foo" → "$WORKTREES_ROOT/feat-eng-13-foo"
+  local branch="$1"
+  printf '%s/%s' "$WORKTREES_ROOT" "${branch//\//-}"
+}
+
+ensure_worktree() {
+  local branch="$1" path="$2"
+  if [[ -d "$path/.git" ]] || [[ -f "$path/.git" ]]; then
+    log "worktree exists: $path"
+    return 0
+  fi
+  if git -C "$REPO_ROOT" rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
+    log "branch exists locally; creating worktree at $path pointing at $branch"
+    git -C "$REPO_ROOT" worktree add "$path" "$branch"
+  elif git -C "$REPO_ROOT" rev-parse --verify "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    log "branch exists on origin; creating worktree at $path tracking origin/$branch"
+    git -C "$REPO_ROOT" worktree add "$path" -b "$branch" "origin/$branch"
+  else
+    log "creating new branch $branch and worktree at $path from origin/main"
+    git -C "$REPO_ROOT" fetch origin main
+    git -C "$REPO_ROOT" worktree add "$path" -b "$branch" origin/main
+  fi
+}
 
 cd "$REPO_ROOT"
 
@@ -126,8 +159,41 @@ if [[ "$entry_action" == "apply-stage-label" ]]; then
   bash "$SCRIPT_DIR/linear.sh" add-label "$issue_id" "stage:$label_suffix"
 fi
 
+# Run reconcile inline for brainstorm/plan stages. If decision is link: or
+# human, short-circuit here (handled by run-stage for label/comment side
+# effects). Only `proceed` goes on to create a worktree.
+reconcile_decision="proceed"
+if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
+  reconcile_decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$issue_id" "$stage")"
+  log "reconcile decision: $reconcile_decision"
+fi
+
+# Determine branch name and worktree path. Only for new-model branches; for
+# legacy feature/* in-flight, skip worktree creation and fall through.
+branch=""
+worktree_path=""
+if [[ "$reconcile_decision" == "proceed" ]]; then
+  # Legacy-branch coexistence: if a feature/<issue> branch already exists
+  # locally or on origin, use the old flow for this issue.
+  ident_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
+  if git -C "$REPO_ROOT" rev-parse --verify "refs/heads/feature/${ident_lower}-"* >/dev/null 2>&1 \
+     || git -C "$REPO_ROOT" ls-remote --heads origin "feature/${ident_lower}-*" 2>/dev/null | grep -q "feature/"; then
+    log "legacy feature/* branch detected for $issue_id — using old flow (no worktree)"
+  else
+    branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
+    worktree_path="$(resolve_worktree_path "$branch")"
+    ensure_worktree "$branch" "$worktree_path"
+  fi
+fi
+
+# Dispatch run-stage.sh from the worktree if one was resolved, else from main.
+dispatch_cwd="$REPO_ROOT"
+if [[ -n "$worktree_path" ]]; then
+  dispatch_cwd="$worktree_path"
+fi
+
 set +e
-bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage"
+(cd "$dispatch_cwd" && bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage")
 rc=$?
 set -e
 
@@ -144,14 +210,14 @@ fi
 
 rm -f "$FAIL_COUNTER"
 
-if [[ -n "$(git status --porcelain)" ]]; then
-  log "committing pipeline artifacts for $issue_id / $stage"
-  git add -A
-  git \
+if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
+  log "committing pipeline artifacts for $issue_id / $stage in $dispatch_cwd"
+  git -C "$dispatch_cwd" add -A
+  git -C "$dispatch_cwd" \
     -c user.name="$BOT_NAME" \
     -c user.email="$BOT_EMAIL" \
     commit -m "chore(pipeline): $stage for $issue_id"
-  git push
+  git -C "$dispatch_cwd" push
 else
   log "no artifacts to commit"
 fi
