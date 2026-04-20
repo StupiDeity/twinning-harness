@@ -32,6 +32,9 @@ check "bash syntax: all .pipeline/bin/*.sh" bash -c '
   for f in .pipeline/bin/*.sh; do bash -n "$f" || exit 1; done
 '
 
+check "classify-failure-test: all cases pass" \
+  bash .pipeline/bin/classify-failure-test.sh
+
 check "YAML syntax: .github/workflows/*.yml" bash -c '
   for f in .github/workflows/*.yml; do
     bun -e "
