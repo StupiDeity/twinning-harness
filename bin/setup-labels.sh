@@ -33,6 +33,8 @@ declare -a LABEL_SPECS=(
   "pipeline:knowledge-reviewed|#10B981|Human-gate ack: gotcha trigger threshold acknowledged, resume pipeline"
   "pipeline:rule-reviewed|#14B8A6|Human-gate ack: learned-rule renewal threshold acknowledged, resume pipeline"
   "pipeline:scope-approval-needed|#FBBF24|Pipeline: scope-check saw notable (adjacent-to-scope) edits; remove label to approve and resume"
+  "pipeline:skip-until-code-changes|#F97316|Pipeline: issue skipped until .pipeline/{bin,config.json,AGENT_PROMPTS.md} content hash or branch HEAD SHA changes. Indicates a pipeline bug."
+  "pipeline:skip-until-human-acts|#EF4444|Pipeline: issue skipped until a human resolves the underlying issue (scope violation, guards, etc.) and removes this label."
 )
 
 label_exists() {
