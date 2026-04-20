@@ -83,11 +83,14 @@ advance_label() {
   prefix="$(config_get '.linear.stage_label_prefix')"
   bash "$SCRIPT_DIR/linear.sh" swap-stage "$ident" "$nxt"
 
-  # Release transition: also flip Linear status to Done.
-  if [[ "$nxt" == "released" ]]; then
-    local done_state
-    done_state="$(config_get '.linear.native_states.done')"
-    bash "$SCRIPT_DIR/linear.sh" transition-state "$ident" "$done_state"
+  # Per ENG-13 D-014: Linear native state transitions.
+  # - stage:reviewing applied → In Review (PR just opened in UI stage).
+  # - stage:released does NOT transition to Done here; Done is set by
+  #   cleanup-worktrees.sh when the PR actually merges.
+  if [[ "$nxt" == "reviewing" ]]; then
+    local in_review_state
+    in_review_state="$(config_get '.linear.native_states.in_review')"
+    bash "$SCRIPT_DIR/linear.sh" transition-state "$ident" "$in_review_state"
   fi
 }
 
