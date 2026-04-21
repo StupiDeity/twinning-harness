@@ -186,6 +186,39 @@ assert_partition_counts 'partition_bulk_50_records' brainstorm ENG-14 50 0 0 \
 assert_partition_counts 'partition_mixed_streams_single_call' brainstorm ENG-14 1 2 3 \
   "$_input_dir/mixed"
 
+# Word-boundary: ENG-140 must NOT match ENG-14 (the right-side substring case;
+# mirrors ENG-1-vs-ENG-14 in run-local-sweep-test.sh). Without the trailing
+# [^a-z0-9]|$ anchor this would false-match.
+printf '?? docs/plans/2026-04-20-eng-140-design.md\0' > "$_input_dir/eng140"
+assert_partition_counts 'partition_eng140_not_matched_by_eng14' \
+  plan ENG-14 0 1 0 "$_input_dir/eng140"
+
+# Copy record (C *) — git -z two-NUL framing identical to rename. Consumes
+# source entry, classifies destination once. Mirror of
+# rename_record_consumes_source in run-local-sweep-test.sh.
+printf 'C  docs/plans/2026-04-20-eng-14-new.md\0docs/plans/2026-04-20-eng-14-old.md\0' \
+  > "$_input_dir/copy"
+assert_partition_counts 'partition_copy_record_consumes_source' \
+  plan ENG-14 1 0 0 "$_input_dir/copy"
+
+# Empty issue_id: D-004 regex MUST NOT spuriously match every basename. A
+# legitimately-named ENG-14 brainstorm file must still be routed somewhere
+# deterministic (either in-scope or leaked — but the count invariant
+# in+leaked+observed must equal the input record count). Asserts no records
+# are silently dropped when issue_id is empty.
+printf '?? docs/brainstorms/2026-04-20-ENG-14-design.md\0' > "$_input_dir/empty_id"
+_tdir_empty="$(mktemp -d -t twinning-empty-id.XXXXXX)"
+: > "$_tdir_empty/in" "$_tdir_empty/leaked" "$_tdir_empty/observed"
+partition_dirty_paths brainstorm '' \
+  3>"$_tdir_empty/in" 4>"$_tdir_empty/leaked" 5>"$_tdir_empty/observed" \
+  < "$_input_dir/empty_id"
+_sum_in="$(tr -cd '\0' < "$_tdir_empty/in" | wc -c | tr -d ' ')"
+_sum_leaked="$(tr -cd '\0' < "$_tdir_empty/leaked" | wc -c | tr -d ' ')"
+_sum_observed="$(tr -cd '\0' < "$_tdir_empty/observed" | wc -c | tr -d ' ')"
+_sum_total=$((_sum_in + _sum_leaked + _sum_observed))
+assert_eq 'partition_empty_issue_id_preserves_record_count' '1' "$_sum_total"
+rm -rf "$_tdir_empty"
+
 # ─── SUSPECTED DEFECT 1: regex-metachar issue_id ────────────────────────
 # The D-004 regex at run-local-helpers.sh:118 interpolates ${issue_lower}
 # unescaped into `[[ "$base_lower" =~ ... ]]`. An issue_id of "a.b" makes
