@@ -272,6 +272,142 @@ else
 fi
 rm -rf "$_tdir"
 
+# ─── ENG-17 QA adversarial coverage ─────────────────────────────────────
+# QA-authored cases NOT in the plan's Failure Mode → Test Map. These cover
+# breakages surfaced by a cold-reviewer pass over the awk pipeline that
+# the plan-enumerated tests do not exercise.
+
+# Shared helper: run the awk stage under test against a fixture on stdin.
+# Reads printf-ready fixture (with literal \0) and emits sort -u'd snapshot
+# to $1. All QA cases use the SAME awk program as run-local.sh and the
+# rename/copy tests above — drift between the three call sites is a P0.
+_snap_pipeline() {
+  local out="$1"
+  awk 'BEGIN{RS="\\0"} skip==1 { print; skip=0; next }
+       length >= 4 { print substr($0, 4); if ($0 ~ /^(R|C)/) skip=1 }' \
+    | sort -u > "$out"
+}
+
+# QA-1 (failure-mode): regex anchor must isolate the FIRST character only.
+# A basename beginning with `R` (e.g. `Readme.md`) after a `?? ` untracked
+# status code would, under a broken anchor, set skip=1 and consume the
+# NEXT record as if it were an oldpath — corrupting the snapshot. Covers
+# the "regex is anchored to the STATUS column, not the path" invariant.
+_tdir="$(mktemp -d -t twinning-qa-snap-r-anchor.XXXXXX)"
+printf '?? Readme.md\0?? other.md\0' \
+  | _snap_pipeline "$_tdir/snap"
+if grep -qxF -- 'Readme.md' "$_tdir/snap" \
+   && grep -qxF -- 'other.md' "$_tdir/snap" \
+   && [[ "$(wc -l < "$_tdir/snap" | tr -d ' ')" == '2' ]]; then
+  report_ok 'qa_snapshot_untracked_R_prefix_no_false_skip'
+else
+  report_fail 'qa_snapshot_untracked_R_prefix_no_false_skip' \
+    'both Readme.md and other.md present, exactly 2 lines' \
+    "snap lines: $(tr '\n' '|' < "$_tdir/snap")"
+fi
+rm -rf "$_tdir"
+
+# QA-2 (failure-mode): two-letter XY code `RM` (staged rename + worktree
+# modify). The first char is still `R`, so the regex must still match and
+# the oldpath (second NUL record) must be emitted verbatim. Exercises a
+# realistic porcelain v1 emission not covered by the plain `R ` test.
+_tdir="$(mktemp -d -t twinning-qa-snap-rm.XXXXXX)"
+printf 'RM staged-new.md\0staged-old.md\0' \
+  | _snap_pipeline "$_tdir/snap"
+if grep -qxF -- 'staged-new.md' "$_tdir/snap" \
+   && grep -qxF -- 'staged-old.md' "$_tdir/snap" \
+   && [[ "$(wc -l < "$_tdir/snap" | tr -d ' ')" == '2' ]]; then
+  report_ok 'qa_snapshot_RM_two_letter_xy_preserves_oldpath'
+else
+  report_fail 'qa_snapshot_RM_two_letter_xy_preserves_oldpath' \
+    'both staged-new.md and staged-old.md present, exactly 2 lines' \
+    "snap lines: $(tr '\n' '|' < "$_tdir/snap")"
+fi
+rm -rf "$_tdir"
+
+# QA-3 (failure-mode): multiple consecutive renames in a single stream.
+# The skip=0 reset after each oldpath must cycle cleanly — a sticky skip
+# flag would drop alternating newpaths. Plan explicitly scopes this out
+# of committed tests as "transitively covered"; QA adds the explicit
+# case because state machines merit explicit multi-cycle coverage.
+_tdir="$(mktemp -d -t twinning-qa-snap-multi.XXXXXX)"
+printf 'R  a.md\0b.md\0R  c.md\0d.md\0C  e.md\0f.md\0' \
+  | _snap_pipeline "$_tdir/snap"
+if grep -qxF -- 'a.md' "$_tdir/snap" \
+   && grep -qxF -- 'b.md' "$_tdir/snap" \
+   && grep -qxF -- 'c.md' "$_tdir/snap" \
+   && grep -qxF -- 'd.md' "$_tdir/snap" \
+   && grep -qxF -- 'e.md' "$_tdir/snap" \
+   && grep -qxF -- 'f.md' "$_tdir/snap" \
+   && [[ "$(wc -l < "$_tdir/snap" | tr -d ' ')" == '6' ]]; then
+  report_ok 'qa_snapshot_consecutive_renames_and_copies'
+else
+  report_fail 'qa_snapshot_consecutive_renames_and_copies' \
+    'all 6 paths (a-f) present, exactly 6 lines' \
+    "snap lines: $(tr '\n' '|' < "$_tdir/snap")"
+fi
+rm -rf "$_tdir"
+
+# QA-4 (boundary): empty input — clean worktree at tick-start. Awk must
+# produce an empty snapshot (zero bytes). Non-empty output here would
+# cause the downstream classifier to misclassify any path against phantom
+# lines.
+_tdir="$(mktemp -d -t twinning-qa-snap-empty.XXXXXX)"
+: | _snap_pipeline "$_tdir/snap"
+if [[ ! -s "$_tdir/snap" ]]; then
+  report_ok 'qa_snapshot_empty_input_produces_empty_file'
+else
+  report_fail 'qa_snapshot_empty_input_produces_empty_file' \
+    'zero-byte snapshot' \
+    "snap lines: $(tr '\n' '|' < "$_tdir/snap")"
+fi
+rm -rf "$_tdir"
+
+# QA-5 (boundary): short oldpath (1 char) — skip branch MUST run before
+# the `length >= 4` guard, else a legal 1-char filename following an R/C
+# record would be silently dropped. Explicit coverage of the branch order.
+_tdir="$(mktemp -d -t twinning-qa-snap-short.XXXXXX)"
+printf 'R  some/long/path.md\0y\0' \
+  | _snap_pipeline "$_tdir/snap"
+if grep -qxF -- 'some/long/path.md' "$_tdir/snap" \
+   && grep -qxF -- 'y' "$_tdir/snap" \
+   && [[ "$(wc -l < "$_tdir/snap" | tr -d ' ')" == '2' ]]; then
+  report_ok 'qa_snapshot_short_oldpath_one_char'
+else
+  report_fail 'qa_snapshot_short_oldpath_one_char' \
+    'both long newpath and 1-char oldpath present, exactly 2 lines' \
+    "snap lines: $(tr '\n' '|' < "$_tdir/snap")"
+fi
+rm -rf "$_tdir"
+
+# QA-6 (portability): BSD awk on macOS with RS="\\0". Plan D-001 verifies
+# this empirically at plan-write time via /usr/bin/awk 20200816; the QA
+# suite automates it as a CI-resident regression so a future awk upgrade
+# or helper-extraction that accidentally reverts RS to the plain-string
+# form `"\0"` trips here (BSD awk with RS="\0" reads only the first
+# record of a NUL stream; plan Success Criterion #7). Skips cleanly
+# on hosts without /usr/bin/awk.
+if [[ -x /usr/bin/awk ]]; then
+  _tdir="$(mktemp -d -t twinning-qa-snap-bsd.XXXXXX)"
+  printf 'R  bsd-new.md\0bsd-old.md\0?? bsd-untracked.md\0' \
+    | /usr/bin/awk 'BEGIN{RS="\\0"} skip==1 { print; skip=0; next }
+                    length >= 4 { print substr($0, 4); if ($0 ~ /^(R|C)/) skip=1 }' \
+    | sort -u > "$_tdir/snap"
+  if grep -qxF -- 'bsd-new.md' "$_tdir/snap" \
+     && grep -qxF -- 'bsd-old.md' "$_tdir/snap" \
+     && grep -qxF -- 'bsd-untracked.md' "$_tdir/snap" \
+     && [[ "$(wc -l < "$_tdir/snap" | tr -d ' ')" == '3' ]]; then
+    report_ok 'qa_snapshot_bsd_awk_RS_regex_escape_portable'
+  else
+    report_fail 'qa_snapshot_bsd_awk_RS_regex_escape_portable' \
+      'BSD /usr/bin/awk emits all 3 records with RS="\\0"' \
+      "snap lines: $(tr '\n' '|' < "$_tdir/snap")"
+  fi
+  rm -rf "$_tdir"
+else
+  printf 'SKIP: qa_snapshot_bsd_awk_RS_regex_escape_portable (no /usr/bin/awk)\n'
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 printf '\n'
