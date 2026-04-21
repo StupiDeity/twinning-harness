@@ -240,8 +240,8 @@ rm -rf "$_input_dir"
 # should preserve both full paths.
 _tdir="$(mktemp -d -t twinning-adversarial-snap.XXXXXX)"
 printf 'R  docs/plans/2026-04-20-eng-14-new.md\0docs/plans/2026-04-20-eng-14-old.md\0' \
-  | tr '\0' '\n' \
-  | sed 's/^...//' \
+  | awk 'BEGIN{RS="\\0"} skip==1 { print; skip=0; next }
+         length >= 4 { print substr($0, 4); if ($0 ~ /^(R|C)/) skip=1 }' \
   | sort -u > "$_tdir/snap"
 if grep -qxF -- 'docs/plans/2026-04-20-eng-14-old.md' "$_tdir/snap" \
    && grep -qxF -- 'docs/plans/2026-04-20-eng-14-new.md' "$_tdir/snap"; then
