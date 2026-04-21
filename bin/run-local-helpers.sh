@@ -79,9 +79,12 @@ partition_dirty_paths() {
   local apply_d004=0
   case "$stage" in brainstorm|plan) apply_d004=1 ;; esac
 
-  local issue_lower=""
+  local issue_lower="" issue_lower_re=""
   if (( apply_d004 )); then
     issue_lower="$(printf '%s' "$issue_id" | tr '[:upper:]' '[:lower:]')"
+    # Escape POSIX ERE metacharacters so ${issue_lower_re} is matched as a
+    # literal substring by the `=~` operator below. Metachars: . [ ] ( ) { } * + ? ^ $ | \
+    issue_lower_re="$(printf '%s' "$issue_lower" | sed 's/[][(){}.*+?^$|\\]/\\&/g')"
   fi
 
   local record code path skip_next=0
@@ -115,7 +118,7 @@ partition_dirty_paths() {
         local base base_lower
         base="${path##*/}"
         base_lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$base_lower" =~ (^|[^a-z0-9])${issue_lower}([^a-z0-9]|$) ]]; then
+        if [[ "$base_lower" =~ (^|[^a-z0-9])${issue_lower_re}([^a-z0-9]|$) ]]; then
           printf '%s\0' "$path" >&3
         else
           printf '%s\0' "$path" >&4
