@@ -253,6 +253,25 @@ else
 fi
 rm -rf "$_tdir"
 
+# ─── SUSPECTED DEFECT 2 (cont.): copy records share the same two-NUL framing
+# C<Y> <newpath>\0<oldpath>\0 — must be treated identically to renames so
+# that a user `git cp` or git's copy-detection heuristic does not trip the
+# self-leak breaker. Same awk program; same assertion shape.
+_tdir="$(mktemp -d -t twinning-adversarial-snap-copy.XXXXXX)"
+printf 'C  a/new.md\0a/old.md\0' \
+  | awk 'BEGIN{RS="\\0"} skip==1 { print; skip=0; next }
+         length >= 4 { print substr($0, 4); if ($0 ~ /^(R|C)/) skip=1 }' \
+  | sort -u > "$_tdir/snap"
+if grep -qxF -- 'a/new.md' "$_tdir/snap" \
+   && grep -qxF -- 'a/old.md' "$_tdir/snap"; then
+  report_ok 'snapshot_preserves_copy_oldpath'
+else
+  report_fail 'snapshot_preserves_copy_oldpath' \
+    'snapshot contains BOTH oldpath and newpath intact for copy records' \
+    "snap lines: $(tr '\n' '|' < "$_tdir/snap")"
+fi
+rm -rf "$_tdir"
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 printf '\n'
