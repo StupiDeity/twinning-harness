@@ -24,6 +24,8 @@ export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=run-local-helpers.sh
+source "$SCRIPT_DIR/run-local-helpers.sh"
 
 LOCK_DIR="$TWINNING_DIR/.run-local.lock"
 ENV_FILE="$PIPELINE_ROOT/.env.local"
@@ -35,69 +37,6 @@ LOG_DIR="$REPO_ROOT/logs/pipeline"
 LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
 BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
-
-stage_output_paths() {
-  local stage="$1" issue_id="$2"
-  # Always-staged (common to all stages).
-  local common=()
-  # Per-stage allowlists. Directory entries end in /.
-  case "$stage" in
-    brainstorm)
-      printf 'docs/brainstorms/\n'
-      printf 'docs/knowledge/decisions.md\n'
-      ;;
-    plan)
-      printf 'docs/plans/\n'
-      ;;
-    implement|ui|qa)
-      # Implement/UI/QA commit their own work via Bash(git:*); run-local
-      # sweep here should ONLY pick up anything the agent left behind. Keep
-      # the allowlist broad for these so legitimate edits aren't dropped.
-      printf 'src/\n'
-      printf 'src-tauri/\n'
-      printf 'crates/\n'
-      printf 'tests/\n'
-      printf 'docs/\n'
-      printf 'package.json\n'
-      printf 'package-lock.json\n'
-      printf 'bun.lock\n'
-      printf 'bun.lockb\n'
-      printf 'Cargo.toml\n'
-      printf 'Cargo.lock\n'
-      ;;
-    retrospective)
-      printf '.pipeline/learned-rules/\n'
-      printf 'docs/knowledge/gotchas.md\n'
-      printf 'docs/knowledge/qa-patterns.md\n'
-      printf 'docs/knowledge/conventions.md\n'
-      printf 'docs/knowledge/decisions.md\n'
-      printf '.pipeline/AGENT_PROMPTS.md\n'
-      printf '.pipeline/config.json\n'
-      printf '.github/workflows/\n'
-      ;;
-    review|build|release)
-      # Read-mostly stages; nothing to sweep.
-      ;;
-    *)
-      ;;
-  esac
-}
-
-stage_in_scope() {
-  # $1=dirty_path, $2=stage, $3=issue_id
-  local path="$1" stage="$2" issue_id="$3"
-  while IFS= read -r allow; do
-    [[ -z "$allow" ]] && continue
-    if [[ "$allow" == */ ]]; then
-      # Directory prefix match with path boundary.
-      [[ "$path" == "$allow"* ]] && return 0
-    else
-      # Exact file match.
-      [[ "$path" == "$allow" ]] && return 0
-    fi
-  done < <(stage_output_paths "$stage" "$issue_id")
-  return 1
-}
 
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -136,7 +75,17 @@ if ! acquire_lock; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
   exit 0
 fi
-trap 'rm -rf "$LOCK_DIR"' EXIT
+
+# Bash traps are NOT stacked — a later `trap ... EXIT` REPLACES this one.
+# Register sweep tempfiles in TWINNING_SWEEP_TMPS so they are reaped here.
+TWINNING_SWEEP_TMPS=()
+cleanup_on_exit() {
+  rm -rf "$LOCK_DIR"
+  if (( ${#TWINNING_SWEEP_TMPS[@]} > 0 )); then
+    rm -f "${TWINNING_SWEEP_TMPS[@]}"
+  fi
+}
+trap cleanup_on_exit EXIT
 
 mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -151,6 +100,8 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 require_env LINEAR_API_KEY
 require_env GH_APP_ID GH_APP_INSTALLATION_ID GH_APP_PRIVATE_KEY_PATH
+require_bin shasum
+assert_stage_allowlist_coverage
 GITHUB_TOKEN="$(bash "$SCRIPT_DIR/gh-app-token.sh")"
 export GITHUB_TOKEN
 log "minted GitHub App installation token (~1h TTL)"
@@ -291,6 +242,17 @@ if [[ -n "$worktree_path" ]]; then
   dispatch_cwd="$worktree_path"
 fi
 
+# Tick-start dirty-path snapshot for self-leak detection (ENG-14 D-4).
+# Any out-of-scope path present at end-of-tick that is NOT in this
+# snapshot must have been introduced by the bot — hard-fail on first
+# occurrence after partition.
+snapshot_file="$(mktemp -t twinning-snapshot.XXXXXX)"
+TWINNING_SWEEP_TMPS+=("$snapshot_file")
+git -C "$dispatch_cwd" status -z --porcelain \
+  | tr '\0' '\n' \
+  | sed 's/^...//' \
+  | sort -u > "$snapshot_file"
+
 set +e
 (cd "$dispatch_cwd" && bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage")
 rc=$?
@@ -309,28 +271,95 @@ fi
 
 rm -f "$FAIL_COUNTER"
 
-if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
-  # D-001 allowlist: only stage files the stage is expected to produce.
-  in_scope=()
-  out_of_scope=()
-  while IFS= read -r line; do
-    # Porcelain format: "XY path" where XY is 2-char status.
-    path="${line:3}"
-    if stage_in_scope "$path" "$stage" "$issue_id"; then
-      in_scope+=("$path")
+# 3-stream partition sweep (ENG-14 D-3).
+in_scope_file="$(mktemp -t twinning-inscope.XXXXXX)"
+leaked_file="$(mktemp -t twinning-leaked.XXXXXX)"
+out_scope_file="$(mktemp -t twinning-outscope.XXXXXX)"
+TWINNING_SWEEP_TMPS+=("$in_scope_file" "$leaked_file" "$out_scope_file")
+: > "$in_scope_file" "$leaked_file" "$out_scope_file"
+
+git -C "$dispatch_cwd" status -z --porcelain \
+  | partition_dirty_paths "$stage" "$issue_id" \
+      3>"$in_scope_file" 4>"$leaked_file" 5>"$out_scope_file"
+
+in_scope_count="$(tr -cd '\0' < "$in_scope_file" | wc -c | tr -d ' ')"
+leaked_count="$(tr -cd '\0' < "$leaked_file" | wc -c | tr -d ' ')"
+observed_count="$(tr -cd '\0' < "$out_scope_file" | wc -c | tr -d ' ')"
+
+# Classify out-of-scope into bucketed-observed (pre-existing, present in
+# tick-start snapshot) vs self-leak (NEW since tick start). Task 10 decides
+# what to do with each.
+observed_buckets=()
+self_leak_hashes=()
+if (( observed_count > 0 )); then
+  while IFS= read -r -d '' p; do
+    if grep -qxF -- "$p" "$snapshot_file"; then
+      b="$(bucket_for_path "$p")"
+      if (( ${#observed_buckets[@]} == 0 )); then
+        observed_buckets+=("$b")
+      else
+        seen=0
+        for existing in "${observed_buckets[@]}"; do
+          [[ "$existing" == "$b" ]] && { seen=1; break; }
+        done
+        (( seen )) || observed_buckets+=("$b")
+      fi
     else
-      out_of_scope+=("$path")
+      self_leak_hashes+=("$(sha12 "$p")")
     fi
-  done < <(git -C "$dispatch_cwd" status --porcelain)
+  done < "$out_scope_file"
+fi
 
-  if (( ${#out_of_scope[@]} > 0 )); then
-    log "sweep: ${#out_of_scope[@]} out-of-scope dirty paths (NOT staged): ${out_of_scope[*]}"
-    bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" "observed" 0 "count=${#out_of_scope[@]}"
+# Precedence: self-leak (hard-fail) > leaked-in-scope (counter+conditional
+# trip) > in-scope commit > observed bucketed (info only). Brainstorm OQ-4.
+
+# 1. Self-leak has highest severity. Emit metric, trip breaker, exit.
+if (( ${#self_leak_hashes[@]} > 0 )); then
+  leak_csv=""
+  for h in "${self_leak_hashes[@]}"; do
+    leak_csv="${leak_csv:+${leak_csv},}${h}"
+  done
+  bash "$SCRIPT_DIR/metrics.sh" sweep-self-leak-out-of-scope "$issue_id" "$stage" \
+    "self-leak" 0 "count=${#self_leak_hashes[@]} hashes=${leak_csv}" \
+    || log "metrics.sh sweep-self-leak-out-of-scope emission failed (non-blocking)"
+  log "SELF-LEAK: ${#self_leak_hashes[@]} bot-introduced out-of-scope path(s); tripping breaker (in-scope paths NOT committed)"
+  if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
+    trip_breaker
+    exit 1
   fi
+fi
 
-  if (( ${#in_scope[@]} > 0 )); then
-    log "sweep: staging ${#in_scope[@]} in-scope paths for $issue_id / $stage"
-    (cd "$dispatch_cwd" && git add -- "${in_scope[@]}")
+# 2. Leaked-in-scope: soft failure. Emit metric, increment counter, trip
+#    breaker only at threshold, exit. Leaves in-scope paths un-committed.
+if (( leaked_count > 0 )); then
+  leaked_hashes=""
+  while IFS= read -r -d '' p; do
+    h="$(sha12 "$p")"
+    leaked_hashes="${leaked_hashes:+${leaked_hashes},}${h}"
+  done < "$leaked_file"
+  bash "$SCRIPT_DIR/metrics.sh" sweep-leaked-in-scope "$issue_id" "$stage" \
+    "leak" 0 "count=${leaked_count} hashes=${leaked_hashes}" \
+    || log "metrics.sh sweep-leaked-in-scope emission failed (non-blocking)"
+  if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
+    fc="$(cat "$FAIL_COUNTER" 2>/dev/null || echo 0)"
+    fc=$((fc + 1))
+    printf '%s\n' "$fc" > "$FAIL_COUNTER"
+    log "sweep-leaked-in-scope: $leaked_count path(s); consecutive failures = $fc (in-scope paths NOT committed)"
+    if (( fc >= FAIL_THRESHOLD )); then
+      trip_breaker
+    fi
+    exit 1
+  fi
+fi
+
+# 3. Clean tick: commit in-scope artifacts if any.
+if (( in_scope_count > 0 )); then
+  if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
+    log "[DRY_RUN] would git add -- ($in_scope_count paths):"
+    tr '\0' '\n' < "$in_scope_file" | sed 's/^/[DRY_RUN]   /' >&2
+  else
+    log "committing pipeline artifacts for $issue_id / $stage ($in_scope_count paths)"
+    (cd "$dispatch_cwd" && xargs -0 git add -- < "$in_scope_file")
     git -C "$dispatch_cwd" \
       -c user.name="$BOT_NAME" \
       -c user.email="$BOT_EMAIL" \
@@ -340,11 +369,20 @@ if [[ -n "$(git -C "$dispatch_cwd" status --porcelain)" ]]; then
     # branch was created off origin/main (see ensure_worktree above). Idempotent for
     # already-correctly-tracked branches.
     git -C "$dispatch_cwd" push -u origin HEAD
-  else
-    log "no in-scope artifacts to commit"
   fi
 else
-  log "no artifacts to commit"
+  log "no in-scope artifacts to commit"
+fi
+
+# 4. Observed bucketed (info only — user concurrent work, no breaker).
+if (( ${#observed_buckets[@]} > 0 )); then
+  observed_buckets_csv=""
+  for b in "${observed_buckets[@]}"; do
+    observed_buckets_csv="${observed_buckets_csv:+${observed_buckets_csv},}${b}"
+  done
+  bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" \
+    "observed" 0 "count=${#observed_buckets[@]} buckets=${observed_buckets_csv}" \
+    || log "metrics.sh sweep-observed-out-of-scope emission failed (non-blocking)"
 fi
 
 # Release watcher: detect newly-published GitHub releases and trigger the local
