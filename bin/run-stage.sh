@@ -211,6 +211,10 @@ main() {
     fi
   fi
 
+  # Guarantee the per-issue state dir exists before dispatch so an agent's first
+  # Write of stage-summary-<stage>.md cannot fail on missing parents.
+  mkdir -p "$(issue_dir "$ident")"
+
   # Render the prompt.
   local prompt_file log_file
   if (( ! skip_dispatch )); then
@@ -338,23 +342,17 @@ To approve and resume, add these entries to the plan's File Structure section an
     fi
   fi
 
-  # Post-stage Linear-comment assertion. The "Completion checklist" in each agent prompt
-  # makes the Linear comment the final mandatory step; this check confirms the agent
-  # actually ran that step rather than exiting early after self-review. Skip for
-  # scope-approval replays (the original dispatch already posted) and for `release`
-  # (terminal stage with variable comment patterns). If missing, fail with exit 23 so
-  # the retrospective loop catches it instead of the pipeline silently marking success.
-  if (( ! skip_dispatch )); then
-    case "$stage" in
-      brainstorm|plan|implement|ui|review|qa|build)
-        if ! bash "$SCRIPT_DIR/linear.sh" has-comment-since "$ident" "$t0_iso"; then
-          classify_failure "$ident" "$stage" "retry-immediately" \
-            "agent exited without posting a Linear comment (completion checklist violated)" 23
-          exit 23
-        fi
-        ;;
-    esac
-  fi
+  # Post-stage completion comment (ENG-11). Orchestrator-owned narrative post.
+  # Runs on both fresh dispatches and scope-approval replays (narrates the advance).
+  case "$stage" in
+    brainstorm|plan|implement|ui|review|qa|build)
+      if ! post_completion_comment "$ident" "$stage"; then
+        classify_failure "$ident" "$stage" "retry-immediately" \
+          "linear post failed for completion/$stage/$ident after one retry" 24
+        exit 24
+      fi
+      ;;
+  esac
 
   # Advance label.
   local nxt
