@@ -41,9 +41,12 @@ extract_block() {
   local section="$1" prompts="$PIPELINE_ROOT/AGENT_PROMPTS.md"
 
   # Schema check: count column-0 fences in the section.
+  # Boundary regex requires a numeric prefix (`## N. `) so H2 subheadings inside
+  # the prompt body (e.g. `## Completion checklist`) do not prematurely end the
+  # section and strand the closing fence.
   local fence_count
   fence_count="$(awk -v section="$section" '
-    /^## / {
+    /^## [0-9]+\. / {
       if (in_section) { exit }
       line = $0
       sub(/^## /, "", line)
@@ -60,7 +63,7 @@ extract_block() {
 
   awk -v section="$section" '
     BEGIN { in_section=0; in_block=0; fence_count=0 }
-    /^## / {
+    /^## [0-9]+\. / {
       if (in_section) { exit }
       line = $0
       sub(/^## /, "", line)
