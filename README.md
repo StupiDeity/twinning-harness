@@ -233,9 +233,8 @@ Every pipeline-authored Linear comment that represents a "current state" of some
 |---|---|---|
 | Halt / skip | `halt/<stage>/<issue>` | classify_failure in classify-failure.sh |
 | Scope approval pending | `scope-approval/<stage>/<issue>` | run-stage.sh (scope-check rc=1) |
-| Linear-comment-missing | `halt/linear-comment-missing/<stage>/<issue>` | run-stage.sh exit-23 path (via classify_failure) |
 | TDD evidence | `tdd-evidence/<stage>/<issue>` | implement + ui agents |
-| Completion checklist | `completion/<stage>/<issue>` | all stage agents |
+| Completion checklist | `completion/<stage>/<issue>` | orchestrator (run-stage.sh `post_completion_comment`) |
 | Reconcile notice | `reconcile/<stage>/<issue>` | run-local.sh reconcile |
 | Release enrichment | `release-enrichment/<version>/<issue>` | release agent |
 
