@@ -171,9 +171,8 @@ main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
 
-  local t0 t0_iso t1 duration
+  local t0 t1 duration
   t0="$(date +%s)"
-  t0_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # Preconditions.
   verify_preconditions "$ident" "$stage" || {
