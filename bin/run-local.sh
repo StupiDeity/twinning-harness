@@ -249,8 +249,8 @@ fi
 snapshot_file="$(mktemp -t twinning-snapshot.XXXXXX)"
 TWINNING_SWEEP_TMPS+=("$snapshot_file")
 git -C "$dispatch_cwd" status -z --porcelain \
-  | tr '\0' '\n' \
-  | sed 's/^...//' \
+  | awk 'BEGIN{RS="\\0"} skip==1 { print; skip=0; next }
+         length >= 4 { print substr($0, 4); if ($0 ~ /^(R|C)/) skip=1 }' \
   | sort -u > "$snapshot_file"
 
 set +e
