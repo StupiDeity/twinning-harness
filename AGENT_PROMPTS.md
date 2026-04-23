@@ -1092,7 +1092,8 @@ is a P0 meta-finding against the retrospective itself):
 1. **Stage failure analysis:**
    - Parse events.jsonl events: which stages produced outcome ∈
      {failed, paused, scope-violation, pr-opened-too-early, premise-failure,
-      merge_conflict, reconcile-human, guards-tripped} most often?
+      merge_conflict, reconcile-human, guards-tripped, dispatch-failed,
+      linear-post-failed, scope-approval-pending} most often?
    - Compare this period's counts vs the previous period.
    - For each stage with ≥3 rejections, name the top 2 recurring reasons.
 
