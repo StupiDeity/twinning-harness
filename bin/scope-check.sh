@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Verify the implement/ui agent's diff against the plan's File Structure section.
-# Usage: scope-check.sh <issue_id> <branch>
+# Usage:
+#   scope-check.sh <issue_id> <branch>              — run the scope check
+#   scope-check.sh has-scope-approval <issue_id>    — exit 0 iff the issue has a
+#       <!-- pipeline-decision: scope-approved --> comment newer than its most
+#       recent <!-- pipeline-halt: scope-deviation --> comment (ENG-18).
 # Exit 0: all changed files are in plan scope (or only benign escapes).
 # Exit 1: one or more files out of plan scope at the NOTABLE tier (list printed to stdout).
 # Exit 2: plan not found, or File Structure unparseable.
@@ -89,6 +93,28 @@ is_notable() {
   grep -qE "^${top}/" <<<"$allowed_files$allowed_dirs" 2>/dev/null
 }
 
+# Returns 0 iff a <!-- pipeline-decision: scope-approved --> comment is
+# newer than the most recent <!-- pipeline-halt: scope-deviation -->
+# comment on the issue. If no scope-deviation halt has been posted,
+# return 1 (no pending decision to match — caller re-runs the normal
+# scope check).
+has_scope_approval() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "has-scope-approval: issue id required"
+  local comments last_halt_ts approved_ts
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue")"
+  [[ -z "$comments" || "$comments" == "null" ]] && return 1
+  last_halt_ts="$(jq -r '
+    [.[] | select(.body | contains("<!-- pipeline-halt: scope-deviation -->"))]
+    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+  [[ -z "$last_halt_ts" ]] && return 1
+  approved_ts="$(jq -r --arg t "$last_halt_ts" '
+    [.[] | select(.createdAt > $t)
+         | select(.body | contains("<!-- pipeline-decision: scope-approved -->"))]
+    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+  [[ -n "$approved_ts" ]]
+}
+
 main() {
   local issue_id="${1:-}" branch="${2:-}"
   [[ -n "$issue_id" && -n "$branch" ]] || die "usage: scope-check.sh <issue_id> <branch>"
@@ -165,5 +191,13 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main "$@"
+  case "${1:-}" in
+    has-scope-approval)
+      shift
+      has_scope_approval "$@"
+      ;;
+    *)
+      main "$@"
+      ;;
+  esac
 fi
