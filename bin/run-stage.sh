@@ -14,22 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 # shellcheck source=classify-failure.sh
 source "$SCRIPT_DIR/classify-failure.sh"
-
-next_stage() {
-  # Canonical happy-path advancement.
-  case "$1" in
-    brainstorm)    printf 'planning' ;;
-    plan)          printf 'implementing' ;;
-    implement)     printf 'ui' ;;
-    ui)            printf 'reviewing' ;;
-    review)        printf 'qa' ;;           # approve-path; reject handled separately
-    qa)            printf 'building' ;;     # pass-path; fail handled separately
-    build)         printf 'released' ;;
-    release)       printf '' ;;             # terminal
-    retrospective) printf '' ;;             # not part of per-issue flow
-    *)             die "unknown stage: $1" ;;
-  esac
-}
+# shellcheck source=verdict-handler.sh
+source "$SCRIPT_DIR/verdict-handler.sh"
 
 verify_preconditions() {
   local ident="$1" stage="$2"
@@ -80,23 +66,6 @@ verify_preconditions() {
   return 0
 }
 
-advance_label() {
-  local ident="$1" stage="$2" nxt="$3"
-  local prefix
-  prefix="$(config_get '.linear.stage_label_prefix')"
-  bash "$SCRIPT_DIR/linear.sh" swap-stage "$ident" "$nxt"
-
-  # Per ENG-13 D-014: Linear native state transitions.
-  # - stage:reviewing applied → In Review (PR just opened in UI stage).
-  # - stage:released does NOT transition to Done here; Done is set by
-  #   cleanup-worktrees.sh when the PR actually merges.
-  if [[ "$nxt" == "reviewing" ]]; then
-    local in_review_state
-    in_review_state="$(config_get '.linear.native_states.in_review')"
-    bash "$SCRIPT_DIR/linear.sh" transition-state "$ident" "$in_review_state"
-  fi
-}
-
 main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
@@ -125,18 +94,19 @@ main() {
   # Reconcile is now performed in run-local.sh before this script is called,
   # so that link:/human decisions don't create empty worktrees. See ENG-13 D-009.
 
-  # Scope-approval replay: if this is implement/ui and the user just cleared
-  # `pipeline:scope-approval-needed` (state file exists, label absent), skip the
-  # agent dispatch and fall through to the post-stage guards. The branch is
-  # already green from the prior dispatch; re-running the agent would just burn
-  # tokens. The post-stage scope-check will observe (state file + no label) and
-  # treat the notable tier as approved.
+  # Scope-approval replay: if this is implement/ui and the user has posted
+  # a `<!-- pipeline-decision: scope-approved -->` comment newer than the
+  # most recent `<!-- pipeline-halt: scope-deviation -->` marker, skip the
+  # agent dispatch and fall through to the post-stage guards. The branch
+  # is already green from the prior dispatch; re-running the agent would
+  # just burn tokens. The post-stage scope-check will observe the same
+  # decision marker and treat the notable tier as approved.
   local skip_dispatch=0
   if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
     local _approval_state="$(issue_dir "$ident")/scope-approval"
     if [[ -f "$_approval_state" ]] \
-       && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
-      log "scope-approval: label cleared; skipping agent dispatch for $stage replay"
+       && bash "$SCRIPT_DIR/scope-check.sh" has-scope-approval "$ident" 2>/dev/null; then
+      log "scope-approval: decision marker posted; skipping agent dispatch for $stage replay"
       skip_dispatch=1
     fi
   fi
@@ -164,23 +134,9 @@ main() {
     bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "scope-approval-replay" 0
   fi
 
-  # Post-review: premise-failure loopback to brainstorming.
-  # The review agent applies `pipeline:premise-failure` when it concludes the brainstorm
-  # itself was wrong. The orchestrator handles the state transition so the review agent
-  # never touches stage labels directly (preamble contract).
-  if [[ "$stage" == "review" ]]; then
-    if bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:premise-failure"; then
-      log "review: premise-failure flagged — looping back to stage:brainstorming"
-      bash "$SCRIPT_DIR/linear.sh" swap-stage "$ident" "brainstorming"
-      bash "$SCRIPT_DIR/linear.sh" add-label    "$ident" "pipeline:supersede"
-      bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:premise-failure"
-      bash "$SCRIPT_DIR/linear.sh" add-comment  "$ident" \
-        "Pipeline: premise-failure loopback → brainstorming. \`pipeline:supersede\` applied so the next brainstorm regenerates (rather than linking the existing doc)."
-      t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "premise-failure" "$duration" "loopback=brainstorming"
-      exit 0
-    fi
-  fi
+  # Post-review premise-failure is now expressed as a pipeline-rejection
+  # marker with target brainstorming; the Verdict Handler loopback table
+  # (reviewing|brainstorming|pipeline:supersede) handles it below.
 
   # Post-implement / post-ui guards:
   #   (a) scope-check: no files outside plan File Structure were touched.
@@ -200,11 +156,15 @@ main() {
         rm -f "$approval_state_file"
         ;;
       1)
-        # NOTABLE tier. If the user has already acknowledged (state file exists,
-        # label absent), treat as approved and clear state. Otherwise, soft-pause.
+        # NOTABLE tier. If the user has already acknowledged (state file
+        # exists, scope-approved decision marker newer than the most
+        # recent scope-deviation halt), treat as approved and clear
+        # state. Otherwise, emit a pipeline-halt: scope-deviation marker
+        # and the sentinel label; the Verdict Handler leaves the halt
+        # intact until halt.sh resolve posts a decision.
         if [[ -f "$approval_state_file" ]] \
-           && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
-          log "scope-check: notable approved by label removal; clearing state and proceeding"
+           && bash "$SCRIPT_DIR/scope-check.sh" has-scope-approval "$ident" 2>/dev/null; then
+          log "scope-check: notable approved by pipeline-decision marker; clearing state and proceeding"
           rm -f "$approval_state_file"
         else
           mkdir -p "$(dirname "$approval_state_file")"
@@ -216,20 +176,15 @@ main() {
 
           local fs_patch
           fs_patch="$(printf -- '- `%s`\n' $notable_files)"
-          local reason
-          reason="scope-approval pending on $branch (notable files listed in halt comment)"
-          classify_failure "$ident" "$stage" "skip-until-human-acts" "$reason" 0
-          # Update the dedicated scope-approval sig comment with the file list.
-          bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "scope-approval/$stage/$ident" "$ident" \
-            "Pipeline: \`$stage\` stage is awaiting scope approval on \`$branch\`. The following files were modified outside the plan's File Structure but live in directories adjacent to declared scope:
+          local halt_body
+          halt_body="$(printf '<!-- pipeline-halt: scope-deviation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash .pipeline/bin/halt.sh resolve %s --decision scope-approved\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
+            "$stage" "$branch" "$fs_patch" "$ident")"
+          bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
+          bash "$SCRIPT_DIR/linear.sh" add-label   "$ident" "pipeline:halted" || true
 
-$fs_patch
-
-To approve and resume, add these entries to the plan's File Structure section and **remove the \`pipeline:scope-approval-needed\` label**. To reject, revert the out-of-scope edits and re-run. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)"
-          # Also keep the existing scope-approval-needed label for backward compat.
-          if ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:scope-approval-needed"; then
-            bash "$SCRIPT_DIR/linear.sh" add-label "$ident" "pipeline:scope-approval-needed"
-          fi
+          t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+          bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "scope-deviation" "$duration" \
+            "branch=$branch notable_count=$(wc -l <<<"$notable_files" | tr -d ' ')" || true
           exit 0
         fi
         ;;
@@ -286,22 +241,42 @@ To approve and resume, add these entries to the plan's File Structure section an
     esac
   fi
 
-  # Advance label.
-  local nxt
-  nxt="$(next_stage "$stage")"
-  if [[ -n "$nxt" ]]; then
-    advance_label "$ident" "$stage" "$nxt"
+  # Post-dispatch halt check: every stage agent must apply pipeline:halted.
+  # If it did not, apply it on the agent's behalf and let the Verdict Handler
+  # surface a protocol violation on the next tick.
+  if ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:halted"; then
+    log "post-dispatch: agent did not apply pipeline:halted; applying on its behalf"
+    bash "$SCRIPT_DIR/linear.sh" add-label "$ident" "pipeline:halted" || true
   fi
 
-  t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-  bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" "next=$nxt"
-  log "stage $stage complete for $ident (next: ${nxt:-terminal})"
+  # Resolve the current stage from the Linear label (long form) rather than
+  # the short-form $stage argument, because the Verdict Handler tables are
+  # keyed on the long form (brainstorming, planning, implementing, ...).
+  local current_stage_label vh_stage
+  current_stage_label="$(bash "$SCRIPT_DIR/linear.sh" stage-of "$ident")"
+  vh_stage="${current_stage_label#stage:}"
+  local vh_rc=0
+  verdict_handler "$ident" "$vh_stage" || vh_rc=$?
 
-  # Success path: clear any prior failure state + skip labels so this issue
-  # re-enters the normal scheduling pool without manual intervention.
-  rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
-  bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
-  bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
+  t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+  case "$vh_rc" in
+    0)
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" "verdict=transitioned"
+      log "stage $stage complete for $ident (verdict-handler transitioned)"
+      # Success path: clear any prior failure state + skip labels.
+      rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
+      bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
+      bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
+      ;;
+    1)
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "halt-for-human" "$duration" "verdict=halt"
+      log "stage $stage halted on $ident (human intervention required)"
+      ;;
+    2)
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "protocol-violation" "$duration" "verdict=violation"
+      log "stage $stage protocol violation on $ident"
+      ;;
+  esac
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
