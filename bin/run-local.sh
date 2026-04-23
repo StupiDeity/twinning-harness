@@ -38,25 +38,6 @@ LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
 BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
 
-acquire_lock() {
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf '%s\n' $$ > "$LOCK_DIR/pid"
-    return 0
-  fi
-  # Existing lock: break it if the holder process is gone.
-  local holder
-  holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || echo 0)"
-  if [[ "$holder" =~ ^[0-9]+$ ]] && (( holder > 0 )) && ! kill -0 "$holder" 2>/dev/null; then
-    rm -rf "$LOCK_DIR"
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-      printf '%s\n' $$ > "$LOCK_DIR/pid"
-      log "broke stale lock held by dead pid $holder"
-      return 0
-    fi
-  fi
-  return 1
-}
-
 trip_breaker() {
   log "CIRCUIT BREAKER: setting orchestrator.paused=true after $FAIL_THRESHOLD consecutive failures"
   # Surgical edit (not jq-write) so formatting/blank lines in config.json are preserved.
@@ -71,7 +52,7 @@ trip_breaker() {
 
 mkdir -p "$TWINNING_DIR"
 
-if ! acquire_lock; then
+if ! acquire_lock "$LOCK_DIR"; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
   exit 0
 fi
