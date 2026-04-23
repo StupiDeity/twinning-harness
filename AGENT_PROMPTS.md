@@ -35,6 +35,61 @@
 
 ---
 
+## Verdict-marker protocol (ENG-18)
+
+Every stage agent below participates in the **single-sentinel-label + HTML-comment-marker verdict protocol**. See `docs/brainstorms/2026-04-22-pipeline-state-machine-formalization-design.md` for the full specification.
+
+### Marker schema
+
+The orchestrator's Verdict Handler (`.pipeline/bin/verdict-handler.sh`) scans Linear comment history for five distinct HTML-comment markers:
+
+| Marker | Who posts | When | Meaning |
+|---|---|---|---|
+| `<!-- pipeline-stage-summary: <stage> -->` | stage agent | pass verdict | advance to the next stage |
+| `<!-- pipeline-rejection: <from> -->` paired with `<!-- pipeline-rejection-target: <to> -->` | stage agent | reject verdict | loopback from `<from>` to `<to>` |
+| `<!-- pipeline-halt: <reason> -->` | stage agent OR classify-failure OR scope-check | human intervention required | `reason` ∈ { `agent-failure`, `agent-blocked`, `scope-deviation`, `protocol-violation`, `manual-pause` } |
+| `<!-- pipeline-decision: <decision> -->` | human via `halt.sh resolve` | halt resolution | `decision` ∈ { `scope-approved`, `scope-rejected`, `resume` } |
+| `<!-- pipeline-transition: <from> → <to> -->` | orchestrator | atomic-transition waypoint | do NOT post this yourself |
+
+**Freshness rule:** the Verdict Handler considers only markers newer than the most recent `<!-- pipeline-transition: -->` comment, and picks the latest verdict-shaped marker among those. Verdict comments are append-only — use `linear.sh add-comment`, NOT `add-or-update-comment`.
+
+### Label vocabulary (post-Phase-4)
+
+Only four pipeline-namespace labels are applied by the pipeline:
+
+| Label | Who applies | Lifecycle |
+|---|---|---|
+| `pipeline:halted` | every stage agent, classify-failure, scope-check | applied at end-of-stage; removed by the Verdict Handler on forward/loopback transition, or by `halt.sh resolve` on human decision |
+| `pipeline:supersede` | Verdict Handler (as a side-effect label on reviewing→brainstorming loopbacks) | cleared by the brainstorm agent when it regenerates the doc |
+| `pipeline:skip-until-code-changes` | classify-failure | auto-cleared when pipeline-content-hash or branch-HEAD changes |
+| `pipeline:abandoned` | human | terminal — permanently off pipeline |
+
+### Operator workflow (how a human resolves a halted issue)
+
+1. Read the fresh `<!-- pipeline-halt: <reason> -->` comment on Linear to identify the cause.
+2. For `scope-deviation` halts:
+   `bash .pipeline/bin/halt.sh resolve ENG-XX --decision scope-approved` (or `scope-rejected`).
+3. For `agent-blocked` / `manual-pause` halts: post a reply comment answering the agent's question (no marker required), then either `bash .pipeline/bin/halt.sh resolve ENG-XX --decision resume` OR manually remove the `pipeline:halted` label in Linear UI. Either path is safe — ENG-18 halts are marker-driven, not state-file-driven.
+4. For `agent-failure` / `protocol-violation` halts: investigate via the `log_file` referenced in the halt comment, fix the underlying issue, then remove the `pipeline:halted` label. The classify-failure state file under `~/.twinning-pipeline/ENG-N/issue-state.json` is cleared automatically on the next successful transition.
+
+### Agent-side contract (applies to §§1-7)
+
+Every stage agent MUST:
+
+1. **Before starting:** read Linear comment history via
+   `bash .pipeline/bin/linear.sh get-comments ENG-XX`.
+   Parse for prior-cycle `<!-- pipeline-stage-summary: -->` markers and
+   any fresh `<!-- pipeline-rejection-target: <this-stage> -->` marker
+   (what a loopback wants fixed).
+2. **Before exiting:** post exactly one closing comment carrying the
+   verdict marker matching your verdict — see per-stage tables below.
+   Use `linear.sh add-comment` (verdict comments are append-only).
+3. **Apply `pipeline:halted`** regardless of verdict:
+   `bash .pipeline/bin/linear.sh add-label ENG-XX pipeline:halted`.
+   The orchestrator removes it on valid forward/loopback transitions.
+
+---
+
 ## 1. Brainstorm Agent
 
 ```
@@ -115,6 +170,16 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    Linear MCP tool. If the comment fails to post, retry once, then fail the stage rather
    than exit clean. The pipeline verifies this comment exists before marking the stage
    successful; an exit without a Linear comment will be caught and flagged.
+6. **Post the verdict marker + apply pipeline:halted** (ENG-18, MANDATORY).
+   Before exiting, post exactly ONE additional append-only comment carrying the
+   verdict marker for your verdict:
+   - pass → `<!-- pipeline-stage-summary: brainstorming -->`
+   - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
+   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"` (NOT
+   add-or-update-comment — verdict comments are append-only). Then apply
+   `pipeline:halted`:
+   `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+   See the Verdict-marker protocol preamble for the full contract.
 ```
 
 ## 2. Plan Agent
@@ -273,6 +338,13 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    MCP tool. If the comment fails to post, retry once, then fail the stage. The pipeline
    verifies this comment exists before marking the stage successful; an exit without a
    Linear comment will be caught and flagged.
+6. **Post the verdict marker + apply pipeline:halted** (ENG-18, MANDATORY).
+   Post exactly ONE additional append-only comment carrying the verdict marker:
+   - pass → `<!-- pipeline-stage-summary: planning -->`
+   - reject-to-brainstorm → `<!-- pipeline-rejection: planning --><!-- pipeline-rejection-target: brainstorming -->`
+   - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
+   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`. Then:
+   `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
 ```
 
 ## 3. Implementation Agent (Backend)
@@ -375,6 +447,14 @@ Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
 - Post the TDD evidence comment above.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
+
+Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+- Post exactly ONE additional append-only comment with your verdict marker:
+    - pass → `<!-- pipeline-stage-summary: implementing -->`
+    - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
+  Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
+- Apply `pipeline:halted`:
+  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
 ```
 
 ## 4. UI Agent (Frontend)
@@ -522,6 +602,14 @@ Output:
   checklist scores, the second-reviewer verdict, and gate-command results.
   Post via `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" {issue_id} "<body>"`.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
+
+Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+- Post exactly ONE additional append-only comment with your verdict marker:
+    - pass → `<!-- pipeline-stage-summary: ui -->`
+    - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
+  Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
+- Apply `pipeline:halted`:
+  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
 ```
 
 ## 5. Review Agent
@@ -659,6 +747,19 @@ Output:
   comment-quality self-lint score, knowledge-update proposals (if any).
 - Single Linear comment on {issue_id} mirroring the summary with the decision path
   letter (A/B/C) as the first line.
+
+Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+- Post exactly ONE additional append-only comment with your verdict marker:
+    - approve/pass → `<!-- pipeline-stage-summary: reviewing -->`
+    - reject-implementation → `<!-- pipeline-rejection: reviewing --><!-- pipeline-rejection-target: implementing -->`
+    - reject-premise (brainstorm-level fault) → `<!-- pipeline-rejection: reviewing --><!-- pipeline-rejection-target: brainstorming -->`
+    - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
+  Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`. Do NOT
+  apply `pipeline:premise-failure` — that label is retired; the Verdict Handler's
+  loopback table (reviewing → brainstorming) now carries the `pipeline:supersede`
+  side-effect automatically.
+- Apply `pipeline:halted`:
+  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
 ```
 
 ## 6. QA Agent
@@ -796,6 +897,15 @@ Output:
 - Linear summary comment on {issue_id}.
 - Any new test commits pushed to `{branch_name}`.
 - No edits to qa-patterns.md (use the candidate marker comment).
+
+Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+- Post exactly ONE additional append-only comment with your verdict marker:
+    - all green (path C) → `<!-- pipeline-stage-summary: qa -->`
+    - qa rejection (path B) → `<!-- pipeline-rejection: qa --><!-- pipeline-rejection-target: implementing -->`
+    - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
+  Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
+- Apply `pipeline:halted`:
+  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
 ```
 
 ## 7. Build Agent
@@ -924,6 +1034,19 @@ Output:
 - PR merged (SHA recorded in Linear comment).
 - Post-merge CI outcome recorded.
 - Slack notification sent.
+
+Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+- **Do NOT post `<!-- pipeline-stage-summary: building -->` until you have
+  verified the PR's merge state is `MERGED`** (`gh pr view --json state`).
+  This is the load-bearing invariant that prevents `stage:released` drift
+  on un-merged issues (brainstorm §Stage 7, Invariant I9).
+- Post exactly ONE additional append-only comment with your verdict marker:
+    - merged and CI green → `<!-- pipeline-stage-summary: building -->`
+    - blocked-by-conflict or CI red → `<!-- pipeline-rejection: building --><!-- pipeline-rejection-target: implementing -->`
+    - halt-for-human (missing approval, WIP label, etc.) → `<!-- pipeline-halt: agent-blocked -->`
+  Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
+- Apply `pipeline:halted`:
+  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
 ```
 
 ## 8. Release Agent
