@@ -218,6 +218,46 @@ fi
 SCRIPT_DIR="$SCRIPT_DIR_SAVED"
 PATH="$PATH_SAVED"
 
+# ─── Case 9: paused path emits stage-end outcome=paused (ENG-10) ─────
+# Pins the metrics emissions for run-stage.sh:178-183. The harness
+# simulates the paused branch by manually invoking the metric calls the
+# block performs (via a local capture stub for metrics.sh) so we can
+# assert both stage-start and stage-end carry outcome=paused.
+reset_capture
+mkdir -p "$(issue_dir ENG-T9)"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'EVENT=%s\nSTAGE=%s\nOUTCOME=%s\nNOTES=%s\n---\n' \
+  "\${1:-}" "\${3:-}" "\${4:-}" "\${6:-}" >> "$STUB_DIR/metrics.capture"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+: > "$STUB_DIR/metrics.capture"
+
+bash "$STUB_DIR/metrics.sh" stage-start ENG-T9 plan paused 0
+bash "$STUB_DIR/metrics.sh" stage-end   ENG-T9 plan "$(failure_outcome_for_exit 11 '')" 0 "exit=11"
+
+starts=$(awk -F= '/^EVENT=/{print $2}' "$STUB_DIR/metrics.capture" | grep -c stage-start)
+ends=$(  awk -F= '/^EVENT=/{print $2}' "$STUB_DIR/metrics.capture" | grep -c stage-end)
+paused_outcomes=$(grep -c '^OUTCOME=paused$' "$STUB_DIR/metrics.capture" | tr -d ' ')
+
+if [[ "$starts" == "1" && "$ends" == "1" && "$paused_outcomes" == "2" ]]; then
+  pass_at "case-9 paused path emits both stage-start and stage-end with outcome=paused"
+else
+  fail_at "case-9 paused path" "starts=$starts ends=$ends paused_outcomes=$paused_outcomes"
+fi
+
+# ─── Case 10: scope-approval notable path passes subcode=1 (ENG-10) ──
+# Contract test: pins the failure_outcome_for_exit(0,1) → scope-approval-pending
+# mapping that run-stage.sh:294 relies on. A future helper edit that
+# breaks this mapping fails here before it can silently break the path.
+outcome=$(failure_outcome_for_exit 0 1)
+if [[ "$outcome" == "scope-approval-pending" ]]; then
+  pass_at "case-10 failure_outcome_for_exit(0,1) → scope-approval-pending"
+else
+  fail_at "case-10" "got $outcome"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

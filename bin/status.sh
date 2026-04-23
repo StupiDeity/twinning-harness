@@ -160,8 +160,8 @@ show_metrics() {
     ] | @tsv
   ' | awk -F'\t' -v red="$C_RED" -v yel="$C_YEL" -v rst="$C_RST" '{
     col = "";
-    if ($5 == "failed" || $5 == "scope-violation" || $5 == "pr-opened-too-early" || $5 == "premise-failure") col = red;
-    else if ($5 == "linked" || $5 == "paused" || $5 == "scope-approval-pending" || $5 == "scope-approval-replay") col = yel;
+    if ($5 == "failed" || $5 == "scope-violation" || $5 == "pr-opened-too-early" || $5 == "premise-failure" || $5 == "dispatch-failed" || $5 == "linear-post-failed" || $5 == "guards-tripped") col = red;
+    else if ($5 == "linked" || $5 == "paused" || $5 == "scope-approval-pending" || $5 == "scope-approval-replay" || $5 == "reconcile-human") col = yel;
     reset = col ? rst : "";
     dur_s = ($6 > 0) ? sprintf("%ds", $6/1000) : "-";
     printf "  %s%s  %s/%s  %s  %-7s  dur=%-6s  %s%s\n", col, $1, $3, $4, $2, $5, dur_s, $7, reset
