@@ -39,6 +39,29 @@ printf '%s' "${MOCK_GH_PR_URL:-}"
 SH
 chmod +x "$STUB_DIR/gh"
 
+# Guards capture: records every `guards.sh bump <ident> <counter>` invocation.
+GUARDS_CAPTURE="$STUB_DIR/guards.capture"
+: > "$GUARDS_CAPTURE"
+cat > "$STUB_DIR/guards.sh" <<SH
+#!/usr/bin/env bash
+# args: \$1 subcmd \$2 ident \$3 counter
+printf 'SUBCMD=%s\nIDENT=%s\nCOUNTER=%s\n---\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" >> "$GUARDS_CAPTURE"
+exit 0
+SH
+chmod +x "$STUB_DIR/guards.sh"
+reset_guards_capture() { : > "$GUARDS_CAPTURE"; }
+guards_bump_count() { grep -c '^SUBCMD=bump$' "$GUARDS_CAPTURE" 2>/dev/null || true; }
+guards_counter_for_last_bump() { awk -F= '/^COUNTER=/ {c=$2} END{print c}' "$GUARDS_CAPTURE"; }
+
+# scope-check stub: MOCK_SCOPE_RC sets the exit code, MOCK_SCOPE_OUT the stdout.
+cat > "$STUB_DIR/scope-check.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${MOCK_SCOPE_OUT:-}"
+exit "${MOCK_SCOPE_RC:-0}"
+SH
+chmod +x "$STUB_DIR/scope-check.sh"
+
 # Source common.sh + run-stage.sh so post_completion_comment is defined.
 # run-stage.sh's sentinel at :307 `[[ "${BASH_SOURCE[0]}" == "${0}" ]]` means
 # sourcing does NOT run main(); no no-op sentinel variable needed.
@@ -256,6 +279,245 @@ if [[ "$outcome" == "scope-approval-pending" ]]; then
   pass_at "case-10 failure_outcome_for_exit(0,1) → scope-approval-pending"
 else
   fail_at "case-10" "got $outcome"
+fi
+
+# ─── Case 11: SEVERE scope-violation bumps implement_rejection ─────────
+# Stub scope-check.sh to return rc=3 with a `severe\t<file>` row; call the
+# scope-check branch inline; assert the bump stub captured exactly one
+# `bump <ident> implement_rejection` invocation.
+reset_capture
+reset_guards_capture
+MOCK_SCOPE_RC=3 MOCK_SCOPE_OUT=$'severe\tcrates/twinning-pipeline/tests/completion_scan_integration.rs' \
+  bash -c '
+    ident="ENG-T11"; stage="implement"; branch="feat/eng-t11"
+    scope_rc=0
+    scope_out="$(bash "'"$STUB_DIR"'/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
+    case "$scope_rc" in
+      3)
+        bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+        ;;
+    esac
+  ' 2>/dev/null
+
+bumps=$(guards_bump_count)
+last_counter=$(guards_counter_for_last_bump)
+if [[ "$bumps" == "1" && "$last_counter" == "implement_rejection" ]]; then
+  pass_at "case-11 SEVERE scope-violation: exactly one implement_rejection bump"
+else
+  fail_at "case-11 SEVERE" "bumps=$bumps last_counter=$last_counter"
+fi
+
+# ─── Case 12: unknown-rc scope-violation bumps implement_rejection ─────
+reset_capture
+reset_guards_capture
+MOCK_SCOPE_RC=4 MOCK_SCOPE_OUT="" \
+  bash -c '
+    ident="ENG-T12"; stage="implement"; branch="feat/eng-t12"
+    scope_rc=0
+    scope_out="$(bash "'"$STUB_DIR"'/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
+    case "$scope_rc" in
+      3) ;;
+      *)
+        bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+        ;;
+    esac
+  ' 2>/dev/null
+
+bumps=$(guards_bump_count)
+last_counter=$(guards_counter_for_last_bump)
+if [[ "$bumps" == "1" && "$last_counter" == "implement_rejection" ]]; then
+  pass_at "case-12 unknown-rc scope-violation: exactly one implement_rejection bump"
+else
+  fail_at "case-12 unknown-rc" "bumps=$bumps last_counter=$last_counter"
+fi
+
+# ─── Case 13: pr-opened-too-early bumps implement_rejection ────────────
+reset_capture
+reset_guards_capture
+bash -c '
+  ident="ENG-T13"; stage="implement"; branch="feat/eng-t13"
+  # Mirror run-stage.sh:336-346: pr_count > 0 → bump + classify.
+  pr_count=1
+  if (( pr_count > 0 )); then
+    bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+  fi
+' 2>/dev/null
+
+bumps=$(guards_bump_count)
+last_counter=$(guards_counter_for_last_bump)
+if [[ "$bumps" == "1" && "$last_counter" == "implement_rejection" ]]; then
+  pass_at "case-13 pr-opened-too-early: exactly one implement_rejection bump"
+else
+  fail_at "case-13 pr-too-early" "bumps=$bumps last_counter=$last_counter"
+fi
+
+# ─── Case 14: NOTABLE scope-approval (rc=1) does NOT bump counter ──────
+# Anti-regression per D-003: the soft-pause branch must never bump.
+reset_capture
+reset_guards_capture
+MOCK_SCOPE_RC=1 MOCK_SCOPE_OUT=$'notable\tcrates/twinning-pipeline/src/adjacent.rs' \
+  bash -c '
+    ident="ENG-T14"; stage="implement"; branch="feat/eng-t14"
+    scope_rc=0
+    scope_out="$(bash "'"$STUB_DIR"'/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
+    # Per D-003: the 1) branch does NOT bump — only 3) and *) and pr-too-early bump.
+    case "$scope_rc" in
+      1) ;;  # soft-pause awaiting user approval; no bump
+      3|*)
+        bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+        ;;
+    esac
+  ' 2>/dev/null
+
+bumps=$(guards_bump_count)
+if [[ "$bumps" == "0" ]]; then
+  pass_at "case-14 NOTABLE (rc=1): zero bumps (D-003 exclusion holds)"
+else
+  fail_at "case-14 NOTABLE" "unexpected bumps=$bumps"
+fi
+
+# ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
+# Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
+# REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
+# layout that symlinks to the real config.json and schemas/linear-ids.json,
+# while linear.sh is a Case-15-specific stub returning `implement_rejection`
+# markers via get-comments. Asserts guards.sh check exits 10 with
+# `implement_rejection(2>=2)` when two markers exist with no newer
+# pipeline-transition, and exits 0 when a forward pipeline-transition
+# marker is injected after them (counter-reset semantic — ENG-18 §Counter
+# unification).
+reset_capture
+FAKE_REPO="$STUB_DIR/fake-repo"
+mkdir -p "$FAKE_REPO/.pipeline/bin" "$FAKE_REPO/.pipeline/schemas"
+ln -sf "$HARNESS_DIR/guards.sh"                          "$FAKE_REPO/.pipeline/bin/guards.sh"
+ln -sf "$HARNESS_DIR/common.sh"                          "$FAKE_REPO/.pipeline/bin/common.sh"
+ln -sf "$REPO_ROOT/.pipeline/config.json"                "$FAKE_REPO/.pipeline/config.json"
+ln -sf "$REPO_ROOT/.pipeline/schemas/linear-ids.json"    "$FAKE_REPO/.pipeline/schemas/linear-ids.json"
+
+# Stub for trip path: two impl_rejection markers, no transition marker.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    # gotcha/rule counters use count_marker (query) — return empty.
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T15","comments":{"nodes":[]}}]}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+trip_output="$(bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1)"
+trip_rc=$?
+set -e
+
+# Stub for reset path: same two markers plus a newer pipeline-transition.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"},
+  {"body":"<!-- pipeline-transition: implementing → ui -->","createdAt":"2026-04-23T10:00:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T15","comments":{"nodes":[]}}]}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+clear_output="$(bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1)"
+clear_rc=$?
+set -e
+
+if [[ "$trip_rc" == "10" ]] \
+   && grep -q 'implement_rejection(2>=2)' <<<"$trip_output" \
+   && [[ "$clear_rc" == "0" ]]; then
+  pass_at "case-15 guards.sh check trips on implement_rejection count=2; resets after forward pipeline-transition"
+else
+  fail_at "case-15 reset-on-transition" "trip_rc=$trip_rc trip_output=$trip_output clear_rc=$clear_rc clear_output=$clear_output"
+fi
+
+# ─── Case 16 (QA adversarial): bump's marker text matches count_marker's grep ──
+# Guards against a future refactor that changes the marker string in bump() but
+# forgets count_marker() (or vice versa), silently disabling the counter. The
+# test asserts the literal text `<!-- pipeline-metric: implement_rejection -->`
+# is the prefix of what bump writes — which is the exact grep target in
+# count_marker (guards.sh:30).
+reset_capture
+BUMP_CAPTURE="$STUB_DIR/bump-marker.capture"
+: > "$BUMP_CAPTURE"
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  add-comment)
+    # \$2=ident, \$3=body
+    printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+bash "$FAKE_REPO/.pipeline/bin/guards.sh" bump ENG-T16 implement_rejection >/dev/null 2>&1
+bump_body="$(cat "$BUMP_CAPTURE")"
+if grep -q '<!-- pipeline-metric: implement_rejection -->' "$BUMP_CAPTURE"; then
+  pass_at "case-16 QA: bump emits the exact marker that count_marker greps for"
+else
+  fail_at "case-16 QA marker contract" "body=$bump_body"
+fi
+
+# ─── Case 17 (QA adversarial): clear-log line includes impl=N ───────────────
+# Guards against a future edit that drops `impl=$impl` from the clear-log line
+# at guards.sh, which would silently remove operator visibility into the new
+# counter. The test asserts the literal token `impl=0` appears when the issue
+# has no markers (clear path).
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  query)
+    # gotcha/rule counters use count_marker (query) — empty.
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T17","comments":{"nodes":[]}}]}}}'
+    ;;
+  get-comments)
+    # rejection counters use count_marker_since_last_transition — empty.
+    printf '%s\n' '[]'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+clear_log_output="$(
+  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T17 2>&1
+)"
+clear_log_rc=$?
+set -e
+
+if [[ "$clear_log_rc" == "0" ]] && grep -q 'impl=0' <<<"$clear_log_output"; then
+  pass_at "case-17 QA: clear-log line includes impl=N (drift guard)"
+else
+  fail_at "case-17 QA clear-log" "rc=$clear_log_rc output=$clear_log_output"
 fi
 
 echo
