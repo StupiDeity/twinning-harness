@@ -7,9 +7,6 @@
 set -euo pipefail
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Isolate on-disk state.
-TWINNING_DIR="$(mktemp -d)"
-export TWINNING_DIR
 export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
@@ -18,7 +15,6 @@ export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 STUB_DIR="$(mktemp -d)"
 CAPTURE_FILE="$STUB_DIR/capture.txt"
 : > "$CAPTURE_FILE"
-trap 'rm -rf "$TWINNING_DIR" "$STUB_DIR"' EXIT
 
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
@@ -52,6 +48,13 @@ source "$HARNESS_DIR/common.sh"
 source "$HARNESS_DIR/classify-failure.sh"
 # shellcheck source=run-stage.sh
 source "$HARNESS_DIR/run-stage.sh"
+
+# Isolate on-disk state: must come AFTER sourcing common.sh, which unconditionally
+# sets TWINNING_DIR=$HOME/.twinning-pipeline. Overriding here prevents the EXIT
+# trap from deleting the real pipeline directory.
+TWINNING_DIR="$(mktemp -d)"
+export TWINNING_DIR
+trap 'rm -rf "$TWINNING_DIR" "$STUB_DIR"' EXIT
 
 # Redirect post_completion_comment's sub-calls through the stubs.
 SCRIPT_DIR="$STUB_DIR"
