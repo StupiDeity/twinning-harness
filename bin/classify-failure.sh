@@ -108,11 +108,22 @@ classify_failure() {
       ;;
   esac
 
-  # Halt comment (edit-in-place via sig).
+  # ENG-18: every policy outcome is a halt surface from the Verdict
+  # Handler's perspective; apply the sentinel label unconditionally.
+  bash "$_CFS_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
+
+  # Halt comment (edit-in-place via sig). Leading marker line lets the
+  # Verdict Handler's find_fresh_verdict treat this as a halt-for-human
+  # verdict. Marker reason depends on policy.
   local sig="halt/$stage/$issue"
+  local marker_reason
+  case "$effective_policy" in
+    skip-until-human-acts) marker_reason="agent-blocked" ;;
+    *)                     marker_reason="agent-failure" ;;
+  esac
   local comment_body
-  comment_body="$(printf 'Pipeline: `%s` stage halted — %s\n\n**Policy:** %s\n**Recorded at:** %s\n**Branch:** %s\n**Retry count:** %d\n\n**Resume:** ' \
-    "$stage" "$effective_reason" "$effective_policy" "$recorded_at" "${branch:-none}" "$retry_count")"
+  comment_body="$(printf '<!-- pipeline-halt: %s -->\n\nPipeline: `%s` stage halted — %s\n\n**Policy:** %s\n**Recorded at:** %s\n**Branch:** %s\n**Retry count:** %d\n\n**Resume:** ' \
+    "$marker_reason" "$stage" "$effective_reason" "$effective_policy" "$recorded_at" "${branch:-none}" "$retry_count")"
   case "$effective_policy" in
     skip-until-code-changes)
       comment_body+="$(printf 'auto-resumes when `.pipeline/{bin,config.json,AGENT_PROMPTS.md}` content hash OR `origin/%s` HEAD changes, OR when `pipeline:skip-until-code-changes` label is removed.' "${branch:-<branch>}")"
