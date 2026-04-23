@@ -39,6 +39,29 @@ printf '%s' "${MOCK_GH_PR_URL:-}"
 SH
 chmod +x "$STUB_DIR/gh"
 
+# Guards capture: records every `guards.sh bump <ident> <counter>` invocation.
+GUARDS_CAPTURE="$STUB_DIR/guards.capture"
+: > "$GUARDS_CAPTURE"
+cat > "$STUB_DIR/guards.sh" <<SH
+#!/usr/bin/env bash
+# args: \$1 subcmd \$2 ident \$3 counter
+printf 'SUBCMD=%s\nIDENT=%s\nCOUNTER=%s\n---\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" >> "$GUARDS_CAPTURE"
+exit 0
+SH
+chmod +x "$STUB_DIR/guards.sh"
+reset_guards_capture() { : > "$GUARDS_CAPTURE"; }
+guards_bump_count() { grep -c '^SUBCMD=bump$' "$GUARDS_CAPTURE" 2>/dev/null || printf '0'; }
+guards_counter_for_last_bump() { awk -F= '/^COUNTER=/ {c=$2} END{print c}' "$GUARDS_CAPTURE"; }
+
+# scope-check stub: MOCK_SCOPE_RC sets the exit code, MOCK_SCOPE_OUT the stdout.
+cat > "$STUB_DIR/scope-check.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${MOCK_SCOPE_OUT:-}"
+exit "${MOCK_SCOPE_RC:-0}"
+SH
+chmod +x "$STUB_DIR/scope-check.sh"
+
 # Source common.sh + run-stage.sh so post_completion_comment is defined.
 # run-stage.sh's sentinel at :307 `[[ "${BASH_SOURCE[0]}" == "${0}" ]]` means
 # sourcing does NOT run main(); no no-op sentinel variable needed.
@@ -256,6 +279,161 @@ if [[ "$outcome" == "scope-approval-pending" ]]; then
   pass_at "case-10 failure_outcome_for_exit(0,1) → scope-approval-pending"
 else
   fail_at "case-10" "got $outcome"
+fi
+
+# ─── Case 11: SEVERE scope-violation bumps implement_rejection ─────────
+# Stub scope-check.sh to return rc=3 with a `severe\t<file>` row; call the
+# scope-check branch inline; assert the bump stub captured exactly one
+# `bump <ident> implement_rejection` invocation.
+reset_capture
+reset_guards_capture
+MOCK_SCOPE_RC=3 MOCK_SCOPE_OUT=$'severe\tcrates/twinning-pipeline/tests/completion_scan_integration.rs' \
+  bash -c '
+    ident="ENG-T11"; stage="implement"; branch="feat/eng-t11"
+    scope_rc=0
+    scope_out="$(bash "'"$STUB_DIR"'/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
+    case "$scope_rc" in
+      3)
+        bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+        ;;
+    esac
+  ' 2>/dev/null
+
+bumps=$(guards_bump_count)
+last_counter=$(guards_counter_for_last_bump)
+if [[ "$bumps" == "1" && "$last_counter" == "implement_rejection" ]]; then
+  pass_at "case-11 SEVERE scope-violation: exactly one implement_rejection bump"
+else
+  fail_at "case-11 SEVERE" "bumps=$bumps last_counter=$last_counter"
+fi
+
+# ─── Case 12: unknown-rc scope-violation bumps implement_rejection ─────
+reset_capture
+reset_guards_capture
+MOCK_SCOPE_RC=4 MOCK_SCOPE_OUT="" \
+  bash -c '
+    ident="ENG-T12"; stage="implement"; branch="feat/eng-t12"
+    scope_rc=0
+    scope_out="$(bash "'"$STUB_DIR"'/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
+    case "$scope_rc" in
+      3) ;;
+      *)
+        bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+        ;;
+    esac
+  ' 2>/dev/null
+
+bumps=$(guards_bump_count)
+last_counter=$(guards_counter_for_last_bump)
+if [[ "$bumps" == "1" && "$last_counter" == "implement_rejection" ]]; then
+  pass_at "case-12 unknown-rc scope-violation: exactly one implement_rejection bump"
+else
+  fail_at "case-12 unknown-rc" "bumps=$bumps last_counter=$last_counter"
+fi
+
+# ─── Case 13: pr-opened-too-early bumps implement_rejection ────────────
+reset_capture
+reset_guards_capture
+bash -c '
+  ident="ENG-T13"; stage="implement"; branch="feat/eng-t13"
+  # Mirror run-stage.sh:336-346: pr_count > 0 → bump + classify.
+  pr_count=1
+  if (( pr_count > 0 )); then
+    bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+  fi
+' 2>/dev/null
+
+bumps=$(guards_bump_count)
+last_counter=$(guards_counter_for_last_bump)
+if [[ "$bumps" == "1" && "$last_counter" == "implement_rejection" ]]; then
+  pass_at "case-13 pr-opened-too-early: exactly one implement_rejection bump"
+else
+  fail_at "case-13 pr-too-early" "bumps=$bumps last_counter=$last_counter"
+fi
+
+# ─── Case 14: NOTABLE scope-approval (rc=1) does NOT bump counter ──────
+# Anti-regression per D-003: the soft-pause branch must never bump.
+reset_capture
+reset_guards_capture
+MOCK_SCOPE_RC=1 MOCK_SCOPE_OUT=$'notable\tcrates/twinning-pipeline/src/adjacent.rs' \
+  bash -c '
+    ident="ENG-T14"; stage="implement"; branch="feat/eng-t14"
+    scope_rc=0
+    scope_out="$(bash "'"$STUB_DIR"'/scope-check.sh" "$ident" "$branch" 2>&1)" || scope_rc=$?
+    # Per D-003: the 1) branch does NOT bump — only 3) and *) and pr-too-early bump.
+    case "$scope_rc" in
+      1) ;;  # soft-pause awaiting user approval; no bump
+      3|*)
+        bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
+        ;;
+    esac
+  ' 2>/dev/null
+
+bumps=$(guards_bump_count)
+if [[ "$bumps" == "0" ]]; then
+  pass_at "case-14 NOTABLE (rc=1): zero bumps (D-003 exclusion holds)"
+else
+  fail_at "case-14 NOTABLE" "unexpected bumps=$bumps"
+fi
+
+# ─── Case 15: guards.sh check/bump round-trip for implement_rejection ──
+# Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
+# REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
+# layout that symlinks to the real config.json and schemas/linear-ids.json,
+# while linear.sh is a Case-15-specific stub returning two
+# `implement_rejection` marker comments and a label toggle via MOCK_LABEL.
+# Asserts guards.sh check exits 10 with `implement_rejection(2>=2)` when the
+# ack label is absent, and exits 0 when present.
+#
+# Must remain the LAST case in the harness.
+reset_capture
+FAKE_REPO="$STUB_DIR/fake-repo"
+mkdir -p "$FAKE_REPO/.pipeline/bin" "$FAKE_REPO/.pipeline/schemas"
+ln -sf "$HARNESS_DIR/guards.sh"                          "$FAKE_REPO/.pipeline/bin/guards.sh"
+ln -sf "$HARNESS_DIR/common.sh"                          "$FAKE_REPO/.pipeline/bin/common.sh"
+ln -sf "$REPO_ROOT/.pipeline/config.json"                "$FAKE_REPO/.pipeline/config.json"
+ln -sf "$REPO_ROOT/.pipeline/schemas/linear-ids.json"    "$FAKE_REPO/.pipeline/schemas/linear-ids.json"
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  query)
+    # Return two marker comments for implement_rejection; empty for others.
+    cat <<'JSON'
+{"data":{"issues":{"nodes":[{"id":"id-T15","comments":{"nodes":[
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."},
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."}
+]}}]}}}
+JSON
+    ;;
+  has-label)
+    # Match the label requested if env var is set.
+    [[ "${MOCK_LABEL:-}" == "$3" ]] && exit 0 || exit 1
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+# Sub-shell so env-var changes don't leak into the rest of the harness.
+set +e
+trip_output="$(
+  MOCK_LABEL="" \
+  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1
+)"
+trip_rc=$?
+clear_output="$(
+  MOCK_LABEL="pipeline:reviewed" \
+  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1
+)"
+clear_rc=$?
+set -e
+
+if [[ "$trip_rc" == "10" ]] \
+   && grep -q 'implement_rejection(2>=2)' <<<"$trip_output" \
+   && [[ "$clear_rc" == "0" ]]; then
+  pass_at "case-15 guards.sh check trips on implement_rejection count=2 without pipeline:reviewed; clears when label present"
+else
+  fail_at "case-15 round-trip" "trip_rc=$trip_rc trip_output=$trip_output clear_rc=$clear_rc clear_output=$clear_output"
 fi
 
 echo
