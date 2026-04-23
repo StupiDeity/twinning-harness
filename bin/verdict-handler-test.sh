@@ -18,7 +18,14 @@ export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 # log file so tests can assert call shapes.
 STUB_DIR="$(mktemp -d)"
 STUB_LOG="$STUB_DIR/calls.log"
+export STUB_DIR STUB_LOG
+: > "$STUB_LOG"
 trap 'rm -rf "$STUB_DIR"' EXIT
+
+# Exported so stubs (run via `bash ...`) see them.
+export VH_FIXTURE_COMMENTS=""
+export VH_CURRENT_STAGE_LABEL=""
+export VH_CURRENT_LABELS=""
 
 # linear.sh stub: handles get-comments (returns $VH_FIXTURE_COMMENTS),
 # add-comment, add-label, remove-label, swap-stage, transition-state,
@@ -62,7 +69,11 @@ fail_at() { printf '  ❌ %s\n      %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 pass_at() { printf '  ✅ %s\n' "$1"; PASS=$((PASS+1)); }
 
 reset_calls() { : > "$STUB_LOG"; }
-calls_grep() { grep -cF "$1" "$STUB_LOG" 2>/dev/null || printf '0'; }
+calls_grep() {
+  local n
+  n=$(grep -cF "$1" "$STUB_LOG" 2>/dev/null || true)
+  printf '%s' "${n:-0}"
+}
 calls_contains() { grep -qF "$1" "$STUB_LOG" 2>/dev/null; }
 
 # Build a canned comments fixture. Args are `body|createdAt` pairs,
