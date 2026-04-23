@@ -503,6 +503,44 @@ else
   printf 'SKIP: qa_snapshot_bsd_awk_RS_regex_escape_portable (no /usr/bin/awk)\n'
 fi
 
+# ─── acquire_lock — concurrent race (ENG-8) ─────────────────────────────
+# Bug class (Linear ENG-8, 2026-04-18): two overlapping pipeline ticks
+# both call acquire_lock on the same lock_dir; at most one must win.
+# Fork two background subshells, each attempting acquisition, capture
+# both exit codes, assert the sum is exactly 1. The lock directory is
+# a fresh mktemp path whose parent exists but whose leaf does not —
+# that is the state acquire_lock's mkdir branch races against.
+_tdir="$(mktemp -d -t twinning-adversarial-lock.XXXXXX)"
+_lock_path="$_tdir/lock"
+_rc_a="$_tdir/rc_a"
+_rc_b="$_tdir/rc_b"
+# common.sh has already enabled `set -e`; capture acquire_lock's exit
+# status with `|| rc=$?` so the losing subshell doesn't abort before
+# writing its rc file.
+(
+  _rc=0
+  acquire_lock "$_lock_path" || _rc=$?
+  printf '%s\n' "$_rc" > "$_rc_a"
+) &
+_pid_a=$!
+(
+  _rc=0
+  acquire_lock "$_lock_path" || _rc=$?
+  printf '%s\n' "$_rc" > "$_rc_b"
+) &
+_pid_b=$!
+wait "$_pid_a" || true
+wait "$_pid_b" || true
+_val_a="$(cat "$_rc_a" 2>/dev/null || echo X)"
+_val_b="$(cat "$_rc_b" 2>/dev/null || echo X)"
+if [[ "$_val_a" =~ ^[0-9]+$ && "$_val_b" =~ ^[0-9]+$ ]]; then
+  _sum=$(( _val_a + _val_b ))
+else
+  _sum="invalid(a=$_val_a,b=$_val_b)"
+fi
+assert_eq 'concurrent_acquire_lock_exactly_one_winner' '1' "$_sum"
+rm -rf "$_tdir"
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 printf '\n'
