@@ -296,7 +296,7 @@ main() {
           fs_patch="$(printf -- '- `%s`\n' $notable_files)"
           local reason
           reason="scope-approval pending on $branch (notable files listed in halt comment)"
-          classify_failure "$ident" "$stage" "skip-until-human-acts" "$reason" 0
+          classify_failure "$ident" "$stage" "skip-until-human-acts" "$reason" 0 1
           # Update the dedicated scope-approval sig comment with the file list.
           bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "scope-approval/$stage/$ident" "$ident" \
             "Pipeline: \`$stage\` stage is awaiting scope approval on \`$branch\`. The following files were modified outside the plan's File Structure but live in directories adjacent to declared scope:
