@@ -75,8 +75,8 @@ printf '## Plan summary\n\nWork done.\n' > "$(issue_dir ENG-T1)/stage-summary-pl
 post_completion_comment ENG-T1 plan
 body="$(captured_body)"
 if   [[ "$(captured_sig)" == "completion/plan/ENG-T1" ]] \
-  && grep -q 'plan complete' <<<"$body" \
-  && grep -q 'Plan summary'  <<<"$body"; then
+  && grep -q 'plan summary' <<<"$body" \
+  && grep -q 'Plan summary' <<<"$body"; then
   pass_at "case-1 happy path: sig + header + agent body posted"
 else
   fail_at "case-1 happy path" "sig=$(captured_sig) body=$body"
@@ -135,18 +135,18 @@ else
   fail_at "case-5 oversize" "${body:0:200}..."
 fi
 
-# ─── Case 6: terminal-next header (build→released) ──────────────────────
+# ─── Case 6: build-stage header + PR tail ──────────────────────────────
 reset_capture
 mkdir -p "$(issue_dir ENG-T6)"
 printf 'merge done\n' > "$(issue_dir ENG-T6)/stage-summary-build.md"
 MOCK_GH_PR_URL="https://github.com/mock/repo/pull/99" \
   post_completion_comment ENG-T6 build
 body="$(captured_body)"
-if grep -q 'advancing to stage:released'                          <<<"$body" \
+if grep -q 'build summary'                                        <<<"$body" \
   && grep -q '— PR: https://github.com/mock/repo/pull/99'          <<<"$body"; then
-  pass_at "case-6 build→released: arrow to 'released' + PR tail appended"
+  pass_at "case-6 build: header 'build summary' + PR tail appended"
 else
-  fail_at "case-6 build→released" "$body"
+  fail_at "case-6 build" "$body"
 fi
 
 # ─── Case 7: no-PR fallthrough (ui stage with gh returning empty) ──────

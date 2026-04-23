@@ -15,6 +15,7 @@
 #   linear.sh stage-of <ENG-n>   # prints current stage:* label name (or empty)
 #   linear.sh has-label <ENG-n> <label_name>   # exit 0 if present, 1 otherwise
 #   linear.sh has-comment-since <ENG-n> <iso8601_ts>   # exit 0 if a comment exists whose createdAt >= ts, 1 otherwise
+#   linear.sh get-comments <ENG-n>   # prints a JSON array [{id, body, createdAt}, ...] in chronological ascending order (oldest first), paginated to the most recent 50
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -212,6 +213,20 @@ has_comment_since() {
     >/dev/null 2>&1 <<<"$resp"
 }
 
+get_comments() {
+  # Emits a JSON array `[{id, body, createdAt}, ...]` in chronological
+  # ascending order (oldest first), paginated to the most recent 50.
+  # Downstream Verdict Handler scans forward for the fresh verdict marker
+  # without another sort step.
+  local ident="$1"
+  [[ -n "$ident" ]] || die "get-comments: issue id required"
+  local q='query($id: String!) { issue(id: $id) { comments(first: 50) { nodes { id body createdAt } } } }'
+  local vars resp
+  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
+  resp="$(linear_query "$q" "$vars")"
+  jq -c '[.data.issue.comments.nodes[]? ] | sort_by(.createdAt)' <<<"$resp"
+}
+
 add_comment() {
   local ident="$1" body="$2"
 
@@ -369,6 +384,7 @@ main() {
     stage-of)               stage_of "$@" ;;
     has-label)              has_label "$@" ;;
     has-comment-since)      has_comment_since "$@" ;;
+    get-comments)           get_comments "$@" ;;
     refresh-cache)          refresh_cache ;;
     *)                      die "unknown command: $cmd (see linear.sh header)" ;;
   esac

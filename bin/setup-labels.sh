@@ -26,6 +26,7 @@ declare -a LABEL_SPECS=(
   "stage:building|#34D399|Pipeline: merged to main, awaiting CI build + release"
   "stage:released|#4ADE80|Pipeline: feature released; terminal state"
   "pipeline:paused|#F59E0B|Halt pipeline advancement on this issue until removed"
+  "pipeline:halted|#DC2626|Pipeline: agent finished; orchestrator owes a decision or human owes one (ENG-18)"
   "pipeline:supersede|#F97316|Reconcile: existing brainstorm/plan is superseded; generate fresh"
   "pipeline:extend|#EAB308|Reconcile: extend existing brainstorm/plan rather than replace"
   "pipeline:ignore|#A3A3A3|Reconcile: existing work is canonical; link and advance without regenerating"

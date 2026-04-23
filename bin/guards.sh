@@ -2,18 +2,23 @@
 # Enforce human_checkpoints.require_human_on_threshold from .pipeline/config.json.
 # Counters are maintained as marker comments on the Linear issue:
 #   <!-- pipeline-metric: review_rejection -->
+#   <!-- pipeline-metric: qa_rejection -->
 #   <!-- pipeline-metric: gotcha_triggered -->
 #   <!-- pipeline-metric: learned_rule_renewal -->
-# Each occurrence = 1 tick. An explicit human ack is a control label:
-#   pipeline:reviewed          -> clears review_rejection threshold
+# Each occurrence = 1 tick. review_rejection and qa_rejection counters
+# reset on every forward `<!-- pipeline-transition: -->` marker so that
+# distinct loopback cycles don't accumulate into a false circuit-breaker
+# trip (brainstorm §Counter unification). gotcha_triggered and
+# learned_rule_renewal count across the whole issue lifetime by design,
+# cleared only by their explicit ack labels:
 #   pipeline:knowledge-reviewed -> clears gotcha_triggered threshold
-#   pipeline:rule-reviewed     -> clears learned_rule_renewal threshold
+#   pipeline:rule-reviewed      -> clears learned_rule_renewal threshold
 #
 # Usage:
 #   guards.sh check <issue_id>
 #     exit 0 if clear, exit 10 if a threshold is tripped (prints which)
 #   guards.sh bump <issue_id> <counter_name>
-#     counter_name: review_rejection | gotcha_triggered | learned_rule_renewal
+#     counter_name: review_rejection | qa_rejection | gotcha_triggered | learned_rule_renewal
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +35,26 @@ count_marker() {
   jq -r --arg m "<!-- pipeline-metric: $marker -->" '[.data.issues.nodes[0].comments.nodes[]? | .body | select(contains($m))] | length' <<<"$resp"
 }
 
+# Count comment bodies containing $marker whose createdAt is newer than
+# the most recent <!-- pipeline-transition: --> comment. Used by the
+# rejection-counter gates so that distinct loopback cycles don't
+# accumulate into a false circuit-breaker trip.
+count_marker_since_last_transition() {
+  local ident="$1" marker="$2"
+  local comments last_ts
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident")"
+  last_ts="$(jq -r '
+    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
+    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+  if [[ -z "$last_ts" ]]; then
+    jq -r --arg m "<!-- pipeline-metric: $marker -->" \
+      '[.[] | select(.body | contains($m))] | length' <<<"$comments"
+  else
+    jq -r --arg m "<!-- pipeline-metric: $marker -->" --arg t "$last_ts" \
+      '[.[] | select(.createdAt > $t) | select(.body | contains($m))] | length' <<<"$comments"
+  fi
+}
+
 check() {
   local ident="$1"
   local review_threshold gotcha_threshold rule_threshold qa_threshold
@@ -41,13 +66,13 @@ check() {
   [[ "$qa_threshold" == "null" || -z "$qa_threshold" ]] && qa_threshold=2
 
   local rev got rule qa
-  rev="$(count_marker "$ident" review_rejection)"
+  rev="$(count_marker_since_last_transition "$ident" review_rejection)"
   got="$(count_marker "$ident" gotcha_triggered)"
   rule="$(count_marker "$ident" learned_rule_renewal)"
-  qa="$(count_marker "$ident" qa_rejection)"
+  qa="$(count_marker_since_last_transition "$ident" qa_rejection)"
 
   local tripped=""
-  if (( rev >= review_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:reviewed; then
+  if (( rev >= review_threshold )); then
     tripped+="review_rejection($rev>=$review_threshold) "
   fi
   if (( got >= gotcha_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:knowledge-reviewed; then
@@ -56,7 +81,7 @@ check() {
   if (( rule >= rule_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:rule-reviewed; then
     tripped+="learned_rule_renewal($rule>=$rule_threshold) "
   fi
-  if (( qa >= qa_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:reviewed; then
+  if (( qa >= qa_threshold )); then
     tripped+="qa_rejection($qa>=$qa_threshold) "
   fi
 
