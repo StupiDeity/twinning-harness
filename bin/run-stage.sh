@@ -2,7 +2,7 @@
 # Run a single pipeline stage against a Linear issue.
 # Usage: run-stage.sh <issue_id> <stage>
 # Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=reconcile-human, 20=dispatch-failed,
-#             21=scope-violation, 22=pr-opened-too-early, 23=linear-comment-missing.
+#             21=scope-violation, 22=pr-opened-too-early, 24=linear-post-failed.
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -29,6 +29,76 @@ next_stage() {
     retrospective) printf '' ;;             # not part of per-issue flow
     *)             die "unknown stage: $1" ;;
   esac
+}
+
+# ─── Per-stage success-path completion comment (ENG-11) ──────────────────────
+# Read the agent-authored summary file, wrap with header + PR tail, and
+# upsert under sig completion/<stage>/<issue>. On missing/empty/symlink,
+# post a mechanical fallback with <!-- pipeline-metric: summary_missing -->.
+# Returns nonzero if Linear post itself fails after one retry.
+#
+# Caller contract: this helper is only invoked for stages in the set
+# {brainstorm, plan, implement, ui, review, qa, build} — every one of which
+# has a non-empty next_stage. We therefore do NOT branch on "terminal stage"
+# here; release/retrospective never reach this path (see run-stage.sh success
+# block's case statement in Task 2).
+post_completion_comment() {
+  local issue="$1" stage="$2"
+  local next_label; next_label="$(next_stage "$stage")"
+  local summary_path; summary_path="$(issue_dir "$issue")/stage-summary-${stage}.md"
+  local sig="completion/${stage}/${issue}"
+
+  local header="**${stage} complete** → advancing to stage:${next_label}"
+
+  # PR tail only on post-UI stages where a PR is guaranteed to exist.
+  local pr_tail=""
+  case "$stage" in
+    ui|review|qa|build)
+      local branch pr_url
+      branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue" 2>/dev/null || printf '')"
+      if [[ -n "$branch" ]] && command -v gh >/dev/null 2>&1; then
+        pr_url="$(gh pr list --head "$branch" --state open  --json url --jq '.[0].url // ""' 2>/dev/null || printf '')"
+        [[ -z "$pr_url" ]] && pr_url="$(gh pr list --head "$branch" --state all --json url --jq '.[0].url // ""' 2>/dev/null || printf '')"
+        [[ -n "$pr_url" ]] && pr_tail=$'\n\n— PR: '"$pr_url"
+      fi
+      ;;
+  esac
+
+  # Read + safety-filter the summary body, or take fallback.
+  # Order matters: strip sig-marker LINES *before* byte-truncating so a mid-line
+  # byte cut inside a `<!-- pipeline-sig: … -->` line cannot leave a partial
+  # (and therefore unmatched-by-sed) marker in the posted body.
+  local body fallback_marker=""
+  if [[ -L "$summary_path" ]]; then
+    fallback_marker="summary_symlink_refused"
+  elif [[ ! -s "$summary_path" ]]; then
+    fallback_marker="summary_missing"
+  else
+    local fsize; fsize="$(wc -c < "$summary_path" | tr -d ' ')"
+    body="$(sed -E '/<!-- pipeline-sig: .* -->/d' "$summary_path" | head -c 32768)"
+    if (( fsize > 32768 )); then
+      body+=$'\n\n_[truncated at 32 KiB]_'
+      body+=$'\n<!-- pipeline-metric: summary_truncated -->'
+    fi
+  fi
+
+  local comment_body
+  if [[ -n "$fallback_marker" ]]; then
+    # Fallback MUST include the PR tail when it would normally apply — a reviewer
+    # landing on a mechanical comment still benefits from the PR link (D-004 open
+    # question resolved: include tail).
+    comment_body="$(printf '%s\n\n_Agent did not write a stage summary; posting mechanical completion._%s\n<!-- pipeline-metric: %s -->' \
+      "$header" "$pr_tail" "$fallback_marker")"
+  else
+    comment_body="$(printf '%s\n\n%s%s' "$header" "$body" "$pr_tail")"
+  fi
+
+  # Retry once on failure. add-or-update-comment appends the canonical sig itself.
+  if bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"; then
+    return 0
+  fi
+  sleep 5
+  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"
 }
 
 verify_preconditions() {
@@ -101,9 +171,8 @@ main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
 
-  local t0 t0_iso t1 duration
+  local t0 t1 duration
   t0="$(date +%s)"
-  t0_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # Preconditions.
   verify_preconditions "$ident" "$stage" || {
@@ -140,6 +209,10 @@ main() {
       skip_dispatch=1
     fi
   fi
+
+  # Guarantee the per-issue state dir exists before dispatch so an agent's first
+  # Write of stage-summary-<stage>.md cannot fail on missing parents.
+  mkdir -p "$(issue_dir "$ident")"
 
   # Render the prompt.
   local prompt_file log_file
@@ -268,23 +341,17 @@ To approve and resume, add these entries to the plan's File Structure section an
     fi
   fi
 
-  # Post-stage Linear-comment assertion. The "Completion checklist" in each agent prompt
-  # makes the Linear comment the final mandatory step; this check confirms the agent
-  # actually ran that step rather than exiting early after self-review. Skip for
-  # scope-approval replays (the original dispatch already posted) and for `release`
-  # (terminal stage with variable comment patterns). If missing, fail with exit 23 so
-  # the retrospective loop catches it instead of the pipeline silently marking success.
-  if (( ! skip_dispatch )); then
-    case "$stage" in
-      brainstorm|plan|implement|ui|review|qa|build)
-        if ! bash "$SCRIPT_DIR/linear.sh" has-comment-since "$ident" "$t0_iso"; then
-          classify_failure "$ident" "$stage" "retry-immediately" \
-            "agent exited without posting a Linear comment (completion checklist violated)" 23
-          exit 23
-        fi
-        ;;
-    esac
-  fi
+  # Post-stage completion comment (ENG-11). Orchestrator-owned narrative post.
+  # Runs on both fresh dispatches and scope-approval replays (narrates the advance).
+  case "$stage" in
+    brainstorm|plan|implement|ui|review|qa|build)
+      if ! post_completion_comment "$ident" "$stage"; then
+        classify_failure "$ident" "$stage" "retry-immediately" \
+          "linear post failed for completion/$stage/$ident after one retry" 24
+        exit 24
+      fi
+      ;;
+  esac
 
   # Advance label.
   local nxt
