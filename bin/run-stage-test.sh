@@ -98,8 +98,8 @@ printf '## Plan summary\n\nWork done.\n' > "$(issue_dir ENG-T1)/stage-summary-pl
 post_completion_comment ENG-T1 plan
 body="$(captured_body)"
 if   [[ "$(captured_sig)" == "completion/plan/ENG-T1" ]] \
-  && grep -q 'plan complete' <<<"$body" \
-  && grep -q 'Plan summary'  <<<"$body"; then
+  && grep -q 'plan summary' <<<"$body" \
+  && grep -q 'Plan summary' <<<"$body"; then
   pass_at "case-1 happy path: sig + header + agent body posted"
 else
   fail_at "case-1 happy path" "sig=$(captured_sig) body=$body"
@@ -158,18 +158,18 @@ else
   fail_at "case-5 oversize" "${body:0:200}..."
 fi
 
-# ─── Case 6: terminal-next header (build→released) ──────────────────────
+# ─── Case 6: build-stage header + PR tail ──────────────────────────────
 reset_capture
 mkdir -p "$(issue_dir ENG-T6)"
 printf 'merge done\n' > "$(issue_dir ENG-T6)/stage-summary-build.md"
 MOCK_GH_PR_URL="https://github.com/mock/repo/pull/99" \
   post_completion_comment ENG-T6 build
 body="$(captured_body)"
-if grep -q 'advancing to stage:released'                          <<<"$body" \
+if grep -q 'build summary'                                        <<<"$body" \
   && grep -q '— PR: https://github.com/mock/repo/pull/99'          <<<"$body"; then
-  pass_at "case-6 build→released: arrow to 'released' + PR tail appended"
+  pass_at "case-6 build: header 'build summary' + PR tail appended"
 else
-  fail_at "case-6 build→released" "$body"
+  fail_at "case-6 build" "$body"
 fi
 
 # ─── Case 7: no-PR fallthrough (ui stage with gh returning empty) ──────
@@ -376,16 +376,16 @@ else
   fail_at "case-14 NOTABLE" "unexpected bumps=$bumps"
 fi
 
-# ─── Case 15: guards.sh check/bump round-trip for implement_rejection ──
+# ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
 # layout that symlinks to the real config.json and schemas/linear-ids.json,
-# while linear.sh is a Case-15-specific stub returning two
-# `implement_rejection` marker comments and a label toggle via MOCK_LABEL.
-# Asserts guards.sh check exits 10 with `implement_rejection(2>=2)` when the
-# ack label is absent, and exits 0 when present.
-#
-# Must remain the LAST case in the harness.
+# while linear.sh is a Case-15-specific stub returning `implement_rejection`
+# markers via get-comments. Asserts guards.sh check exits 10 with
+# `implement_rejection(2>=2)` when two markers exist with no newer
+# pipeline-transition, and exits 0 when a forward pipeline-transition
+# marker is injected after them (counter-reset semantic — ENG-18 §Counter
+# unification).
 reset_capture
 FAKE_REPO="$STUB_DIR/fake-repo"
 mkdir -p "$FAKE_REPO/.pipeline/bin" "$FAKE_REPO/.pipeline/schemas"
@@ -393,47 +393,67 @@ ln -sf "$HARNESS_DIR/guards.sh"                          "$FAKE_REPO/.pipeline/b
 ln -sf "$HARNESS_DIR/common.sh"                          "$FAKE_REPO/.pipeline/bin/common.sh"
 ln -sf "$REPO_ROOT/.pipeline/config.json"                "$FAKE_REPO/.pipeline/config.json"
 ln -sf "$REPO_ROOT/.pipeline/schemas/linear-ids.json"    "$FAKE_REPO/.pipeline/schemas/linear-ids.json"
+
+# Stub for trip path: two impl_rejection markers, no transition marker.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
-  query)
-    # Return two marker comments for implement_rejection; empty for others.
+  get-comments)
     cat <<'JSON'
-{"data":{"issues":{"nodes":[{"id":"id-T15","comments":{"nodes":[
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."},
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."}
-]}}]}}}
+[
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"}
+]
 JSON
     ;;
-  has-label)
-    # Match the label requested if env var is set.
-    [[ "${MOCK_LABEL:-}" == "$3" ]] && exit 0 || exit 1
+  query)
+    # gotcha/rule counters use count_marker (query) — return empty.
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T15","comments":{"nodes":[]}}]}}}'
     ;;
+  has-label) exit 1 ;;
   *) exit 0 ;;
 esac
 SH
 chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
 
-# Sub-shell so env-var changes don't leak into the rest of the harness.
 set +e
-trip_output="$(
-  MOCK_LABEL="" \
-  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1
-)"
+trip_output="$(bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1)"
 trip_rc=$?
-clear_output="$(
-  MOCK_LABEL="pipeline:reviewed" \
-  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1
-)"
+set -e
+
+# Stub for reset path: same two markers plus a newer pipeline-transition.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"},
+  {"body":"<!-- pipeline-transition: implementing → ui -->","createdAt":"2026-04-23T10:00:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T15","comments":{"nodes":[]}}]}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+clear_output="$(bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1)"
 clear_rc=$?
 set -e
 
 if [[ "$trip_rc" == "10" ]] \
    && grep -q 'implement_rejection(2>=2)' <<<"$trip_output" \
    && [[ "$clear_rc" == "0" ]]; then
-  pass_at "case-15 guards.sh check trips on implement_rejection count=2 without pipeline:reviewed; clears when label present"
+  pass_at "case-15 guards.sh check trips on implement_rejection count=2; resets after forward pipeline-transition"
 else
-  fail_at "case-15 round-trip" "trip_rc=$trip_rc trip_output=$trip_output clear_rc=$clear_rc clear_output=$clear_output"
+  fail_at "case-15 reset-on-transition" "trip_rc=$trip_rc trip_output=$trip_output clear_rc=$clear_rc clear_output=$clear_output"
 fi
 
 # ─── Case 16 (QA adversarial): bump's marker text matches count_marker's grep ──
@@ -465,65 +485,21 @@ else
   fail_at "case-16 QA marker contract" "body=$bump_body"
 fi
 
-# ─── Case 17 (QA adversarial): ack-label specificity ────────────────────────
-# Applying a DIFFERENT pipeline:*-reviewed label (pipeline:knowledge-reviewed
-# or pipeline:rule-reviewed) must NOT clear the implement_rejection trip.
-# Guards against a future refactor that relaxes `has-label pipeline:reviewed`
-# into a prefix/substring match, which would let unrelated ack labels silently
-# suppress real rejections.
-cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
-#!/usr/bin/env bash
-case "${1:-}" in
-  query)
-    cat <<'JSON'
-{"data":{"issues":{"nodes":[{"id":"id-T17","comments":{"nodes":[
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."},
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."}
-]}}]}}}
-JSON
-    ;;
-  has-label)
-    # Only the exact literal label set via MOCK_LABEL matches.
-    [[ "${MOCK_LABEL:-}" == "$3" ]] && exit 0 || exit 1
-    ;;
-  *) exit 0 ;;
-esac
-SH
-chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
-
-set +e
-knowledge_output="$(
-  MOCK_LABEL="pipeline:knowledge-reviewed" \
-  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T17 2>&1
-)"
-knowledge_rc=$?
-rule_output="$(
-  MOCK_LABEL="pipeline:rule-reviewed" \
-  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T17 2>&1
-)"
-rule_rc=$?
-set -e
-
-if [[ "$knowledge_rc" == "10" ]] \
-   && grep -q 'implement_rejection(2>=2)' <<<"$knowledge_output" \
-   && [[ "$rule_rc" == "10" ]] \
-   && grep -q 'implement_rejection(2>=2)' <<<"$rule_output"; then
-  pass_at "case-17 QA: non-'pipeline:reviewed' ack labels do NOT clear implement_rejection trip"
-else
-  fail_at "case-17 QA ack specificity" "knowledge_rc=$knowledge_rc rule_rc=$rule_rc"
-fi
-
-# ─── Case 18 (QA adversarial): clear-log line includes impl=N ───────────────
+# ─── Case 17 (QA adversarial): clear-log line includes impl=N ───────────────
 # Guards against a future edit that drops `impl=$impl` from the clear-log line
-# at guards.sh:75, which would silently remove operator visibility into the new
+# at guards.sh, which would silently remove operator visibility into the new
 # counter. The test asserts the literal token `impl=0` appears when the issue
 # has no markers (clear path).
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
   query)
-    # Zero marker comments — clear path.
-    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T18","comments":{"nodes":[]}}]}}}'
+    # gotcha/rule counters use count_marker (query) — empty.
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T17","comments":{"nodes":[]}}]}}}'
+    ;;
+  get-comments)
+    # rejection counters use count_marker_since_last_transition — empty.
+    printf '%s\n' '[]'
     ;;
   has-label) exit 1 ;;
   *) exit 0 ;;
@@ -533,15 +509,15 @@ chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
 
 set +e
 clear_log_output="$(
-  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T18 2>&1
+  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T17 2>&1
 )"
 clear_log_rc=$?
 set -e
 
 if [[ "$clear_log_rc" == "0" ]] && grep -q 'impl=0' <<<"$clear_log_output"; then
-  pass_at "case-18 QA: clear-log line includes impl=N (drift guard)"
+  pass_at "case-17 QA: clear-log line includes impl=N (drift guard)"
 else
-  fail_at "case-18 QA clear-log" "rc=$clear_log_rc output=$clear_log_output"
+  fail_at "case-17 QA clear-log" "rc=$clear_log_rc output=$clear_log_output"
 fi
 
 echo
