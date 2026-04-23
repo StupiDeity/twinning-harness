@@ -261,6 +261,12 @@ case "$reconcile_decision" in
     bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
       "Pipeline reconcile: an existing $stage doc appears to cover this topic. Apply one of: \`pipeline:supersede\` (generate fresh and retire the old), \`pipeline:extend\` (generate fresh, referencing the old), or \`pipeline:ignore\` (link the old as canonical). Until a label is applied, this issue is paused."
     bash "$SCRIPT_DIR/metrics.sh" stage-start "$issue_id" "$stage" "reconcile-human" 0
+    # ENG-10 D-004: emit a matching stage-end so retrospective §1 can pair
+    # the events. Direct-string emission (not via failure_outcome_for_exit)
+    # because exit_code=0 subcode="" would route to unknown-exit-0; this
+    # path is a short-circuit, not a classified failure.
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" \
+      "reconcile-human" 0 "awaiting=supersede-or-extend-or-ignore" || true
     log "== tick end (reconcile human gate) =="
     exit 0
     ;;
