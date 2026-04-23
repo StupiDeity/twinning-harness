@@ -51,7 +51,7 @@ exit 0
 SH
 chmod +x "$STUB_DIR/guards.sh"
 reset_guards_capture() { : > "$GUARDS_CAPTURE"; }
-guards_bump_count() { grep -c '^SUBCMD=bump$' "$GUARDS_CAPTURE" 2>/dev/null || printf '0'; }
+guards_bump_count() { grep -c '^SUBCMD=bump$' "$GUARDS_CAPTURE" 2>/dev/null || true; }
 guards_counter_for_last_bump() { awk -F= '/^COUNTER=/ {c=$2} END{print c}' "$GUARDS_CAPTURE"; }
 
 # scope-check stub: MOCK_SCOPE_RC sets the exit code, MOCK_SCOPE_OUT the stdout.
