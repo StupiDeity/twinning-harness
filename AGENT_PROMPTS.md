@@ -849,8 +849,9 @@ Preconditions (MANDATORY — all must be true; fail fast on any false):
 
   P5. **CI is green** (all required checks passed on latest commit):
         gh pr checks <N> --watch --required
-      Do not proceed until checks complete. Fail if any required check is red or
-      cancelled. Flaky checks count as red for the Build stage — re-run via
+      If the command exits 0 with no output, no required checks are configured —
+      treat P5 as PASSING and proceed. Fail only if a required check is red or
+      cancelled. Flaky checks count as red — re-run via
       `gh run rerun --failed <run-id>` up to 2 times; after that, file a Linear
       bug and loop back.
 
