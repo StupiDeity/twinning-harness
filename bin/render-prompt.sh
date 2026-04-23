@@ -41,9 +41,12 @@ extract_block() {
   local section="$1" prompts="$PIPELINE_ROOT/AGENT_PROMPTS.md"
 
   # Schema check: count column-0 fences in the section.
+  # Boundary regex requires a numeric prefix (`## N. `) so H2 subheadings inside
+  # the prompt body (e.g. `## Completion checklist`) do not prematurely end the
+  # section and strand the closing fence.
   local fence_count
   fence_count="$(awk -v section="$section" '
-    /^## / {
+    /^## [0-9]+\. / {
       if (in_section) { exit }
       line = $0
       sub(/^## /, "", line)
@@ -60,7 +63,7 @@ extract_block() {
 
   awk -v section="$section" '
     BEGIN { in_section=0; in_block=0; fence_count=0 }
-    /^## / {
+    /^## [0-9]+\. / {
       if (in_section) { exit }
       line = $0
       sub(/^## /, "", line)
@@ -169,14 +172,15 @@ main() {
 
   # Interpolate. Using python for safe substitution (handles multiline description).
   # Falls back to sed if python unavailable.
-  local issue_id_lower branch_name
+  local issue_id_lower branch_name stage_summary_path
   issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
   branch_name="feature/${issue_id_lower}-${slug}"
+  stage_summary_path="$HOME/.twinning-pipeline/${issue_id}/stage-summary-${stage}.md"
 
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" <<'PY'
+    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" "$stage_summary_path" <<'PY'
 import sys
-tmpl, issue_id, issue_id_lower, title, description, date, slug, brainstorm_file, plan_file, branch_name = sys.argv[1:]
+tmpl, issue_id, issue_id_lower, title, description, date, slug, brainstorm_file, plan_file, branch_name, stage_summary_path = sys.argv[1:]
 out = tmpl
 repl = {
   "{issue_id}": issue_id,
@@ -188,6 +192,7 @@ repl = {
   "{brainstorm_file}": brainstorm_file,
   "{plan_file}": plan_file,
   "{branch_name}": branch_name,
+  "{stage_summary_path}": stage_summary_path,
 }
 for k, v in repl.items():
   out = out.replace(k, v)
@@ -202,7 +207,8 @@ PY
         -e "s|{slug}|$slug|g" \
         -e "s|{brainstorm_file}|$brainstorm_file|g" \
         -e "s|{plan_file}|$plan_file|g" \
-        -e "s|{branch_name}|$branch_name|g"
+        -e "s|{branch_name}|$branch_name|g" \
+        -e "s|{stage_summary_path}|$stage_summary_path|g"
     # title and description may contain sed metacharacters — fall back users: install python3.
   fi
 }

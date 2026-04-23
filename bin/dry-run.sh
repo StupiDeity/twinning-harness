@@ -38,6 +38,9 @@ check "classify-failure-test: all cases pass" \
 check "sweep test harness: 13 partition cases pass" \
   bash .pipeline/bin/run-local-sweep-test.sh
 
+check "run-stage-test: all cases pass" \
+  bash .pipeline/bin/run-stage-test.sh
+
 check "YAML syntax: .github/workflows/*.yml" bash -c '
   for f in .github/workflows/*.yml; do
     bun -e "

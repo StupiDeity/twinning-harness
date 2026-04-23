@@ -229,6 +229,101 @@ printf '?? docs/brainstorms/2026-04-20-a-b-foo.md\0' \
 assert_partition_counts 'regex_metachar_issue_id_literal_match' \
   brainstorm 'a.b' 0 1 0 "$_input_dir/regex_metachar"
 
+# ─── QA-authored adversarial coverage for ENG-16 (metachar escape) ──────
+# These cases are NOT in the plan's Failure Mode -> Test Map. Each one
+# exercises a metachar class the plan's single `a.b` case does not, plus
+# the positive-match symmetry and a sequential-invocation state check.
+
+# Positive-match symmetry: plan's `regex_metachar_issue_id_literal_match`
+# tests the negative (a.b vs a-b-foo -> leaked). This is the positive
+# (a.b vs a.b-foo with literal `.`) -> in-scope. Confirms the escape is
+# not over-aggressive (i.e. doesn't block legitimate literal matches).
+printf '?? docs/brainstorms/2026-04-20-a.b-foo.md\0' \
+  > "$_input_dir/qa_metachar_positive"
+assert_partition_counts 'qa_metachar_dot_positive_literal_match' \
+  brainstorm 'a.b' 1 0 0 "$_input_dir/qa_metachar_positive"
+
+# Alternation metachar `|`. Without escape, ERE `a|b` means "match a OR b"
+# and the top-level `(^|[^a-z0-9])a|b([^a-z0-9]|$)` parses as
+# `((^|[^a-z0-9])a) | (b([^a-z0-9]|$))`. Basename `2026-04-20-a-foo.md`
+# has `-a-` (non-alnum/a/non-alnum) -> unescaped routes in-scope.
+# With escape (`a\|b`), requires literal `a|b` -> absent -> leaked.
+printf '?? docs/brainstorms/2026-04-20-a-foo.md\0' \
+  > "$_input_dir/qa_metachar_pipe"
+assert_partition_counts 'qa_metachar_pipe_no_false_match' \
+  brainstorm 'a|b' 0 1 0 "$_input_dir/qa_metachar_pipe"
+
+# Kleene star `*`. Without escape, ERE `a*b` means "zero or more a's then b",
+# which matches `b` preceded by any boundary. Basename `2026-04-20-b-foo.md`
+# has `-b-` -> unescaped routes in-scope. With escape (`a\*b`), requires
+# literal `a*b` -> absent -> leaked.
+printf '?? docs/brainstorms/2026-04-20-b-foo.md\0' \
+  > "$_input_dir/qa_metachar_star"
+assert_partition_counts 'qa_metachar_star_no_false_match' \
+  brainstorm 'a*b' 0 1 0 "$_input_dir/qa_metachar_star"
+
+# Parentheses as capture group. Without escape, ERE `feat(x)` makes `(x)`
+# a 1-char capture group, so the pattern matches literal `featx` with
+# boundaries. Basename `xyz-featx-foo.md` -> unescaped routes in-scope.
+# With escape (`feat\(x\)`), requires literal `feat(x)` -> absent -> leaked.
+printf '?? docs/brainstorms/2026-04-20-xyz-featx-foo.md\0' \
+  > "$_input_dir/qa_metachar_parens"
+assert_partition_counts 'qa_metachar_parens_no_false_match' \
+  brainstorm 'feat(x)' 0 1 0 "$_input_dir/qa_metachar_parens"
+
+# Leading-metachar boundary composition. issue_id beginning with an
+# escaped metachar must still compose cleanly with the left-boundary
+# `(^|[^a-z0-9])` anchor. issue_id `.eng` against basename `.eng-foo.md`
+# -> `\.eng` matches literal `.eng` preceded by ^ -> in-scope.
+printf '?? docs/brainstorms/.eng-foo.md\0' \
+  > "$_input_dir/qa_metachar_leading"
+assert_partition_counts 'qa_metachar_leading_dot_boundary_match' \
+  brainstorm '.eng' 1 0 0 "$_input_dir/qa_metachar_leading"
+
+# Backslash in issue_id (plan Open Question 4 — explicit post-merge
+# follow-up, promoted to committed coverage here). issue_id `a\b` is three
+# literal chars. Sed escape produces `a\\b` (4 chars). POSIX ERE reads
+# `\\` as literal `\`, so the regex requires literal `a\b` in basename.
+# Basename `a-b-foo.md` has no backslash -> leaked.
+printf '?? docs/brainstorms/2026-04-20-a-b-foo.md\0' \
+  > "$_input_dir/qa_metachar_backslash"
+assert_partition_counts 'qa_metachar_backslash_no_false_match' \
+  brainstorm 'a\b' 0 1 0 "$_input_dir/qa_metachar_backslash"
+
+# Sequential-invocation state integrity. `issue_lower_re` must be a
+# function-local, so a metachar-bearing first call does not leak its
+# escaped regex into a metachar-free second call. First invocation uses
+# `a.b`; second uses `ENG-14`. If `issue_lower_re` leaked, the second
+# call would re-use `a\.b` as its pattern and the ENG-14 basename would
+# be misrouted. Assert the second call routes 1 record to in-scope.
+_qa_state_dir="$(mktemp -d -t twinning-qa-state.XXXXXX)"
+printf '?? docs/brainstorms/2026-04-20-a-b-foo.md\0' \
+  > "$_qa_state_dir/first_in"
+printf '?? docs/brainstorms/2026-04-20-ENG-14-foo.md\0' \
+  > "$_qa_state_dir/second_in"
+: > "$_qa_state_dir/first_fd3" "$_qa_state_dir/first_fd4" "$_qa_state_dir/first_fd5"
+: > "$_qa_state_dir/second_fd3" "$_qa_state_dir/second_fd4" "$_qa_state_dir/second_fd5"
+partition_dirty_paths brainstorm 'a.b' \
+  3>"$_qa_state_dir/first_fd3" 4>"$_qa_state_dir/first_fd4" 5>"$_qa_state_dir/first_fd5" \
+  < "$_qa_state_dir/first_in"
+partition_dirty_paths brainstorm 'ENG-14' \
+  3>"$_qa_state_dir/second_fd3" 4>"$_qa_state_dir/second_fd4" 5>"$_qa_state_dir/second_fd5" \
+  < "$_qa_state_dir/second_in"
+_state_second_in="$(tr -cd '\0' < "$_qa_state_dir/second_fd3" | wc -c | tr -d ' ')"
+assert_eq 'qa_no_state_bleed_between_invocations' '1' "$_state_second_in"
+rm -rf "$_qa_state_dir"
+
+# Long metachar-bearing issue_id. Sed must handle a 200-char id (100
+# repetitions of `x.`) without truncation; the resulting regex (~300
+# chars) must be well-formed in bash's `[[ =~ ]]` and still route a
+# non-matching basename to leaked.
+_qa_long_id=""
+for _ in $(seq 1 100); do _qa_long_id+='x.'; done
+printf '?? docs/brainstorms/2026-04-20-nomatch-foo.md\0' \
+  > "$_input_dir/qa_metachar_long_id"
+assert_partition_counts 'qa_metachar_long_id_no_false_match' \
+  brainstorm "$_qa_long_id" 0 1 0 "$_input_dir/qa_metachar_long_id"
+
 rm -rf "$_input_dir"
 
 # ─── SUSPECTED DEFECT 2: snapshot pipeline loses rename oldpath ─────────
