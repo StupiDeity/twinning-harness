@@ -13,7 +13,7 @@
 #   guards.sh check <issue_id>
 #     exit 0 if clear, exit 10 if a threshold is tripped (prints which)
 #   guards.sh bump <issue_id> <counter_name>
-#     counter_name: review_rejection | gotcha_triggered | learned_rule_renewal
+#     counter_name: review_rejection | gotcha_triggered | learned_rule_renewal | qa_rejection | implement_rejection
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,19 +32,23 @@ count_marker() {
 
 check() {
   local ident="$1"
-  local review_threshold gotcha_threshold rule_threshold qa_threshold
+  local review_threshold gotcha_threshold rule_threshold qa_threshold impl_threshold
   review_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.review_rejections_per_feature')"
   gotcha_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.gotcha_trigger_count')"
   rule_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.learned_rule_renewals')"
   qa_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.qa_rejections_per_feature')"
   # Default qa threshold if the key is absent in older configs.
   [[ "$qa_threshold" == "null" || -z "$qa_threshold" ]] && qa_threshold=2
+  impl_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.implement_rejections_per_feature')"
+  # Default impl threshold if the key is absent in older configs.
+  [[ "$impl_threshold" == "null" || -z "$impl_threshold" ]] && impl_threshold=2
 
-  local rev got rule qa
+  local rev got rule qa impl
   rev="$(count_marker "$ident" review_rejection)"
   got="$(count_marker "$ident" gotcha_triggered)"
   rule="$(count_marker "$ident" learned_rule_renewal)"
   qa="$(count_marker "$ident" qa_rejection)"
+  impl="$(count_marker "$ident" implement_rejection)"
 
   local tripped=""
   if (( rev >= review_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:reviewed; then
@@ -59,19 +63,22 @@ check() {
   if (( qa >= qa_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:reviewed; then
     tripped+="qa_rejection($qa>=$qa_threshold) "
   fi
+  if (( impl >= impl_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:reviewed; then
+    tripped+="implement_rejection($impl>=$impl_threshold) "
+  fi
 
   if [[ -n "$tripped" ]]; then
     log "guards: tripped on $ident: $tripped"
     printf '%s\n' "$tripped"
     exit 10
   fi
-  log "guards: clear on $ident (rev=$rev got=$got rule=$rule qa=$qa)"
+  log "guards: clear on $ident (rev=$rev got=$got rule=$rule qa=$qa impl=$impl)"
 }
 
 bump() {
   local ident="$1" counter="$2"
   case "$counter" in
-    review_rejection|gotcha_triggered|learned_rule_renewal|qa_rejection) ;;
+    review_rejection|gotcha_triggered|learned_rule_renewal|qa_rejection|implement_rejection) ;;
     *) die "unknown counter: $counter" ;;
   esac
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "<!-- pipeline-metric: $counter --> Counter bumped by guards.sh."
