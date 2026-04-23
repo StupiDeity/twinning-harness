@@ -436,6 +436,114 @@ else
   fail_at "case-15 round-trip" "trip_rc=$trip_rc trip_output=$trip_output clear_rc=$clear_rc clear_output=$clear_output"
 fi
 
+# ─── Case 16 (QA adversarial): bump's marker text matches count_marker's grep ──
+# Guards against a future refactor that changes the marker string in bump() but
+# forgets count_marker() (or vice versa), silently disabling the counter. The
+# test asserts the literal text `<!-- pipeline-metric: implement_rejection -->`
+# is the prefix of what bump writes — which is the exact grep target in
+# count_marker (guards.sh:30).
+reset_capture
+BUMP_CAPTURE="$STUB_DIR/bump-marker.capture"
+: > "$BUMP_CAPTURE"
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  add-comment)
+    # \$2=ident, \$3=body
+    printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+bash "$FAKE_REPO/.pipeline/bin/guards.sh" bump ENG-T16 implement_rejection >/dev/null 2>&1
+bump_body="$(cat "$BUMP_CAPTURE")"
+if grep -q '<!-- pipeline-metric: implement_rejection -->' "$BUMP_CAPTURE"; then
+  pass_at "case-16 QA: bump emits the exact marker that count_marker greps for"
+else
+  fail_at "case-16 QA marker contract" "body=$bump_body"
+fi
+
+# ─── Case 17 (QA adversarial): ack-label specificity ────────────────────────
+# Applying a DIFFERENT pipeline:*-reviewed label (pipeline:knowledge-reviewed
+# or pipeline:rule-reviewed) must NOT clear the implement_rejection trip.
+# Guards against a future refactor that relaxes `has-label pipeline:reviewed`
+# into a prefix/substring match, which would let unrelated ack labels silently
+# suppress real rejections.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  query)
+    cat <<'JSON'
+{"data":{"issues":{"nodes":[{"id":"id-T17","comments":{"nodes":[
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."},
+  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh."}
+]}}]}}}
+JSON
+    ;;
+  has-label)
+    # Only the exact literal label set via MOCK_LABEL matches.
+    [[ "${MOCK_LABEL:-}" == "$3" ]] && exit 0 || exit 1
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+knowledge_output="$(
+  MOCK_LABEL="pipeline:knowledge-reviewed" \
+  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T17 2>&1
+)"
+knowledge_rc=$?
+rule_output="$(
+  MOCK_LABEL="pipeline:rule-reviewed" \
+  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T17 2>&1
+)"
+rule_rc=$?
+set -e
+
+if [[ "$knowledge_rc" == "10" ]] \
+   && grep -q 'implement_rejection(2>=2)' <<<"$knowledge_output" \
+   && [[ "$rule_rc" == "10" ]] \
+   && grep -q 'implement_rejection(2>=2)' <<<"$rule_output"; then
+  pass_at "case-17 QA: non-'pipeline:reviewed' ack labels do NOT clear implement_rejection trip"
+else
+  fail_at "case-17 QA ack specificity" "knowledge_rc=$knowledge_rc rule_rc=$rule_rc"
+fi
+
+# ─── Case 18 (QA adversarial): clear-log line includes impl=N ───────────────
+# Guards against a future edit that drops `impl=$impl` from the clear-log line
+# at guards.sh:75, which would silently remove operator visibility into the new
+# counter. The test asserts the literal token `impl=0` appears when the issue
+# has no markers (clear path).
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  query)
+    # Zero marker comments — clear path.
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T18","comments":{"nodes":[]}}]}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+clear_log_output="$(
+  bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T18 2>&1
+)"
+clear_log_rc=$?
+set -e
+
+if [[ "$clear_log_rc" == "0" ]] && grep -q 'impl=0' <<<"$clear_log_output"; then
+  pass_at "case-18 QA: clear-log line includes impl=N (drift guard)"
+else
+  fail_at "case-18 QA clear-log" "rc=$clear_log_rc output=$clear_log_output"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
