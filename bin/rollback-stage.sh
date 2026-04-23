@@ -62,6 +62,23 @@ main() {
   log "rollback: $issue_id $current -> $to_stage reason=$reason"
 
   bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$to_stage"
+
+  # ENG-11: drop stale stage-summary files for stages we just rolled through, so
+  # the forward re-run publishes fresh substance rather than recycling pre-rollback bodies.
+  local _r short summary
+  for (( _r = tgt_rank + 1; _r <= cur_rank; _r++ )); do
+    case "$_r" in
+      1) short=brainstorm ;; 2) short=plan ;; 3) short=implement ;;
+      4) short=ui         ;; 5) short=review ;; 6) short=qa ;;
+      7) short=build      ;; *) continue ;;
+    esac
+    summary="$(issue_dir "$issue_id")/stage-summary-${short}.md"
+    if [[ -f "$summary" ]]; then
+      rm -f "$summary"
+      log "rollback: cleared $summary"
+    fi
+  done
+
   bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
     "Pipeline rollback: \`stage:${current}\` → \`stage:${to_stage}\`. Reason: $reason"
   bash "$SCRIPT_DIR/metrics.sh" stage-rollback "$issue_id" "$current" "rolled-back" 0 \
