@@ -15,13 +15,24 @@ export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 # Redirect bash "bash $SCRIPT_DIR/..." calls to local stubs via a tempdir.
 STUB_DIR="$(mktemp -d)"
 trap 'rm -rf "$STUB_DIR"' EXIT
-for cmd in linear.sh slack.sh metrics.sh; do
+METRICS_CAPTURE="$STUB_DIR/metrics.capture"
+: > "$METRICS_CAPTURE"
+for cmd in linear.sh slack.sh; do
   cat > "$STUB_DIR/$cmd" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
   chmod +x "$STUB_DIR/$cmd"
 done
+# metrics.sh as a capture stub so cases 9-14 can inspect the emitted
+# outcome/notes (ENG-10). Args: event issue_id stage outcome duration_ms notes.
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'EVENT=%s\nISSUE=%s\nSTAGE=%s\nOUTCOME=%s\nDURATION=%s\nNOTES=%s\n---\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" "\${6:-}" >> "$METRICS_CAPTURE"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
 
 # classify-failure.sh uses "bash $_CFS_SCRIPT_DIR/linear.sh ..." — override
 # _CFS_SCRIPT_DIR to point at our stubs.
@@ -43,6 +54,13 @@ pass_at() { printf '  ✅ %s\n' "$1"; PASS=$((PASS+1)); }
 reset_state() {
   rm -rf "$TWINNING_DIR"/ENG-*
 }
+
+# Capture-stub helpers (ENG-10 cases 9-14). The capture file accumulates
+# multiple invocations as `KEY=VALUE` blocks separated by `---`; latest_*
+# returns the last non-empty value for the field.
+latest_outcome() { awk -F= '/^OUTCOME=/ {out=$2} /^---$/ {} END{print out}' "$METRICS_CAPTURE"; }
+latest_notes()   { awk -F= '/^NOTES=/   {n=substr($0,7)} END{print n}' "$METRICS_CAPTURE"; }
+reset_metrics()  { : > "$METRICS_CAPTURE"; }
 
 read_state() {
   cat "$(issue_dir "$1")/issue-state.json"
@@ -128,6 +146,54 @@ sha=$(read_state ENG-906 | jq -r '.evidence.branch_head_sha')
 [[ "$sha" == "" ]] \
   && pass_at "case-8 empty branch yields empty branch_head_sha" \
   || fail_at "case-8" "got $sha"
+
+# ─── Test 9: exit 10 → outcome=guards-tripped ─────────────────────────
+reset_state; reset_metrics
+classify_failure "ENG-907" "implement" "skip-until-human-acts" "g" 10 ""
+outcome=$(latest_outcome); notes=$(latest_notes)
+[[ "$outcome" == "guards-tripped" && "$notes" == *"policy=skip-until-human-acts"* ]] \
+  && pass_at "case-9 exit 10 → guards-tripped with policy in notes" \
+  || fail_at "case-9" "outcome=$outcome notes=$notes"
+
+# ─── Test 10: exit 20 → outcome=dispatch-failed ───────────────────────
+reset_state; reset_metrics
+classify_failure "ENG-908" "implement" "retry-immediately" "d" 20 ""
+outcome=$(latest_outcome); notes=$(latest_notes)
+[[ "$outcome" == "dispatch-failed" && "$notes" == *"policy=retry-immediately"* ]] \
+  && pass_at "case-10 exit 20 → dispatch-failed with policy in notes" \
+  || fail_at "case-10" "outcome=$outcome notes=$notes"
+
+# ─── Test 11: exit 21 subcode=3 → outcome=scope-violation ─────────────
+reset_state; reset_metrics
+classify_failure "ENG-909" "implement" "skip-until-human-acts" "sv" 21 3
+outcome=$(latest_outcome); notes=$(latest_notes)
+[[ "$outcome" == "scope-violation" && "$notes" == *"subcode=3"* && "$notes" == *"policy=skip-until-human-acts"* ]] \
+  && pass_at "case-11 exit 21 subcode=3 → scope-violation with subcode+policy in notes" \
+  || fail_at "case-11" "outcome=$outcome notes=$notes"
+
+# ─── Test 12: exit 22 → outcome=pr-opened-too-early ───────────────────
+reset_state; reset_metrics
+classify_failure "ENG-910" "implement" "skip-until-human-acts" "pr" 22 ""
+outcome=$(latest_outcome)
+[[ "$outcome" == "pr-opened-too-early" ]] \
+  && pass_at "case-12 exit 22 → pr-opened-too-early" \
+  || fail_at "case-12" "outcome=$outcome"
+
+# ─── Test 13: exit 24 → outcome=linear-post-failed ────────────────────
+reset_state; reset_metrics
+classify_failure "ENG-911" "implement" "retry-immediately" "lp" 24 ""
+outcome=$(latest_outcome)
+[[ "$outcome" == "linear-post-failed" ]] \
+  && pass_at "case-13 exit 24 → linear-post-failed" \
+  || fail_at "case-13" "outcome=$outcome"
+
+# ─── Test 14: exit 0 subcode=1 → outcome=scope-approval-pending ───────
+reset_state; reset_metrics
+classify_failure "ENG-912" "implement" "skip-until-human-acts" "sa" 0 1
+outcome=$(latest_outcome)
+[[ "$outcome" == "scope-approval-pending" ]] \
+  && pass_at "case-14 exit 0 subcode=1 → scope-approval-pending" \
+  || fail_at "case-14" "outcome=$outcome"
 
 # ─── Summary ──────────────────────────────────────────────────────────
 echo

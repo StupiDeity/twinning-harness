@@ -142,8 +142,12 @@ classify_failure() {
   # Slack.
   bash "$_CFS_SCRIPT_DIR/slack.sh" warn "Stage $stage on $issue → $effective_policy (exit=$exit_code, retry=$retry_count)" || true
 
-  # Metric event.
-  bash "$_CFS_SCRIPT_DIR/metrics.sh" stage-end "$issue" "$stage" "$effective_policy" 0 \
-    "exit=$exit_code${subcode:+ subcode=$subcode} retry_count=$retry_count branch=${branch:-none}" || true
+  # Metric event (ENG-10): outcome is the typed failure-mode name via the
+  # common.sh taxonomy helper; policy rides in notes alongside exit/subcode/
+  # retry/branch. Consumers (status.sh, retrospective §1) filter on outcome.
+  local _typed_outcome
+  _typed_outcome="$(failure_outcome_for_exit "$exit_code" "${subcode:-}")"
+  bash "$_CFS_SCRIPT_DIR/metrics.sh" stage-end "$issue" "$stage" "$_typed_outcome" 0 \
+    "exit=$exit_code${subcode:+ subcode=$subcode} policy=$effective_policy retry_count=$retry_count branch=${branch:-none}" || true
 }
 export -f classify_failure

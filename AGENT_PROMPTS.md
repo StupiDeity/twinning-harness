@@ -158,18 +158,18 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    success comment. Do NOT silently exit.
 4. **Commit artifacts**: the brainstorm doc, plus any new ADRs appended to
    `docs/knowledge/decisions.md` with status `proposed`.
-5. **Post the Linear comment on {issue_id}** — this is the LAST step and is MANDATORY.
-   The stage is not complete until this runs successfully. The comment must include:
+5. **Write the stage summary file** at `{stage_summary_path}` — this is the LAST step and is MANDATORY.
+   The file is picked up by the orchestrator, wrapped with a canonical header, and posted
+   to Linear automatically after this stage exits clean. Content MUST include:
    - the brainstorm doc URL,
    - the full 6-row persona pass/fail table (one row per persona — missing rows indicate
      a skipped persona, which is a failure),
    - a one-line summary: either "zero P0s, proceeding to planning" (success path) or
      an escalation summary tagged `<!-- pipeline-metric: brainstorm_escalate -->` citing
      the unresolved P0s (escalate path).
-   Post via `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" {issue_id} "<body>"` or the equivalent
-   Linear MCP tool. If the comment fails to post, retry once, then fail the stage rather
-   than exit clean. The pipeline verifies this comment exists before marking the stage
-   successful; an exit without a Linear comment will be caught and flagged.
+   Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" …` yourself —
+   that path is now orchestrator-owned. Exception-path markers (`pipeline-metric: contract_gap`,
+   etc.) continue to use `linear.sh add-comment` as before.
 6. **Post the verdict marker + apply pipeline:halted** (ENG-18, MANDATORY).
    Before exiting, post exactly ONE additional append-only comment carrying the
    verdict marker for your verdict:
@@ -329,15 +329,16 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    and reach main via the normal merge flow; do not attempt direct-to-main pushes. Only
    knowledge-file changes go through PRs with CODEOWNERS. Do NOT change the Linear stage
    label — the orchestrator swaps it on successful exit.
-5. **Post the Linear comment on {issue_id}** — this is the LAST step and is MANDATORY.
-   The stage is not complete until this runs successfully. The comment must include the
-   plan URL and the full persona pass/fail table (one row per persona), plus either a
-   success summary or an escalation summary tagged
-   `<!-- pipeline-metric: plan_escalate -->` if step 3 hit iteration 3. Post via
-   `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" {issue_id} "<body>"` or the equivalent Linear
-   MCP tool. If the comment fails to post, retry once, then fail the stage. The pipeline
-   verifies this comment exists before marking the stage successful; an exit without a
-   Linear comment will be caught and flagged.
+5. **Write the stage summary file** at `{stage_summary_path}` — this is the LAST step and is MANDATORY.
+   The file is picked up by the orchestrator, wrapped with a canonical header, and posted
+   to Linear automatically after this stage exits clean. Content MUST include:
+   - the `{plan_file}` path (so a reviewer landing on the plan-stage gate can jump to the
+     plan doc directly, even before a PR exists),
+   - the full persona pass/fail table (one row per persona),
+   - either a success summary or an escalation summary tagged
+     `<!-- pipeline-metric: plan_escalate -->` if step 3 hit iteration 3.
+   Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …` yourself —
+   that path is now orchestrator-owned.
 6. **Post the verdict marker + apply pipeline:halted** (ENG-18, MANDATORY).
    Post exactly ONE additional append-only comment carrying the verdict marker:
    - pass → `<!-- pipeline-stage-summary: planning -->`
@@ -446,6 +447,12 @@ Post via `bash .pipeline/bin/linear.sh add-or-update-comment "tdd-evidence/imple
 Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
 - Post the TDD evidence comment above.
+- Write the stage summary file at `{stage_summary_path}` containing: a pointer to the
+  plan doc path (`{plan_file}`), the commit range on `{branch_name}` (one line per commit,
+  oldest first), per-plan-task commit SHAs, api-contract verification result (pass/fail),
+  and gate-command result summary. The orchestrator posts this as the completion comment
+  on stage exit. This summary is what a reviewer landing on stage:implementing sees BEFORE
+  a PR exists — include enough context to navigate the work.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 
 Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
@@ -598,9 +605,10 @@ PR creation (at exit — UI stage owns PR creation for this branch):
 Output:
 - Commit any remaining work on `{branch_name}` and push.
 - Open the PR per the template above.
-- Post a single Linear comment on {issue_id} with: the PR URL, the per-component
-  checklist scores, the second-reviewer verdict, and gate-command results.
-  Post via `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" {issue_id} "<body>"`.
+- Write the stage summary file at `{stage_summary_path}` containing: the PR URL, the
+  per-component checklist scores, the second-reviewer verdict, and gate-command results.
+  The orchestrator posts this as the completion comment.
+- Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" …` yourself.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 
 Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
@@ -745,8 +753,10 @@ Output:
   premise failure).
 - Summary comment on the PR with: ensemble findings by severity, anti-bias results,
   comment-quality self-lint score, knowledge-update proposals (if any).
-- Single Linear comment on {issue_id} mirroring the summary with the decision path
-  letter (A/B/C) as the first line.
+- Write the stage summary file at `{stage_summary_path}` containing: overall approve/reject
+  verdict, per-reviewer-persona pass/fail table, list of findings by severity, and
+  gate-command result summary. Orchestrator posts this as the completion comment.
+  (On premise-failure path A, skip writing the summary — the orchestrator does not advance.)
 
 Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
@@ -887,7 +897,9 @@ Decision path (apply exactly one):
      - Commit any QA-authored adversarial tests that are not already on the branch.
      - Post a QA summary comment on the PR (gate results + coverage-audit table +
        adversarial tests added + dedup results).
-     - Post a Linear comment on {issue_id} with the same summary.
+     - Write the stage summary file at `{stage_summary_path}` with the same summary
+       (orchestrator posts it as the completion comment). PR summary comment on the
+       GitHub PR stays separate.
      - Orchestrator advances to `stage:building`.
 
 Do NOT change the Linear stage label yourself. The orchestrator owns state transitions.
@@ -1022,7 +1034,9 @@ Decision path (apply exactly one):
   B. **Preconditions pass; merge executed:**
      - Merge the PR (squash + auto + delete-branch).
      - Watch post-merge CI to green.
-     - Post Linear summary: merge SHA, release workflow run ID, any config flags.
+     - Write the stage summary file at `{stage_summary_path}`: merge SHA, release workflow
+       run ID, any config flags. Orchestrator posts it as the completion comment.
+       (Post-merge enrichment by the release stage is separate and uses its own sig.)
      - Slack info notification.
 
 Do NOT change the Linear stage label or Linear native state. The orchestrator
@@ -1201,7 +1215,8 @@ is a P0 meta-finding against the retrospective itself):
 1. **Stage failure analysis:**
    - Parse events.jsonl events: which stages produced outcome ∈
      {failed, paused, scope-violation, pr-opened-too-early, premise-failure,
-      merge_conflict, reconcile-human, guards-tripped} most often?
+      merge_conflict, reconcile-human, guards-tripped, dispatch-failed,
+      linear-post-failed, scope-approval-pending} most often?
    - Compare this period's counts vs the previous period.
    - For each stage with ≥3 rejections, name the top 2 recurring reasons.
 

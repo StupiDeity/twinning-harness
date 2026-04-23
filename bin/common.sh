@@ -44,7 +44,36 @@ compute_pipeline_content_hash() {
     | shasum -a 256 \
     | awk '{print $1}'
 }
-export -f issue_dir compute_pipeline_content_hash
+# ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
+# Map a run-stage.sh exit code (and optional subcode) to the canonical
+# typed outcome name the retrospective agent's §1 filter and status.sh's
+# red/yellow predicate recognise. Callers: classify-failure.sh (all
+# classify_failure emissions), run-stage.sh (paused path — exit 11).
+# Reconcile-human (run-local.sh) does NOT call this helper: it emits the
+# direct string "reconcile-human" per D-004 because exit_code=0
+# subcode="" would route to unknown-exit-0.
+#
+# Usage: failure_outcome_for_exit <exit_code> <subcode>
+#   subcode may be "" (empty). Case matching is exact.
+failure_outcome_for_exit() {
+  local exit_code="$1" subcode="${2:-}"
+  case "$exit_code" in
+    0)
+      case "$subcode" in
+        1) printf 'scope-approval-pending' ;;
+        *) printf 'unknown-exit-0' ;;
+      esac
+      ;;
+    10) printf 'guards-tripped' ;;
+    11) printf 'paused' ;;
+    20) printf 'dispatch-failed' ;;
+    21) printf 'scope-violation' ;;
+    22) printf 'pr-opened-too-early' ;;
+    24) printf 'linear-post-failed' ;;
+    *)  printf 'unknown-exit-%s' "$exit_code" ;;
+  esac
+}
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit
 
 PIPELINE_DRY_RUN="${PIPELINE_DRY_RUN:-0}"
 export PIPELINE_DRY_RUN
