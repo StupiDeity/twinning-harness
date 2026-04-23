@@ -316,11 +316,13 @@ To approve and resume, add these entries to the plan's File Structure section an
         severe_files="$(grep -E '^severe	' <<<"$scope_out" | awk -F'\t' '{print $2}' | sort -u)"
         local severe_patch
         severe_patch="$(printf -- '- `%s`\n' $severe_files)"
+        bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
         classify_failure "$ident" "$stage" "skip-until-human-acts" \
           "SEVERE scope violation on $branch: $(tr '\n' ' ' <<<"$severe_patch")" 21 3
         exit 21
         ;;
       *)
+        bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
         classify_failure "$ident" "$stage" "skip-until-code-changes" \
           "scope-check rc=$scope_rc (likely plan not found or File Structure unparseable)" \
           21 "$scope_rc"
@@ -338,6 +340,7 @@ To approve and resume, add these entries to the plan's File Structure section an
         local pr_count
         pr_count="$(gh pr list --head "$branch" --state open --json number --jq 'length' 2>/dev/null || printf '0')"
         if (( pr_count > 0 )); then
+          bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
           classify_failure "$ident" "$stage" "skip-until-human-acts" \
             "implement stage opened a PR on $branch — UI stage should own PR creation" 22
           exit 22
