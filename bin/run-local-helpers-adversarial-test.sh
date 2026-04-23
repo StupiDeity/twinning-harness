@@ -541,6 +541,55 @@ fi
 assert_eq 'concurrent_acquire_lock_exactly_one_winner' '1' "$_sum"
 rm -rf "$_tdir"
 
+# ─── acquire_lock — QA adversarial coverage (ENG-8) ─────────────────────
+# QA-authored checks beyond the plan's Failure Mode → Test Map. These
+# guard against regressions a future refactor could introduce: pid-file
+# contents, live-holder clobber, and the explicit-argument contract.
+
+# qa_acquire_lock_writes_calling_pid_to_pidfile
+# Boundary assertion on the documented side effect: after a fresh
+# acquisition, $lock_dir/pid must contain the calling shell's $$.
+_qtdir="$(mktemp -d -t twinning-adversarial-lock-qa.XXXXXX)"
+_qlock="$_qtdir/lock"
+acquire_lock "$_qlock"
+_qwrote="$(cat "$_qlock/pid" 2>/dev/null || echo MISSING)"
+assert_eq 'qa_acquire_lock_writes_calling_pid_to_pidfile' "$$" "$_qwrote"
+rm -rf "$_qtdir"
+
+# qa_acquire_lock_live_holder_rejected_without_clobber
+# Pre-seed the lock dir with our own live PID, then call acquire_lock:
+# expected rc=1, and the pid file must still contain the original
+# PID (i.e. the relocated function must not `rm -rf` a live lock).
+_qtdir="$(mktemp -d -t twinning-adversarial-lock-qa.XXXXXX)"
+_qlock="$_qtdir/lock"
+mkdir "$_qlock"
+printf '%s\n' "$$" > "$_qlock/pid"
+_qorig="$(cat "$_qlock/pid")"
+_qrc=0
+acquire_lock "$_qlock" || _qrc=$?
+_qafter="$(cat "$_qlock/pid" 2>/dev/null || echo MISSING)"
+assert_eq 'qa_acquire_lock_live_holder_rejected_rc' '1' "$_qrc"
+assert_eq 'qa_acquire_lock_live_holder_pidfile_preserved' "$_qorig" "$_qafter"
+rm -rf "$_qtdir"
+
+# qa_acquire_lock_uses_arg_not_lock_dir_global
+# Contract assertion: the relocated function takes the lock path as an
+# explicit positional argument and must not fall back to a caller-side
+# $LOCK_DIR global. Unset LOCK_DIR in a subshell, then call acquire_lock
+# with an explicit arg — expect rc=0 and the explicit path to exist.
+_qtdir="$(mktemp -d -t twinning-adversarial-lock-qa.XXXXXX)"
+_qlock="$_qtdir/explicit-lock"
+_qrc=0
+(
+  unset LOCK_DIR
+  acquire_lock "$_qlock"
+) || _qrc=$?
+_qexists='no'
+[[ -d "$_qlock" ]] && _qexists='yes'
+assert_eq 'qa_acquire_lock_explicit_arg_rc' '0' "$_qrc"
+assert_eq 'qa_acquire_lock_explicit_arg_path_created' 'yes' "$_qexists"
+rm -rf "$_qtdir"
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 printf '\n'
