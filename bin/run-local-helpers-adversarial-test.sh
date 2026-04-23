@@ -503,6 +503,93 @@ else
   printf 'SKIP: qa_snapshot_bsd_awk_RS_regex_escape_portable (no /usr/bin/awk)\n'
 fi
 
+# ─── acquire_lock — concurrent race (ENG-8) ─────────────────────────────
+# Bug class (Linear ENG-8, 2026-04-18): two overlapping pipeline ticks
+# both call acquire_lock on the same lock_dir; at most one must win.
+# Fork two background subshells, each attempting acquisition, capture
+# both exit codes, assert the sum is exactly 1. The lock directory is
+# a fresh mktemp path whose parent exists but whose leaf does not —
+# that is the state acquire_lock's mkdir branch races against.
+_tdir="$(mktemp -d -t twinning-adversarial-lock.XXXXXX)"
+_lock_path="$_tdir/lock"
+_rc_a="$_tdir/rc_a"
+_rc_b="$_tdir/rc_b"
+# common.sh has already enabled `set -e`; capture acquire_lock's exit
+# status with `|| rc=$?` so the losing subshell doesn't abort before
+# writing its rc file.
+(
+  _rc=0
+  acquire_lock "$_lock_path" || _rc=$?
+  printf '%s\n' "$_rc" > "$_rc_a"
+) &
+_pid_a=$!
+(
+  _rc=0
+  acquire_lock "$_lock_path" || _rc=$?
+  printf '%s\n' "$_rc" > "$_rc_b"
+) &
+_pid_b=$!
+wait "$_pid_a" || true
+wait "$_pid_b" || true
+_val_a="$(cat "$_rc_a" 2>/dev/null || echo X)"
+_val_b="$(cat "$_rc_b" 2>/dev/null || echo X)"
+if [[ "$_val_a" =~ ^[0-9]+$ && "$_val_b" =~ ^[0-9]+$ ]]; then
+  _sum=$(( _val_a + _val_b ))
+else
+  _sum="invalid(a=$_val_a,b=$_val_b)"
+fi
+assert_eq 'concurrent_acquire_lock_exactly_one_winner' '1' "$_sum"
+rm -rf "$_tdir"
+
+# ─── acquire_lock — QA adversarial coverage (ENG-8) ─────────────────────
+# QA-authored checks beyond the plan's Failure Mode → Test Map. These
+# guard against regressions a future refactor could introduce: pid-file
+# contents, live-holder clobber, and the explicit-argument contract.
+
+# qa_acquire_lock_writes_calling_pid_to_pidfile
+# Boundary assertion on the documented side effect: after a fresh
+# acquisition, $lock_dir/pid must contain the calling shell's $$.
+_qtdir="$(mktemp -d -t twinning-adversarial-lock-qa.XXXXXX)"
+_qlock="$_qtdir/lock"
+acquire_lock "$_qlock"
+_qwrote="$(cat "$_qlock/pid" 2>/dev/null || echo MISSING)"
+assert_eq 'qa_acquire_lock_writes_calling_pid_to_pidfile' "$$" "$_qwrote"
+rm -rf "$_qtdir"
+
+# qa_acquire_lock_live_holder_rejected_without_clobber
+# Pre-seed the lock dir with our own live PID, then call acquire_lock:
+# expected rc=1, and the pid file must still contain the original
+# PID (i.e. the relocated function must not `rm -rf` a live lock).
+_qtdir="$(mktemp -d -t twinning-adversarial-lock-qa.XXXXXX)"
+_qlock="$_qtdir/lock"
+mkdir "$_qlock"
+printf '%s\n' "$$" > "$_qlock/pid"
+_qorig="$(cat "$_qlock/pid")"
+_qrc=0
+acquire_lock "$_qlock" || _qrc=$?
+_qafter="$(cat "$_qlock/pid" 2>/dev/null || echo MISSING)"
+assert_eq 'qa_acquire_lock_live_holder_rejected_rc' '1' "$_qrc"
+assert_eq 'qa_acquire_lock_live_holder_pidfile_preserved' "$_qorig" "$_qafter"
+rm -rf "$_qtdir"
+
+# qa_acquire_lock_uses_arg_not_lock_dir_global
+# Contract assertion: the relocated function takes the lock path as an
+# explicit positional argument and must not fall back to a caller-side
+# $LOCK_DIR global. Unset LOCK_DIR in a subshell, then call acquire_lock
+# with an explicit arg — expect rc=0 and the explicit path to exist.
+_qtdir="$(mktemp -d -t twinning-adversarial-lock-qa.XXXXXX)"
+_qlock="$_qtdir/explicit-lock"
+_qrc=0
+(
+  unset LOCK_DIR
+  acquire_lock "$_qlock"
+) || _qrc=$?
+_qexists='no'
+[[ -d "$_qlock" ]] && _qexists='yes'
+assert_eq 'qa_acquire_lock_explicit_arg_rc' '0' "$_qrc"
+assert_eq 'qa_acquire_lock_explicit_arg_path_created' 'yes' "$_qexists"
+rm -rf "$_qtdir"
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 printf '\n'

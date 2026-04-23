@@ -131,3 +131,46 @@ partition_dirty_paths() {
     fi
   done
 }
+
+# Single-flight lock for run-local.sh. Uses POSIX-atomic mkdir(2) on
+# $1 (the lock directory) to guarantee at most one pipeline tick runs
+# concurrently on this host.
+#
+# Context (ENG-8): On 2026-04-18 UTC, runs 24614671581 (21:50) and
+# 24614881559 (22:02) of the former .github/workflows/pipeline.yml
+# double-dispatched the `plan` stage for ENG-5. verify_preconditions()
+# at run-stage.sh:132-134 caught the second dispatch via label-mismatch
+# die — that architecture-agnostic check is the PRIMARY defense against
+# stage double-dispatch. This mkdir lock is the SECONDARY,
+# per-host-tick-level optimization that stops overlapping run-local.sh
+# ticks before they reach verify_preconditions.
+#
+# After commits 56c8a8a (2026-04-19, cron disabled) and 4f5850e
+# (2026-04-20, workflow file deleted) moved the poll loop from
+# .github/workflows/pipeline.yml to a local launchd job, the lock's
+# scope is one host — if the pipeline ever runs on multiple hosts,
+# only verify_preconditions protects the bug class. Do not remove
+# this lock without either (a) a distributed alternative or
+# (b) reaffirmed reliance on the precondition check.
+#
+# Returns 0 on success (fresh acquisition OR stale-lock recovery),
+# 1 if another live holder owns the lock.
+acquire_lock() {
+  local lock_dir="$1"
+  if mkdir "$lock_dir" 2>/dev/null; then
+    printf '%s\n' $$ > "$lock_dir/pid"
+    return 0
+  fi
+  # Existing lock: break it if the holder process is gone.
+  local holder
+  holder="$(cat "$lock_dir/pid" 2>/dev/null || echo 0)"
+  if [[ "$holder" =~ ^[0-9]+$ ]] && (( holder > 0 )) && ! kill -0 "$holder" 2>/dev/null; then
+    rm -rf "$lock_dir"
+    if mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s\n' $$ > "$lock_dir/pid"
+      log "broke stale lock held by dead pid $holder"
+      return 0
+    fi
+  fi
+  return 1
+}
