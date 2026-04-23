@@ -19,6 +19,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=verdict-handler.sh
+source "$SCRIPT_DIR/verdict-handler.sh"
 
 STAGE_LABEL_TO_STAGE_ARG='
 stage:brainstorming=brainstorm
@@ -149,6 +151,24 @@ main() {
       local ident labels_json
       ident="$(jq -r ".[$i].identifier" <<<"$cand_json")"
       labels_json="$(jq -c ".[$i].labels" <<<"$cand_json")"
+
+      # Pre-dispatch: process pending verdicts on halted issues. If the
+      # fresh marker is pass/reject, the Verdict Handler transitions and
+      # clears halt; the next tick will then see the new stage. If the
+      # fresh marker is a halt-for-human (rc=1) or protocol violation
+      # (rc=2), leave as-is and skip dispatching this candidate.
+      local has_halt
+      has_halt="$(jq -r --arg n "pipeline:halted" \
+        '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
+      if [[ "$has_halt" == "true" ]]; then
+        local cur_stage_suffix="${stage_label#stage:}"
+        if verdict_handler "$ident" "$cur_stage_suffix"; then
+          log "poll: verdict-handler transitioned $ident; will be picked up next tick"
+        fi
+        i=$((i+1))
+        continue
+      fi
+
       if _poll_evaluate_skip "$ident" "$labels_json"; then
         pick="$ident"; break
       fi
