@@ -179,6 +179,11 @@ main() {
     local rc=$?
     bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "paused" 0 \
       || true
+    # ENG-10 D-004: emit a matching stage-end so retrospective §1 can pair
+    # the events. Helper resolves rc=11 to "paused"; any other rc would
+    # return "unknown-exit-<N>" which is the correct drift signal.
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" \
+      "$(failure_outcome_for_exit "$rc" "")" 0 "exit=$rc" || true
     exit "$rc"
   }
 
