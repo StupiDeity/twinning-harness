@@ -10,14 +10,47 @@ source "$SCRIPT_DIR_REAL/common.sh"
 
 export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
-TWINNING_DIR="$(mktemp -d)"
-export TWINNING_DIR
-_TEST_TWINNING_DIR="$TWINNING_DIR"  # Save for later re-assignment
 
-STUB_DIR="$(mktemp -d)"
+# Allocate temp dirs. These paths are captured into _TEST_* variables that
+# never get reassigned by sourcing common.sh / poll.sh (both of which reset
+# TWINNING_DIR to $HOME/.twinning-pipeline). The trap uses the _TEST_*
+# copies so an accidental TWINNING_DIR reassignment can't cause rm -rf to
+# hit live pipeline state. See ENG-20 incident on 2026-04-24.
+_TEST_TWINNING_DIR="$(mktemp -d)"
+_TEST_STUB_DIR="$(mktemp -d)"
+
+# Defense-in-depth: refuse to continue if mktemp ever returns a path
+# outside platform temp roots. On macOS mktemp writes to /var/folders/...
+# and on Linux to /tmp/... — anything else is a red flag.
+_test_assert_temp_path() {
+  case "$1" in
+    /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*) return 0 ;;
+    *) printf 'REFUSING: path %q is not a platform temp dir\n' "$1" >&2; exit 99 ;;
+  esac
+}
+_test_assert_temp_path "$_TEST_TWINNING_DIR"
+_test_assert_temp_path "$_TEST_STUB_DIR"
+
+# Trap cleanup. Uses _TEST_* (never reassigned) and checks each path is
+# still a temp dir at trap-fire time before rm-rf-ing it. This would have
+# prevented the 2026-04-24 incident where sourcing common.sh reset
+# TWINNING_DIR to $HOME/.twinning-pipeline and the exit trap removed it.
+_test_safe_rm() {
+  local path="$1"
+  case "$path" in
+    /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*)
+      rm -rf "$path" ;;
+    *)
+      printf 'SAFETY: trap refusing rm -rf %q (not a temp dir)\n' "$path" >&2 ;;
+  esac
+}
+trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_TWINNING_DIR"' EXIT
+
+TWINNING_DIR="$_TEST_TWINNING_DIR"
+export TWINNING_DIR
+STUB_DIR="$_TEST_STUB_DIR"
 FIXTURE_DIR="$STUB_DIR/fixtures"
 mkdir -p "$FIXTURE_DIR"
-trap 'rm -rf "$STUB_DIR" "$TWINNING_DIR"' EXIT
 export FIXTURE_DIR
 
 # ─── Stub external scripts ───────────────────────────────────────────
