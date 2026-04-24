@@ -148,7 +148,7 @@ fi
 # ─── Case 5: oversize file → truncation marker ──────────────────────────
 reset_capture
 mkdir -p "$(issue_dir ENG-T5)"
-yes "x" | head -c 40000 > "$(issue_dir ENG-T5)/stage-summary-plan.md"
+head -c 40000 /dev/zero | tr '\0' x > "$(issue_dir ENG-T5)/stage-summary-plan.md"
 post_completion_comment ENG-T5 plan
 body="$(captured_body)"
 if grep -q 'summary_truncated' <<<"$body" \
