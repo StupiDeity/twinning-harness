@@ -88,7 +88,12 @@ main() {
     fi
   done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
   if [[ -n "$canonical" ]]; then
-    printf 'link:%s\n' "${canonical#"$REPO_ROOT/"}"
+    local rel out
+    rel="${canonical#"$REPO_ROOT/"}"
+    if out="$(resolve_via_control_label "$issue_id" "$rel" canonical)"; then
+      printf '%s\n' "$out"; return 0
+    fi
+    printf 'link:%s\n' "$rel"
     return 0
   fi
 
