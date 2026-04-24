@@ -73,7 +73,7 @@ get_issue() {
 list_issues_in_state() {
   local state_name="$1" team_id
   team_id="$(config_get '.linear.team_id')"
-  local q='query($teamId: ID!, $state: String!) { issues(first: 50, filter: { team: { id: { eq: $teamId } }, state: { name: { eq: $state } } }) { nodes { id identifier title state { name } labels { nodes { name } } updatedAt } } }'
+  local q='query($teamId: ID!, $state: String!) { issues(first: 50, filter: { team: { id: { eq: $teamId } }, state: { name: { eq: $state } } }) { nodes { id identifier title state { name } labels { nodes { name } } priority updatedAt } } }'
   local vars
   vars="$(jq -cn --arg teamId "$team_id" --arg state "$state_name" '{teamId:$teamId, state:$state}')"
   linear_query "$q" "$vars"
@@ -82,7 +82,7 @@ list_issues_in_state() {
 list_issues_with_label() {
   local label_name="$1" team_id
   team_id="$(config_get '.linear.team_id')"
-  local q='query($teamId: ID!, $label: String!) { issues(first: 50, filter: { team: { id: { eq: $teamId } }, labels: { name: { eq: $label } } }) { nodes { id identifier title state { name } labels { nodes { name } } updatedAt } } }'
+  local q='query($teamId: ID!, $label: String!) { issues(first: 50, filter: { team: { id: { eq: $teamId } }, labels: { name: { eq: $label } } }) { nodes { id identifier title state { name } labels { nodes { name } } priority updatedAt } } }'
   local vars
   vars="$(jq -cn --arg teamId "$team_id" --arg label "$label_name" '{teamId:$teamId, label:$label}')"
   linear_query "$q" "$vars"
