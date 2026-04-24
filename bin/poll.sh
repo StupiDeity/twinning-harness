@@ -230,6 +230,83 @@ _poll_classify_all() {
   printf '%s' "$acc"
 }
 
+# Emit a per-tick halt-sprawl alert when the count of slot=="vacate"
+# entries in the classified array exceeds the configured threshold.
+#
+# Behaviour (ENG-21):
+#   - threshold read from .orchestrator.alert_on_halted_over
+#   - missing / null / non-integer key → feature disabled (one log line, early return)
+#   - count > threshold (strict GT) → always append halt-sprawl metric row
+#   - if $PIPELINE_SLACK_WEBHOOK_URL is set AND debounce file is absent or >86400s old:
+#       → fire slack.sh warn "..." naming the first 3 vacate identifiers
+#       → stamp ~/.twinning-pipeline/.halt-sprawl-last-alerted with current ISO-8601 UTC
+#   - metric emission never fails the tick (|| true, mirroring poll.sh:235)
+#
+# Input:  classified_json (JSON array produced by _poll_classify_all)
+# Output: none
+# Side effects: writes to $TWINNING_DIR/metrics/events.jsonl and
+#               $TWINNING_DIR/.halt-sprawl-last-alerted; may POST to Slack.
+_poll_emit_halt_sprawl_alert() {
+  local classified_json="$1"
+
+  local threshold
+  threshold="$(config_get '.orchestrator.alert_on_halted_over')"
+  if [[ -z "$threshold" ]] || [[ "$threshold" == "null" ]]; then
+    log "halt-sprawl: threshold unset; alert disabled"
+    return 0
+  fi
+  if ! [[ "$threshold" =~ ^[0-9]+$ ]]; then
+    log "halt-sprawl: non-integer threshold ($threshold); alert disabled"
+    return 0
+  fi
+
+  local count
+  count="$(jq '[.[] | select(.slot == "vacate")] | length' <<<"$classified_json")"
+
+  if ! (( count > threshold )); then
+    return 0
+  fi
+
+  # Level-triggered: append metric every tick above threshold.
+  bash "$SCRIPT_DIR/metrics.sh" halt-sprawl "" "" alert 0 \
+    "count=$count threshold=$threshold" || true
+
+  # Edge-triggered: Slack at most once per 24h.
+  local debounce_file="$TWINNING_DIR/.halt-sprawl-last-alerted"
+  local now_epoch last_epoch="0"
+  now_epoch="$(date -u +%s)"
+  if [[ -f "$debounce_file" ]]; then
+    local stamp
+    stamp="$(cat "$debounce_file" 2>/dev/null || printf '')"
+    # Accept ISO-8601 UTC (primary) or empty (treat as absent).
+    # Any unparseable content → last_epoch stays 0 → Slack fires.
+    if [[ -n "$stamp" ]]; then
+      last_epoch="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$stamp" +%s 2>/dev/null \
+                    || date -u -d "$stamp" +%s 2>/dev/null \
+                    || printf '0')"
+    fi
+  fi
+
+  if (( now_epoch - last_epoch > 86400 )); then
+    local top3
+    top3="$(jq -rc '[.[] | select(.slot == "vacate") | .identifier] | .[:3] | join(", ")' \
+             <<<"$classified_json")"
+    local suffix=""
+    if (( count > 3 )); then
+      suffix=", …"
+    fi
+    local msg="Halt sprawl: $count halted ($top3$suffix) exceed threshold $threshold"
+    log "halt-sprawl: firing slack (count=$count threshold=$threshold)"
+    bash "$SCRIPT_DIR/slack.sh" warn "$msg" || true
+
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$debounce_file"
+  else
+    log "halt-sprawl: slack suppressed by debounce ($((now_epoch - last_epoch))s < 86400s)"
+  fi
+
+  return 0
+}
+
 idle() {
   local reason="${1:-}"
   bash "$SCRIPT_DIR/metrics.sh" poll-tick "" "" "idle" 0 "$reason" || true
