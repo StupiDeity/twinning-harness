@@ -70,6 +70,7 @@ failure_outcome_for_exit() {
     21) printf 'scope-violation' ;;
     22) printf 'pr-opened-too-early' ;;
     24) printf 'linear-post-failed' ;;
+    25) printf 'agent-contract-missing' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
 }
