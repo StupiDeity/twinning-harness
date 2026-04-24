@@ -332,6 +332,10 @@ main() {
   local classified
   classified="$(_poll_classify_all "$gathered")"
 
+  # Pass 2b: halt-sprawl observability (ENG-21). Reads classified only;
+  # never fails the tick.
+  _poll_emit_halt_sprawl_alert "$classified"
+
   # Pass 3: derive held slots = top-N holders sorted by
   # (stage descending toward released, Linear priority descending).
   local held
