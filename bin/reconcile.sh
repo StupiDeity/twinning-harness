@@ -87,8 +87,8 @@ main() {
       canonical="$f"; break
     fi
   done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
+  local rel="" out=""
   if [[ -n "$canonical" ]]; then
-    local rel out
     rel="${canonical#"$REPO_ROOT/"}"
     if out="$(resolve_via_control_label "$issue_id" "$rel" canonical)"; then
       printf '%s\n' "$out"; return 0
@@ -118,20 +118,11 @@ main() {
 
   # Threshold 0.50 on jaccard tokens feels about right; tune with real data.
   if awk -v s="$best_score" 'BEGIN{exit !(s>=0.50)}'; then
-    # Resolve via control label.
-    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:supersede"; then
-      log "reconcile: pipeline:supersede → proceed (supersedes ${best_file#"$REPO_ROOT/"} score=$best_score)"
-      printf 'proceed\n'; return 0
+    rel="${best_file#"$REPO_ROOT/"}"
+    if out="$(resolve_via_control_label "$issue_id" "$rel" fuzzy "$best_score")"; then
+      printf '%s\n' "$out"; return 0
     fi
-    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:extend"; then
-      log "reconcile: pipeline:extend → proceed (extends ${best_file#"$REPO_ROOT/"} score=$best_score)"
-      printf 'proceed\n'; return 0
-    fi
-    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:ignore"; then
-      log "reconcile: pipeline:ignore → link (canonical=${best_file#"$REPO_ROOT/"} score=$best_score)"
-      printf 'link:%s\n' "${best_file#"$REPO_ROOT/"}"; return 0
-    fi
-    log "reconcile: fuzzy match needs human (candidate=${best_file#"$REPO_ROOT/"} score=$best_score)"
+    log "reconcile: fuzzy match needs human (candidate=${rel} score=$best_score)"
     printf 'human\n'; return 0
   fi
 
