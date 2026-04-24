@@ -31,6 +31,26 @@ print(f"{inter/union:.2f}")
 PY
 }
 
+# Resolve a reconcile match by consulting the three control labels.
+# Args: $1=issue_id $2=rel_path (relative-to-REPO_ROOT) $3=match_kind (canonical|fuzzy) [$4=score]
+# Prints: proceed | link:<rel_path> on exit 0 (a label applied). Nothing on exit 1.
+resolve_via_control_label() {
+  local issue_id="$1" rel_path="$2" kind="$3" score="${4:-}"
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:supersede"; then
+    log "reconcile: pipeline:supersede → proceed (supersedes ${rel_path} kind=${kind}${score:+ score=$score})"
+    printf 'proceed\n'; return 0
+  fi
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:extend"; then
+    log "reconcile: pipeline:extend → proceed (extends ${rel_path} kind=${kind}${score:+ score=$score})"
+    printf 'proceed\n'; return 0
+  fi
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:ignore"; then
+    log "reconcile: pipeline:ignore → link (canonical=${rel_path} kind=${kind}${score:+ score=$score})"
+    printf 'link:%s\n' "$rel_path"; return 0
+  fi
+  return 1
+}
+
 main() {
   local issue_id="${1:-}" kind="${2:-}"
   [[ -n "$issue_id" && -n "$kind" ]] || die "usage: reconcile.sh <issue_id> <brainstorm|plan>"
