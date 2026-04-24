@@ -12,6 +12,7 @@ export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 TWINNING_DIR="$(mktemp -d)"
 export TWINNING_DIR
+_TEST_TWINNING_DIR="$TWINNING_DIR"  # Save for later re-assignment
 
 STUB_DIR="$(mktemp -d)"
 FIXTURE_DIR="$STUB_DIR/fixtures"
@@ -59,10 +60,16 @@ done
 # poll.sh sets SCRIPT_DIR from BASH_SOURCE at load time and uses it in
 # every `bash "$SCRIPT_DIR/..."` call. We source the real file (so
 # main() and helpers are defined) and then override SCRIPT_DIR so
-# call sites resolve to our stubs.
+# call sites resolve to our stubs. Same with verdict-handler.sh's
+# _VH_SCRIPT_DIR (set when verdict-handler.sh is sourced by poll.sh).
+# NB: poll.sh sources common.sh, which resets TWINNING_DIR to HOME path;
+# we must re-override TWINNING_DIR after sourcing poll.sh.
 # shellcheck source=poll.sh
 source "$SCRIPT_DIR_REAL/poll.sh"
 SCRIPT_DIR="$STUB_DIR"
+_VH_SCRIPT_DIR="$STUB_DIR"
+TWINNING_DIR="$_TEST_TWINNING_DIR"
+export TWINNING_DIR
 
 # _poll_evaluate_skip calls git ls-remote for branch SHA. Override for
 # tests: always return empty current SHA so evidence-unchanged branch
@@ -175,6 +182,28 @@ if { [[ "$issue_id" == "ENG-1001" ]] || [[ "$issue_id" == "ENG-1002" ]]; } \
   pass_at "AC-1 advance-held-at-cap dispatches a planning issue"
 else
   fail_at "AC-1 advance-held-at-cap dispatches a planning issue" "out=$out"
+fi
+
+# ─── AC-2: halt-for-human vacates slot ────────────────────────────────
+# 2 issues bare-halted with pipeline-halt markers (agent-blocked for human)
+# + 1 Todo in inbox. Expected: Todo picked up (halted don't hold slots).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-2001|In Progress|3|Bug,stage:planning,pipeline:halted" \
+  "ENG-2002|In Progress|3|Bug,stage:planning,pipeline:halted"
+write_comments_fixture "ENG-2001" \
+  "<!-- pipeline-halt: agent-blocked -->|2026-04-24T10:00:00.000Z"
+write_comments_fixture "ENG-2002" \
+  "<!-- pipeline-halt: agent-blocked -->|2026-04-24T10:00:00.000Z"
+write_inbox_fixture \
+  "ENG-3001|Todo|3|Bug"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-3001" ]] && [[ "$entry" == "apply-stage-label" ]]; then
+  pass_at "AC-2 halt-for-human vacates slot; inbox Todo picked"
+else
+  fail_at "AC-2 halt-for-human vacates slot; inbox Todo picked" "out=$out"
 fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
