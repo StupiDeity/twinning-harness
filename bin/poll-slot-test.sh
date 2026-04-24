@@ -229,6 +229,38 @@ else
   fail_at "AC-3 halt-for-verdict holds slot; inbox NOT picked" "out=$out"
 fi
 
+# ─── AC-4: priority sort — higher Linear priority advances first ──────
+# Two stage:planning issues at same stage. ENG-5001 has priority 1 (Urgent),
+# ENG-5002 has priority 3 (Normal). cap=2. Expected: ENG-5001 is dispatched.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-5001|In Progress|1|Bug,stage:planning" \
+  "ENG-5002|In Progress|3|Bug,stage:planning"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-5001" ]]; then
+  pass_at "AC-4 priority sort — Urgent advances before Normal"
+else
+  fail_at "AC-4 priority sort — Urgent advances before Normal" "out=$out"
+fi
+
+# Also: stage sort — later stage advances before earlier stage at same priority.
+# ENG-5003 at stage:reviewing (later) + ENG-5004 at stage:planning, same priority 3.
+# Expected: ENG-5003 dispatched (closer to released).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-5004|In Progress|3|Bug,stage:planning"
+write_label_fixture "stage:reviewing" \
+  "ENG-5003|In Progress|3|Bug,stage:reviewing"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
+stage="$(jq -r '.stage // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-5003" ]] && [[ "$stage" == "review" ]]; then
+  pass_at "AC-4 stage sort — reviewing advances before planning"
+else
+  fail_at "AC-4 stage sort — reviewing advances before planning" "out=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
