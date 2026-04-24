@@ -94,6 +94,142 @@ _poll_evaluate_skip() {
   return 1
 }
 
+# Gather all non-Done issues bearing any non-released stage:* label.
+# Emits: JSON array [{identifier, stage_label, stage_index, priority, labels}]
+# where stage_index is the position of the stage in workflow_stages (0 = earliest,
+# higher = closer to stage:released). Released is excluded.
+#
+# Dedupes by identifier (protects against the rare race where an issue is mid
+# label-swap and appears in two stage buckets). Last write wins on stage fields.
+_poll_gather_stage_labeled_issues() {
+  local acc='[]'
+  local idx=-1
+  local stage
+  while IFS= read -r stage; do
+    idx=$((idx+1))
+    [[ "$stage" == "released" ]] && continue
+    local stage_label="stage:$stage"
+    local batch
+    batch="$(bash "$SCRIPT_DIR/linear.sh" list-issues-with-label "$stage_label" \
+      | jq -c --arg label "$stage_label" --argjson idx "$idx" '
+        [.data.issues.nodes[]
+         | select(.state.name != "Done")
+         | {identifier:   .identifier,
+            stage_label:  $label,
+            stage_index:  $idx,
+            priority:     (.priority // 0),
+            labels:       [.labels.nodes[].name]}]')"
+    acc="$(jq -c --argjson a "$acc" --argjson b "$batch" '$a + $b' <<<"$acc")"
+  done < <(jq -r '.linear.workflow_stages[]' "$CONFIG")
+  jq -c 'unique_by(.identifier)' <<<"$acc"
+}
+
+# Classify one issue's slot state from its labels (+ Linear comments when needed).
+# Input:  ident, labels_json  (labels_json is a JSON array of label name strings)
+# Output: {"slot": "hold"|"vacate"|"terminal", "advanceable": true|false}
+#
+# Rules (evaluated top-down, first match wins):
+#   _poll_evaluate_skip returns 1 (still skipped — applies to:
+#     skip-until-human-acts present, OR
+#     skip-until-code-changes present AND evidence unchanged)
+#                                                    → vacate
+#   _poll_evaluate_skip returns 0 (include — covers:
+#     no skip labels + no state file, OR
+#     orphan state file cleanup, OR
+#     orphan label cleanup, OR
+#     skip-until-code-changes evidence changed + label cleared)
+#                                                    → proceed with label-based classification
+#   pipeline:abandoned                               → terminal
+#   pipeline:paused                                  → vacate (human-initiated)
+#   pipeline:scope-approval-needed                   → vacate (human-gated)
+#   pipeline:halted (bare; evaluated via marker)     →
+#     find_fresh_verdict returns empty               → hold, NOT advanceable
+#                                                      (agent may have exited silently;
+#                                                       next tick pre-dispatch re-checks)
+#     fresh marker is pipeline-halt                  → vacate (halt-for-human / protocol-violation)
+#     fresh marker is pipeline-stage-summary/rejection → hold, advanceable
+#                                                      (verdict_handler will transition)
+#     other marker shape                             → hold, NOT advanceable (conservative)
+#   no blocker labels                                → hold, advanceable
+#
+# Note: _poll_evaluate_skip handles both skip-until-* label branches AND
+# orphan cleanup (state file without label, or label without state file).
+# Calling it up-front subsumes the skip-label case and preserves the
+# orphan-cleanup behavior of pre-ENG-20 main(). For non-skip issues with
+# neither label nor state file, it short-circuits to return 0 with no
+# side effects — cheap.
+_poll_classify_labels() {
+  local ident="$1" labels_json="$2"
+
+  if ! _poll_evaluate_skip "$ident" "$labels_json"; then
+    printf '{"slot":"vacate","advanceable":false}'
+    return 0
+  fi
+
+  _has_label() {
+    jq -r --arg n "$1" '[.[] | select(. == $n)] | length > 0' <<<"$labels_json"
+  }
+
+  if [[ "$(_has_label pipeline:abandoned)" == "true" ]]; then
+    printf '{"slot":"terminal","advanceable":false}'
+    return 0
+  fi
+
+  if [[ "$(_has_label pipeline:paused)" == "true" ]] \
+  || [[ "$(_has_label pipeline:scope-approval-needed)" == "true" ]]; then
+    printf '{"slot":"vacate","advanceable":false}'
+    return 0
+  fi
+
+  if [[ "$(_has_label pipeline:halted)" == "true" ]]; then
+    local fresh
+    fresh="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
+    if [[ -z "$fresh" ]]; then
+      printf '{"slot":"hold","advanceable":false}'
+      return 0
+    fi
+    local marker
+    marker="$(jq -r '.marker // ""' <<<"$fresh")"
+    case "$marker" in
+      pipeline-stage-summary|pipeline-rejection)
+        printf '{"slot":"hold","advanceable":true}' ;;
+      pipeline-halt)
+        printf '{"slot":"vacate","advanceable":false}' ;;
+      *)
+        printf '{"slot":"hold","advanceable":false}' ;;
+    esac
+    return 0
+  fi
+
+  printf '{"slot":"hold","advanceable":true}'
+}
+
+# Classify every issue in a gathered-issues JSON array and augment each object
+# with {slot, advanceable, priority_sort_rank}.
+# priority_sort_rank maps Linear priority for descending sort:
+#   Urgent(1)=4, High(2)=3, Normal(3)=2, Low(4)=1, None(0)=0.
+_poll_classify_all() {
+  local gathered_json="$1"
+  local n
+  n="$(jq 'length' <<<"$gathered_json")"
+  local acc='[]'
+  local i=0
+  while (( i < n )); do
+    local item ident labels_json class augmented
+    item="$(jq -c ".[$i]" <<<"$gathered_json")"
+    ident="$(jq -r '.identifier' <<<"$item")"
+    labels_json="$(jq -c '.labels' <<<"$item")"
+    class="$(_poll_classify_labels "$ident" "$labels_json")"
+    augmented="$(jq -c --argjson c "$class" '
+      . + $c + {
+        priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)
+      }' <<<"$item")"
+    acc="$(jq -c --argjson a "$acc" --argjson x "$augmented" '$a + [$x]' <<<"$acc")"
+    i=$((i+1))
+  done
+  printf '%s' "$acc"
+}
+
 idle() {
   local reason="${1:-}"
   bash "$SCRIPT_DIR/metrics.sh" poll-tick "" "" "idle" 0 "$reason" || true
