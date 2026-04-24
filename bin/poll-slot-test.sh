@@ -206,6 +206,29 @@ else
   fail_at "AC-2 halt-for-human vacates slot; inbox Todo picked" "out=$out"
 fi
 
+# ─── AC-3: halt-for-verdict holds slot ────────────────────────────────
+# 2 issues bare-halted with pipeline-stage-summary markers (auto-advance
+# via verdict_handler) + 1 Todo in inbox. Expected: no inbox pickup,
+# idle or verdict-handler-scheduled advancement. Either outcome is
+# acceptable — issue MUST NOT be the inbox Todo.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-4001|In Progress|3|Bug,stage:planning,pipeline:halted" \
+  "ENG-4002|In Progress|3|Bug,stage:planning,pipeline:halted"
+write_comments_fixture "ENG-4001" \
+  "<!-- pipeline-stage-summary: planning -->|2026-04-24T10:00:00.000Z"
+write_comments_fixture "ENG-4002" \
+  "<!-- pipeline-stage-summary: planning -->|2026-04-24T10:00:00.000Z"
+write_inbox_fixture \
+  "ENG-3002|Todo|3|Bug"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
+if [[ "$issue_id" != "ENG-3002" ]]; then
+  pass_at "AC-3 halt-for-verdict holds slot; inbox NOT picked"
+else
+  fail_at "AC-3 halt-for-verdict holds slot; inbox NOT picked" "out=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
