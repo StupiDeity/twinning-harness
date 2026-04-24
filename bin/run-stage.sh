@@ -130,6 +130,35 @@ post_completion_comment() {
   bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"
 }
 
+# Push the current worktree branch to origin if HEAD is ahead of origin/<branch>.
+# Without this, an agent that commits brainstorm/plan docs inside the worktree
+# leaves the commit un-pushed: run-local.sh's partition-sweep push only fires
+# when there are *uncommitted* dirty paths, so a clean agent commit stays local.
+# Result (observed on ENG-6): the completion comment's `github.com/.../blob/<branch>/…`
+# link 404s because the branch never reached origin. Push here so the link resolves
+# by the time post_completion_comment posts it.
+push_branch_if_ahead() {
+  local branch ahead upstream_ref
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf '')"
+  [[ -z "$branch" || "$branch" == "HEAD" ]] && return 0
+  case "$branch" in main|master) return 0 ;; esac
+  git remote get-url origin >/dev/null 2>&1 || return 0
+
+  upstream_ref="refs/remotes/origin/${branch}"
+  if git rev-parse --verify --quiet "$upstream_ref" >/dev/null; then
+    ahead="$(git rev-list --count "${upstream_ref}..HEAD" 2>/dev/null || printf 0)"
+  else
+    ahead=1  # branch absent on origin — treat as needing push
+  fi
+  (( ahead > 0 )) || return 0
+
+  log "pushing $branch to origin ($ahead unpushed commit(s)) so completion-comment links resolve"
+  if ! git push -u origin HEAD 2>&1 | sed 's/^/  push: /' >&2; then
+    log "git push -u origin $branch failed; completion-comment link may 404 until next tick"
+    return 0
+  fi
+}
+
 verify_preconditions() {
   local ident="$1" stage="$2"
 
@@ -376,6 +405,16 @@ main() {
         ;;
     esac
   fi
+
+  # Push branch BEFORE posting the completion comment so any `github.com/.../blob/<branch>/…`
+  # link in the agent's summary resolves. run-local.sh's partition-sweep push only fires on
+  # uncommitted dirty paths; an agent that commits its artifacts cleanly otherwise leaves the
+  # branch local-only (ENG-6 observed). Non-fatal on failure — next tick will retry.
+  case "$stage" in
+    brainstorm|plan|implement|ui|review|qa|build)
+      push_branch_if_ahead || true
+      ;;
+  esac
 
   # Post-stage completion comment (ENG-11). Orchestrator-owned narrative post.
   # Runs on both fresh dispatches and scope-approval replays (narrates the advance).

@@ -90,6 +90,52 @@ Every stage agent MUST:
 
 ---
 
+## Stage summary comment format (ALL stages)
+
+Every agent-authored stage summary file is wrapped by the orchestrator with a
+`**<stage> summary**` header and posted to Linear on successful exit. These
+comments are the human's primary window into what each stage did — write them
+for a teammate skimming Linear on their phone, not a protocol log.
+
+### Contract (applies to every stage summary file in §§1–7)
+
+1. **Lead with an artifact link.** Whatever the stage produced — a brainstorm
+   doc, plan doc, PR URL, commit range. One clickable line, right at the top.
+   The orchestrator pushes the feature branch to origin before the comment
+   posts, so `https://github.com/<owner>/<repo>/blob/<branch>/<path>` URLs
+   resolve. You MUST still emit a correct URL (right repo, right branch, right
+   path).
+2. **TL;DR** — 1–2 sentences in plain English: what this stage did and the
+   single most load-bearing outcome or tradeoff. No jargon, no ADR numbers, no
+   persona-speak, no severity counts.
+3. **Single-line status** when the gate passes cleanly. Examples:
+   - Brainstorm: `Personas: 6/6 PASS · gate P0: 0 · proceeding to planning`
+   - Plan: `Personas: 5/5 PASS · gate P0: 0 · proceeding to implementing`
+   - Implement: `12 commits · 47 tests added · api-contract: pass · proceeding to ui`
+   - UI: `PR #124 opened · 3 components · proceeding to reviewing`
+   - Review: `Approved · 0 P0 findings · proceeding to qa`
+   - QA: `All gates green · 6 adversarial tests added · proceeding to building`
+   - Build: `Merged SHA abc1234 · release workflow green · proceeding to released`
+   Do NOT emit verbose tables or per-severity matrices when the gate is clean.
+4. **Notes (ONLY if something failed, iterated, or deviated).** ≤ 1 concise
+   paragraph per non-passing persona / unresolved P0 / known-flaky gate /
+   plan deviation. Name what was flagged and how it was resolved (or why it
+   stays unresolved). No tables, no per-severity counts, no
+   "addressed-in-iteration" asides.
+5. **Escalation path.** If the stage exhausted its iteration budget with an
+   unresolved blocker, replace the status line with an escalation line, apply
+   the stage-specific `<!-- pipeline-metric: <stage>_escalate -->` or `_reject`
+   marker, and put the reason in Notes.
+6. **Full audit record stays in the artifact, not the comment.** Persona
+   tables, full finding lists, per-command drift checks, coverage-audit
+   matrices belong in the brainstorm doc / plan doc / PR body / QA audit file.
+   The Linear comment is the headline, not the audit trail.
+
+Per-stage content slots are listed in each "Write the stage summary file" step
+below. The slot list is additive to this contract — always follow the contract.
+
+---
+
 ## 1. Brainstorm Agent
 
 ```
@@ -158,15 +204,22 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    success comment. Do NOT silently exit.
 4. **Commit artifacts**: the brainstorm doc, plus any new ADRs appended to
    `docs/knowledge/decisions.md` with status `proposed`.
-5. **Write the stage summary file** at `{stage_summary_path}` — this is the LAST step and is MANDATORY.
-   The file is picked up by the orchestrator, wrapped with a canonical header, and posted
-   to Linear automatically after this stage exits clean. Content MUST include:
-   - the brainstorm doc URL,
-   - the full 6-row persona pass/fail table (one row per persona — missing rows indicate
-     a skipped persona, which is a failure),
-   - a one-line summary: either "zero P0s, proceeding to planning" (success path) or
-     an escalation summary tagged `<!-- pipeline-metric: brainstorm_escalate -->` citing
-     the unresolved P0s (escalate path).
+5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+   Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
+   - Artifact link: `[docs/brainstorms/{file}.md](<github-blob-url>)` pointing at the
+     brainstorm doc on the feature branch.
+   - TL;DR: 1–2 sentences on the decision + its load-bearing tradeoff.
+   - Status line (clean gate): `Personas: N/6 PASS · gate P0: 0 · proceeding to planning`
+     (N is the count that returned PASS).
+   - Notes (only on non-clean paths): concise paragraph per non-passing persona or
+     unresolved P0. No 6-row table.
+   - Escalate tag: `<!-- pipeline-metric: brainstorm_escalate -->` if any P0 remained
+     after iteration 3.
+
+   Internally you still MUST run all 6 personas and record their verdicts in the
+   brainstorm doc itself (under an "## Persona review" section) — that's the durable
+   record. The Linear comment is the headline, not the audit trail.
+
    Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" …` yourself —
    that path is now orchestrator-owned. Exception-path markers (`pipeline-metric: contract_gap`,
    etc.) continue to use `linear.sh add-comment` as before.
@@ -329,16 +382,20 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    and reach main via the normal merge flow; do not attempt direct-to-main pushes. Only
    knowledge-file changes go through PRs with CODEOWNERS. Do NOT change the Linear stage
    label — the orchestrator swaps it on successful exit.
-5. **Write the stage summary file** at `{stage_summary_path}` — this is the LAST step and is MANDATORY.
-   The file is picked up by the orchestrator, wrapped with a canonical header, and posted
-   to Linear automatically after this stage exits clean. Content MUST include:
-   - the `{plan_file}` path (so a reviewer landing on the plan-stage gate can jump to the
-     plan doc directly, even before a PR exists),
-   - the full persona pass/fail table (one row per persona),
-   - either a success summary or an escalation summary tagged
-     `<!-- pipeline-metric: plan_escalate -->` if step 3 hit iteration 3.
-   Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …` yourself —
-   that path is now orchestrator-owned.
+5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+   Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
+   - Artifact link: `[docs/plans/{plan_file}.md](<github-blob-url>)` pointing at the plan
+     doc on the feature branch (reviewers can jump to the plan even before a PR exists).
+   - TL;DR: 1–2 sentences on what the plan commits to build + the biggest call it makes
+     (e.g. new crate vs. extending existing one; widening a trait; cross-crate refactor).
+   - Status line (clean gate): `Personas: N/5 PASS · gate P0: 0 · proceeding to implementing`.
+   - Notes (only on non-clean paths): concise paragraph per non-passing persona or
+     unresolved P0. No persona table.
+   - Escalate tag: `<!-- pipeline-metric: plan_escalate -->` if step 3 hit iteration 3.
+
+   Full persona verdicts and finding lists stay in the plan doc itself. Do NOT call
+   `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …`
+   yourself — that path is orchestrator-owned.
 6. **Post the verdict marker + apply pipeline:halted** (ENG-18, MANDATORY).
    Post exactly ONE additional append-only comment carrying the verdict marker:
    - pass → `<!-- pipeline-stage-summary: planning -->`
@@ -447,12 +504,21 @@ Post via `bash .pipeline/bin/linear.sh add-or-update-comment "tdd-evidence/imple
 Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
 - Post the TDD evidence comment above.
-- Write the stage summary file at `{stage_summary_path}` containing: a pointer to the
-  plan doc path (`{plan_file}`), the commit range on `{branch_name}` (one line per commit,
-  oldest first), per-plan-task commit SHAs, api-contract verification result (pass/fail),
-  and gate-command result summary. The orchestrator posts this as the completion comment
-  on stage exit. This summary is what a reviewer landing on stage:implementing sees BEFORE
-  a PR exists — include enough context to navigate the work.
+- Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
+  comment format contract (preamble). Stage-specific slots:
+  - Artifact link: plan doc link (`[docs/plans/{plan_file}.md](<github-blob-url>)`) AND
+    the branch-compare link
+    (`https://github.com/<owner>/<repo>/compare/main...<branch>`) so the reviewer can
+    navigate the work before the PR exists.
+  - TL;DR: 1–2 sentences on what the backend change does and the biggest load-bearing
+    choice made (e.g. widened a trait, added a migration, introduced a new provider).
+  - Status line (clean gate): e.g.
+    `N commits · +M test / +K src · api-contract: pass · gates green · proceeding to ui`.
+  - Notes (only on deviations / known-flaky gate / plan-extend): concise paragraph per
+    deviation — what the plan said, what landed, why. Do NOT post the full commit list
+    or per-task SHA matrix here; the commit log is on GitHub.
+  Full commit log and per-task SHA mapping stay in the `tdd-evidence/implement/{issue_id}`
+  comment (separate sig, orchestrator-independent).
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 
 Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
@@ -605,9 +671,17 @@ PR creation (at exit — UI stage owns PR creation for this branch):
 Output:
 - Commit any remaining work on `{branch_name}` and push.
 - Open the PR per the template above.
-- Write the stage summary file at `{stage_summary_path}` containing: the PR URL, the
-  per-component checklist scores, the second-reviewer verdict, and gate-command results.
-  The orchestrator posts this as the completion comment.
+- Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
+  comment format contract (preamble). Stage-specific slots:
+  - Artifact link: the PR URL.
+  - TL;DR: 1–2 sentences on what the user sees change and the single biggest design
+    call (e.g. new view vs. extending an existing one, chart library choice).
+  - Status line (clean): e.g.
+    `PR #NNN opened · K components · second-review: approve · proceeding to reviewing`.
+  - Notes (only on deviations / per-component checklist misses / second-reviewer
+    request-changes): concise paragraph per miss.
+  Full per-component checklist scores and the second-reviewer verdict go into the PR
+  description, not this comment.
 - Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" …` yourself.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 
@@ -753,10 +827,18 @@ Output:
   premise failure).
 - Summary comment on the PR with: ensemble findings by severity, anti-bias results,
   comment-quality self-lint score, knowledge-update proposals (if any).
-- Write the stage summary file at `{stage_summary_path}` containing: overall approve/reject
-  verdict, per-reviewer-persona pass/fail table, list of findings by severity, and
-  gate-command result summary. Orchestrator posts this as the completion comment.
+- Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
+  comment format contract (preamble). Stage-specific slots:
+  - Artifact link: the PR URL (with the `gh pr review` verdict visible).
+  - TL;DR: 1–2 sentences on the verdict and the single most important finding (or "no
+    blocking issues" when clean).
+  - Status line (clean approve): `Approved · 0 P0 findings · proceeding to qa`.
+  - Notes (only on request-changes / P0 findings / premise-failure): concise paragraph
+    per finding — what's wrong, where, what needs to change. No per-persona table, no
+    per-severity counts; those belong in the PR summary comment.
   (On premise-failure path A, skip writing the summary — the orchestrator does not advance.)
+  Full per-reviewer-persona verdicts, severity-bucketed findings, and comment-quality
+  self-lint stay in the PR summary comment posted via `gh pr comment`.
 
 Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
@@ -896,10 +978,17 @@ Decision path (apply exactly one):
   C. **All green:**
      - Commit any QA-authored adversarial tests that are not already on the branch.
      - Post a QA summary comment on the PR (gate results + coverage-audit table +
-       adversarial tests added + dedup results).
-     - Write the stage summary file at `{stage_summary_path}` with the same summary
-       (orchestrator posts it as the completion comment). PR summary comment on the
-       GitHub PR stays separate.
+       adversarial tests added + dedup results). This is the full audit trail.
+     - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
+       comment format contract (preamble). Stage-specific slots:
+       - Artifact link: the PR URL.
+       - TL;DR: 1–2 sentences on QA verdict and whether adversarial tests surfaced
+         anything new (usually: "no new issues" + number of tests added).
+       - Status line (clean): `All gates green · K adversarial tests added · proceeding to building`.
+       - Notes (only on partial-green / known-flake): one paragraph per flake with the
+         rationale for letting it through; bug-issue links if any bugs were filed.
+       The full coverage-audit table and adversarial-test list stay in the PR summary
+       comment, not this Linear comment.
      - Orchestrator advances to `stage:building`.
 
 Do NOT change the Linear stage label yourself. The orchestrator owns state transitions.
@@ -1034,8 +1123,14 @@ Decision path (apply exactly one):
   B. **Preconditions pass; merge executed:**
      - Merge the PR (squash + auto + delete-branch).
      - Watch post-merge CI to green.
-     - Write the stage summary file at `{stage_summary_path}`: merge SHA, release workflow
-       run ID, any config flags. Orchestrator posts it as the completion comment.
+     - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
+       comment format contract (preamble). Stage-specific slots:
+       - Artifact link: the merge commit link
+         (`https://github.com/<owner>/<repo>/commit/<merge_sha>`).
+       - TL;DR: 1 sentence on what merged (e.g. "Fix: reconcile honors
+         `pipeline:supersede` on canonical-match path too").
+       - Status line (clean): `Merged SHA <sha12> · release workflow green · proceeding to released`.
+       - Notes (only on config-flag flips or deferred follow-ups): one paragraph each.
        (Post-merge enrichment by the release stage is separate and uses its own sig.)
      - Slack info notification.
 
