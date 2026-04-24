@@ -261,6 +261,50 @@ else
   fail_at "AC-4 stage sort — reviewing advances before planning" "out=$out"
 fi
 
+# ─── AC-5: metric reason — max-concurrent-reached only at inbox-gate ──
+# Capture idle reason by replacing the metrics.sh stub with a capture
+# stub for this test only. When all held slots are non-advanceable (bare
+# halted with no fresh verdict marker → hold, not advanceable), the
+# dispatch loop iterates without dispatching, then the inbox gate fires.
+reset_fixtures
+# Two bare-halted issues with NO fresh verdict markers — classifier returns
+# hold/not-advanceable, so they hold slots but don't dispatch.
+write_label_fixture "stage:planning" \
+  "ENG-6001|In Progress|3|Bug,stage:planning,pipeline:halted" \
+  "ENG-6002|In Progress|3|Bug,stage:planning,pipeline:halted"
+# No comments-ENG-6001.json / comments-ENG-6002.json fixtures → get-comments
+# returns [] → find_fresh_verdict returns empty → classifier holds, not advanceable.
+
+# Replace metrics.sh with a capture stub that writes the reason to a file.
+REASON_CAPTURE="$STUB_DIR/last-reason"
+: > "$REASON_CAPTURE"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+# Signature: metrics.sh poll-tick "" "" idle 0 <reason>
+if [[ "\$1" == "poll-tick" && "\$4" == "idle" ]]; then
+  printf '%s' "\${6:-}" > "$REASON_CAPTURE"
+fi
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+out="$(main 2>/dev/null || true)"
+reason="$(cat "$REASON_CAPTURE" 2>/dev/null || printf '')"
+if [[ "$reason" == max-concurrent-reached* ]] \
+   && [[ "$(jq -r '.issue_id // "null"' <<<"$out")" == "null" ]]; then
+  pass_at "AC-5 idle reason max-concurrent-reached when all held non-advanceable"
+else
+  fail_at "AC-5 idle reason max-concurrent-reached when all held non-advanceable" \
+    "reason=$reason out=$out"
+fi
+
+# Restore the no-op metrics.sh for subsequent tests (if any).
+cat > "$STUB_DIR/metrics.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
