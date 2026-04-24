@@ -520,6 +520,88 @@ else
   fail_at "case-17 QA clear-log" "rc=$clear_log_rc output=$clear_log_output"
 fi
 
+# ─── Case 18: success-arm clears pipeline:supersede for brainstorm+plan only (ENG-6) ──
+# Drives main() for stage=brainstorm through a full-mock chain to the
+# `case "$vh_rc" in 0)` success arm. Captures every linear.sh call and asserts
+# that remove-label pipeline:supersede fires for brainstorm+vh_rc=0 and NOT for
+# stage=implement or vh_rc=1 (halt arm). Sub-assertions share one linear.sh
+# stub shape so the three scenarios remain synchronized.
+
+# Dispatch-based linear.sh stub: has-label exits 0 for the labels we want
+# present (stage:<X> and pipeline:halted), exits 1 for pipeline:paused;
+# stage-of prints `stage:<vh_stage>`; every capturable subcommand records
+# into CAPTURE_FILE using the existing SUBCMD/SIG/IDENT/BODY shape.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  has-label)
+    case "\${3:-}" in
+      pipeline:paused) exit 1 ;;
+      stage:*)         exit 0 ;;
+      pipeline:halted) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  stage-of)
+    printf '%s\n' "\${MOCK_STAGE_OF:-stage:brainstorming}"
+    ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# render-prompt.sh + dispatch.sh: no-op stubs so main() reaches verdict_handler.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/render-prompt.sh"
+chmod +x "$STUB_DIR/render-prompt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"
+chmod +x "$STUB_DIR/dispatch.sh"
+
+# Override post_completion_comment so its add-or-update-comment call does not
+# drown the capture file. Harness-local; doesn't affect other cases since this
+# is the last case before the summary line.
+post_completion_comment() { return 0; }
+
+# Drive: stage=brainstorm, vh_rc=0 → remove-label pipeline:supersede expected.
+reset_capture
+verdict_handler() { return 0; }
+MOCK_STAGE_OF="stage:brainstorming"
+main ENG-T18A brainstorm >/dev/null 2>&1 || true
+
+if grep -B2 '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null \
+     | grep -q '^SUBCMD=remove-label$'; then
+  pass_at "case-18a brainstorm+vh_rc=0: remove-label pipeline:supersede fires"
+else
+  fail_at "case-18a brainstorm+vh_rc=0" "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# Drive: stage=implement, vh_rc=0 → remove-label pipeline:supersede NOT expected.
+reset_capture
+verdict_handler() { return 0; }
+MOCK_STAGE_OF="stage:implementing"
+main ENG-T18B implement >/dev/null 2>&1 || true
+
+if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
+  pass_at "case-18b implement+vh_rc=0: remove-label pipeline:supersede does NOT fire"
+else
+  fail_at "case-18b implement+vh_rc=0" "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# Drive: stage=brainstorm, vh_rc=1 (halt) → remove-label pipeline:supersede NOT expected.
+reset_capture
+verdict_handler() { return 1; }
+MOCK_STAGE_OF="stage:brainstorming"
+main ENG-T18C brainstorm >/dev/null 2>&1 || true
+
+if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
+  pass_at "case-18c brainstorm+vh_rc=1 (halt arm): remove-label pipeline:supersede does NOT fire"
+else
+  fail_at "case-18c brainstorm+vh_rc=1" "capture=$(cat "$CAPTURE_FILE")"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
