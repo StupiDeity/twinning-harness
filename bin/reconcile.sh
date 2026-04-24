@@ -31,6 +31,26 @@ print(f"{inter/union:.2f}")
 PY
 }
 
+# Resolve a reconcile match by consulting the three control labels.
+# Args: $1=issue_id $2=rel_path (relative-to-REPO_ROOT) $3=match_kind (canonical|fuzzy) [$4=score]
+# Prints: proceed | link:<rel_path> on exit 0 (a label applied). Nothing on exit 1.
+resolve_via_control_label() {
+  local issue_id="$1" rel_path="$2" kind="$3" score="${4:-}"
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:supersede"; then
+    log "reconcile: pipeline:supersede → proceed (supersedes ${rel_path} kind=${kind}${score:+ score=$score})"
+    printf 'proceed\n'; return 0
+  fi
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:extend"; then
+    log "reconcile: pipeline:extend → proceed (extends ${rel_path} kind=${kind}${score:+ score=$score})"
+    printf 'proceed\n'; return 0
+  fi
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:ignore"; then
+    log "reconcile: pipeline:ignore → link (canonical=${rel_path} kind=${kind}${score:+ score=$score})"
+    printf 'link:%s\n' "$rel_path"; return 0
+  fi
+  return 1
+}
+
 main() {
   local issue_id="${1:-}" kind="${2:-}"
   [[ -n "$issue_id" && -n "$kind" ]] || die "usage: reconcile.sh <issue_id> <brainstorm|plan>"
@@ -67,8 +87,13 @@ main() {
       canonical="$f"; break
     fi
   done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
+  local rel="" out=""
   if [[ -n "$canonical" ]]; then
-    printf 'link:%s\n' "${canonical#"$REPO_ROOT/"}"
+    rel="${canonical#"$REPO_ROOT/"}"
+    if out="$(resolve_via_control_label "$issue_id" "$rel" canonical)"; then
+      printf '%s\n' "$out"; return 0
+    fi
+    printf 'link:%s\n' "$rel"
     return 0
   fi
 
@@ -93,20 +118,11 @@ main() {
 
   # Threshold 0.50 on jaccard tokens feels about right; tune with real data.
   if awk -v s="$best_score" 'BEGIN{exit !(s>=0.50)}'; then
-    # Resolve via control label.
-    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:supersede"; then
-      log "reconcile: pipeline:supersede → proceed (supersedes ${best_file#"$REPO_ROOT/"} score=$best_score)"
-      printf 'proceed\n'; return 0
+    rel="${best_file#"$REPO_ROOT/"}"
+    if out="$(resolve_via_control_label "$issue_id" "$rel" fuzzy "$best_score")"; then
+      printf '%s\n' "$out"; return 0
     fi
-    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:extend"; then
-      log "reconcile: pipeline:extend → proceed (extends ${best_file#"$REPO_ROOT/"} score=$best_score)"
-      printf 'proceed\n'; return 0
-    fi
-    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue_id" "pipeline:ignore"; then
-      log "reconcile: pipeline:ignore → link (canonical=${best_file#"$REPO_ROOT/"} score=$best_score)"
-      printf 'link:%s\n' "${best_file#"$REPO_ROOT/"}"; return 0
-    fi
-    log "reconcile: fuzzy match needs human (candidate=${best_file#"$REPO_ROOT/"} score=$best_score)"
+    log "reconcile: fuzzy match needs human (candidate=${rel} score=$best_score)"
     printf 'human\n'; return 0
   fi
 

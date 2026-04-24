@@ -454,6 +454,14 @@ main() {
       rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
+      # Clear pipeline:supersede on brainstorm/plan stage success so the signal
+      # does not leak into downstream stages (only reconcile reads this label,
+      # and reconcile only runs for brainstorm/plan per run-local.sh).
+      # NOTE: pipeline:extend is NOT auto-cleared (ENG-6 D-005 — extend is a
+      # carry-forward signal the operator may intend to span multiple stages).
+      if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
+        bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:supersede" 2>/dev/null || true
+      fi
       ;;
     1)
       bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "halt-for-human" "$duration" "verdict=halt"
