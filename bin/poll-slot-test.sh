@@ -159,6 +159,24 @@ write_comments_fixture() {
 # ─── Test cases ───────────────────────────────────────────────────────
 # (Cases appended below in later tasks.)
 
+# ─── AC-1: advance held issue when cap is reached ─────────────────────
+# Two issues at stage:planning, cap=2. Must advance one of them.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-1001|In Progress|3|Bug,stage:planning" \
+  "ENG-1002|In Progress|3|Bug,stage:planning"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
+stage="$(jq -r '.stage // ""' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+if { [[ "$issue_id" == "ENG-1001" ]] || [[ "$issue_id" == "ENG-1002" ]]; } \
+   && [[ "$stage" == "plan" ]] \
+   && [[ "$entry" == "run" ]]; then
+  pass_at "AC-1 advance-held-at-cap dispatches a planning issue"
+else
+  fail_at "AC-1 advance-held-at-cap dispatches a planning issue" "out=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

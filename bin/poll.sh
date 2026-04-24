@@ -247,81 +247,69 @@ main() {
   local max_concurrent
   max_concurrent="$(config_get '.orchestrator.max_concurrent_features')"
 
-  # Count currently active features (any non-terminal stage label).
-  local active_count=0
-  while IFS= read -r stage_label; do
-    local arg; arg="$(stage_arg_for_label "$stage_label")"
-    [[ -z "$arg" ]] && continue
-    local n
-    n="$(bash "$SCRIPT_DIR/linear.sh" list-issues-with-label "$stage_label" \
-      | jq '[.data.issues.nodes[] | select(.state.name != "Done")] | length')"
-    active_count=$((active_count + n))
-  done < <(jq -r '.linear.workflow_stages[] | "stage:" + .' "$CONFIG" | grep -v '^stage:released$')
+  # Pass 1: gather all non-Done issues bearing any non-released stage:* label.
+  local gathered
+  gathered="$(_poll_gather_stage_labeled_issues)"
 
-  if (( active_count >= max_concurrent )); then
-    idle "max-concurrent-reached (active=$active_count, limit=$max_concurrent)"
+  # Pass 2: classify each → {slot, advanceable, priority_sort_rank, ...}.
+  local classified
+  classified="$(_poll_classify_all "$gathered")"
+
+  # Pass 3: derive held slots = top-N holders sorted by
+  # (stage descending toward released, Linear priority descending).
+  local held
+  held="$(jq -c --argjson n "$max_concurrent" '
+    [.[] | select(.slot == "hold")]
+    | sort_by([-(.stage_index), -(.priority_sort_rank)])
+    | .[:$n]' <<<"$classified")"
+  local held_count
+  held_count="$(jq 'length' <<<"$held")"
+
+  # Pass 4: attempt dispatch from held slots in sorted order.
+  # First advanceable candidate that is NOT currently pending a verdict
+  # transition wins. For halted-with-stage-summary-or-rejection candidates,
+  # we invoke verdict_handler (same as previous behaviour) and let the
+  # transition land; the new stage is picked up next tick.
+  local i=0
+  local hn
+  hn="$(jq 'length' <<<"$held")"
+  while (( i < hn )); do
+    local ident stage_label labels_json advanceable
+    ident="$(jq -r ".[$i].identifier"    <<<"$held")"
+    stage_label="$(jq -r ".[$i].stage_label" <<<"$held")"
+    labels_json="$(jq -c ".[$i].labels"   <<<"$held")"
+    advanceable="$(jq -r ".[$i].advanceable" <<<"$held")"
+
+    if [[ "$advanceable" != "true" ]]; then
+      i=$((i+1)); continue
+    fi
+
+    local has_halt
+    has_halt="$(jq -r --arg n "pipeline:halted" \
+      '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
+    if [[ "$has_halt" == "true" ]]; then
+      local cur_stage_suffix="${stage_label#stage:}"
+      if verdict_handler "$ident" "$cur_stage_suffix"; then
+        log "poll: verdict-handler transitioned $ident; will be picked up next tick"
+      fi
+      i=$((i+1)); continue
+    fi
+
+    local arg
+    arg="$(stage_arg_for_label "$stage_label")"
+    jq -nc \
+      --arg issue_id "$ident" \
+      --arg stage "$arg" \
+      --arg reason "held slot at $stage_label" \
+      '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
+    exit 0
+  done
+
+  # Pass 5: inbox pickup, only if a slot is available.
+  if (( held_count >= max_concurrent )); then
+    idle "max-concurrent-reached (held=$held_count, limit=$max_concurrent)"
   fi
 
-  # 1. Active issues: find one needing its current stage run.
-  # We iterate stages in canonical order so early stages get priority over late ones.
-  while IFS= read -r stage_label; do
-    local arg; arg="$(stage_arg_for_label "$stage_label")"
-    [[ -z "$arg" ]] && continue
-
-    # Enumerate candidates + labels; helper decides include/exclude.
-    local cand_json
-    cand_json="$(bash "$SCRIPT_DIR/linear.sh" list-issues-with-label "$stage_label" \
-      | jq -c '
-        [.data.issues.nodes[]
-         | select(.state.name != "Done")
-         | select([.labels.nodes[].name] | index("pipeline:paused") | not)
-         | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
-         | select([.labels.nodes[].name] | index("pipeline:scope-approval-needed") | not)
-         | {identifier: .identifier, labels: [.labels.nodes[].name]}]')"
-
-    local pick=""
-    local candidates_count
-    candidates_count="$(jq 'length' <<<"$cand_json")"
-    local i=0
-    while (( i < candidates_count )); do
-      local ident labels_json
-      ident="$(jq -r ".[$i].identifier" <<<"$cand_json")"
-      labels_json="$(jq -c ".[$i].labels" <<<"$cand_json")"
-
-      # Pre-dispatch: process pending verdicts on halted issues. If the
-      # fresh marker is pass/reject, the Verdict Handler transitions and
-      # clears halt; the next tick will then see the new stage. If the
-      # fresh marker is a halt-for-human (rc=1) or protocol violation
-      # (rc=2), leave as-is and skip dispatching this candidate.
-      local has_halt
-      has_halt="$(jq -r --arg n "pipeline:halted" \
-        '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
-      if [[ "$has_halt" == "true" ]]; then
-        local cur_stage_suffix="${stage_label#stage:}"
-        if verdict_handler "$ident" "$cur_stage_suffix"; then
-          log "poll: verdict-handler transitioned $ident; will be picked up next tick"
-        fi
-        i=$((i+1))
-        continue
-      fi
-
-      if _poll_evaluate_skip "$ident" "$labels_json"; then
-        pick="$ident"; break
-      fi
-      i=$((i+1))
-    done
-
-    if [[ -n "$pick" ]]; then
-      jq -nc \
-        --arg issue_id "$pick" \
-        --arg stage "$arg" \
-        --arg reason "active at $stage_label" \
-        '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
-      exit 0
-    fi
-  done < <(jq -r '.linear.workflow_stages[] | "stage:" + .' "$CONFIG" | grep -v '^stage:released$')
-
-  # 2. Inbox: find a Todo-state issue with no stage:* label.
   local inbox_state
   inbox_state="$(config_get '.linear.native_states.inbox')"
   local inbox_pick
@@ -331,7 +319,10 @@ main() {
        | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
        | select([.labels.nodes[].name] | index("pipeline:paused") | not)
        | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
-       | .identifier] | first // ""')"
+       | {identifier: .identifier,
+          priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
+      | sort_by(-.priority_sort_rank)
+      | .[0].identifier // ""')"
   if [[ -n "$inbox_pick" ]]; then
     jq -nc \
       --arg issue_id "$inbox_pick" \
