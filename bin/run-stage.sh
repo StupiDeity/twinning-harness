@@ -2,7 +2,9 @@
 # Run a single pipeline stage against a Linear issue.
 # Usage: run-stage.sh <issue_id> <stage>
 # Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=reconcile-human, 20=dispatch-failed,
-#             21=scope-violation, 22=pr-opened-too-early, 24=linear-post-failed.
+#             21=scope-violation, 22=pr-opened-too-early, 24=linear-post-failed,
+#             25=agent-contract-missing (agent exited clean but emitted neither the
+#                stage-summary file nor a verdict-marker comment).
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -16,6 +18,41 @@ source "$SCRIPT_DIR/common.sh"
 source "$SCRIPT_DIR/classify-failure.sh"
 # shellcheck source=verdict-handler.sh
 source "$SCRIPT_DIR/verdict-handler.sh"
+
+# ─── Fallback-comment enrichment (ENG-7) ──────────────────────────────────────
+# When post_completion_comment takes the summary_missing / summary_symlink_refused
+# fallback, enumerate whatever the agent did manage to produce in the worktree.
+# Silence-on-fallback was the worst part of ENG-7: a complete 571-line brainstorm
+# doc sat untracked in the worktree while Linear showed only "Agent did not write
+# a stage summary". Prints "" on no artifacts so the fallback body is unchanged.
+_stage_artifacts_footer() {
+  local issue="$1" stage="$2"
+  local wt; wt="$(issue_dir "$issue")/worktree"
+  [[ -d "$wt" ]] || { printf ''; return 0; }
+
+  # Stage → doc-dir mapping. Only brainstorm and plan have a single canonical
+  # doc surface; post-plan stages span the repo and are best described by
+  # branch-delta which the PR link already covers.
+  local doc_dir=""
+  case "$stage" in
+    brainstorm) doc_dir="docs/brainstorms" ;;
+    plan)       doc_dir="docs/plans" ;;
+    *)          printf ''; return 0 ;;
+  esac
+
+  local paths
+  paths="$(git -C "$wt" status --porcelain -- "$doc_dir" 2>/dev/null \
+    | awk '{print $NF}' | sort -u)"
+  [[ -z "$paths" ]] && { printf ''; return 0; }
+
+  local lines=""
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    lines+="$(printf -- '- \`%s\`\n' "$p")"
+  done <<<"$paths"
+
+  printf '\n\n**Artifacts detected in worktree (%s):**\n\n%s' "$doc_dir" "$lines"
+}
 
 # ─── Per-stage success-path completion comment (ENG-11) ──────────────────────
 # Read the agent-authored summary file, wrap with header + PR tail, and
@@ -73,8 +110,14 @@ post_completion_comment() {
     # Fallback MUST include the PR tail when it would normally apply — a reviewer
     # landing on a mechanical comment still benefits from the PR link (D-004 open
     # question resolved: include tail).
-    comment_body="$(printf '%s\n\n_Agent did not write a stage summary; posting mechanical completion._%s\n<!-- pipeline-metric: %s -->' \
-      "$header" "$pr_tail" "$fallback_marker")"
+    # Also enumerate the worktree artifacts the agent left behind, so the reviewer
+    # sees what (if anything) it managed to produce before the silent exit. ENG-7
+    # was the motivating case: a 571-line brainstorm doc sat untracked in the
+    # worktree while Linear showed only "Agent did not write a stage summary".
+    local artifacts_tail
+    artifacts_tail="$(_stage_artifacts_footer "$issue" "$stage")"
+    comment_body="$(printf '%s\n\n_Agent did not write a stage summary; posting mechanical completion._%s%s\n<!-- pipeline-metric: %s -->' \
+      "$header" "$pr_tail" "$artifacts_tail" "$fallback_marker")"
   else
     comment_body="$(printf '%s\n\n%s%s' "$header" "$body" "$pr_tail")"
   fi
@@ -308,6 +351,30 @@ main() {
         fi
       fi
     fi
+  fi
+
+  # Agent-contract validator (ENG-7). On a fresh dispatch (not scope-approval
+  # replay), the agent MUST have produced at least one of:
+  #   (a) stage-summary-<stage>.md in issue_dir — read by post_completion_comment.
+  #   (b) A fresh verdict-marker comment on the Linear issue — read by verdict_handler.
+  # Exiting clean without either artifact is an agent protocol failure: the
+  # downstream cascade posts summary_missing + halt + protocol-violation/no-marker,
+  # which silently parks the issue while consuming a max_concurrent_features slot.
+  # Classify as retry-immediately (exit 25); classify_failure's auto-escalation
+  # converts repeated same-evidence retries into skip-until-code-changes.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      brainstorm|plan|implement|ui|review|qa|build)
+        local _summary_path _fresh_marker
+        _summary_path="$(issue_dir "$ident")/stage-summary-${stage}.md"
+        _fresh_marker="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
+        if [[ ! -s "$_summary_path" ]] && [[ -z "$_fresh_marker" ]]; then
+          classify_failure "$ident" "$stage" "retry-immediately" \
+            "agent dispatch returned 0 but emitted no stage-summary file and no verdict marker" 25
+          exit 25
+        fi
+        ;;
+    esac
   fi
 
   # Post-stage completion comment (ENG-11). Orchestrator-owned narrative post.
