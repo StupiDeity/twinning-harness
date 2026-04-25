@@ -136,9 +136,18 @@ main() {
   [[ -n "$body" ]] || { log "scope-check: File Structure section empty/missing"; exit 2; }
 
   local allowed_files allowed_dirs
-  allowed_files="$(grep -oE '([a-zA-Z0-9_./-]+/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+' <<<"$body" | sort -u)"
+  # ENG-25: `*` (not `+`) on the directory-prefix group so repo-root files
+  # (CLAUDE.md, README.md, package.json, …) declared in the plan's File Structure
+  # are parsed into allowed_files. With `+`, zero-prefix tokens like `CLAUDE.md`
+  # never matched and were always SEVERE-flagged.
+  #
+  # The trailing `|| true` on each pipeline guards against grep-no-match (rc=1)
+  # under `set -o pipefail` from aborting the whole script. Plans that declare
+  # only repo-root files (no nested paths) produce no allowed_dirs matches; the
+  # explicit empty check below handles the empty-allowed-set case.
+  allowed_files="$(grep -oE '([a-zA-Z0-9_./-]+/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+' <<<"$body" | sort -u || true)"
   allowed_dirs="$(grep -oE '([a-zA-Z0-9_.-]+/){1,}' <<<"$body" \
-    | awk '!/\.[a-zA-Z0-9]+\/$/' | sort -u)"
+    | awk '!/\.[a-zA-Z0-9]+\/$/' | sort -u || true)"
 
   if [[ -z "$allowed_files$allowed_dirs" ]]; then
     log "scope-check: no file or directory tokens parsed from File Structure"
