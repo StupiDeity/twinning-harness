@@ -9,11 +9,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>{{REPO_ROOT}}/.pipeline/bin/run-retrospective-local.sh</string>
+    <string>__HARNESS_ROOT__/bin/run-retrospective-local.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>{{REPO_ROOT}}</string>
+  <string>__TARGET_REPO__</string>
 
   <!-- Fire Mondays at 09:00 local time. launchd coalesces a missed firing
        (Mac asleep/off at 09:00) and runs it when the Mac wakes, as long as
@@ -39,17 +39,21 @@
   <integer>3600</integer>
 
   <key>StandardOutPath</key>
-  <string>{{REPO_ROOT}}/logs/pipeline/retrospective-launchd.out.log</string>
+  <string>__HARNESS_STATE_DIR__/logs/retrospective-launchd.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>{{REPO_ROOT}}/logs/pipeline/retrospective-launchd.err.log</string>
+  <string>__HARNESS_STATE_DIR__/logs/retrospective-launchd.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
-    <string>{{HOME}}</string>
+    <string>__HOME__</string>
+    <key>TARGET_REPO</key>
+    <string>__TARGET_REPO__</string>
+    <key>HARNESS_STATE_DIR</key>
+    <string>__HARNESS_STATE_DIR__</string>
   </dict>
 </dict>
 </plist>

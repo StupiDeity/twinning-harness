@@ -164,7 +164,7 @@ verify_preconditions() {
 
   # Global pause?
   local paused
-  paused="$(config_get '.orchestrator.paused')"
+  paused="$(is_orchestrator_paused)"
   if [[ "$paused" == "true" ]]; then
     log "orchestrator globally paused"
     return 11
@@ -265,7 +265,7 @@ main() {
   local prompt_file log_file
   if (( ! skip_dispatch )); then
     prompt_file="$(mktemp -t pipeline-prompt-XXXXXX)"
-    log_file="$REPO_ROOT/logs/pipeline/${ident}-${stage}-$(date -u +%Y%m%dT%H%M%SZ).log"
+    log_file="$HARNESS_STATE_DIR/logs/${ident}-${stage}-$(date -u +%Y%m%dT%H%M%SZ).log"
     mkdir -p "$(dirname "$log_file")"
     bash "$SCRIPT_DIR/render-prompt.sh" "$stage" "$ident" > "$prompt_file"
     log "rendered prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
@@ -330,8 +330,8 @@ main() {
           # label. The Verdict Handler leaves the halt intact until halt.sh
           # resolve posts a pipeline-decision marker.
           local halt_body
-          halt_body="$(printf '<!-- pipeline-halt: scope-deviation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash .pipeline/bin/halt.sh resolve %s --decision scope-approved\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
-            "$stage" "$branch" "$fs_patch" "$ident")"
+          halt_body="$(printf '<!-- pipeline-halt: scope-deviation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/halt.sh resolve %s --decision scope-approved\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
+            "$stage" "$branch" "$fs_patch" "$HARNESS_ROOT" "$ident")"
           bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
           bash "$SCRIPT_DIR/linear.sh" add-label   "$ident" "pipeline:halted" || true
 

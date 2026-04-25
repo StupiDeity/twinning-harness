@@ -96,8 +96,10 @@ printf ' M crates/twinning-pipeline/src/foo.rs\0' \
 printf ' M crates/twinning-pipeline/src/foo.rs\0' \
   | assert_partition implement_stage_sweeps_rust_source implement ENG-14 1 0 0
 
-# 13 (new for ENG-13): retrospective allowlist classifies learned-rules as in-scope
-printf ' M .pipeline/learned-rules/plan.md\0' \
-  | assert_partition retrospective_learned_rules_in_scope retrospective ENG-14 1 0 0
+# 13 (new for ENG-13, updated for ENG-23): retrospective allowlist now covers
+# `.pipeline-config/config.json` (target-repo config) — `.pipeline/learned-rules/`
+# moved to the harness repo and is no longer target-relative.
+printf ' M .pipeline-config/config.json\0' \
+  | assert_partition retrospective_pipeline_config_in_scope retrospective ENG-14 1 0 0
 
 printf 'All sweep-test cases passed.\n'

@@ -14,7 +14,7 @@ main() {
 
   [[ -n "$event" && -n "$outcome" ]] || die "usage: metrics.sh <event> <issue_id> <stage> <outcome> <duration_ms> [notes]"
 
-  local jsonl_file="$TWINNING_DIR/metrics/events.jsonl"
+  local jsonl_file="$HARNESS_STATE_DIR/metrics/events.jsonl"
   local iso_ts
   iso_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

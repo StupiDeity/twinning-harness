@@ -38,7 +38,7 @@ slugify() {
 # was edited in a way that breaks prompt extraction — die loudly rather than ship a
 # silently-truncated prompt to the agent.
 extract_block() {
-  local section="$1" prompts="$PIPELINE_ROOT/AGENT_PROMPTS.md"
+  local section="$1" prompts="$HARNESS_ROOT/AGENT_PROMPTS.md"
 
   # Schema check: count column-0 fences in the section.
   # Boundary regex requires a numeric prefix (`## N. `) so H2 subheadings inside
@@ -95,7 +95,7 @@ find_doc() {
       in_fm && $0 ~ "^linear:[[:space:]]+" id "[[:space:]]*$" { exit 0 }
       NR>20 { exit 1 }
     ' "$f"; then
-      printf '%s' "${f#"$REPO_ROOT/"}"
+      printf '%s' "${f#"$TARGET_REPO/"}"
       return
     fi
   done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
@@ -106,7 +106,7 @@ find_doc() {
       /^# / { if ($0 ~ "(^|[^A-Z0-9])" id "([^A-Z0-9-]|$)") exit 0; exit 1 }
       NR>30 { exit 1 }
     ' "$f"; then
-      printf '%s' "${f#"$REPO_ROOT/"}"
+      printf '%s' "${f#"$TARGET_REPO/"}"
       return
     fi
   done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
@@ -118,7 +118,7 @@ find_doc() {
     match="$(find "$dir" -maxdepth 1 -type f -iname "*${slug}*.md" 2>/dev/null | head -1)"
   fi
   if [[ -n "$match" ]]; then
-    printf '%s' "${match#"$REPO_ROOT/"}"
+    printf '%s' "${match#"$TARGET_REPO/"}"
   else
     printf ''
   fi
@@ -145,8 +145,8 @@ main() {
     [[ -n "$version" && -n "$tag" ]] || die "release stage needs PIPELINE_RELEASE_VERSION and PIPELINE_RELEASE_TAG env"
     # Resolve prev_tag if not provided.
     if [[ -z "$prev_tag" ]]; then
-      prev_tag="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 "${tag}^" 2>/dev/null \
-        || git -C "$REPO_ROOT" rev-list --max-parents=0 HEAD | head -1)"
+      prev_tag="$(git -C "$TARGET_REPO" describe --tags --abbrev=0 "${tag}^" 2>/dev/null \
+        || git -C "$TARGET_REPO" rev-list --max-parents=0 HEAD | head -1)"
     fi
     printf '%s' "$block" \
       | sed \
@@ -167,8 +167,8 @@ main() {
   slug="$(slugify "$title")"
 
   local brainstorm_file plan_file
-  brainstorm_file="$(find_doc "$REPO_ROOT/docs/brainstorms" "$issue_id" "$slug")"
-  plan_file="$(find_doc "$REPO_ROOT/docs/plans" "$issue_id" "$slug")"
+  brainstorm_file="$(find_doc "$TARGET_REPO/docs/brainstorms" "$issue_id" "$slug")"
+  plan_file="$(find_doc "$TARGET_REPO/docs/plans" "$issue_id" "$slug")"
 
   # Interpolate. Using python for safe substitution (handles multiline description).
   # Falls back to sed if python unavailable.

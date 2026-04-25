@@ -23,13 +23,11 @@ stage_output_paths() {
       ;;
     retrospective)
       printf '%s\n' \
-        '.pipeline/learned-rules/' \
         'docs/knowledge/gotchas.md' \
         'docs/knowledge/qa-patterns.md' \
         'docs/knowledge/conventions.md' \
         'docs/knowledge/decisions.md' \
-        '.pipeline/AGENT_PROMPTS.md' \
-        '.pipeline/config.json' \
+        '.pipeline-config/config.json' \
         '.github/workflows/'
       ;;
     review|build|release)

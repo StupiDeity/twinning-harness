@@ -32,7 +32,7 @@ PY
 }
 
 # Resolve a reconcile match by consulting the three control labels.
-# Args: $1=issue_id $2=rel_path (relative-to-REPO_ROOT) $3=match_kind (canonical|fuzzy) [$4=score]
+# Args: $1=issue_id $2=rel_path (relative-to-TARGET_REPO) $3=match_kind (canonical|fuzzy) [$4=score]
 # Prints: proceed | link:<rel_path> on exit 0 (a label applied). Nothing on exit 1.
 resolve_via_control_label() {
   local issue_id="$1" rel_path="$2" kind="$3" score="${4:-}"
@@ -57,8 +57,8 @@ main() {
 
   local dir
   case "$kind" in
-    brainstorm) dir="$REPO_ROOT/docs/brainstorms" ;;
-    plan)       dir="$REPO_ROOT/docs/plans" ;;
+    brainstorm) dir="$TARGET_REPO/docs/brainstorms" ;;
+    plan)       dir="$TARGET_REPO/docs/plans" ;;
     *)          die "kind must be brainstorm or plan" ;;
   esac
 
@@ -89,7 +89,7 @@ main() {
   done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print0)
   local rel="" out=""
   if [[ -n "$canonical" ]]; then
-    rel="${canonical#"$REPO_ROOT/"}"
+    rel="${canonical#"$TARGET_REPO/"}"
     if out="$(resolve_via_control_label "$issue_id" "$rel" canonical)"; then
       printf '%s\n' "$out"; return 0
     fi
@@ -118,7 +118,7 @@ main() {
 
   # Threshold 0.50 on jaccard tokens feels about right; tune with real data.
   if awk -v s="$best_score" 'BEGIN{exit !(s>=0.50)}'; then
-    rel="${best_file#"$REPO_ROOT/"}"
+    rel="${best_file#"$TARGET_REPO/"}"
     if out="$(resolve_via_control_label "$issue_id" "$rel" fuzzy "$best_score")"; then
       printf '%s\n' "$out"; return 0
     fi

@@ -22,7 +22,7 @@ main() {
 
   # Extract distinct Gotcha-hit IDs from commit messages on the branch (since main).
   local hits
-  hits="$(git -C "$REPO_ROOT" log --pretty=%B "main..${branch}" 2>/dev/null \
+  hits="$(git -C "$TARGET_REPO" log --pretty=%B "main..${branch}" 2>/dev/null \
     | awk -F'[: ]+' 'tolower($1)=="gotcha-hit" { print $2 }' \
     | sort -u || true)"
 

@@ -80,7 +80,7 @@ _poll_evaluate_skip() {
   branch="$(jq -r '.branch // ""'                            "$state_file")"
   current_hash="$(compute_pipeline_content_hash)"
   if [[ -n "$branch" ]]; then
-    current_sha="$(git -C "$REPO_ROOT" ls-remote origin "$branch" 2>/dev/null | awk '{print $1}' | head -1 || true)"
+    current_sha="$(git -C "$TARGET_REPO" ls-remote origin "$branch" 2>/dev/null | awk '{print $1}' | head -1 || true)"
   else
     current_sha=""
   fi
@@ -244,8 +244,8 @@ _poll_classify_all() {
 #
 # Input:  classified_json (JSON array produced by _poll_classify_all)
 # Output: none
-# Side effects: writes to $TWINNING_DIR/metrics/events.jsonl and
-#               $TWINNING_DIR/.halt-sprawl-last-alerted; may POST to Slack.
+# Side effects: writes to $HARNESS_STATE_DIR/metrics/events.jsonl and
+#               $HARNESS_STATE_DIR/.halt-sprawl-last-alerted; may POST to Slack.
 _poll_emit_halt_sprawl_alert() {
   local classified_json="$1"
 
@@ -272,7 +272,7 @@ _poll_emit_halt_sprawl_alert() {
     "count=$count threshold=$threshold" || true
 
   # Edge-triggered: Slack at most once per 24h.
-  local debounce_file="$TWINNING_DIR/.halt-sprawl-last-alerted"
+  local debounce_file="$HARNESS_STATE_DIR/.halt-sprawl-last-alerted"
   local now_epoch last_epoch="0"
   now_epoch="$(date -u +%s)"
   if [[ -f "$debounce_file" ]]; then

@@ -14,7 +14,7 @@ source "$SCRIPT_DIR_REAL/common.sh"
 export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
-_TEST_TWINNING_DIR="$(mktemp -d)"
+_TEST_HARNESS_STATE_DIR="$(mktemp -d)"
 _TEST_STUB_DIR="$(mktemp -d)"
 _test_assert_temp_path() {
   case "$1" in
@@ -22,7 +22,7 @@ _test_assert_temp_path() {
     *) printf 'REFUSING: path %q is not a platform temp dir\n' "$1" >&2; exit 99 ;;
   esac
 }
-_test_assert_temp_path "$_TEST_TWINNING_DIR"
+_test_assert_temp_path "$_TEST_HARNESS_STATE_DIR"
 _test_assert_temp_path "$_TEST_STUB_DIR"
 _test_safe_rm() {
   local path="$1"
@@ -31,13 +31,13 @@ _test_safe_rm() {
     *) printf 'SAFETY: trap refusing rm -rf %q (not a temp dir)\n' "$path" >&2 ;;
   esac
 }
-trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_TWINNING_DIR"' EXIT
+trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_HARNESS_STATE_DIR"' EXIT
 
-TWINNING_DIR="$_TEST_TWINNING_DIR"
-export TWINNING_DIR
+HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
+export HARNESS_STATE_DIR
 STUB_DIR="$_TEST_STUB_DIR"
-METRICS_FILE="$TWINNING_DIR/metrics/events.jsonl"
-DEBOUNCE_FILE="$TWINNING_DIR/.halt-sprawl-last-alerted"
+METRICS_FILE="$HARNESS_STATE_DIR/metrics/events.jsonl"
+DEBOUNCE_FILE="$HARNESS_STATE_DIR/.halt-sprawl-last-alerted"
 SLACK_CAPTURE="$STUB_DIR/slack-calls.log"
 mkdir -p "$(dirname "$METRICS_FILE")"
 export METRICS_FILE DEBOUNCE_FILE SLACK_CAPTURE
@@ -82,8 +82,8 @@ install_default_metrics_stub
 source "$SCRIPT_DIR_REAL/poll.sh"
 SCRIPT_DIR="$STUB_DIR"
 _VH_SCRIPT_DIR="$STUB_DIR"
-TWINNING_DIR="$_TEST_TWINNING_DIR"
-export TWINNING_DIR
+HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
+export HARNESS_STATE_DIR
 
 git() {
   if [[ "$1" == "-C" && "$3" == "ls-remote" ]]; then

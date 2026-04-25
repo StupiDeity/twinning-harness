@@ -3,8 +3,8 @@
 # mutating Linear. Skips online checks if LINEAR_API_KEY is unset.
 #
 # Usage:
-#   bash .pipeline/bin/dry-run.sh [issue_id]
-#   LINEAR_API_KEY=... bash .pipeline/bin/dry-run.sh ENG-5
+#   bash $HARNESS_ROOT/bin/dry-run.sh [issue_id]
+#   LINEAR_API_KEY=... bash $HARNESS_ROOT/bin/dry-run.sh ENG-5
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,18 +28,18 @@ check() {
 
 echo "━━━ Offline checks ━━━"
 
-check "bash syntax: all .pipeline/bin/*.sh" bash -c '
-  for f in .pipeline/bin/*.sh; do bash -n "$f" || exit 1; done
+check "bash syntax: all $HARNESS_ROOT/bin/*.sh" bash -c '
+  for f in $HARNESS_ROOT/bin/*.sh; do bash -n "$f" || exit 1; done
 '
 
 check "classify-failure-test: all cases pass" \
-  bash .pipeline/bin/classify-failure-test.sh
+  bash $HARNESS_ROOT/bin/classify-failure-test.sh
 
 check "sweep test harness: 13 partition cases pass" \
-  bash .pipeline/bin/run-local-sweep-test.sh
+  bash $HARNESS_ROOT/bin/run-local-sweep-test.sh
 
 check "run-stage-test: all cases pass" \
-  bash .pipeline/bin/run-stage-test.sh
+  bash $HARNESS_ROOT/bin/run-stage-test.sh
 
 check "YAML syntax: .github/workflows/*.yml" bash -c '
   for f in .github/workflows/*.yml; do
@@ -50,17 +50,17 @@ check "YAML syntax: .github/workflows/*.yml" bash -c '
   done
 '
 
-check "JSON syntax: config.json" jq empty .pipeline/config.json
-check "JSON syntax: linear-ids.json" jq empty .pipeline/schemas/linear-ids.json
+check "JSON syntax: config.json" jq empty $CONFIG
+check "JSON syntax: linear-ids.json" jq empty $IDS_CACHE
 
 check "config: team_id present" \
-  bash -c '[[ -n "$(jq -r .linear.team_id .pipeline/config.json)" ]]'
+  bash -c '[[ -n "$(jq -r .linear.team_id $CONFIG)" ]]'
 check "config: project_id present" \
-  bash -c '[[ -n "$(jq -r .linear.project_id .pipeline/config.json)" ]]'
+  bash -c '[[ -n "$(jq -r .linear.project_id $CONFIG)" ]]'
 check "config: paused=false" \
-  bash -c '[[ "$(jq -r .orchestrator.paused .pipeline/config.json)" == "false" ]]'
+  bash -c '[[ "$(is_orchestrator_paused)" == "false" ]]'
 check "config: all 8 workflow_stages listed" \
-  bash -c '[[ "$(jq -r ".linear.workflow_stages | length" .pipeline/config.json)" == "8" ]]'
+  bash -c '[[ "$(jq -r ".linear.workflow_stages | length" $CONFIG)" == "8" ]]'
 
 check "cache: all 15 pipeline labels resolved to UUIDs" bash -c '
   missing=0
@@ -68,7 +68,7 @@ check "cache: all 15 pipeline labels resolved to UUIDs" bash -c '
     stage:reviewing stage:qa stage:building stage:released \
     pipeline:paused pipeline:supersede pipeline:extend pipeline:ignore \
     pipeline:reviewed pipeline:knowledge-reviewed pipeline:rule-reviewed; do
-    id=$(jq -r ".labels[\"$label\"]" .pipeline/schemas/linear-ids.json)
+    id=$(jq -r ".labels[\"$label\"]" $IDS_CACHE)
     [[ "$id" == "null" || -z "$id" ]] && { echo "missing: $label"; missing=1; }
   done
   exit $missing
@@ -76,15 +76,15 @@ check "cache: all 15 pipeline labels resolved to UUIDs" bash -c '
 
 check "cache: all 3 native states resolved" bash -c '
   for s in Todo "In Progress" Done; do
-    id=$(jq -r ".states[\"$s\"]" .pipeline/schemas/linear-ids.json)
+    id=$(jq -r ".states[\"$s\"]" $IDS_CACHE)
     if [[ "$id" == "null" || -z "$id" ]]; then echo "missing state: $s"; exit 1; fi
   done
   exit 0
 '
 
 check "render-prompt: extracts brainstorm block" bash -c '
-  source .pipeline/bin/common.sh
-  source .pipeline/bin/render-prompt.sh
+  source $HARNESS_ROOT/bin/common.sh
+  source $HARNESS_ROOT/bin/render-prompt.sh
   body=$(extract_block "1. Brainstorm Agent")
   lines=$(wc -l <<<"$body")
   [[ $lines -gt 30 ]] || { echo "extracted too few lines: $lines"; exit 1; }
@@ -92,8 +92,8 @@ check "render-prompt: extracts brainstorm block" bash -c '
 '
 
 check "render-prompt: extracts all 9 stages" bash -c '
-  source .pipeline/bin/common.sh
-  source .pipeline/bin/render-prompt.sh
+  source $HARNESS_ROOT/bin/common.sh
+  source $HARNESS_ROOT/bin/render-prompt.sh
   for stage in brainstorm plan implement ui review qa build release retrospective; do
     section=$(lookup_section "$stage")
     if [[ -z "$section" ]]; then echo "no section for: $stage"; exit 1; fi
@@ -105,14 +105,14 @@ check "render-prompt: extracts all 9 stages" bash -c '
 
 check "metrics.sh: append works" bash -c '
   tmp=$(mktemp); cp docs/knowledge/pipeline-metrics.md "$tmp"
-  .pipeline/bin/metrics.sh stage-test DRY-0 brainstorm success 123 "dry-run-test"
+  $HARNESS_ROOT/bin/metrics.sh stage-test DRY-0 brainstorm success 123 "dry-run-test"
   grep -q "DRY-0" docs/knowledge/pipeline-metrics.md || exit 1
   mv "$tmp" docs/knowledge/pipeline-metrics.md
 '
 
 check "slack.sh: no-op without webhook" bash -c '
   unset PIPELINE_SLACK_WEBHOOK_URL
-  out=$(.pipeline/bin/slack.sh info "dry-run" 2>&1)
+  out=$($HARNESS_ROOT/bin/slack.sh info "dry-run" 2>&1)
   grep -q "no webhook configured" <<<"$out" || exit 1
 '
 
@@ -120,15 +120,15 @@ check "dispatch.sh: dry-run prints prompt preview" bash -c '
   tmp=$(mktemp)
   echo "PROMPT TEST BODY line 1" > "$tmp"
   echo "PROMPT TEST BODY line 2" >> "$tmp"
-  out=$(PIPELINE_DRY_RUN=1 .pipeline/bin/dispatch.sh brainstorm "$tmp" 2>&1)
+  out=$(PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/dispatch.sh brainstorm "$tmp" 2>&1)
   grep -q "would invoke: claude" <<<"$out" || { echo "$out"; exit 1; }
   grep -q "PROMPT TEST BODY" <<<"$out" || { echo "$out"; exit 1; }
   rm "$tmp"
 '
 
 check "dispatch.sh: all 9 stages have allowed-tools profiles" bash -c '
-  source .pipeline/bin/common.sh
-  source .pipeline/bin/dispatch.sh
+  source $HARNESS_ROOT/bin/common.sh
+  source $HARNESS_ROOT/bin/dispatch.sh
   for stage in brainstorm plan implement ui review qa build release retrospective; do
     allowed_tools_for "$stage" >/dev/null || exit 1
   done
@@ -155,25 +155,25 @@ echo "━━━ Online checks (need LINEAR_API_KEY) ━━━"
 
 if [[ -z "${LINEAR_API_KEY:-}" ]]; then
   echo "  ⏭  LINEAR_API_KEY not set; skipping online checks."
-  echo "     To include them: export LINEAR_API_KEY=... ; bash .pipeline/bin/dry-run.sh"
+  echo "     To include them: export LINEAR_API_KEY=... ; bash $HARNESS_ROOT/bin/dry-run.sh"
 else
   check "linear.sh: auth + fetch $ISSUE_ID" bash -c '
-    resp=$(.pipeline/bin/linear.sh get-issue "'"$ISSUE_ID"'")
+    resp=$($HARNESS_ROOT/bin/linear.sh get-issue "'"$ISSUE_ID"'")
     jq -e ".data.issue.identifier == \"'"$ISSUE_ID"'\"" <<<"$resp" >/dev/null
   '
 
   check "linear.sh: $ISSUE_ID currently has no stage:* label" bash -c '
-    stage=$(.pipeline/bin/linear.sh stage-of "'"$ISSUE_ID"'")
+    stage=$($HARNESS_ROOT/bin/linear.sh stage-of "'"$ISSUE_ID"'")
     [[ -z "$stage" ]] || { echo "unexpected current stage: $stage"; exit 1; }
   '
 
   check "poll.sh: returns valid JSON decision" bash -c '
-    d=$(.pipeline/bin/poll.sh)
+    d=$($HARNESS_ROOT/bin/poll.sh)
     jq -e "has(\"issue_id\")" <<<"$d" >/dev/null
   '
 
   check "reconcile.sh $ISSUE_ID brainstorm → human (Mar-25 fuzzy match)" bash -c '
-    out=$(.pipeline/bin/reconcile.sh "'"$ISSUE_ID"'" brainstorm 2>/dev/null || true)
+    out=$($HARNESS_ROOT/bin/reconcile.sh "'"$ISSUE_ID"'" brainstorm 2>/dev/null || true)
     # Accept "human" OR "link:..." (the Mar-25 brainstorm may mention ENG-5 ID or not).
     case "$out" in
       human|link:*) ;;
@@ -184,7 +184,7 @@ else
 
   check "run-stage.sh: refuses to run without stage:* label on $ISSUE_ID" bash -c '
     # Without the entry label applied, run-stage.sh should fail the precondition.
-    if PIPELINE_DRY_RUN=1 .pipeline/bin/run-stage.sh "'"$ISSUE_ID"'" brainstorm 2>&1 \
+    if PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/run-stage.sh "'"$ISSUE_ID"'" brainstorm 2>&1 \
       | grep -q "does not carry stage:brainstorming"; then
       exit 0
     else
