@@ -23,7 +23,7 @@ _cf_branch_for() {
 _cf_branch_head_sha() {
   local branch="$1"
   [[ -z "$branch" ]] && { printf ''; return 0; }
-  git -C "$REPO_ROOT" ls-remote origin "$branch" 2>/dev/null \
+  git -C "$TARGET_REPO" ls-remote origin "$branch" 2>/dev/null \
     | awk '{print $1}' | head -1 || true
 }
 

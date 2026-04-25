@@ -13,10 +13,10 @@ export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
 # Allocate temp dirs. These paths are captured into _TEST_* variables that
 # never get reassigned by sourcing common.sh / poll.sh (both of which reset
-# TWINNING_DIR to $HOME/.twinning-pipeline). The trap uses the _TEST_*
-# copies so an accidental TWINNING_DIR reassignment can't cause rm -rf to
+# HARNESS_STATE_DIR to $HOME/.twinning-pipeline). The trap uses the _TEST_*
+# copies so an accidental HARNESS_STATE_DIR reassignment can't cause rm -rf to
 # hit live pipeline state. See ENG-20 incident on 2026-04-24.
-_TEST_TWINNING_DIR="$(mktemp -d)"
+_TEST_HARNESS_STATE_DIR="$(mktemp -d)"
 _TEST_STUB_DIR="$(mktemp -d)"
 
 # Defense-in-depth: refuse to continue if mktemp ever returns a path
@@ -28,13 +28,13 @@ _test_assert_temp_path() {
     *) printf 'REFUSING: path %q is not a platform temp dir\n' "$1" >&2; exit 99 ;;
   esac
 }
-_test_assert_temp_path "$_TEST_TWINNING_DIR"
+_test_assert_temp_path "$_TEST_HARNESS_STATE_DIR"
 _test_assert_temp_path "$_TEST_STUB_DIR"
 
 # Trap cleanup. Uses _TEST_* (never reassigned) and checks each path is
 # still a temp dir at trap-fire time before rm-rf-ing it. This would have
 # prevented the 2026-04-24 incident where sourcing common.sh reset
-# TWINNING_DIR to $HOME/.twinning-pipeline and the exit trap removed it.
+# HARNESS_STATE_DIR to $HOME/.twinning-pipeline and the exit trap removed it.
 _test_safe_rm() {
   local path="$1"
   case "$path" in
@@ -44,10 +44,10 @@ _test_safe_rm() {
       printf 'SAFETY: trap refusing rm -rf %q (not a temp dir)\n' "$path" >&2 ;;
   esac
 }
-trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_TWINNING_DIR"' EXIT
+trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_HARNESS_STATE_DIR"' EXIT
 
-TWINNING_DIR="$_TEST_TWINNING_DIR"
-export TWINNING_DIR
+HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
+export HARNESS_STATE_DIR
 STUB_DIR="$_TEST_STUB_DIR"
 FIXTURE_DIR="$STUB_DIR/fixtures"
 mkdir -p "$FIXTURE_DIR"
@@ -95,14 +95,14 @@ done
 # main() and helpers are defined) and then override SCRIPT_DIR so
 # call sites resolve to our stubs. Same with verdict-handler.sh's
 # _VH_SCRIPT_DIR (set when verdict-handler.sh is sourced by poll.sh).
-# NB: poll.sh sources common.sh, which resets TWINNING_DIR to HOME path;
-# we must re-override TWINNING_DIR after sourcing poll.sh.
+# NB: poll.sh sources common.sh, which resets HARNESS_STATE_DIR to HOME path;
+# we must re-override HARNESS_STATE_DIR after sourcing poll.sh.
 # shellcheck source=poll.sh
 source "$SCRIPT_DIR_REAL/poll.sh"
 SCRIPT_DIR="$STUB_DIR"
 _VH_SCRIPT_DIR="$STUB_DIR"
-TWINNING_DIR="$_TEST_TWINNING_DIR"
-export TWINNING_DIR
+HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
+export HARNESS_STATE_DIR
 
 # _poll_evaluate_skip calls git ls-remote for branch SHA. Override for
 # tests: always return empty current SHA so evidence-unchanged branch

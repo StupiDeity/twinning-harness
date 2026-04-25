@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/common.sh"
 
 require_bin gh jq git
 
-WORKTREES_DIR="$TWINNING_DIR/worktrees"
+WORKTREES_DIR="$HARNESS_STATE_DIR/worktrees"
 [[ -d "$WORKTREES_DIR" ]] || { log "no worktrees dir; nothing to sweep"; exit 0; }
 
 # issue_id_from_branch: "feat/eng-13-foo" → "ENG-13"; empty if no match.
@@ -25,11 +25,11 @@ issue_id_from_branch() {
 remove_tree() {
   local path="$1" branch="$2" reason="$3"
   log "cleanup: removing worktree $path (branch=$branch, reason=$reason)"
-  git -C "$REPO_ROOT" worktree remove --force "$path" 2>/dev/null || {
+  git -C "$TARGET_REPO" worktree remove --force "$path" 2>/dev/null || {
     log "cleanup: git worktree remove failed; forcing rm of $path"
     rm -rf "$path"
   }
-  git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+  git -C "$TARGET_REPO" branch -D "$branch" 2>/dev/null || true
   bash "$SCRIPT_DIR/metrics.sh" worktree-cleanup "$3" "$branch" "success" 0 "path=$path"
 }
 

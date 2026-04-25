@@ -28,7 +28,7 @@ main() {
   # Render the prompt.
   local prompt_file log_file
   prompt_file="$(mktemp -t pipeline-release-prompt-XXXXXX)"
-  log_file="$REPO_ROOT/logs/pipeline/release-${tag}-$(date -u +%Y%m%dT%H%M%SZ).log"
+  log_file="$HARNESS_STATE_DIR/logs/release-${tag}-$(date -u +%Y%m%dT%H%M%SZ).log"
   mkdir -p "$(dirname "$log_file")"
   bash "$SCRIPT_DIR/render-prompt.sh" release > "$prompt_file"
   log "rendered release prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"

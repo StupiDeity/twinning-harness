@@ -54,9 +54,9 @@ source "$HARNESS_DIR/common.sh"
 # shellcheck source=reconcile.sh
 source "$HARNESS_DIR/reconcile.sh"
 
-# Post-source overrides: reconcile.sh:15 sets SCRIPT_DIR; common.sh:7 sets REPO_ROOT.
+# Post-source overrides: reconcile.sh sets SCRIPT_DIR; common.sh sets TARGET_REPO.
 # Both are top-level assignments and thus overridable globally.
-REPO_ROOT="$FIXTURE_DIR"
+TARGET_REPO="$FIXTURE_DIR"
 SCRIPT_DIR="$STUB_DIR"
 mkdir -p "$FIXTURE_DIR/docs/brainstorms"
 

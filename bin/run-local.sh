@@ -27,13 +27,13 @@ source "$SCRIPT_DIR/common.sh"
 # shellcheck source=run-local-helpers.sh
 source "$SCRIPT_DIR/run-local-helpers.sh"
 
-LOCK_DIR="$TWINNING_DIR/.run-local.lock"
-ENV_FILE="$PIPELINE_ROOT/.env.local"
-FAIL_COUNTER="$TWINNING_DIR/.consecutive-failures"
+LOCK_DIR="$HARNESS_STATE_DIR/.run-local.lock"
+ENV_FILE="$TARGET_CONFIG_DIR/.env.local"
+FAIL_COUNTER="$HARNESS_STATE_DIR/.consecutive-failures"
 FAIL_THRESHOLD=3
-TICK_COUNTER="$TWINNING_DIR/.tick-counter"
+TICK_COUNTER="$HARNESS_STATE_DIR/.tick-counter"
 CLEANUP_EVERY_N_TICKS=10
-LOG_DIR="$REPO_ROOT/logs/pipeline"
+LOG_DIR="$HARNESS_STATE_DIR/logs"
 LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
 BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
@@ -50,7 +50,7 @@ trip_breaker() {
   fi
 }
 
-mkdir -p "$TWINNING_DIR"
+mkdir -p "$HARNESS_STATE_DIR"
 
 if ! acquire_lock "$LOCK_DIR"; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
@@ -110,25 +110,25 @@ ensure_worktree() {
     log "worktree exists: $path"
     return 0
   fi
-  if git -C "$REPO_ROOT" rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
+  if git -C "$TARGET_REPO" rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
     log "branch exists locally; creating worktree at $path pointing at $branch"
-    git -C "$REPO_ROOT" worktree add "$path" "$branch"
-  elif git -C "$REPO_ROOT" rev-parse --verify "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    git -C "$TARGET_REPO" worktree add "$path" "$branch"
+  elif git -C "$TARGET_REPO" rev-parse --verify "refs/remotes/origin/$branch" >/dev/null 2>&1; then
     log "branch exists on origin; creating worktree at $path tracking origin/$branch"
-    git -C "$REPO_ROOT" worktree add "$path" -b "$branch" "origin/$branch"
+    git -C "$TARGET_REPO" worktree add "$path" -b "$branch" "origin/$branch"
   else
     log "creating new branch $branch and worktree at $path from origin/main"
-    git -C "$REPO_ROOT" fetch origin main
+    git -C "$TARGET_REPO" fetch origin main
     # --no-track: branching off a remote-tracking ref (origin/main) otherwise wires
     # the new branch's upstream to origin/main, which makes later `git push` fail
     # with "upstream branch of your current branch does not match the name" under
     # the default push.default=simple. The first push below uses `-u origin HEAD` to
     # set the correct upstream to origin/<branch>.
-    git -C "$REPO_ROOT" worktree add --no-track "$path" -b "$branch" origin/main
+    git -C "$TARGET_REPO" worktree add --no-track "$path" -b "$branch" origin/main
   fi
 }
 
-cd "$REPO_ROOT"
+cd "$TARGET_REPO"
 
 decision="$(bash "$SCRIPT_DIR/poll.sh")"
 log "poll decision: $decision"
@@ -212,8 +212,8 @@ if [[ "$reconcile_decision" == "proceed" ]]; then
   # Legacy-branch coexistence: if a feature/<issue> branch already exists
   # locally or on origin, use the old flow for this issue.
   ident_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
-  if [[ -n "$(git -C "$REPO_ROOT" branch --list "feature/${ident_lower}-*" 2>/dev/null)" ]] \
-     || git -C "$REPO_ROOT" ls-remote --heads origin "feature/${ident_lower}-*" 2>/dev/null | grep -q "feature/"; then
+  if [[ -n "$(git -C "$TARGET_REPO" branch --list "feature/${ident_lower}-*" 2>/dev/null)" ]] \
+     || git -C "$TARGET_REPO" ls-remote --heads origin "feature/${ident_lower}-*" 2>/dev/null | grep -q "feature/"; then
     log "legacy feature/* branch detected for $issue_id — using old flow (no worktree)"
   else
     branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
@@ -224,7 +224,7 @@ if [[ "$reconcile_decision" == "proceed" ]]; then
 fi
 
 # Dispatch run-stage.sh from the worktree if one was resolved, else from main.
-dispatch_cwd="$REPO_ROOT"
+dispatch_cwd="$TARGET_REPO"
 if [[ -n "$worktree_path" ]]; then
   dispatch_cwd="$worktree_path"
 fi
@@ -375,7 +375,7 @@ fi
 # Release watcher: detect newly-published GitHub releases and trigger the local
 # on-new-release handler (sweep + observer agent). Replaces the old
 # pipeline-release.yml workflow. Cheap: one `gh api` call per tick.
-LAST_RELEASE_FILE="$TWINNING_DIR/last-observed-release"
+LAST_RELEASE_FILE="$HARNESS_STATE_DIR/last-observed-release"
 if command -v gh >/dev/null 2>&1; then
   latest_release_json="$(gh release list --limit 1 --json tagName,name 2>/dev/null || printf '[]')"
   latest_tag="$(jq -r '.[0].tagName // ""' <<<"$latest_release_json")"

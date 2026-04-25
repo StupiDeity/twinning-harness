@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test harness for post_completion_comment + rollback summary cleanup (ENG-11).
-# All cases run under PIPELINE_DRY_RUN=1 against a mktemp'd TWINNING_DIR and
+# All cases run under PIPELINE_DRY_RUN=1 against a mktemp'd HARNESS_STATE_DIR and
 # a STUB_DIR of fake linear.sh / branch-name.sh / gh scripts, so no real
 # Linear / gh / filesystem side-effects escape the harness.
 
@@ -73,11 +73,11 @@ source "$HARNESS_DIR/classify-failure.sh"
 source "$HARNESS_DIR/run-stage.sh"
 
 # Isolate on-disk state: must come AFTER sourcing common.sh, which unconditionally
-# sets TWINNING_DIR=$HOME/.twinning-pipeline. Overriding here prevents the EXIT
+# sets HARNESS_STATE_DIR=$HOME/.twinning-pipeline. Overriding here prevents the EXIT
 # trap from deleting the real pipeline directory.
-TWINNING_DIR="$(mktemp -d)"
-export TWINNING_DIR
-trap 'rm -rf "$TWINNING_DIR" "$STUB_DIR"' EXIT
+HARNESS_STATE_DIR="$(mktemp -d)"
+export HARNESS_STATE_DIR
+trap 'rm -rf "$HARNESS_STATE_DIR" "$STUB_DIR"' EXIT
 
 # Redirect post_completion_comment's sub-calls through the stubs.
 SCRIPT_DIR="$STUB_DIR"

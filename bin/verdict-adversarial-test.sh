@@ -64,10 +64,10 @@ for real in halt.sh scope-check.sh guards.sh classify-failure.sh verdict-handler
 done
 
 # Also need the fixtures used by classify-failure.sh (.pipeline/config.json
-# lookups, pipeline-content-hash, branch-name.sh). Point TWINNING_DIR at a
+# lookups, pipeline-content-hash, branch-name.sh). Point HARNESS_STATE_DIR at a
 # tempdir so issue-state.json writes don't clobber real state.
-export TWINNING_DIR="$STUB_DIR/twinning"
-mkdir -p "$TWINNING_DIR"
+export HARNESS_STATE_DIR="$STUB_DIR/twinning"
+mkdir -p "$HARNESS_STATE_DIR"
 
 PASS=0; FAIL=0
 fail_at() { printf '  ❌ %s\n      %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }

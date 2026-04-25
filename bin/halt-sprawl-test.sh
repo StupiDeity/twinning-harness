@@ -13,7 +13,7 @@ export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
 # Allocate temp dirs captured into _TEST_* (never reassigned by sourcing
 # common.sh / poll.sh). See ENG-20 incident 2026-04-24.
-_TEST_TWINNING_DIR="$(mktemp -d)"
+_TEST_HARNESS_STATE_DIR="$(mktemp -d)"
 _TEST_STUB_DIR="$(mktemp -d)"
 _test_assert_temp_path() {
   case "$1" in
@@ -21,7 +21,7 @@ _test_assert_temp_path() {
     *) printf 'REFUSING: path %q is not a platform temp dir\n' "$1" >&2; exit 99 ;;
   esac
 }
-_test_assert_temp_path "$_TEST_TWINNING_DIR"
+_test_assert_temp_path "$_TEST_HARNESS_STATE_DIR"
 _test_assert_temp_path "$_TEST_STUB_DIR"
 _test_safe_rm() {
   local path="$1"
@@ -30,14 +30,14 @@ _test_safe_rm() {
     *) printf 'SAFETY: trap refusing rm -rf %q (not a temp dir)\n' "$path" >&2 ;;
   esac
 }
-trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_TWINNING_DIR"' EXIT
+trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_HARNESS_STATE_DIR"' EXIT
 
-TWINNING_DIR="$_TEST_TWINNING_DIR"
-export TWINNING_DIR
+HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
+export HARNESS_STATE_DIR
 STUB_DIR="$_TEST_STUB_DIR"
 FIXTURE_DIR="$STUB_DIR/fixtures"
-METRICS_FILE="$TWINNING_DIR/metrics/events.jsonl"
-DEBOUNCE_FILE="$TWINNING_DIR/.halt-sprawl-last-alerted"
+METRICS_FILE="$HARNESS_STATE_DIR/metrics/events.jsonl"
+DEBOUNCE_FILE="$HARNESS_STATE_DIR/.halt-sprawl-last-alerted"
 SLACK_CAPTURE="$STUB_DIR/slack-calls.log"
 mkdir -p "$FIXTURE_DIR" "$(dirname "$METRICS_FILE")"
 export FIXTURE_DIR METRICS_FILE DEBOUNCE_FILE SLACK_CAPTURE
@@ -67,7 +67,7 @@ SH
 chmod +x "$STUB_DIR/linear.sh"
 
 # metrics.sh: write a real jsonl line so tests can inspect the on-disk shape.
-# Mirrors the real metrics.sh shape but skips TWINNING_DIR recomputation.
+# Mirrors the real metrics.sh shape but skips HARNESS_STATE_DIR recomputation.
 cat > "$STUB_DIR/metrics.sh" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
@@ -90,13 +90,13 @@ printf '%s\t%s\n' "\${1:-}" "\${2:-}" >> "$SLACK_CAPTURE"
 SH
 chmod +x "$STUB_DIR/slack.sh"
 
-# ─── Source poll.sh and override SCRIPT_DIR / TWINNING_DIR ────────────
+# ─── Source poll.sh and override SCRIPT_DIR / HARNESS_STATE_DIR ────────────
 # shellcheck source=poll.sh
 source "$SCRIPT_DIR_REAL/poll.sh"
 SCRIPT_DIR="$STUB_DIR"
 _VH_SCRIPT_DIR="$STUB_DIR"
-TWINNING_DIR="$_TEST_TWINNING_DIR"
-export TWINNING_DIR
+HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
+export HARNESS_STATE_DIR
 
 git() {
   if [[ "$1" == "-C" && "$3" == "ls-remote" ]]; then

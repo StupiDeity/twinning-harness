@@ -122,9 +122,9 @@ main() {
   # In the worktree flow, run-stage.sh invokes scope-check with cwd inside the
   # per-issue worktree, where the plan has been committed on the feature branch
   # but not merged to main. Resolve plans from that worktree, not from the shared
-  # $REPO_ROOT (which points at main via SCRIPT_DIR/../..).
+  # $TARGET_REPO (which points at main via SCRIPT_DIR/../..).
   local worktree_root
-  worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$REPO_ROOT")"
+  worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TARGET_REPO")"
 
   local plan
   plan="$(find_canonical_plan "$issue_id" "$worktree_root")" \

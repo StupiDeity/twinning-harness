@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# Shared helpers sourced by every pipeline script.
-# Provides: PIPELINE_ROOT, REPO_ROOT, CONFIG, log, die, require_env.
+# Shared helpers sourced by every harness script.
+# Provides: HARNESS_ROOT, TARGET_REPO, HARNESS_STATE_DIR, TARGET_CONFIG_DIR,
+#           CONFIG, IDS_CACHE, STATE_FILE, log, die, require_env.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PIPELINE_ROOT="$REPO_ROOT/.pipeline"
-CONFIG="$PIPELINE_ROOT/config.json"
-IDS_CACHE="$PIPELINE_ROOT/schemas/linear-ids.json"
-TWINNING_DIR="${HOME}/.twinning-pipeline"
+HARNESS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-export REPO_ROOT PIPELINE_ROOT CONFIG IDS_CACHE TWINNING_DIR
+: "${TARGET_REPO:?TARGET_REPO env var required — path to the target repo this harness drives}"
+[[ -d "$TARGET_REPO" ]] || { printf '[%s] FATAL: TARGET_REPO does not exist: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TARGET_REPO" >&2; exit 1; }
+
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/twinning-harness}"
+TARGET_CONFIG_DIR="${TARGET_REPO}/.pipeline-config"
+CONFIG="${TARGET_CONFIG_DIR}/config.json"
+IDS_CACHE="${TARGET_CONFIG_DIR}/schemas/linear-ids.json"
+STATE_FILE="${TARGET_CONFIG_DIR}/state.local.json"
+
+export HARNESS_ROOT TARGET_REPO HARNESS_STATE_DIR TARGET_CONFIG_DIR CONFIG IDS_CACHE STATE_FILE
 
 # ─── Per-issue state directory (ENG-15) ──────────────────────────────
 # Resolve the per-issue state directory. Callers: run-stage.sh,
@@ -19,7 +25,7 @@ export REPO_ROOT PIPELINE_ROOT CONFIG IDS_CACHE TWINNING_DIR
 issue_dir() {
   local issue="$1"
   [[ -n "$issue" ]] || die "issue_dir: missing issue id"
-  printf '%s/%s' "$TWINNING_DIR" "$issue"
+  printf '%s/%s' "$HARNESS_STATE_DIR" "$issue"
 }
 # Compute a stable sha256 over the set of files that drive pipeline
 # behavior from the main dev dir. Intentionally excludes metrics/ and
@@ -32,9 +38,9 @@ compute_pipeline_content_hash() {
   local files
   files="$(
     {
-      find "$REPO_ROOT/.pipeline/bin" -type f -name '*.sh' 2>/dev/null
-      printf '%s\n' "$REPO_ROOT/.pipeline/config.json"
-      printf '%s\n' "$REPO_ROOT/.pipeline/AGENT_PROMPTS.md"
+      find "$HARNESS_ROOT/bin" -type f -name '*.sh' 2>/dev/null
+      printf '%s\n' "$CONFIG"
+      printf '%s\n' "$HARNESS_ROOT/AGENT_PROMPTS.md"
     } | LC_ALL=C sort
   )"
   # shasum each, then hash the concatenation of per-file digests.
@@ -74,7 +80,36 @@ failure_outcome_for_exit() {
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
 }
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit
+# ─── Orchestrator paused flag (ENG-23) ────────────────────────────────
+# Read priority: STATE_FILE (runtime override) > CONFIG (static default) > "false".
+# Writes go ONLY to STATE_FILE so the target repo is never asked to
+# commit transient state.
+is_orchestrator_paused() {
+  if [[ -f "$STATE_FILE" ]]; then
+    local override
+    override="$(jq -r '.orchestrator.paused // empty' "$STATE_FILE" 2>/dev/null || true)"
+    if [[ -n "$override" && "$override" != "null" ]]; then
+      printf '%s' "$override"
+      return
+    fi
+  fi
+  jq -r '.orchestrator.paused // "false"' "$CONFIG"
+}
+
+set_orchestrator_paused() {
+  local paused="$1"   # "true" or "false"
+  [[ "$paused" == "true" || "$paused" == "false" ]] || die "set_orchestrator_paused: expected true|false, got $paused"
+  mkdir -p "$(dirname "$STATE_FILE")"
+  local tmp="$STATE_FILE.tmp"
+  if [[ -f "$STATE_FILE" ]]; then
+    jq ".orchestrator.paused = $paused" "$STATE_FILE" > "$tmp"
+  else
+    printf '{"orchestrator":{"paused":%s}}\n' "$paused" > "$tmp"
+  fi
+  mv "$tmp" "$STATE_FILE"
+}
+
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit is_orchestrator_paused set_orchestrator_paused
 
 PIPELINE_DRY_RUN="${PIPELINE_DRY_RUN:-0}"
 export PIPELINE_DRY_RUN

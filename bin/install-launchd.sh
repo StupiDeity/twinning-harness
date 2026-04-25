@@ -15,20 +15,22 @@ TARGET_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 
 mkdir -p "$TARGET_DIR"
-mkdir -p "$REPO_ROOT/logs/pipeline"
+mkdir -p "$HARNESS_STATE_DIR/logs"
 
 # $1=label, $2=kickstart(1|0). We kickstart the 5-min pipeline so it runs once
 # immediately; the retrospective runs on calendar schedule only.
 install_plist() {
   local label="$1" kickstart="$2"
-  local template="$PIPELINE_ROOT/launchd/${label}.plist.template"
+  local template="$HARNESS_ROOT/launchd/${label}.plist.template"
   local target="$TARGET_DIR/${label}.plist"
 
   [[ -f "$template" ]] || die "plist template missing: $template"
 
   sed \
-    -e "s|{{REPO_ROOT}}|$REPO_ROOT|g" \
-    -e "s|{{HOME}}|$HOME|g" \
+    -e "s|__HARNESS_ROOT__|$HARNESS_ROOT|g" \
+    -e "s|__TARGET_REPO__|$TARGET_REPO|g" \
+    -e "s|__HARNESS_STATE_DIR__|$HARNESS_STATE_DIR|g" \
+    -e "s|__HOME__|$HOME|g" \
     "$template" > "$target"
   log "rendered $target"
 
@@ -55,12 +57,12 @@ Pipeline LaunchAgents installed.
   com.twinning.pipeline       — every 5 min, main tick + release watcher
   com.twinning.retrospective  — weekly Mon 09:00, retrospective agent + PR
   Domain:  $DOMAIN
-  Logs:    $REPO_ROOT/logs/pipeline/launchd.{out,err}.log
-           $REPO_ROOT/logs/pipeline/retrospective-launchd.{out,err}.log
-           $REPO_ROOT/logs/pipeline/local-YYYY-MM-DD.log
+  Logs:    $HARNESS_STATE_DIR/logs/launchd.{out,err}.log
+           $HARNESS_STATE_DIR/logs/retrospective-launchd.{out,err}.log
+           $HARNESS_STATE_DIR/logs/local-YYYY-MM-DD.log
 
 Useful:
   launchctl list | grep com.twinning
-  tail -f $REPO_ROOT/logs/pipeline/local-\$(date -u +%Y-%m-%d).log
-  bash .pipeline/bin/uninstall-launchd.sh    # stop & remove both
+  tail -f $HARNESS_STATE_DIR/logs/local-\$(date -u +%Y-%m-%d).log
+  bash $HARNESS_ROOT/bin/uninstall-launchd.sh    # stop & remove both
 EOF
