@@ -5,6 +5,7 @@
 set -euo pipefail
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PIPELINE_DRY_RUN=1
+unset TARGET_REPO
 export LINEAR_API_KEY=test-mock-key
 
 PASS=0; FAIL=0

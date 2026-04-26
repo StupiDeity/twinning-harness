@@ -235,6 +235,8 @@ _slug_freeze_write_sentinel() {
   mkdir -p "$(dirname "$sentinel")"
   printf '%s\n' "$TARGET_REPO" > "$sentinel"
   log "slug-freeze: wrote sentinel $sentinel"
+  mkdir -p "$HARNESS_ROOT/learned-rules/$slug"
+  log "slug-freeze: ensured $HARNESS_ROOT/learned-rules/$slug/ exists"
 }
 
 is_slug_freeze_done() {

@@ -175,7 +175,7 @@ main() {
   local issue_id_lower branch_name stage_summary_path learned_rules_dir
   issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
   branch_name="feature/${issue_id_lower}-${slug}"
-  stage_summary_path="$HOME/.twinning-pipeline/${issue_id}/stage-summary-${stage}.md"
+  stage_summary_path="$(issue_dir "$issue_id")/stage-summary-${stage}.md"
   learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
 
   if command -v python3 >/dev/null 2>&1; then

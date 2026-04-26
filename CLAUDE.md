@@ -87,8 +87,9 @@ Install / uninstall the launchd agents (rendered into `~/Library/LaunchAgents/` 
 templates in `launchd/`):
 
 ```bash
-TARGET_REPO=/path/to/target bash bin/install-launchd.sh
-bash bin/uninstall-launchd.sh
+bash bin/setup.sh /path/to/target          # full onboarding (recommended)
+bash bin/install-launchd.sh /path/to/target  # just (re)install plists
+bash bin/uninstall-launchd.sh /path/to/target  # bootout & remove plists
 ```
 
 ## Tests
@@ -225,8 +226,8 @@ Anything writing files outside the per-stage allowlist must update the partition
 
 | Symptom | Where to look |
 |---|---|
-| Tick is silent | `$HARNESS_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
-| Breaker tripped | `$HARNESS_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
+| Tick is silent | `$PROJECT_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
+| Breaker tripped | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
 | Kill switch | `bash bin/halt.sh resolve …` or set `orchestrator.paused=true` (takes effect next tick) |

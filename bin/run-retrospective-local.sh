@@ -13,10 +13,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Load .env.local so LINEAR_API_KEY and friends are available to the agent.
-if [[ -f "$TARGET_CONFIG_DIR/.env.local" ]]; then
-  # shellcheck disable=SC1091
-  set -a; source "$TARGET_CONFIG_DIR/.env.local"; set +a
+# Load shared secrets then per-project .env.local so LINEAR_API_KEY and friends
+# are available to the agent. secrets.env is loaded first; .env.local may override.
+SECRETS_FILE="$HARNESS_CONFIG_DIR/secrets.env"
+if [[ -f "$SECRETS_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$SECRETS_FILE"; set +a
+fi
+ENV_FILE="$TARGET_CONFIG_DIR/.env.local"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$ENV_FILE"; set +a
 fi
 
 require_env LINEAR_API_KEY

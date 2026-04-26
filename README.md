@@ -77,7 +77,7 @@ Observe:
 
 ```bash
 launchctl list | grep com.twinning.pipeline                          # status / last exit
-tail -f logs/pipeline/local-$(date -u +%Y-%m-%d).log                  # per-tick rolling log
+tail -f "${XDG_STATE_HOME:-~/.local/state}/twinning-harness/<slug>/logs/local-$(date -u +%Y-%m-%d).log"  # per-tick rolling log
 tail -f logs/pipeline/launchd.err.log                                 # anything launchd captured
 bash .pipeline/bin/status.sh                                          # dashboard (works regardless of runtime)
 ```
@@ -223,20 +223,25 @@ When you want the pipeline to build a feature:
 
 ## Per-Issue State Directory (ENG-15)
 
-All per-issue state lives under `~/.twinning-pipeline/ENG-N/`:
+All per-issue state lives under `$PROJECT_STATE_DIR/ENG-N/`
+(`${XDG_STATE_HOME:-~/.local/state}/twinning-harness/<slug>/ENG-N/`):
 
 ````
-~/.twinning-pipeline/
-├── .consecutive-failures    # global breaker counter
-├── .run-local.lock/         # global tick lock
-├── .tick-counter            # global tick counter
-├── github.pem               # GitHub App private key
-├── metrics/
-│   └── events.jsonl         # pipeline-wide telemetry
-└── ENG-N/                   # one dir per in-flight issue
-    ├── worktree/            # git worktree for the feature branch
-    ├── issue-state.json     # retry memory (ENG-15) — see schema below
-    └── scope-approval       # optional, legacy scope-approval state
+${XDG_STATE_HOME:-~/.local/state}/twinning-harness/
+├── .claude-mutex.lock/      # global single-flight around dispatch.sh
+└── <slug>/                  # per-project (PROJECT_STATE_DIR)
+    ├── target-repo          # collision sentinel
+    ├── .consecutive-failures
+    ├── .run-local.lock/
+    ├── .tick-counter
+    ├── last-observed-release
+    ├── logs/                # local-YYYY-MM-DD.log + per-stage transcripts
+    ├── metrics/
+    │   └── events.jsonl     # pipeline-wide telemetry
+    └── ENG-N/               # one dir per in-flight issue
+        ├── worktree/        # git worktree for the feature branch
+        ├── issue-state.json # retry memory (ENG-15) — see schema below
+        └── stage-summary-<stage>.md
 ````
 
 ### issue-state.json schema
