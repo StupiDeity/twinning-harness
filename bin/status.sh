@@ -143,7 +143,7 @@ show_active_issues() {
 
 show_metrics() {
   section "Last 10 JSONL metrics events"
-  local jsonl="$HARNESS_STATE_DIR/metrics/events.jsonl"
+  local jsonl="$PROJECT_STATE_DIR/metrics/events.jsonl"
   if [[ ! -f "$jsonl" ]]; then
     printf '  %s(no events.jsonl yet)%s\n' "$C_DIM" "$C_RST"
     return 0

@@ -46,13 +46,20 @@ Linear (source of truth)           Local runtime (Mac Studio)
 
 ## Local runtime (Mac Studio / launchd)
 
-Install once on the Mac Studio:
+### Install for a target repo
+
+Run from the harness checkout:
 
 ```bash
-cp .pipeline/.env.local.example .pipeline/.env.local
-# edit .pipeline/.env.local — paste LINEAR_API_KEY
-bash .pipeline/bin/install-launchd.sh
+bash bin/setup.sh /path/to/target-repo
 ```
+
+`setup.sh` walks every onboarding phase idempotently — Linear auth,
+team/project selection, label provisioning, slug freeze, GitHub App
+credentials, `gh auth`, optional Slack, config defaults, validation, and
+finally launchd installation. Re-run any time; satisfied phases are
+skipped. To redo just one phase: `bash bin/setup.sh /path <phase>` (e.g.,
+`linear-auth`, `slug-freeze`, `validate`).
 
 The installer renders **both** launchd plist templates into `~/Library/LaunchAgents/`
 and loads the agents:
@@ -70,7 +77,7 @@ Observe:
 
 ```bash
 launchctl list | grep com.twinning.pipeline                          # status / last exit
-tail -f logs/pipeline/local-$(date -u +%Y-%m-%d).log                  # per-tick rolling log
+tail -f "${XDG_STATE_HOME:-~/.local/state}/twinning-harness/<slug>/logs/local-$(date -u +%Y-%m-%d).log"  # per-tick rolling log
 tail -f logs/pipeline/launchd.err.log                                 # anything launchd captured
 bash .pipeline/bin/status.sh                                          # dashboard (works regardless of runtime)
 ```
@@ -170,6 +177,35 @@ Set `PIPELINE_DRY_RUN=1` to exercise the harness without calling Claude or mutat
 PIPELINE_DRY_RUN=1 LINEAR_API_KEY=... bash .pipeline/bin/run-stage.sh ENG-5 brainstorm
 ```
 
+## Multi-project layout
+
+A single harness checkout drives N target repos by giving each a unique
+project slug (derived once from the Linear project name and frozen in
+`config.json::project.slug`). Per-project state lives at
+`${XDG_STATE_HOME:-~/.local/state}/twinning-harness/<slug>/`. Each project
+gets its own launchd pair: `com.twinning.pipeline.<slug>` and
+`com.twinning.retrospective.<slug>`.
+
+Shared secrets (`LINEAR_API_KEY`, `GH_APP_ID`, `GH_APP_PRIVATE_KEY_PATH`,
+`PIPELINE_SLACK_WEBHOOK_URL`) live once at
+`${XDG_CONFIG_HOME:-~/.config}/twinning-harness/secrets.env`. Per-project
+`.env.local` only carries `GH_APP_INSTALLATION_ID`.
+
+Cross-project `claude -p` calls are serialized via a global mutex at
+`$HARNESS_STATE_DIR/.claude-mutex.lock/`, so two projects' ticks won't
+overlap their agent calls.
+
+### Migrating an existing single-project install
+
+```bash
+bash bin/setup.sh /path/to/twinning migrate
+```
+
+This single command performs the full upgrade — slug freeze, secrets
+lift, state-dir relocation under `<slug>/`, learned-rules relocation
+under `<slug>/`, legacy launchd bootout, and slug-suffixed reinstall.
+Idempotent.
+
 ## Phase 2 (future) — not yet wired
 
 - Linear webhook → local HTTP listener for instant pickup instead of 5-minute poll.
@@ -187,20 +223,25 @@ When you want the pipeline to build a feature:
 
 ## Per-Issue State Directory (ENG-15)
 
-All per-issue state lives under `~/.twinning-pipeline/ENG-N/`:
+All per-issue state lives under `$PROJECT_STATE_DIR/ENG-N/`
+(`${XDG_STATE_HOME:-~/.local/state}/twinning-harness/<slug>/ENG-N/`):
 
 ````
-~/.twinning-pipeline/
-├── .consecutive-failures    # global breaker counter
-├── .run-local.lock/         # global tick lock
-├── .tick-counter            # global tick counter
-├── github.pem               # GitHub App private key
-├── metrics/
-│   └── events.jsonl         # pipeline-wide telemetry
-└── ENG-N/                   # one dir per in-flight issue
-    ├── worktree/            # git worktree for the feature branch
-    ├── issue-state.json     # retry memory (ENG-15) — see schema below
-    └── scope-approval       # optional, legacy scope-approval state
+${XDG_STATE_HOME:-~/.local/state}/twinning-harness/
+├── .claude-mutex.lock/      # global single-flight around dispatch.sh
+└── <slug>/                  # per-project (PROJECT_STATE_DIR)
+    ├── target-repo          # collision sentinel
+    ├── .consecutive-failures
+    ├── .run-local.lock/
+    ├── .tick-counter
+    ├── last-observed-release
+    ├── logs/                # local-YYYY-MM-DD.log + per-stage transcripts
+    ├── metrics/
+    │   └── events.jsonl     # pipeline-wide telemetry
+    └── ENG-N/               # one dir per in-flight issue
+        ├── worktree/        # git worktree for the feature branch
+        ├── issue-state.json # retry memory (ENG-15) — see schema below
+        └── stage-summary-<stage>.md
 ````
 
 ### issue-state.json schema

@@ -10,8 +10,16 @@ source "$SCRIPT_DIR/common.sh"
 
 require_bin gh jq git
 
-WORKTREES_DIR="$HARNESS_STATE_DIR/worktrees"
-[[ -d "$WORKTREES_DIR" ]] || { log "no worktrees dir; nothing to sweep"; exit 0; }
+# Worktrees live at $PROJECT_STATE_DIR/ENG-*/worktree per ENG-15. The
+# enclosing per-issue dir also holds issue-state.json + stage-summary-*.md;
+# we only sweep the worktree subdir, leaving the parent untouched so
+# poll.sh's skip-state evidence survives.
+shopt -s nullglob
+worktree_paths=("$PROJECT_STATE_DIR"/ENG-*/worktree)
+if (( ${#worktree_paths[@]} == 0 )); then
+  log "no per-issue worktrees under $PROJECT_STATE_DIR; nothing to sweep"
+  exit 0
+fi
 
 # issue_id_from_branch: "feat/eng-13-foo" → "ENG-13"; empty if no match.
 issue_id_from_branch() {
@@ -45,9 +53,7 @@ transition_done() {
   log "cleanup: transitioned $issue_id to Linear state '$done_state'"
 }
 
-shopt -s nullglob
-for path in "$WORKTREES_DIR"/*/; do
-  path="${path%/}"
+for path in "${worktree_paths[@]}"; do
   # Resolve the branch at this worktree.
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)"
   [[ -n "$branch" ]] || { log "cleanup: skip $path (not a git worktree)"; continue; }

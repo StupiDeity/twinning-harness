@@ -11,6 +11,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+CLAUDE_MUTEX_DIR="$HARNESS_STATE_DIR/.claude-mutex.lock"
+CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
+
+acquire_claude_mutex() {
+  local waited=0
+  while ! mkdir "$CLAUDE_MUTEX_DIR" 2>/dev/null; do
+    if (( waited == 0 )); then
+      local holder=""
+      [[ -f "$CLAUDE_MUTEX_DIR/pid" ]] && holder="$(cat "$CLAUDE_MUTEX_DIR/pid" 2>/dev/null || true)"
+      log "[claude-mutex] waiting for lock held by ${holder:-<unknown>}"
+    fi
+    (( waited >= CLAUDE_MUTEX_TIMEOUT )) && die "[claude-mutex] timeout after ${CLAUDE_MUTEX_TIMEOUT}s"
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "$CLAUDE_MUTEX_DIR/pid"
+}
+
+release_claude_mutex() {
+  rm -rf "$CLAUDE_MUTEX_DIR"
+}
+
 allowed_tools_for() {
   # Every stage gets `Bash(bash .pipeline/bin/linear.sh:*)` so agents can always post
   # Linear comments via the canonical bash path. MCP Linear remains available in parallel;
@@ -37,6 +59,9 @@ main() {
 
   local tools
   tools="$(allowed_tools_for "$stage")"
+
+  acquire_claude_mutex
+  trap 'release_claude_mutex' EXIT
 
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
     log "[DRY_RUN] would invoke: claude -p --allowed-tools \"$tools\" < $prompt_file"

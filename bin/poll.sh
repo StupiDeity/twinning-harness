@@ -244,8 +244,8 @@ _poll_classify_all() {
 #
 # Input:  classified_json (JSON array produced by _poll_classify_all)
 # Output: none
-# Side effects: writes to $HARNESS_STATE_DIR/metrics/events.jsonl and
-#               $HARNESS_STATE_DIR/.halt-sprawl-last-alerted; may POST to Slack.
+# Side effects: writes to $PROJECT_STATE_DIR/metrics/events.jsonl and
+#               $PROJECT_STATE_DIR/.halt-sprawl-last-alerted; may POST to Slack.
 _poll_emit_halt_sprawl_alert() {
   local classified_json="$1"
 
@@ -272,7 +272,7 @@ _poll_emit_halt_sprawl_alert() {
     "count=$count threshold=$threshold" || true
 
   # Edge-triggered: Slack at most once per 24h.
-  local debounce_file="$HARNESS_STATE_DIR/.halt-sprawl-last-alerted"
+  local debounce_file="$PROJECT_STATE_DIR/.halt-sprawl-last-alerted"
   local now_epoch last_epoch="0"
   now_epoch="$(date -u +%s)"
   if [[ -f "$debounce_file" ]]; then

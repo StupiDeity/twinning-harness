@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 # shellcheck source=run-local-helpers.sh

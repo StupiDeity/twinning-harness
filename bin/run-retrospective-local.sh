@@ -13,10 +13,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Load .env.local so LINEAR_API_KEY and friends are available to the agent.
-if [[ -f "$TARGET_CONFIG_DIR/.env.local" ]]; then
-  # shellcheck disable=SC1091
-  set -a; source "$TARGET_CONFIG_DIR/.env.local"; set +a
+# Load shared secrets then per-project .env.local so LINEAR_API_KEY and friends
+# are available to the agent. secrets.env is loaded first; .env.local may override.
+SECRETS_FILE="$HARNESS_CONFIG_DIR/secrets.env"
+if [[ -f "$SECRETS_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$SECRETS_FILE"; set +a
+fi
+ENV_FILE="$TARGET_CONFIG_DIR/.env.local"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$ENV_FILE"; set +a
 fi
 
 require_env LINEAR_API_KEY
@@ -26,7 +33,7 @@ main() {
   local today branch log_file prompt_file
   today="$(date -u +%Y-%m-%d)"
   branch="pipeline/retrospective-${today}"
-  log_file="$HARNESS_STATE_DIR/logs/retrospective-$(date -u +%Y%m%dT%H%M%SZ).log"
+  log_file="$PROJECT_STATE_DIR/logs/retrospective-$(date -u +%Y%m%dT%H%M%SZ).log"
   mkdir -p "$(dirname "$log_file")"
 
   log "retrospective: starting for $today"

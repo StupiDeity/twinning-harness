@@ -147,7 +147,7 @@ Read these files first (in order):
 3. docs/architecture/SYSTEM_ARCHITECTURE.md — system architecture, crate responsibilities, data flow, constraints, error handling
 4. docs/knowledge/decisions.md — prior architectural decisions (do not re-debate accepted ADRs)
 5. docs/knowledge/gotchas.md — known pitfalls to avoid
-6. .pipeline/learned-rules/brainstorm.md — learned rules from past retrospectives (follow ALL rules listed)
+6. {learned_rules_dir}/brainstorm.md — learned rules from past retrospectives (follow ALL rules listed)
 
 Linear Issue:
 {issue_title}
@@ -247,7 +247,7 @@ Read these files first (in order):
 4. docs/knowledge/decisions.md — follow accepted ADRs; accept proposed ADRs from the brainstorm
 5. docs/knowledge/gotchas.md — filter by tags relevant to the crates you will touch
 6. docs/knowledge/conventions.md — filter by tags relevant to the crates you will touch
-7. .pipeline/learned-rules/plan.md — learned rules from past retrospectives (follow ALL rules listed)
+7. {learned_rules_dir}/plan.md — learned rules from past retrospectives (follow ALL rules listed)
 8. docs/brainstorms/{brainstorm_file} — the approved brainstorm for this feature
 
 Linear Issue:
@@ -417,7 +417,7 @@ Read these files first (in order):
 3. docs/knowledge/gotchas.md — filter by tags relevant to the crates you're modifying
 4. docs/knowledge/decisions.md — follow all accepted ADRs
 5. docs/knowledge/conventions.md — filter by tags relevant to the crates you're modifying
-6. .pipeline/learned-rules/implementation.md — learned rules from past retrospectives (follow ALL)
+6. {learned_rules_dir}/implementation.md — learned rules from past retrospectives (follow ALL)
 7. docs/brainstorms/{brainstorm_file}
 8. docs/plans/{plan_file} — focus on "Backend Tasks" and the `api-contract` block
 
@@ -541,7 +541,7 @@ Read these files first (in order):
 2. docs/UX_PRINCIPLES.md — your primary constraint document
 3. docs/knowledge/gotchas.md — filter by tags: frontend, svelte, css, ui
 4. docs/knowledge/conventions.md — filter by tags: frontend, svelte, css, ui
-5. .pipeline/learned-rules/ui.md — learned rules from past retrospectives (follow ALL)
+5. {learned_rules_dir}/ui.md — learned rules from past retrospectives (follow ALL)
 6. docs/brainstorms/{brainstorm_file}
 7. docs/plans/{plan_file} — focus on "Frontend Tasks" + the `api-contract` block
 
@@ -706,7 +706,7 @@ Read these files first (in order):
 3. docs/knowledge/gotchas.md — filter by tags relevant to the PR's crates
 4. docs/knowledge/decisions.md — verify against accepted ADRs
 5. docs/knowledge/conventions.md — verify against established conventions
-6. .pipeline/learned-rules/review.md — learned rules (follow ALL)
+6. {learned_rules_dir}/review.md — learned rules (follow ALL)
 
 Input:
   Fetch the feature PR with:
@@ -867,7 +867,7 @@ Read these files first (in order):
 3. docs/plans/{plan_file} — Test Strategy + Failure Mode → Test Map (authoritative)
 4. docs/knowledge/qa-patterns.md — known flaky tests and recurring failure patterns
 5. docs/knowledge/conventions.md — testing conventions section
-6. .pipeline/learned-rules/qa.md — learned rules (follow ALL)
+6. {learned_rules_dir}/qa.md — learned rules (follow ALL)
 
 Branch: `{branch_name}` (already carries backend + frontend commits and the open PR
 from the review stage). Check it out; you may commit additional test files here.
@@ -1018,7 +1018,7 @@ the merge under a fixed strategy. You are NOT re-running tests locally — CI is
 authoritative signal.
 
 Read these files first:
-1. .pipeline/learned-rules/build.md — learned rules (follow ALL)
+1. {learned_rules_dir}/build.md — learned rules (follow ALL)
 2. docs/knowledge/decisions.md — check for any ADR that constrains merging (e.g., release
    cadence decisions, version-pinning rules)
 
@@ -1167,7 +1167,7 @@ owns version bumps, git tags, and the GitHub Release body (see `.releaserc.json`
 with per-issue Linear context, audit cadence, and notify humans.
 
 Read these files first:
-1. .pipeline/learned-rules/release.md — learned rules (follow ALL)
+1. {learned_rules_dir}/release.md — learned rules (follow ALL)
 2. docs/knowledge/decisions.md — any ADR about release cadence or versioning
 3. .releaserc.json — authoritative semantic-release config (read-only; do not edit)
 
@@ -1288,7 +1288,7 @@ Read these files (in order):
 3. docs/knowledge/qa-patterns.md — current entries + commit log for additions
 4. docs/knowledge/conventions.md — current entries + commit log for additions
 5. docs/knowledge/decisions.md — ADRs (proposed vs accepted vs superseded)
-6. .pipeline/learned-rules/*.md — current learned rules for all agents
+6. {learned_rules_dir}/*.md — current learned rules for all agents
 7. .pipeline/AGENT_PROMPTS.md — current prompts (you are allowed to PR edits here)
 8. .pipeline/config.json — current config (you are allowed to PR edits here)
 9. .github/workflows/pipeline*.yml and release*.yml — current workflows (PR-editable)
@@ -1433,7 +1433,7 @@ Output (the retrospective PR body):
   3. ...
 
   ## Proposals (grouped by artifact)
-  - **New learned rules** (files changed: .pipeline/learned-rules/*.md)
+  - **New learned rules** (files changed: {learned_rules_dir}/*.md)
     - agent: <short title>. Why: <reason>. Evidence: <path:line or metric>.
   - **New / renewed conventions** (docs/knowledge/conventions.md)
   - **New / renewed / removed gotchas** (docs/knowledge/gotchas.md)

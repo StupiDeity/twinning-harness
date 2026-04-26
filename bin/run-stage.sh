@@ -265,7 +265,7 @@ main() {
   local prompt_file log_file
   if (( ! skip_dispatch )); then
     prompt_file="$(mktemp -t pipeline-prompt-XXXXXX)"
-    log_file="$HARNESS_STATE_DIR/logs/${ident}-${stage}-$(date -u +%Y%m%dT%H%M%SZ).log"
+    log_file="$PROJECT_STATE_DIR/logs/${ident}-${stage}-$(date -u +%Y%m%dT%H%M%SZ).log"
     mkdir -p "$(dirname "$log_file")"
     bash "$SCRIPT_DIR/render-prompt.sh" "$stage" "$ident" > "$prompt_file"
     log "rendered prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
