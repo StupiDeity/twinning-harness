@@ -166,8 +166,36 @@ is_linear_identity_done() {
      && -n "$(jq -r '.linear.project_id // empty' "$CONFIG")" ]]
 }
 
+# ── Phase 4: linear-schema ────────────────────────────────────────────
+phase_linear_schema() {
+  print_phase_header "linear-schema"
+  # secrets.env vars must be in env for setup-labels.sh / linear.sh refresh-cache.
+  set -a
+  # shellcheck disable=SC1090
+  source "$SECRETS_FILE"
+  set +a
+  log "linear-schema: invoking bin/setup-labels.sh"
+  bash "$SCRIPT_DIR/setup-labels.sh"
+  log "linear-schema: invoking bin/linear.sh refresh-cache"
+  bash "$SCRIPT_DIR/linear.sh" refresh-cache
+}
+
+is_linear_schema_done() {
+  [[ -f "$IDS_CACHE" ]] || return 1
+  # All 15 pipeline labels must resolve.
+  local missing=0 label
+  for label in stage:brainstorming stage:planning stage:implementing stage:ui \
+    stage:reviewing stage:qa stage:building stage:released \
+    pipeline:paused pipeline:supersede pipeline:extend pipeline:ignore \
+    pipeline:reviewed pipeline:knowledge-reviewed pipeline:rule-reviewed; do
+    local id; id="$(jq -r ".labels[\"$label\"] // empty" "$IDS_CACHE")"
+    [[ -n "$id" ]] || { missing=1; break; }
+  done
+  (( missing == 0 ))
+}
+
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"
