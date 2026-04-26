@@ -194,8 +194,56 @@ is_linear_schema_done() {
   (( missing == 0 ))
 }
 
+# ── Phase 5: slug-freeze ──────────────────────────────────────────────
+phase_slug_freeze() {
+  print_phase_header "slug-freeze"
+  local existing; existing="$(jq -r '.project.slug // empty' "$CONFIG")"
+  if [[ -n "$existing" ]]; then
+    log "slug-freeze: project.slug already frozen as '$existing'"
+    _slug_freeze_write_sentinel "$existing"
+    return 0
+  fi
+
+  [[ -f "$IDS_CACHE" ]] || die "slug-freeze: $IDS_CACHE missing — run linear-schema phase first"
+  local proj_name
+  proj_name="$(jq -r '.project.name // empty' "$IDS_CACHE")"
+  [[ -n "$proj_name" ]] || die "slug-freeze: linear-ids.json::.project.name is empty — re-run linear-schema with the correct project_id"
+
+  local slug
+  slug="$(slugify_project_name "$proj_name")" || die "slug-freeze: '$proj_name' did not produce a valid slug. Rename the project in Linear or pre-set project.slug in config.json manually."
+
+  # Collision check.
+  local sentinel="$HARNESS_STATE_DIR/$slug/target-repo"
+  if [[ -f "$sentinel" ]]; then
+    local recorded; recorded="$(cat "$sentinel")"
+    if [[ "$recorded" != "$TARGET_REPO" ]]; then
+      die "slug-freeze: slug '$slug' already in use by $recorded (sentinel: $sentinel). Rename the Linear project or contact the operator."
+    fi
+  fi
+
+  local tmp; tmp="$(mktemp)"
+  jq --arg s "$slug" '.project = (.project // {}) | .project.slug = $s' "$CONFIG" > "$tmp"
+  mv "$tmp" "$CONFIG"
+  log "slug-freeze: project.slug='$slug' frozen in $CONFIG"
+
+  _slug_freeze_write_sentinel "$slug"
+}
+
+_slug_freeze_write_sentinel() {
+  local slug="$1" sentinel="$HARNESS_STATE_DIR/$slug/target-repo"
+  mkdir -p "$(dirname "$sentinel")"
+  printf '%s\n' "$TARGET_REPO" > "$sentinel"
+  log "slug-freeze: wrote sentinel $sentinel"
+}
+
+is_slug_freeze_done() {
+  local slug; slug="$(jq -r '.project.slug // empty' "$CONFIG")"
+  [[ -n "$slug" ]] || return 1
+  [[ -f "$HARNESS_STATE_DIR/$slug/target-repo" ]] || return 1
+}
+
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity linear-schema)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"
