@@ -230,7 +230,8 @@ phase_slug_freeze() {
 }
 
 _slug_freeze_write_sentinel() {
-  local slug="$1" sentinel="$HARNESS_STATE_DIR/$slug/target-repo"
+  local slug="$1"
+  local sentinel="$HARNESS_STATE_DIR/$slug/target-repo"
   mkdir -p "$(dirname "$sentinel")"
   printf '%s\n' "$TARGET_REPO" > "$sentinel"
   log "slug-freeze: wrote sentinel $sentinel"
@@ -404,7 +405,7 @@ phase_launchd() {
   local ans; read -r ans
   ans="${ans:-Y}"
   case "$ans" in
-    [Yy]*) bash "$SCRIPT_DIR/install-launchd.sh" "$TARGET_REPO" ;;
+    [Yy]*) ( unset PROJECT_STATE_DIR TWINNING_BOOTSTRAPPING PROJECT_SLUG; bash "$SCRIPT_DIR/install-launchd.sh" "$TARGET_REPO" ) ;;
     *) log "launchd: skipped (run install-launchd.sh manually when ready)" ;;
   esac
 }
@@ -417,6 +418,111 @@ is_launchd_done() {
     launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
   done
 }
+
+# ── Transitional: migrate ─────────────────────────────────────────────
+# One-shot upgrade of the existing single-project install. See spec §6.
+phase_migrate() {
+  print_phase_header "migrate"
+
+  # 1. Sanity check.
+  jq -e '.linear.team_id and .linear.project_id' "$CONFIG" >/dev/null \
+    || die "migrate: $CONFIG missing team_id or project_id — abort"
+
+  # Refresh IDs cache if missing.
+  if [[ ! -f "$IDS_CACHE" ]]; then
+    set -a; source "$SECRETS_FILE" 2>/dev/null || true; set +a
+    bash "$SCRIPT_DIR/linear.sh" refresh-cache
+  fi
+
+  # 2. Slug freeze (delegate; idempotent).
+  phase_slug_freeze
+
+  local slug; slug="$(jq -r '.project.slug' "$CONFIG")"
+  local project_state="$HARNESS_STATE_DIR/$slug"
+
+  # 3. Lift shared credentials from per-project .env.local into shared secrets.env.
+  mkdir -p "$HARNESS_CONFIG_DIR" && chmod 0700 "$HARNESS_CONFIG_DIR"
+  local var
+  for var in LINEAR_API_KEY GH_APP_ID GH_APP_PRIVATE_KEY_PATH PIPELINE_SLACK_WEBHOOK_URL; do
+    local val; val="$(read_env_file "$ENV_FILE" "$var" | cut -d= -f2-)"
+    if [[ -n "$val" ]]; then
+      write_env_file "$SECRETS_FILE" 0600 "$var=$val"
+      # Strip from per-project .env.local.
+      sed -i.bak -E "/^[[:space:]]*${var}=/d" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+      log "migrate: lifted $var → $SECRETS_FILE"
+    fi
+  done
+
+  # If the GH App private key lives at the legacy state-dir path, move it.
+  local key_path; key_path="$(read_env_file "$SECRETS_FILE" GH_APP_PRIVATE_KEY_PATH | cut -d= -f2-)"
+  if [[ -n "$key_path" && -f "$key_path" && "$key_path" != "$HARNESS_CONFIG_DIR/github-app.pem" ]]; then
+    if [[ "$key_path" == "$HARNESS_STATE_DIR/"* || "$key_path" == "$HOME/.twinning-pipeline/"* ]]; then
+      mv "$key_path" "$HARNESS_CONFIG_DIR/github-app.pem"
+      chmod 0600 "$HARNESS_CONFIG_DIR/github-app.pem"
+      write_env_file "$SECRETS_FILE" 0600 "GH_APP_PRIVATE_KEY_PATH=$HARNESS_CONFIG_DIR/github-app.pem"
+      log "migrate: moved GitHub App private key to $HARNESS_CONFIG_DIR/github-app.pem"
+    fi
+  fi
+
+  # 4. Move state dir contents under <slug>/.
+  mkdir -p "$project_state"
+  local item src dst
+  for item in .consecutive-failures .tick-counter .halt-sprawl-last-alerted last-observed-release; do
+    src="$HARNESS_STATE_DIR/$item"
+    dst="$project_state/$item"
+    [[ -e "$src" && ! -e "$dst" ]] && { mv "$src" "$dst"; log "migrate: moved $item"; }
+  done
+  for d in logs metrics; do
+    src="$HARNESS_STATE_DIR/$d"
+    dst="$project_state/$d"
+    if [[ -d "$src" && ! -d "$dst" ]]; then
+      mv "$src" "$dst"
+      log "migrate: moved $d/"
+    fi
+  done
+  # Move ENG-N issue dirs (only direct children that match ENG- prefix and are
+  # not already inside a slug dir).
+  while IFS= read -r -d '' issue; do
+    local name; name="$(basename "$issue")"
+    [[ "$name" =~ ^ENG-[0-9]+$ ]] || continue
+    [[ -d "$project_state/$name" ]] && continue
+    mv "$issue" "$project_state/$name"
+    log "migrate: moved $name/"
+  done < <(find "$HARNESS_STATE_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
+
+  # 5. Move learned-rules.
+  local lr="$HARNESS_ROOT/learned-rules"
+  mkdir -p "$lr/$slug"
+  local rule
+  while IFS= read -r -d '' rule; do
+    local rname; rname="$(basename "$rule")"
+    [[ -f "$lr/$slug/$rname" ]] && continue
+    mv "$rule" "$lr/$slug/$rname"
+    log "migrate: moved learned-rules/$rname"
+  done < <(find "$lr" -mindepth 1 -maxdepth 1 -type f -name '*.md' -print0)
+
+  # 6. Bootout legacy un-suffixed agents.
+  local domain="gui/$(id -u)"
+  for label in com.twinning.pipeline com.twinning.retrospective; do
+    if launchctl print "$domain/$label" >/dev/null 2>&1; then
+      launchctl bootout "$domain/$label" || true
+      log "migrate: bootout legacy $label"
+    fi
+    [[ -f "$HOME/Library/LaunchAgents/$label.plist" ]] \
+      && rm -f "$HOME/Library/LaunchAgents/$label.plist" \
+      && log "migrate: removed legacy $label.plist"
+  done
+
+  # 7. Install slug-suffixed agents.
+  ( unset PROJECT_STATE_DIR TWINNING_BOOTSTRAPPING PROJECT_SLUG; bash "$SCRIPT_DIR/install-launchd.sh" "$TARGET_REPO" )
+
+  # 8. Sanity check.
+  ( unset PROJECT_STATE_DIR TWINNING_BOOTSTRAPPING PROJECT_SLUG; bash "$SCRIPT_DIR/dry-run.sh" >/dev/null 2>&1 ) || log "migrate: dry-run.sh reported failures (see above)"
+  log "migrate: complete. New labels:"
+  launchctl list 2>/dev/null | grep com.twinning >&2 || true
+}
+
+is_migrate_done() { return 1; }   # always re-run on demand; substeps are individually idempotent
 
 # Phase dispatch.
 ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app gh-cli slack config-defaults validate launchd)
