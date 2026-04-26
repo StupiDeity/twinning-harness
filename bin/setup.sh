@@ -99,7 +99,11 @@ is_linear_auth_done() {
 
 # ── Phase 3: linear-identity ──────────────────────────────────────────
 _linear_post() {
-  local query="$1" vars="${2:-{\}}"
+  local query="$1" vars="${2:-}"
+  # macOS bash 3.2 does not honor backslash-escapes inside ${param:-default},
+  # so the obvious `${2:-{\}}` form expands to the literal `{\}` (not `{}`).
+  # Default an empty vars to `{}` explicitly so jq --argjson sees valid JSON.
+  [[ -n "$vars" ]] || vars='{}'
   local key resp
   key="$(read_env_file "$SECRETS_FILE" LINEAR_API_KEY | cut -d= -f2-)"
   [[ -n "$key" ]] || die "linear-identity: secrets.env LINEAR_API_KEY missing"
