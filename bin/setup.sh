@@ -304,8 +304,57 @@ is_github_app_done() {
   [[ -n "$a" && -n "$p" && -n "$i" && -f "$p" ]]
 }
 
+# ── Phase 7: gh-cli ───────────────────────────────────────────────────
+phase_gh_cli() {
+  print_phase_header "gh-cli"
+  if gh auth status >/dev/null 2>&1; then
+    log "gh-cli: already authenticated"
+    return 0
+  fi
+  cat >&2 <<'TXT'
+gh CLI is not authenticated. The release-watcher in run-local.sh uses
+`gh release list` to detect new releases.
+Run in a separate terminal:    gh auth login
+Press ENTER here when done...
+TXT
+  read -r _
+  gh auth status >/dev/null 2>&1 || die "gh-cli: still not authenticated"
+}
+
+is_gh_cli_done() { gh auth status >/dev/null 2>&1; }
+
+# ── Phase 8: slack (optional) ─────────────────────────────────────────
+phase_slack() {
+  print_phase_header "slack"
+  local existing
+  existing="$(read_env_file "$SECRETS_FILE" PIPELINE_SLACK_WEBHOOK_URL | cut -d= -f2-)"
+  if [[ -n "$existing" ]]; then
+    log "slack: PIPELINE_SLACK_WEBHOOK_URL already set"
+    return 0
+  fi
+  printf 'Slack incoming webhook URL (blank to skip): ' >&2
+  local url; read -r url
+  if [[ -z "$url" ]]; then
+    log "slack: skipped (slack.sh will no-op)"
+    return 0
+  fi
+  [[ "$url" =~ ^https://hooks.slack.com/ ]] \
+    || die "slack: URL must start with https://hooks.slack.com/"
+  write_env_file "$SECRETS_FILE" 0600 "PIPELINE_SLACK_WEBHOOK_URL=$url"
+  log "slack: webhook persisted"
+}
+
+is_slack_done() {
+  # Slack is optional; treat as "done" if either set OR explicitly skipped.
+  # The phase asks every time the var is unset, which is fine — the user can
+  # press enter to skip.
+  local v
+  v="$(read_env_file "$SECRETS_FILE" PIPELINE_SLACK_WEBHOOK_URL | cut -d= -f2-)"
+  [[ -n "$v" ]]
+}
+
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app gh-cli slack)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"
