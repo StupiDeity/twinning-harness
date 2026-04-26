@@ -396,8 +396,30 @@ phase_validate() {
 
 is_validate_done() { return 1; }  # always re-run on demand
 
+# ── Phase 11: launchd ─────────────────────────────────────────────────
+phase_launchd() {
+  print_phase_header "launchd"
+  local slug; slug="$(jq -r '.project.slug' "$CONFIG")"
+  printf 'Install launchd agents for project '\''%s'\'' now? [Y/n]: ' "$slug" >&2
+  local ans; read -r ans
+  ans="${ans:-Y}"
+  case "$ans" in
+    [Yy]*) bash "$SCRIPT_DIR/install-launchd.sh" "$TARGET_REPO" ;;
+    *) log "launchd: skipped (run install-launchd.sh manually when ready)" ;;
+  esac
+}
+
+is_launchd_done() {
+  local slug label
+  slug="$(jq -r '.project.slug // empty' "$CONFIG")"
+  [[ -n "$slug" ]] || return 1
+  for label in "com.twinning.pipeline.$slug" "com.twinning.retrospective.$slug"; do
+    launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
+  done
+}
+
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app gh-cli slack config-defaults validate)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app gh-cli slack config-defaults validate launchd)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"
