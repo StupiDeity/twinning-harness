@@ -68,10 +68,11 @@ read_env_file() {
 # Re-quotes values that contain whitespace or shell metacharacters.
 write_env_file() {
   local path="$1" mode="$2"; shift 2
-  mkdir -p "$(dirname "$path")"
+  local dir; dir="$(dirname "$path")"
+  mkdir -p "$dir"
   [[ -f "$path" ]] || : > "$path"
-  local pair key value tmp
-  tmp="$(mktemp)"
+  local pair key value safe_value tmp
+  tmp="$(mktemp "$dir/.write-env.XXXXXX")"
   cp "$path" "$tmp"
   for pair in "$@"; do
     key="${pair%%=*}"
@@ -81,8 +82,13 @@ write_env_file() {
       value="\"${value//\"/\\\"}\""
     fi
     if grep -qE "^[[:space:]]*${key}=" "$tmp"; then
+      # Escape sed replacement-side metacharacters before interpolating into
+      # the s|…|…| expression.  Order matters: backslash first.
+      safe_value="${value//\\/\\\\}"   # escape backslash first
+      safe_value="${safe_value//&/\\&}"  # escape & (sed back-ref)
+      safe_value="${safe_value//|/\\|}"  # escape | (sed delimiter)
       # macOS sed in-place needs '' after -i; keep portable form.
-      sed -i.bak -E "s|^[[:space:]]*${key}=.*$|${key}=${value}|" "$tmp"
+      sed -i.bak -E "s|^[[:space:]]*${key}=.*$|${key}=${safe_value}|" "$tmp"
       rm -f "$tmp.bak"
     else
       printf '%s=%s\n' "$key" "$value" >> "$tmp"
