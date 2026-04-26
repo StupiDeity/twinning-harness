@@ -1,31 +1,47 @@
 #!/usr/bin/env bash
-# Unload both pipeline LaunchAgents and remove their plists. Idempotent.
-# Usage: bash .pipeline/bin/uninstall-launchd.sh
+# Bootout and remove the per-project launchd pair.
+#
+# Usage:
+#   bash bin/uninstall-launchd.sh /path/to/target
+#   bash bin/uninstall-launchd.sh --slug <slug>
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=common.sh
-source "$SCRIPT_DIR/common.sh"
-
-TARGET_DIR="$HOME/Library/LaunchAgents"
+LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 
-uninstall_plist() {
-  local label="$1"
-  local target="$TARGET_DIR/${label}.plist"
+slug=""
+case "${1:-}" in
+  --slug)
+    slug="${2:-}"
+    [[ -n "$slug" ]] || { printf 'usage: bash bin/uninstall-launchd.sh --slug <slug>\n' >&2; exit 64; }
+    ;;
+  *)
+    TARGET_REPO="${TARGET_REPO:-${1:-}}"
+    [[ -n "$TARGET_REPO" && -d "$TARGET_REPO" ]] || {
+      printf 'usage: bash bin/uninstall-launchd.sh /path/to/target\n' >&2; exit 64; }
+    export TARGET_REPO
+    # shellcheck source=common.sh
+    source "$SCRIPT_DIR/common.sh"
+    slug="$PROJECT_SLUG"
+    ;;
+esac
 
+uninstall_one() {
+  local kind="$1"
+  local label="com.twinning.${kind}.${slug}"
+  local target="$LAUNCHD_DIR/${label}.plist"
   if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
-    launchctl bootout "$DOMAIN/$label"
-    log "unloaded $label"
+    launchctl bootout "$DOMAIN/$label" || true
+    printf 'unloaded %s\n' "$label" >&2
   else
-    log "$label was not loaded"
+    printf '%s was not loaded\n' "$label" >&2
   fi
-
   if [[ -f "$target" ]]; then
     rm -f "$target"
-    log "removed $target"
+    printf 'removed %s\n' "$target" >&2
   fi
 }
 
-uninstall_plist "com.twinning.pipeline"
-uninstall_plist "com.twinning.retrospective"
+uninstall_one pipeline
+uninstall_one retrospective
