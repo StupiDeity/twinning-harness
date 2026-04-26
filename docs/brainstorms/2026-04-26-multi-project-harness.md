@@ -419,8 +419,8 @@ failures.
     `render-prompt-slug-test.sh` all pass.
 
 ### Technical Hints
-- See `docs/superpowers/specs/2026-04-26-multi-project-harness-design.md`
-  for the full design.
+- See `docs/brainstorms/2026-04-26-multi-project-harness.md` for the
+  full design.
 - Slug freeze location is `config.json::project.slug`; collision sentinel
   is `$HARNESS_STATE_DIR/<slug>/target-repo` (plain text).
 - XDG conventions: shared config at `${XDG_CONFIG_HOME:-~/.config}/twinning-harness/`,
