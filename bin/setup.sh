@@ -353,8 +353,51 @@ is_slack_done() {
   [[ -n "$v" ]]
 }
 
+# ── Phase 9: config-defaults ──────────────────────────────────────────
+phase_config_defaults() {
+  print_phase_header "config-defaults"
+  local tmp; tmp="$(mktemp)"
+  jq '
+    .orchestrator = (.orchestrator // {}) |
+    if (.orchestrator.paused // null) == null then
+      .orchestrator.paused = false
+    else . end |
+    .linear = (.linear // {}) |
+    if (.linear.stage_label_prefix // null) == null then
+      .linear.stage_label_prefix = "stage:"
+    else . end |
+    if (.linear.workflow_stages // null) == null then
+      .linear.workflow_stages = ["brainstorm","plan","implement","ui","review","qa","build","release"]
+    else . end |
+    .linear.native_states = (.linear.native_states // {}) |
+    if (.linear.native_states.active // null) == null then
+      .linear.native_states.active = "In Progress"
+    else . end
+  ' "$CONFIG" > "$tmp"
+  mv "$tmp" "$CONFIG"
+  log "config-defaults: $CONFIG normalized"
+}
+
+is_config_defaults_done() {
+  jq -e '
+    (.orchestrator.paused != null) and
+    (.linear.stage_label_prefix != null) and
+    (.linear.workflow_stages != null and (.linear.workflow_stages | length) == 8) and
+    (.linear.native_states.active != null)
+  ' "$CONFIG" >/dev/null 2>&1
+}
+
+# ── Phase 10: validate ────────────────────────────────────────────────
+phase_validate() {
+  print_phase_header "validate"
+  set -a; source "$SECRETS_FILE"; set +a
+  bash "$SCRIPT_DIR/dry-run.sh"
+}
+
+is_validate_done() { return 1; }  # always re-run on demand
+
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app gh-cli slack)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app gh-cli slack config-defaults validate)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"
