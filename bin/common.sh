@@ -18,6 +18,40 @@ STATE_FILE="${TARGET_CONFIG_DIR}/state.local.json"
 
 export HARNESS_ROOT TARGET_REPO HARNESS_STATE_DIR TARGET_CONFIG_DIR CONFIG IDS_CACHE STATE_FILE
 
+# log/die defined early so slug resolution (below) can call die.
+log() {
+  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+die() {
+  printf '[%s] FATAL: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+  exit 1
+}
+
+HARNESS_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/twinning-harness"
+
+# Project slug resolution. Three modes:
+#   1. Caller pre-set $PROJECT_SLUG (test fixtures, setup.sh's slug-freeze
+#      phase) — respect it.
+#   2. TWINNING_BOOTSTRAPPING=1 — soft-empty (setup.sh phases that run before
+#      slug-freeze).
+#   3. Otherwise — read from config.json::project.slug; die loudly if absent.
+if [[ -z "${PROJECT_SLUG:-}" ]]; then
+  if [[ -n "${TWINNING_BOOTSTRAPPING:-}" ]]; then
+    PROJECT_SLUG=""
+  else
+    PROJECT_SLUG="$(jq -r '.project.slug // empty' "$CONFIG" 2>/dev/null || true)"
+    [[ -n "$PROJECT_SLUG" ]] || die "config.json::project.slug missing — run bin/setup.sh /path/to/target first"
+  fi
+fi
+if [[ -n "$PROJECT_SLUG" ]]; then
+  PROJECT_STATE_DIR="${PROJECT_STATE_DIR:-${HARNESS_STATE_DIR}/${PROJECT_SLUG}}"
+else
+  PROJECT_STATE_DIR="${PROJECT_STATE_DIR:-}"
+fi
+
+export HARNESS_CONFIG_DIR PROJECT_SLUG PROJECT_STATE_DIR
+
 # ─── Per-issue state directory (ENG-15) ──────────────────────────────
 # Resolve the per-issue state directory. Callers: run-stage.sh,
 # run-local.sh, poll.sh, classify-failure.sh. The directory holds
@@ -111,17 +145,29 @@ set_orchestrator_paused() {
 
 export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit is_orchestrator_paused set_orchestrator_paused
 
+# ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
+# Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
+# project claude mutex). mkdir is atomic across processes; rmdir is
+# safe even if multiple holders lose the race to release.
+acquire_lock() {
+  local dir="$1" timeout="${2:-0}" waited=0
+  while ! mkdir "$dir" 2>/dev/null; do
+    (( timeout > 0 && waited >= timeout )) && return 1
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 0
+}
+
+release_lock() {
+  local dir="$1"
+  rmdir "$dir" 2>/dev/null || true
+}
+
+export -f acquire_lock release_lock
+
 PIPELINE_DRY_RUN="${PIPELINE_DRY_RUN:-0}"
 export PIPELINE_DRY_RUN
-
-log() {
-  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
-}
-
-die() {
-  printf '[%s] FATAL: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
-  exit 1
-}
 
 require_env() {
   for var in "$@"; do
