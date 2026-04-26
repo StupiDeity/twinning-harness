@@ -242,8 +242,70 @@ is_slug_freeze_done() {
   [[ -f "$HARNESS_STATE_DIR/$slug/target-repo" ]] || return 1
 }
 
+# ── Phase 6: github-app ───────────────────────────────────────────────
+phase_github_app() {
+  print_phase_header "github-app"
+  cat >&2 <<'TXT'
+GitHub App setup
+----------------
+1. If you don't already have a "twinning-pipeline-bot" GitHub App, create one at:
+     https://github.com/settings/apps/new
+   Required permissions: Contents=Read+Write, Pull requests=Read+Write,
+                         Issues=Read+Write, Metadata=Read.
+   Webhook: not required.
+2. After creation, install the App on your target repo via:
+     https://github.com/settings/installations
+   Note the Installation ID (numeric, in the install URL).
+3. Generate a private key from the App's settings page; download the .pem.
+
+TXT
+  local app_id install_id pem_src pem_dest
+  app_id="$(read_env_file "$SECRETS_FILE" GH_APP_ID | cut -d= -f2-)"
+  if [[ -z "$app_id" ]]; then
+    printf 'GitHub App ID (numeric): ' >&2
+    read -r app_id
+    [[ "$app_id" =~ ^[0-9]+$ ]] || die "github-app: invalid App ID: $app_id"
+  fi
+  install_id="$(read_env_file "$ENV_FILE" GH_APP_INSTALLATION_ID | cut -d= -f2-)"
+  if [[ -z "$install_id" ]]; then
+    printf 'GitHub App Installation ID (numeric, per-repo): ' >&2
+    read -r install_id
+    [[ "$install_id" =~ ^[0-9]+$ ]] || die "github-app: invalid Installation ID: $install_id"
+  fi
+  pem_dest="$HARNESS_CONFIG_DIR/github-app.pem"
+  if [[ ! -f "$pem_dest" ]]; then
+    printf 'Path to private key .pem (will be moved to %s): ' "$pem_dest" >&2
+    read -r pem_src
+    [[ -f "$pem_src" ]] || die "github-app: file not found: $pem_src"
+    cp "$pem_src" "$pem_dest"
+    chmod 0600 "$pem_dest"
+    log "github-app: copied $pem_src -> $pem_dest (0600)"
+  fi
+
+  write_env_file "$SECRETS_FILE" 0600 \
+    "GH_APP_ID=$app_id" \
+    "GH_APP_PRIVATE_KEY_PATH=$pem_dest"
+  write_env_file "$ENV_FILE" 0600 \
+    "GH_APP_INSTALLATION_ID=$install_id"
+
+  # Verify by minting a token.
+  set -a; source "$SECRETS_FILE"; set +a
+  GH_APP_INSTALLATION_ID="$install_id" \
+    bash "$SCRIPT_DIR/gh-app-token.sh" >/dev/null \
+    || die "github-app: gh-app-token.sh failed — check App permissions and Installation ID"
+  log "github-app: token minted successfully"
+}
+
+is_github_app_done() {
+  local a p i
+  a="$(read_env_file "$SECRETS_FILE" GH_APP_ID | cut -d= -f2-)"
+  p="$(read_env_file "$SECRETS_FILE" GH_APP_PRIVATE_KEY_PATH | cut -d= -f2-)"
+  i="$(read_env_file "$ENV_FILE" GH_APP_INSTALLATION_ID | cut -d= -f2-)"
+  [[ -n "$a" && -n "$p" && -n "$i" && -f "$p" ]]
+}
+
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"
