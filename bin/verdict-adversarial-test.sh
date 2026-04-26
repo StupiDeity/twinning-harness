@@ -15,10 +15,11 @@
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PIPELINE_DRY_RUN=1
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
 STUB_DIR="$(mktemp -d)"
@@ -68,6 +69,8 @@ done
 # tempdir so issue-state.json writes don't clobber real state.
 export HARNESS_STATE_DIR="$STUB_DIR/twinning"
 mkdir -p "$HARNESS_STATE_DIR"
+export PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+mkdir -p "$PROJECT_STATE_DIR"
 
 PASS=0; FAIL=0
 fail_at() { printf '  ❌ %s\n      %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }

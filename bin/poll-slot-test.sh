@@ -5,10 +5,11 @@
 
 set -euo pipefail
 SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PIPELINE_DRY_RUN=1
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR_REAL/common.sh"
 
-export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
 # Allocate temp dirs. These paths are captured into _TEST_* variables that
@@ -48,6 +49,9 @@ trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_HARNESS_STATE_DIR"'
 
 HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
 export HARNESS_STATE_DIR
+PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+export PROJECT_STATE_DIR
+mkdir -p "$PROJECT_STATE_DIR"
 STUB_DIR="$_TEST_STUB_DIR"
 FIXTURE_DIR="$STUB_DIR/fixtures"
 mkdir -p "$FIXTURE_DIR"
@@ -103,6 +107,8 @@ SCRIPT_DIR="$STUB_DIR"
 _VH_SCRIPT_DIR="$STUB_DIR"
 HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
 export HARNESS_STATE_DIR
+PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+export PROJECT_STATE_DIR
 
 # _poll_evaluate_skip calls git ls-remote for branch SHA. Override for
 # tests: always return empty current SHA so evidence-unchanged branch

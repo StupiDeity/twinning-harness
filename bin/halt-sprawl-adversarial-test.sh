@@ -8,10 +8,11 @@
 
 set -euo pipefail
 SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PIPELINE_DRY_RUN=1
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR_REAL/common.sh"
 
-export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
 _TEST_HARNESS_STATE_DIR="$(mktemp -d)"
@@ -35,9 +36,12 @@ trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_HARNESS_STATE_DIR"'
 
 HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
 export HARNESS_STATE_DIR
+PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+export PROJECT_STATE_DIR
+mkdir -p "$PROJECT_STATE_DIR"
 STUB_DIR="$_TEST_STUB_DIR"
-METRICS_FILE="$HARNESS_STATE_DIR/metrics/events.jsonl"
-DEBOUNCE_FILE="$HARNESS_STATE_DIR/.halt-sprawl-last-alerted"
+METRICS_FILE="$PROJECT_STATE_DIR/metrics/events.jsonl"
+DEBOUNCE_FILE="$PROJECT_STATE_DIR/.halt-sprawl-last-alerted"
 SLACK_CAPTURE="$STUB_DIR/slack-calls.log"
 mkdir -p "$(dirname "$METRICS_FILE")"
 export METRICS_FILE DEBOUNCE_FILE SLACK_CAPTURE
@@ -84,6 +88,8 @@ SCRIPT_DIR="$STUB_DIR"
 _VH_SCRIPT_DIR="$STUB_DIR"
 HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
 export HARNESS_STATE_DIR
+PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+export PROJECT_STATE_DIR
 
 git() {
   if [[ "$1" == "-C" && "$3" == "ls-remote" ]]; then

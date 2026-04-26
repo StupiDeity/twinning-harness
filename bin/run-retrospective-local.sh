@@ -26,7 +26,7 @@ main() {
   local today branch log_file prompt_file
   today="$(date -u +%Y-%m-%d)"
   branch="pipeline/retrospective-${today}"
-  log_file="$HARNESS_STATE_DIR/logs/retrospective-$(date -u +%Y%m%dT%H%M%SZ).log"
+  log_file="$PROJECT_STATE_DIR/logs/retrospective-$(date -u +%Y%m%dT%H%M%SZ).log"
   mkdir -p "$(dirname "$log_file")"
 
   log "retrospective: starting for $today"

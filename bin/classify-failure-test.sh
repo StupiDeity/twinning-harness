@@ -4,12 +4,13 @@
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PIPELINE_DRY_RUN=1
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 # shellcheck source=classify-failure.sh
 source "$SCRIPT_DIR/classify-failure.sh"
 
-export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
 # Redirect bash "bash $SCRIPT_DIR/..." calls to local stubs via a tempdir.
@@ -46,13 +47,16 @@ _cf_branch_for() { printf '%s' "${MOCK_BRANCH:-feat/eng-test-mock}"; }
 # Use a temp dir for issue state so we don't clobber live state.
 HARNESS_STATE_DIR="$(mktemp -d)"
 export HARNESS_STATE_DIR
+PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+export PROJECT_STATE_DIR
+mkdir -p "$PROJECT_STATE_DIR"
 
 PASS=0; FAIL=0
 fail_at() { printf '  ❌ %s\n      %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 pass_at() { printf '  ✅ %s\n' "$1"; PASS=$((PASS+1)); }
 
 reset_state() {
-  rm -rf "$HARNESS_STATE_DIR"/ENG-*
+  rm -rf "$PROJECT_STATE_DIR"/ENG-*
 }
 
 # Capture-stub helpers (ENG-10 cases 9-14). The capture file accumulates

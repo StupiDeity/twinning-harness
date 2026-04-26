@@ -8,6 +8,7 @@ set -euo pipefail
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export PIPELINE_DRY_RUN=1
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
 
 # Stubs: linear.sh captures args for inspection; branch-name.sh + gh return
@@ -77,6 +78,9 @@ source "$HARNESS_DIR/run-stage.sh"
 # trap from deleting the real pipeline directory.
 HARNESS_STATE_DIR="$(mktemp -d)"
 export HARNESS_STATE_DIR
+PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+export PROJECT_STATE_DIR
+mkdir -p "$PROJECT_STATE_DIR"
 trap 'rm -rf "$HARNESS_STATE_DIR" "$STUB_DIR"' EXIT
 
 # Redirect post_completion_comment's sub-calls through the stubs.

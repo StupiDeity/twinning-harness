@@ -61,7 +61,7 @@ export HARNESS_CONFIG_DIR PROJECT_SLUG PROJECT_STATE_DIR
 issue_dir() {
   local issue="$1"
   [[ -n "$issue" ]] || die "issue_dir: missing issue id"
-  printf '%s/%s' "$HARNESS_STATE_DIR" "$issue"
+  printf '%s/%s' "$PROJECT_STATE_DIR" "$issue"
 }
 # Compute a stable sha256 over the set of files that drive pipeline
 # behavior from the main dev dir. Intentionally excludes metrics/ and
