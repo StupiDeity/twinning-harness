@@ -11,7 +11,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-ISSUE_ID="${1:-ENG-5}"
+# Optional positional override. If unset, the online section auto-probes
+# the first inbox-state issue from Linear; this keeps dry-run.sh
+# target-agnostic (no hardcoded ENG-N fixture per project).
+ISSUE_ID="${1:-}"
 PASS=0; FAIL=0
 check() {
   local label="$1"
@@ -104,10 +107,12 @@ check "render-prompt: extracts all 9 stages" bash -c '
 '
 
 check "metrics.sh: append works" bash -c '
-  tmp=$(mktemp); cp docs/knowledge/pipeline-metrics.md "$tmp"
+  jsonl="$PROJECT_STATE_DIR/metrics/events.jsonl"
+  before=$( [[ -f "$jsonl" ]] && wc -l < "$jsonl" | tr -d " " || echo 0 )
   $HARNESS_ROOT/bin/metrics.sh stage-test DRY-0 brainstorm success 123 "dry-run-test"
-  grep -q "DRY-0" docs/knowledge/pipeline-metrics.md || exit 1
-  mv "$tmp" docs/knowledge/pipeline-metrics.md
+  after=$( [[ -f "$jsonl" ]] && wc -l < "$jsonl" | tr -d " " || echo 0 )
+  (( after > before )) || { echo "events.jsonl did not grow"; exit 1; }
+  tail -1 "$jsonl" | grep -q "DRY-0" || { echo "tail line missing DRY-0"; exit 1; }
 '
 
 check "slack.sh: no-op without webhook" bash -c '
@@ -157,41 +162,66 @@ if [[ -z "${LINEAR_API_KEY:-}" ]]; then
   echo "  ⏭  LINEAR_API_KEY not set; skipping online checks."
   echo "     To include them: export LINEAR_API_KEY=... ; bash $HARNESS_ROOT/bin/dry-run.sh"
 else
-  check "linear.sh: auth + fetch $ISSUE_ID" bash -c '
-    resp=$($HARNESS_ROOT/bin/linear.sh get-issue "'"$ISSUE_ID"'")
-    jq -e ".data.issue.identifier == \"'"$ISSUE_ID"'\"" <<<"$resp" >/dev/null
-  '
+  # Resolve the probe issue: explicit override > first inbox-state issue.
+  # The contract checks below are target-agnostic — they just need a real
+  # Linear identifier to exercise the API + script paths.
+  PROBE_ID="$ISSUE_ID"
+  if [[ -z "$PROBE_ID" ]]; then
+    inbox_state="$(jq -r '.linear.native_states.inbox // "Todo"' "$CONFIG")"
+    inbox_resp="$(bash "$HARNESS_ROOT/bin/linear.sh" list-issues-in-state "$inbox_state" 2>/dev/null || true)"
+    PROBE_ID="$(jq -r '.data.issues.nodes[0].identifier // empty' <<<"$inbox_resp" 2>/dev/null || true)"
+  fi
 
-  check "linear.sh: $ISSUE_ID currently has no stage:* label" bash -c '
-    stage=$($HARNESS_ROOT/bin/linear.sh stage-of "'"$ISSUE_ID"'")
-    [[ -z "$stage" ]] || { echo "unexpected current stage: $stage"; exit 1; }
-  '
-
+  # Always-runnable check (no probe needed).
   check "poll.sh: returns valid JSON decision" bash -c '
     d=$($HARNESS_ROOT/bin/poll.sh)
     jq -e "has(\"issue_id\")" <<<"$d" >/dev/null
   '
 
-  check "reconcile.sh $ISSUE_ID brainstorm → human (Mar-25 fuzzy match)" bash -c '
-    out=$($HARNESS_ROOT/bin/reconcile.sh "'"$ISSUE_ID"'" brainstorm 2>/dev/null || true)
-    # Accept "human" OR "link:..." (the Mar-25 brainstorm may mention ENG-5 ID or not).
-    case "$out" in
-      human|link:*) ;;
-      *) echo "unexpected reconcile output: $out"; exit 1 ;;
-    esac
-    echo "reconcile output: $out"
-  '
+  if [[ -z "$PROBE_ID" ]]; then
+    echo "  ⏭  no inbox-state issues found; skipping issue-bound contract checks."
+    echo "     (Pass an explicit ID: bash $HARNESS_ROOT/bin/dry-run.sh ENG-N)"
+  else
+    echo "  ℹ  using $PROBE_ID as probe target"
 
-  check "run-stage.sh: refuses to run without stage:* label on $ISSUE_ID" bash -c '
-    # Without the entry label applied, run-stage.sh should fail the precondition.
-    if PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/run-stage.sh "'"$ISSUE_ID"'" brainstorm 2>&1 \
-      | grep -q "does not carry stage:brainstorming"; then
-      exit 0
-    else
-      echo "run-stage.sh did not enforce precondition"
+    check "linear.sh: auth + fetch $PROBE_ID" bash -c '
+      resp=$($HARNESS_ROOT/bin/linear.sh get-issue "'"$PROBE_ID"'")
+      jq -e ".data.issue.identifier == \"'"$PROBE_ID"'\"" <<<"$resp" >/dev/null
+    '
+
+    check "linear.sh: stage-of returns empty or a valid stage:* label" bash -c '
+      stage=$($HARNESS_ROOT/bin/linear.sh stage-of "'"$PROBE_ID"'")
+      if [[ -z "$stage" ]] || [[ "$stage" =~ ^stage: ]]; then
+        exit 0
+      fi
+      echo "unexpected stage-of output: $stage"
       exit 1
-    fi
-  '
+    '
+
+    check "reconcile.sh: produces a valid decision (proceed | human | link:*)" bash -c '
+      out=$($HARNESS_ROOT/bin/reconcile.sh "'"$PROBE_ID"'" brainstorm 2>/dev/null || true)
+      case "$out" in
+        proceed|human|link:*) echo "reconcile output: $out"; exit 0 ;;
+        *) echo "unexpected reconcile output: $out"; exit 1 ;;
+      esac
+    '
+
+    check "run-stage.sh: refuses to run without stage:* label" bash -c '
+      # Only meaningful if the probe is currently stage-less; otherwise skip.
+      cur=$($HARNESS_ROOT/bin/linear.sh stage-of "'"$PROBE_ID"'")
+      if [[ -n "$cur" ]]; then
+        echo "probe '"$PROBE_ID"' already at $cur; skipping precondition probe"
+        exit 0
+      fi
+      if PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/run-stage.sh "'"$PROBE_ID"'" brainstorm 2>&1 \
+        | grep -q "does not carry stage:brainstorming"; then
+        exit 0
+      else
+        echo "run-stage.sh did not enforce precondition for '"$PROBE_ID"'"
+        exit 1
+      fi
+    '
+  fi
 fi
 
 echo
