@@ -147,7 +147,7 @@ Read these files first (in order):
 3. docs/architecture/SYSTEM_ARCHITECTURE.md — system architecture, crate responsibilities, data flow, constraints, error handling
 4. docs/knowledge/decisions.md — prior architectural decisions (do not re-debate accepted ADRs)
 5. docs/knowledge/gotchas.md — known pitfalls to avoid
-6. .pipeline/learned-rules/brainstorm.md — learned rules from past retrospectives (follow ALL rules listed)
+6. {learned_rules_dir}/brainstorm.md — learned rules from past retrospectives (follow ALL rules listed)
 
 Linear Issue:
 {issue_title}

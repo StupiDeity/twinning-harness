@@ -172,15 +172,16 @@ main() {
 
   # Interpolate. Using python for safe substitution (handles multiline description).
   # Falls back to sed if python unavailable.
-  local issue_id_lower branch_name stage_summary_path
+  local issue_id_lower branch_name stage_summary_path learned_rules_dir
   issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
   branch_name="feature/${issue_id_lower}-${slug}"
   stage_summary_path="$HOME/.twinning-pipeline/${issue_id}/stage-summary-${stage}.md"
+  learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
 
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" "$stage_summary_path" <<'PY'
+    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" "$stage_summary_path" "$learned_rules_dir" <<'PY'
 import sys
-tmpl, issue_id, issue_id_lower, title, description, date, slug, brainstorm_file, plan_file, branch_name, stage_summary_path = sys.argv[1:]
+tmpl, issue_id, issue_id_lower, title, description, date, slug, brainstorm_file, plan_file, branch_name, stage_summary_path, learned_rules_dir = sys.argv[1:]
 out = tmpl
 repl = {
   "{issue_id}": issue_id,
@@ -193,6 +194,7 @@ repl = {
   "{plan_file}": plan_file,
   "{branch_name}": branch_name,
   "{stage_summary_path}": stage_summary_path,
+  "{learned_rules_dir}": learned_rules_dir,
 }
 for k, v in repl.items():
   out = out.replace(k, v)
@@ -208,7 +210,8 @@ PY
         -e "s|{brainstorm_file}|$brainstorm_file|g" \
         -e "s|{plan_file}|$plan_file|g" \
         -e "s|{branch_name}|$branch_name|g" \
-        -e "s|{stage_summary_path}|$stage_summary_path|g"
+        -e "s|{stage_summary_path}|$stage_summary_path|g" \
+        -e "s|{learned_rules_dir}|$learned_rules_dir|g"
     # title and description may contain sed metacharacters — fall back users: install python3.
   fi
 }
