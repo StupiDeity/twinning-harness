@@ -73,11 +73,12 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 log "== tick start =="
 
+SECRETS_FILE="$HARNESS_CONFIG_DIR/secrets.env"
+if [[ -f "$SECRETS_FILE" ]]; then
+  set -a; source "$SECRETS_FILE"; set +a
+fi
 if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  set -a; source "$ENV_FILE"; set +a   # per-project may override
 fi
 require_env LINEAR_API_KEY
 require_env GH_APP_ID GH_APP_INSTALLATION_ID GH_APP_PRIVATE_KEY_PATH
