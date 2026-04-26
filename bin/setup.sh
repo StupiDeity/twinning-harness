@@ -55,8 +55,50 @@ is_workspace_done() {
   [[ -d "$TARGET_CONFIG_DIR/schemas" && -d "$HARNESS_CONFIG_DIR" && -f "$CONFIG" ]]
 }
 
+# ── Phase 2: linear-auth ──────────────────────────────────────────────
+phase_linear_auth() {
+  print_phase_header "linear-auth"
+  local existing
+  existing="$(read_env_file "$SECRETS_FILE" LINEAR_API_KEY | cut -d= -f2-)"
+  local key="$existing"
+  if [[ -z "$key" ]]; then
+    key="$(prompt_secret 'Linear personal API key (Settings → API)')"
+  fi
+  [[ -n "$key" ]] || die "linear-auth: empty LINEAR_API_KEY"
+
+  # Verify with viewer query.
+  local resp http_code
+  resp="$(curl -sS -w '\n%{http_code}' -X POST 'https://api.linear.app/graphql' \
+    -H "Authorization: $key" \
+    -H 'Content-Type: application/json' \
+    --data '{"query":"{ viewer { id name } }"}' 2>/dev/null || true)"
+  http_code="${resp##*$'\n'}"
+  resp="${resp%$'\n'*}"
+  [[ "$http_code" =~ ^2 ]] || die "linear-auth: HTTP $http_code from Linear (resp: $resp)"
+  jq -e '.data.viewer.id' >/dev/null 2>&1 <<<"$resp" \
+    || die "linear-auth: Linear rejected the key (resp: $resp)"
+  log "linear-auth: viewer=$(jq -r '.data.viewer.name' <<<"$resp")"
+
+  write_env_file "$SECRETS_FILE" 0600 "LINEAR_API_KEY=$key"
+  log "linear-auth: wrote $SECRETS_FILE"
+}
+
+is_linear_auth_done() {
+  local k
+  k="$(read_env_file "$SECRETS_FILE" LINEAR_API_KEY | cut -d= -f2-)"
+  [[ -n "$k" ]] || return 1
+  # Verify the cached key still works (cheap call).
+  local resp http_code
+  resp="$(curl -sS -w '\n%{http_code}' -X POST 'https://api.linear.app/graphql' \
+    -H "Authorization: $k" -H 'Content-Type: application/json' \
+    --data '{"query":"{ viewer { id } }"}' 2>/dev/null || true)"
+  http_code="${resp##*$'\n'}"
+  [[ "$http_code" =~ ^2 ]] || return 1
+  jq -e '.data.viewer.id' >/dev/null 2>&1 <<<"${resp%$'\n'*}"
+}
+
 # Phase dispatch.
-ALL_PHASES=(workspace)
+ALL_PHASES=(workspace linear-auth)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"
