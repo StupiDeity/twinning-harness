@@ -110,6 +110,23 @@ export HARNESS_STATE_DIR
 PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
 export PROJECT_STATE_DIR
 
+# Override CONFIG with a self-contained scratch config carrying every
+# key poll.sh reads: orchestrator.{paused,max_concurrent_features,
+# alert_on_halted_over}, linear.{native_states.inbox,workflow_stages}.
+# Without this, $CONFIG points at the test target's config.json which
+# may not exist; poll.sh's config_get calls return empty, AC-1 sees
+# limit= and the slot allocation collapses.
+CONFIG="$STUB_DIR/config.json"
+jq -n '{
+  orchestrator: {paused: false, max_concurrent_features: 2, alert_on_halted_over: 5},
+  linear: {
+    native_states: {inbox: "Todo", active: "In Progress", done: "Done"},
+    workflow_stages: ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"],
+    stage_label_prefix: "stage:"
+  }
+}' > "$CONFIG"
+export CONFIG
+
 # _poll_evaluate_skip calls git ls-remote for branch SHA. Override for
 # tests: always return empty current SHA so evidence-unchanged branch
 # is taken when skip state exists. Tests that exercise skip-code path

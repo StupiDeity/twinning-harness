@@ -91,6 +91,16 @@ export HARNESS_STATE_DIR
 PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
 export PROJECT_STATE_DIR
 
+# Override CONFIG with a self-contained scratch config that sets the
+# threshold low enough for the DEFAULT_CLASSIFIED (6 entries) to trip
+# the helper's alert. Without this, $CONFIG points at the test target's
+# config.json which may not exist, _poll_emit_halt_sprawl_alert reads
+# an empty threshold, and exits early — making every assertion fail
+# regardless of the case under test.
+CONFIG="$STUB_DIR/config.json"
+jq -n '{orchestrator: {alert_on_halted_over: 5}}' > "$CONFIG"
+export CONFIG
+
 git() {
   if [[ "$1" == "-C" && "$3" == "ls-remote" ]]; then
     printf ''; return 0

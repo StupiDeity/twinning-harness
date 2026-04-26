@@ -104,6 +104,15 @@ export HARNESS_STATE_DIR
 PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
 export PROJECT_STATE_DIR
 
+# Default CONFIG with alert_on_halted_over=5 — matches the live config's
+# threshold so AC-THR-GT (count=6) and AC-DEBOUNCE-* (count=6) cases trip
+# the alert. Cases that need a different threshold (AC-THR-EQ, AC-THR-ZERO,
+# AC-CONFIG-ABSENT, AC-CONFIG-GARBAGE) override CONFIG locally via the
+# SCRATCH_CONFIG pattern below.
+CONFIG="$STUB_DIR/config.json"
+jq -n '{orchestrator: {alert_on_halted_over: 5}}' > "$CONFIG"
+export CONFIG
+
 git() {
   if [[ "$1" == "-C" && "$3" == "ls-remote" ]]; then
     printf ''; return 0
@@ -221,11 +230,12 @@ fi
 # ─── AC-THR-ZERO: threshold == 0 + count == 1 → alert fires ───────────
 # Operator explicitly set threshold=0 to alert on any sprawl.
 reset_fixtures; reset_state
-# Temporarily override the config read via a wrapper config_get.
-# We mutate CONFIG by writing a scratch file and pointing CONFIG at it.
+# Temporarily override the config read by writing a self-contained
+# scratch file with only the keys this helper reads, and pointing CONFIG
+# at it. Self-contained so the test does not depend on $TARGET_REPO
+# having a populated config.json.
 SCRATCH_CONFIG="$STUB_DIR/config-zero.json"
-jq '.orchestrator.alert_on_halted_over = 0' "$REPO_ROOT/.pipeline/config.json" \
-  > "$SCRATCH_CONFIG"
+jq -n '{orchestrator: {alert_on_halted_over: 0}}' > "$SCRATCH_CONFIG"
 ORIG_CONFIG="$CONFIG"
 CONFIG="$SCRATCH_CONFIG"
 classified='[{"identifier":"ENG-301","slot":"vacate"}]'
@@ -323,8 +333,7 @@ fi
 # ─── AC-CONFIG-ABSENT: key missing → feature disabled, no alert ───────
 reset_fixtures; reset_state
 SCRATCH_CONFIG="$STUB_DIR/config-absent.json"
-jq 'del(.orchestrator.alert_on_halted_over)' "$REPO_ROOT/.pipeline/config.json" \
-  > "$SCRATCH_CONFIG"
+jq -n '{orchestrator: {paused: false}}' > "$SCRATCH_CONFIG"
 ORIG_CONFIG="$CONFIG"
 CONFIG="$SCRATCH_CONFIG"
 classified='[
@@ -348,8 +357,7 @@ fi
 # ─── AC-CONFIG-GARBAGE: non-integer key → feature disabled ────────────
 reset_fixtures; reset_state
 SCRATCH_CONFIG="$STUB_DIR/config-garbage.json"
-jq '.orchestrator.alert_on_halted_over = "five"' \
-  "$REPO_ROOT/.pipeline/config.json" > "$SCRATCH_CONFIG"
+jq -n '{orchestrator: {alert_on_halted_over: "five"}}' > "$SCRATCH_CONFIG"
 ORIG_CONFIG="$CONFIG"
 CONFIG="$SCRATCH_CONFIG"
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
