@@ -45,6 +45,7 @@ check "run-stage-test: all cases pass" \
   bash $HARNESS_ROOT/bin/run-stage-test.sh
 
 check "YAML syntax: .github/workflows/*.yml" bash -c '
+  shopt -s nullglob
   for f in .github/workflows/*.yml; do
     bun -e "
       import fs from \"fs\"; import YAML from \"yaml\";
