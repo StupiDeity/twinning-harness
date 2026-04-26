@@ -20,8 +20,6 @@ is the namespace key for filesystem state and launchd labels.
 ## 2. Non-goals
 
 - Cross-project orchestration (one issue spanning multiple repos).
-- Per-project `learned-rules/` partitioning (deferred; v1 serializes the
-  retrospective via the global mutex — see §5.5).
 - macOS Keychain for secrets (deferred).
 - `setup.sh --non-interactive` (deferred).
 - GitHub App manifest auto-create (deferred).
@@ -53,7 +51,7 @@ is the namespace key for filesystem state and launchd labels.
 
 ## 4. Filesystem layout
 
-```
+```text
 ${XDG_CONFIG_HOME:-~/.config}/twinning-harness/      # shared, per-user
 ├── secrets.env              LINEAR_API_KEY, GH_APP_ID, GH_APP_PRIVATE_KEY_PATH,
 │                            PIPELINE_SLACK_WEBHOOK_URL    (mode 0600)
@@ -126,12 +124,12 @@ Phases (idempotent, resumable; re-running runs the first unsatisfied phase forwa
 | 9 | `config-defaults` | Ensure `config.json` has `orchestrator.paused: false`, `linear.stage_label_prefix: "stage:"`, `linear.workflow_stages: [...]`, `linear.native_states.active: "In Progress"`. Only writes missing keys; never overwrites human-set values. |
 | 10 | `validate` | Run `bin/dry-run.sh` offline checks; report pass/fail. |
 | 11 | `launchd` | Prompt: "Install launchd agents for `<slug>` now? [Y/n]". On Y, invoke `bin/install-launchd.sh /path/to/target`. |
-| — | `migrate-state` (transitional) | One-time migration of an existing single-project install. Only invokable explicitly by `setup.sh /path migrate-state`; never run by the no-arg form. See §6 for the migration sequence. |
+| — | `migrate` (transitional) | One-shot upgrade of an existing single-project install. Bundles every step required to lift the legacy un-namespaced layout into the slug-aware one. Idempotent. See §6 for the substeps. Never run by the no-arg `setup.sh /path` invocation; must be requested explicitly. |
 
 `setup.sh /path` (no phase arg) runs all unsatisfied phases 1–11.
 `setup.sh /path <phase>` jumps to one phase. `setup.sh /path validate` is
-the health-check shortcut. `setup.sh /path migrate-state` is the one-time
-upgrade path (§6).
+the health-check shortcut. `setup.sh /path migrate` is the one-time upgrade
+umbrella (§6).
 
 ### 5.3 `bin/install-launchd.sh` — slug-aware
 
@@ -150,17 +148,16 @@ become `$HARNESS_STATE_DIR/<slug>/logs/launchd.{out,err}.log`.
 `PROJECT_SLUG`. Bootout-then-bootstrap targets only the slug-suffixed labels —
 sibling projects' agents are untouched.
 
-`bin/uninstall-launchd.sh` accepts one of three argument forms:
+`bin/uninstall-launchd.sh` accepts one of two argument forms:
 - `bin/uninstall-launchd.sh /path/to/target` — resolves slug from the
   target's `config.json`.
 - `bin/uninstall-launchd.sh --slug <slug>` — direct slug, useful when the
   target repo path is no longer accessible.
-- `bin/uninstall-launchd.sh --legacy` — removes the un-suffixed
-  `com.twinning.pipeline` and `com.twinning.retrospective` agents, used
-  exactly once during the migration in §6.
 
-In every form, only the named labels are bootouted and only their plists
-removed; sibling projects' agents are untouched.
+In both forms, only the named labels are bootouted and only their plists
+removed; sibling projects' agents are untouched. Bootout of the legacy
+un-suffixed agents is owned exclusively by `setup.sh /path migrate`
+(§6); not exposed as a manual flag.
 
 ### 5.4 `bin/run-local.sh` — minimal changes
 
@@ -179,22 +176,51 @@ removed; sibling projects' agents are untouched.
   means every consumer of the agent is automatically serialized, including
   the weekly retrospective and any future direct dispatch caller.
 
-### 5.5 `learned-rules/` — v1 stopgap, deferred fix
+### 5.5 `learned-rules/<slug>/` partitioning
 
-The retrospective agent edits files in `$HARNESS_ROOT/learned-rules/`. With N
-projects each running a Monday retrospective in parallel, two retrospectives
-could race against the same files.
+Today `$HARNESS_ROOT/learned-rules/` holds eight stage files
+(`brainstorm.md`, `plan.md`, `implementation.md`, `ui.md`, `review.md`,
+`qa.md`, `build.md`, `release.md`) referenced as literal `.pipeline/learned-rules/<stage>.md`
+strings throughout `AGENT_PROMPTS.md`. With N projects each retrospecting
+weekly, those files would be a shared write target — and even more
+fundamentally, learned rules from one project's retrospective should not
+leak into another project's stage prompts (different codebases, different
+gotchas).
 
-**v1 stopgap is automatic** because the retrospective runs through `dispatch.sh`
-like every other agent, and the §5.4 mutex serializes all `claude -p` calls
-across projects. So overlapping Monday retrospectives queue rather than race —
-no extra wiring needed.
+**Layout change.** The directory becomes
+`$HARNESS_ROOT/learned-rules/<slug>/<stage>.md`. Each project gets its
+own ruleset. The eight existing files for the current single-project
+install move to `learned-rules/<existing-slug>/` as part of the §6
+migration.
 
-**Real fix (deferred)**: namespace the rules per project as
-`learned-rules/<slug>/`, update `render-prompt.sh` to concatenate the
-slug-specific rules into the per-stage base prompt, and update the
-retrospective agent's prompt to write to its own slug's directory. Filed as
-ENG-followup; not blocking this spec.
+**Prompt rendering.** `bin/render-prompt.sh` gains a new substitution
+token `{learned_rules_dir}` that resolves to the absolute path
+`$HARNESS_ROOT/learned-rules/$PROJECT_SLUG`. The token is interpolated
+in both the python and sed substitution branches alongside the existing
+`{branch_name}` / `{stage_summary_path}` etc. tokens.
+
+**`AGENT_PROMPTS.md` rewrite.** Every literal occurrence of
+`.pipeline/learned-rules/<stage>.md` (≈10 references across stage
+sections + 2 in the retrospective section) is replaced with
+`{learned_rules_dir}/<stage>.md`. The retrospective agent's "files
+written" line that today says `learned-rules/*.md` becomes
+`{learned_rules_dir}/*.md`.
+
+**Retrospective writes.** The retrospective agent's prompt is updated
+so all `Edit`/`Write` operations on stage rule files target paths under
+`{learned_rules_dir}/`. The existing `pipeline:rule-reviewed` human-
+approval gate is unchanged — gating is per-issue, which is naturally
+per-project.
+
+**No race remains.** Combined with the §5.4 cross-project `claude -p`
+mutex, two retrospectives running on the same Monday queue (mutex) AND
+target disjoint files (per-slug dirs). Belt-and-braces.
+
+**`dispatch.sh` allowed-tools.** Each stage's allowed tool set in
+`bin/dispatch.sh::allowed_tools_for` already permits Read on
+`learned-rules/**`. After the migration the allowlist may need a glob
+update if it currently uses an exact-depth pattern; verified during
+implementation.
 
 ### 5.6 Other scripts — pass-through, mechanical sweep
 
@@ -208,26 +234,58 @@ becomes `$PROJECT_STATE_DIR/...`. Single grep + sed pass, one PR.
 
 ## 6. Migration (existing single-project install)
 
-The current Mac Studio install is single-project, so a one-time migration is
-required. Documented in CLAUDE.md and the Linear issue body:
+The current Mac Studio install is single-project, so a one-time migration
+is required. The entire upgrade is one command:
 
-1. `bash bin/setup.sh /path/to/twinning slug-freeze` — derives + writes
-   `project.slug` for the existing target.
-2. `bash bin/setup.sh /path/to/twinning migrate-state` — a phase used only on
-   this transition:
-   - Detects top-level `$HARNESS_STATE_DIR/ENG-N/` dirs and the global files
-     `.consecutive-failures`, `.run-local.lock`, `.tick-counter`,
-     `last-observed-release`, `logs/`, `metrics/`.
-   - Moves them under `$HARNESS_STATE_DIR/<slug>/`.
-   - Idempotent: skip files already migrated.
-3. `bash bin/uninstall-launchd.sh --legacy` — bootouts the un-suffixed
-   `com.twinning.pipeline` and `com.twinning.retrospective`.
-4. `bash bin/install-launchd.sh /path/to/twinning` — installs the slug-
-   suffixed pair.
+```
+bash bin/setup.sh /path/to/twinning migrate
+```
 
-After the migration phase has been run once, the `migrate-state` phase
-remains a no-op on subsequent invocations and can be removed in a later
-spring-cleaning PR.
+This is an umbrella phase that performs every step required to lift the
+legacy un-namespaced install into the slug-aware layout. Each substep is
+guarded by an "is it already done?" check, so the command is idempotent
+and re-runnable without harm.
+
+Substeps, in order:
+
+1. **Sanity-check the existing install.** Verify `$TARGET_REPO/.pipeline-config/config.json`
+   has `linear.team_id` and `linear.project_id`. If
+   `linear-ids.json` is missing or stale, run `linear.sh refresh-cache`
+   to populate it.
+2. **Slug freeze.** If `config.json::project.slug` is unset, derive it
+   from `linear-ids.json::.project.name` per §3 and write it back.
+3. **Lift shared credentials.** Read the existing `$TARGET_REPO/.pipeline-config/.env.local`,
+   move `LINEAR_API_KEY`, `GH_APP_ID`, `GH_APP_PRIVATE_KEY_PATH`,
+   `PIPELINE_SLACK_WEBHOOK_URL` into `$HARNESS_CONFIG_DIR/secrets.env`
+   (mode 0600). Leave `GH_APP_INSTALLATION_ID` in `.env.local`. If the
+   GitHub App private key is at the legacy `$HARNESS_STATE_DIR/github.pem`
+   path, move it to `$HARNESS_CONFIG_DIR/github-app.pem` and rewrite
+   `GH_APP_PRIVATE_KEY_PATH` accordingly.
+4. **Move state dir contents.** For each top-level entry under
+   `$HARNESS_STATE_DIR/` that is not already a project-namespace dir
+   (`ENG-N/`, `.consecutive-failures`, `.tick-counter`,
+   `last-observed-release`, `logs/`, `metrics/`), move it under
+   `$HARNESS_STATE_DIR/<slug>/`. Skip stale lockdirs (`.run-local.lock`)
+   — let them be recreated on the next tick. Write the `target-repo`
+   collision sentinel.
+5. **Move learned-rules.** For each `.md` file directly under
+   `$HARNESS_ROOT/learned-rules/`, move it to
+   `$HARNESS_ROOT/learned-rules/<slug>/`. (Per §5.5 this is the v1
+   in-scope partition.)
+6. **Bootout legacy launchd agents.** Bootout `com.twinning.pipeline`
+   and `com.twinning.retrospective` (the un-suffixed labels) directly
+   via `launchctl bootout`. Remove the corresponding plist files from
+   `~/Library/LaunchAgents/`.
+7. **Install slug-suffixed agents.** Invoke `bin/install-launchd.sh
+   /path/to/twinning` to render and load `com.twinning.pipeline.<slug>`
+   and `com.twinning.retrospective.<slug>`.
+8. **Sanity-check the result.** Run `bin/dry-run.sh` offline checks and
+   `launchctl list | grep com.twinning` to confirm only the slug-
+   suffixed labels are loaded. Print a one-line summary.
+
+After the migration has run once, every substep reports
+"already-migrated" on subsequent invocations. The phase can be removed
+in a later spring-cleaning PR once no installations are left to upgrade.
 
 ## 7. Testing
 
@@ -263,7 +321,6 @@ spring-cleaning PR.
 
 ## 9. Open questions / followups (out of v1 scope, filed as separate ENG)
 
-- Per-project `learned-rules/<slug>/` (§5.5).
 - macOS Keychain for `LINEAR_API_KEY` and the GitHub App private key.
 - `setup.sh --non-interactive` for automation.
 - GitHub App manifest auto-create flow (one-click create-and-install).
@@ -314,53 +371,69 @@ failures.
 ### Scope Boundaries
 
 **IN:**
-- `bin/setup.sh` with the eleven phases listed in the spec.
+- `bin/setup.sh` with the eleven phases listed in the spec, plus the
+  one-shot `migrate` umbrella phase.
 - `bin/install-launchd.sh` and `bin/uninstall-launchd.sh` slug-aware.
 - `bin/common.sh` derives `PROJECT_SLUG`, `PROJECT_STATE_DIR`,
   `HARNESS_CONFIG_DIR`.
-- `run-local.sh` per-project paths + claude mutex wrapper.
-- One-time migration phase for the existing single-project install.
-- Tests: setup, install-launchd, mutex; existing tests namespaced under a
-  fixture slug.
+- `run-local.sh` per-project paths.
+- Cross-project `claude -p` mutex inside `bin/dispatch.sh`.
+- Per-project `learned-rules/<slug>/` partitioning, including the
+  `{learned_rules_dir}` token in `render-prompt.sh` and the
+  corresponding `AGENT_PROMPTS.md` rewrite.
+- Tests: setup, install-launchd, mutex, render-prompt-slug; existing
+  tests namespaced under a fixture slug.
 
 **OUT (filed as separate ENG):**
-- Per-project `learned-rules/<slug>/`.
 - macOS Keychain integration.
 - `setup.sh --non-interactive`.
 - GitHub App manifest auto-create.
 - Cross-project status dashboard.
 
 ### Acceptance Criteria
-1. On a fresh checkout, `bash bin/setup.sh /path/to/target-A` walks all eleven
-   phases interactively and produces a working install (a tick succeeds).
-2. Running `bash bin/setup.sh /path/to/target-A` again is a no-op
-   (every phase reports "already satisfied").
+1. On a fresh checkout, `bash bin/setup.sh /path/to/target-A` walks all
+   eleven phases interactively and produces a working install (a tick
+   succeeds end-to-end).
+2. Running `bash bin/setup.sh /path/to/target-A` again is a no-op (every
+   phase reports "already satisfied").
 3. Running `bash bin/setup.sh /path/to/target-B` with a different
    `linear.project_id` derives a different slug, never touches target-A's
    state, and produces a second working install.
 4. With both A and B installed, `launchctl list | grep com.twinning` shows
    four labels (two per project). Tripping A's breaker leaves B running.
 5. Running A's and B's ticks at overlapping wall-clock times serializes the
-   `claude -p` subprocess via `.claude-mutex.lock/`; non-claude work runs in
-   parallel.
+   `claude -p` subprocess via `.claude-mutex.lock/`; non-claude work runs
+   in parallel.
 6. `bash bin/uninstall-launchd.sh /path/to/target-A` removes only A's two
    plists and leaves B intact.
-7. `bash bin/setup.sh /path/to/twinning slug-freeze` followed by
-   `migrate-state` cleanly upgrades the existing single-project install with
-   no lost ENG-N dirs, breaker counter, or metrics history.
-8. All existing `bin/*-test.sh` tests pass after the namespacing pass.
-9. New tests: `setup-test.sh`, `install-launchd-test.sh`, `mutex-test.sh` all
-   pass.
+7. `bash bin/setup.sh /path/to/twinning migrate` (single command)
+   cleanly upgrades the existing single-project install with no lost
+   ENG-N dirs, breaker counter, metrics history, learned rules, or
+   credentials. Re-running it is a no-op.
+8. After migration, an A stage's prompt rendered by `render-prompt.sh`
+   resolves `{learned_rules_dir}` to `$HARNESS_ROOT/learned-rules/<slug-A>/`
+   and a B stage's prompt resolves it to `$HARNESS_ROOT/learned-rules/<slug-B>/`.
+   The two projects' learned rules do not leak into each other's prompts.
+9. All existing `bin/*-test.sh` tests pass after the namespacing pass.
+10. New tests: `setup-test.sh`, `install-launchd-test.sh`, `mutex-test.sh`,
+    `render-prompt-slug-test.sh` all pass.
 
 ### Technical Hints
-- See `docs/superpowers/specs/2026-04-26-multi-project-harness-design.md` for
-  the full design.
-- Slug freeze location is `config.json::project.slug`; collision sentinel is
-  `$HARNESS_STATE_DIR/<slug>/target-repo` (plain text).
+- See `docs/superpowers/specs/2026-04-26-multi-project-harness-design.md`
+  for the full design.
+- Slug freeze location is `config.json::project.slug`; collision sentinel
+  is `$HARNESS_STATE_DIR/<slug>/target-repo` (plain text).
 - XDG conventions: shared config at `${XDG_CONFIG_HOME:-~/.config}/twinning-harness/`,
   state at `${XDG_STATE_HOME:-~/.local/state}/twinning-harness/<slug>/`.
-- `common.sh` is the choke point for path namespacing — most call sites adapt
-  by referencing `$PROJECT_STATE_DIR` instead of `$HARNESS_STATE_DIR/<issue>`.
+- `common.sh` is the choke point for path namespacing — most call sites
+  adapt by referencing `$PROJECT_STATE_DIR` instead of
+  `$HARNESS_STATE_DIR/<issue>`.
+- The `claude -p` mutex lives inside `bin/dispatch.sh` (the single
+  caller of the agent), so retrospectives are serialized for free.
+- `bin/render-prompt.sh` gains a `{learned_rules_dir}` token resolving
+  to `$HARNESS_ROOT/learned-rules/$PROJECT_SLUG`. Replace every literal
+  `.pipeline/learned-rules/<stage>.md` in `AGENT_PROMPTS.md` with
+  `{learned_rules_dir}/<stage>.md`.
 
 ### Related Issues / Context
 - ENG-23 (env-var refactor) established `HARNESS_ROOT` / `TARGET_REPO` /
