@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.twinning.retrospective</string>
+  <string>com.twinning.retrospective.__PROJECT_SLUG__</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -39,10 +39,10 @@
   <integer>3600</integer>
 
   <key>StandardOutPath</key>
-  <string>__HARNESS_STATE_DIR__/logs/retrospective-launchd.out.log</string>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/retrospective-launchd.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>__HARNESS_STATE_DIR__/logs/retrospective-launchd.err.log</string>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/retrospective-launchd.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -54,6 +54,8 @@
     <string>__TARGET_REPO__</string>
     <key>HARNESS_STATE_DIR</key>
     <string>__HARNESS_STATE_DIR__</string>
+    <key>PROJECT_SLUG</key>
+    <string>__PROJECT_SLUG__</string>
   </dict>
 </dict>
 </plist>

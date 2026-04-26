@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.twinning.pipeline</string>
+  <string>com.twinning.pipeline.__PROJECT_SLUG__</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -28,10 +28,10 @@
   <integer>60</integer>
 
   <key>StandardOutPath</key>
-  <string>__HARNESS_STATE_DIR__/logs/launchd.out.log</string>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/launchd.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>__HARNESS_STATE_DIR__/logs/launchd.err.log</string>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/launchd.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -43,6 +43,8 @@
     <string>__TARGET_REPO__</string>
     <key>HARNESS_STATE_DIR</key>
     <string>__HARNESS_STATE_DIR__</string>
+    <key>PROJECT_SLUG</key>
+    <string>__PROJECT_SLUG__</string>
   </dict>
 </dict>
 </plist>
