@@ -22,6 +22,9 @@ A second binary, the **retrospective agent**, runs weekly and edits the rule fil
 | `HARNESS_ROOT` | derived from `bin/common.sh` location | this repo (scripts + `AGENT_PROMPTS.md` + `learned-rules/`) |
 | `TARGET_REPO` | **required, no default** | the target repo whose worktrees, branches, PRs are mutated |
 | `HARNESS_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/twinning-harness` | per-issue dirs (`ENG-N/worktree/`, `issue-state.json`), tick lock, fail counter, logs, metrics |
+| `HARNESS_CONFIG_DIR` | `${XDG_CONFIG_HOME:-~/.config}/twinning-harness` | shared secrets (`secrets.env`) and the GitHub App private key |
+| `PROJECT_SLUG` | derived from `config.json::project.slug` | per-project namespace key (frozen at first setup) |
+| `PROJECT_STATE_DIR` | `$HARNESS_STATE_DIR/$PROJECT_SLUG` | per-project state (issue dirs, breaker, lock, logs, metrics) |
 
 Derived (do not override):
 - `TARGET_CONFIG_DIR = $TARGET_REPO/.pipeline-config` — holds `config.json`, `schemas/linear-ids.json`, `.env.local`
@@ -161,21 +164,23 @@ The four pipeline-namespace labels the harness applies are:
 
 ## Per-issue state directory
 
-Per-issue scratch lives under `$HARNESS_STATE_DIR/ENG-N/`:
+Per-issue scratch lives under `$PROJECT_STATE_DIR/ENG-N/`:
 
 ```
 $HARNESS_STATE_DIR/
-├── .consecutive-failures   # global circuit-breaker counter (3 → trip)
-├── .run-local.lock/        # global tick lock (single-flight)
-├── .tick-counter           # global tick count (worktree sweep every 10)
-├── last-observed-release   # release watcher dedup
-├── logs/                   # local-YYYY-MM-DD.log + per-stage transcripts
-├── metrics/events.jsonl    # pipeline-wide telemetry (also the retrospective's input)
-└── ENG-N/
-    ├── worktree/           # git worktree of feat/<issue>-<slug> branch in TARGET_REPO
-    ├── issue-state.json    # written by classify_failure, read by poll.sh, deleted on success
-    ├── stage-summary-<stage>.md  # agent-authored; consumed by post_completion_comment
-    └── scope-approval      # legacy; superseded by halt-marker flow
+├── .claude-mutex.lock/         # global single-flight around dispatch.sh
+└── <slug>/                     # per-project
+    ├── target-repo             # collision sentinel
+    ├── .consecutive-failures
+    ├── .run-local.lock/
+    ├── .tick-counter
+    ├── last-observed-release
+    ├── logs/local-YYYY-MM-DD.log + per-stage transcripts
+    ├── metrics/events.jsonl
+    └── ENG-N/
+        ├── worktree/
+        ├── issue-state.json
+        └── stage-summary-<stage>.md
 ```
 
 `issue-state.json` is the durable state for the skip-label dance — `poll.sh` reads it on
@@ -211,6 +216,10 @@ Anything writing files outside the per-stage allowlist must update the partition
 - For exit codes, use the taxonomy in `failure_outcome_for_exit` (common.sh) — adding a new
   exit code without updating that switch routes it to `unknown-exit-N` and the
   retrospective's §1 filter will not classify it.
+- New scripts that read or write per-project state must reference
+  `$PROJECT_STATE_DIR`, never `$HARNESS_STATE_DIR/<issue>` directly.
+  Cross-project shared state (the claude mutex, the project sentinel
+  collision check) is the only legitimate use of `$HARNESS_STATE_DIR/`.
 
 ## Failure-mode quick reference
 
