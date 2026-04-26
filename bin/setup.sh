@@ -70,6 +70,8 @@ run_phase_or_skip() {
 
 main() {
   if [[ -n "$PHASE" ]]; then
+    declare -F "phase_${PHASE//-/_}" >/dev/null \
+      || { printf 'unknown phase: %s\n' "$PHASE" >&2; exit 64; }
     "phase_${PHASE//-/_}"
     return
   fi
