@@ -39,9 +39,32 @@ declare -a LABEL_SPECS=(
 )
 
 label_exists() {
-  local name="$1" id
-  id="$(ids_get ".labels[\"$name\"]" 2>/dev/null || echo "null")"
-  [[ "$id" != "null" && -n "$id" ]]
+  # Prefer the cache when available (fast, no Linear hit). On a fresh
+  # install the cache is populated by `linear.sh refresh-cache` AFTER
+  # this script runs — at that point the cache file may not exist.
+  # In that case fall back to the live team-labels snapshot we fetch
+  # once at script start (see EXISTING_LABEL_NAMES below).
+  local name="$1"
+  if [[ -f "$IDS_CACHE" ]]; then
+    local id
+    id="$(ids_get ".labels[\"$name\"]" 2>/dev/null || echo "null")"
+    if [[ "$id" != "null" && -n "$id" ]]; then
+      return 0
+    fi
+  fi
+  grep -Fxq -- "$name" <<<"$EXISTING_LABEL_NAMES"
+}
+
+# Fetch existing labels in this team in a single GraphQL call. The list
+# is consumed by label_exists() above when the IDs cache is absent or
+# missing the entry. Linear scopes labels to the team, not the project,
+# so this catches the case where a sibling project in the same team has
+# already provisioned the pipeline labels.
+_fetch_existing_label_names() {
+  local q='query($teamId: String!) { team(id: $teamId) { labels(first: 250) { nodes { name } } } }'
+  local vars; vars="$(jq -cn --arg teamId "$TEAM_ID" '{teamId:$teamId}')"
+  bash "$SCRIPT_DIR/linear.sh" query "$q" "$vars" \
+    | jq -r '.data.team.labels.nodes[]?.name'
 }
 
 create_label() {
@@ -55,6 +78,7 @@ create_label() {
 }
 
 main() {
+  EXISTING_LABEL_NAMES="$(_fetch_existing_label_names)"
   local created=0 skipped=0
   for spec in "${LABEL_SPECS[@]}"; do
     IFS='|' read -r name color desc <<<"$spec"
