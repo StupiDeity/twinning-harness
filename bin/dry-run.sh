@@ -104,10 +104,12 @@ check "render-prompt: extracts all 9 stages" bash -c '
 '
 
 check "metrics.sh: append works" bash -c '
-  tmp=$(mktemp); cp docs/knowledge/pipeline-metrics.md "$tmp"
+  jsonl="$PROJECT_STATE_DIR/metrics/events.jsonl"
+  before=$( [[ -f "$jsonl" ]] && wc -l < "$jsonl" | tr -d " " || echo 0 )
   $HARNESS_ROOT/bin/metrics.sh stage-test DRY-0 brainstorm success 123 "dry-run-test"
-  grep -q "DRY-0" docs/knowledge/pipeline-metrics.md || exit 1
-  mv "$tmp" docs/knowledge/pipeline-metrics.md
+  after=$( [[ -f "$jsonl" ]] && wc -l < "$jsonl" | tr -d " " || echo 0 )
+  (( after > before )) || { echo "events.jsonl did not grow"; exit 1; }
+  tail -1 "$jsonl" | grep -q "DRY-0" || { echo "tail line missing DRY-0"; exit 1; }
 '
 
 check "slack.sh: no-op without webhook" bash -c '

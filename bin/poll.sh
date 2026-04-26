@@ -323,6 +323,9 @@ main() {
 
   local max_concurrent
   max_concurrent="$(config_get '.orchestrator.max_concurrent_features')"
+  # Defensive default: missing or null key would otherwise trip set -u
+  # at the (( held_count >= max_concurrent )) arithmetic below.
+  [[ "$max_concurrent" == "null" || -z "$max_concurrent" ]] && max_concurrent=2
 
   # Pass 1: gather all non-Done issues bearing any non-released stage:* label.
   local gathered

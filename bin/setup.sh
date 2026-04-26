@@ -369,16 +369,28 @@ phase_config_defaults() {
     if (.orchestrator.paused // null) == null then
       .orchestrator.paused = false
     else . end |
+    if (.orchestrator.max_concurrent_features // null) == null then
+      .orchestrator.max_concurrent_features = 2
+    else . end |
+    if (.orchestrator.alert_on_halted_over // null) == null then
+      .orchestrator.alert_on_halted_over = 5
+    else . end |
     .linear = (.linear // {}) |
     if (.linear.stage_label_prefix // null) == null then
       .linear.stage_label_prefix = "stage:"
     else . end |
     if (.linear.workflow_stages // null) == null then
-      .linear.workflow_stages = ["brainstorm","plan","implement","ui","review","qa","build","release"]
+      .linear.workflow_stages = ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]
     else . end |
     .linear.native_states = (.linear.native_states // {}) |
     if (.linear.native_states.active // null) == null then
       .linear.native_states.active = "In Progress"
+    else . end |
+    if (.linear.native_states.inbox // null) == null then
+      .linear.native_states.inbox = "Todo"
+    else . end |
+    if (.linear.native_states.done // null) == null then
+      .linear.native_states.done = "Done"
     else . end
   ' "$CONFIG" > "$tmp"
   mv "$tmp" "$CONFIG"
@@ -388,9 +400,13 @@ phase_config_defaults() {
 is_config_defaults_done() {
   jq -e '
     (.orchestrator.paused != null) and
+    (.orchestrator.max_concurrent_features != null) and
+    (.orchestrator.alert_on_halted_over != null) and
     (.linear.stage_label_prefix != null) and
     (.linear.workflow_stages != null and (.linear.workflow_stages | length) == 8) and
-    (.linear.native_states.active != null)
+    (.linear.native_states.active != null) and
+    (.linear.native_states.inbox != null) and
+    (.linear.native_states.done != null)
   ' "$CONFIG" >/dev/null 2>&1
 }
 
@@ -398,7 +414,11 @@ is_config_defaults_done() {
 phase_validate() {
   print_phase_header "validate"
   set -a; source "$SECRETS_FILE"; set +a
-  bash "$SCRIPT_DIR/dry-run.sh"
+  # dry-run.sh and its child subprocesses (metrics.sh, etc.) must derive
+  # PROJECT_SLUG / PROJECT_STATE_DIR from config.json, not inherit our
+  # bootstrapping shim. Same pattern as phase_launchd / phase_migrate.
+  ( unset PROJECT_STATE_DIR TWINNING_BOOTSTRAPPING PROJECT_SLUG
+    bash "$SCRIPT_DIR/dry-run.sh" )
 }
 
 is_validate_done() { return 1; }  # always re-run on demand
