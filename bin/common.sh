@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Shared helpers sourced by every harness script.
 # Provides: HARNESS_ROOT, TARGET_REPO, HARNESS_STATE_DIR, TARGET_CONFIG_DIR,
-#           CONFIG, IDS_CACHE, STATE_FILE, log, die, require_env.
+#           CONFIG, IDS_CACHE, STATE_FILE, HARNESS_CONFIG_DIR, PROJECT_SLUG,
+#           PROJECT_STATE_DIR, log, die, require_env, acquire_lock, release_lock.
 
 set -euo pipefail
 
@@ -40,6 +41,7 @@ if [[ -z "${PROJECT_SLUG:-}" ]]; then
   if [[ -n "${TWINNING_BOOTSTRAPPING:-}" ]]; then
     PROJECT_SLUG=""
   else
+    [[ -f "$CONFIG" ]] || die "config.json not found at $CONFIG — run bin/setup.sh /path/to/target first"
     PROJECT_SLUG="$(jq -r '.project.slug // empty' "$CONFIG" 2>/dev/null || true)"
     [[ -n "$PROJECT_SLUG" ]] || die "config.json::project.slug missing — run bin/setup.sh /path/to/target first"
   fi
