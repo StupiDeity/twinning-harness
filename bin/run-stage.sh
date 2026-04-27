@@ -89,17 +89,24 @@ _cost_flags_for() {
 # When read+create == 0, omit the `· cache N%` segment entirely — do NOT
 # print `0%` (that misleads the operator into thinking the cache failed
 # rather than that there was no cache traffic at all).
+#
+# Soft-fail semantics (D-010): a corrupt-but-nonempty usage file MUST
+# return empty, mirroring the absent-file path. The single `jq @tsv`
+# extraction returns nothing when the file does not parse as JSON
+# (errors silenced); an empty TSV short-circuits before any awk
+# formatting can render misleading `cost: $0.00 · in 0.0k …` output.
 _cost_footer() {
   local issue="$1" stage="$2"
   local f; f="$(issue_dir "$issue")/usage-${stage}.json"
   [[ -s "$f" ]] || { printf ''; return 0; }
 
+  local tsv
+  tsv="$(jq -r '[.cost_usd // 0, .tokens_in // 0, .tokens_out // 0, .cache_read // 0, .cache_create // 0] | @tsv' \
+    "$f" 2>/dev/null)" || tsv=""
+  [[ -z "$tsv" ]] && { printf ''; return 0; }
+
   local cost_usd tokens_in tokens_out cache_read cache_create
-  cost_usd="$(jq -r    '.cost_usd     // 0' "$f" 2>/dev/null)"
-  tokens_in="$(jq -r   '.tokens_in    // 0' "$f" 2>/dev/null)"
-  tokens_out="$(jq -r  '.tokens_out   // 0' "$f" 2>/dev/null)"
-  cache_read="$(jq -r  '.cache_read   // 0' "$f" 2>/dev/null)"
-  cache_create="$(jq -r '.cache_create // 0' "$f" 2>/dev/null)"
+  IFS=$'\t' read -r cost_usd tokens_in tokens_out cache_read cache_create <<<"$tsv"
 
   local cache_seg=""
   if (( cache_read + cache_create > 0 )); then
@@ -111,6 +118,16 @@ _cost_footer() {
 
   awk -v cost="$cost_usd" -v ti="$tokens_in" -v to="$tokens_out" -v cs="$cache_seg" \
     'BEGIN{ printf("\ncost: $%.2f · in %.1fk · out %.1fk%s", cost, ti/1000.0, to/1000.0, cs) }'
+}
+
+# ENG-26 D-011: scope-approval replay does NOT invoke claude this tick,
+# so a usage-<stage>.json from the prior real dispatch would otherwise
+# be re-read by `_cost_flags_for` and double-count cost. Remove the file
+# before the replay metrics emit so it cleanly omits cost fields.
+_replay_scope_approval() {
+  local ident="$1" stage="$2"
+  rm -f "$(issue_dir "$ident")/usage-${stage}.json"
+  bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "scope-approval-replay" 0
 }
 
 # ─── Per-stage success-path completion comment (ENG-11) ──────────────────────
@@ -351,13 +368,7 @@ main() {
     fi
     rm -f "$prompt_file"
   else
-    # ENG-26 D-011: scope-approval replay does NOT invoke claude this
-    # tick, so a usage-<stage>.json from the prior real dispatch would
-    # otherwise be re-read by `_cost_flags_for` and double-count the
-    # cost. Remove it before metrics.sh stage-start so replay metrics
-    # cleanly omit cost fields.
-    rm -f "$(issue_dir "$ident")/usage-${stage}.json"
-    bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "scope-approval-replay" 0
+    _replay_scope_approval "$ident" "$stage"
   fi
 
   # Post-review premise-failure is now expressed as a pipeline-rejection
