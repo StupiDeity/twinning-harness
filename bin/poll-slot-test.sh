@@ -465,7 +465,32 @@ if [[ "$slot" == "hold" && "$adv" == "true" ]]; then
   pass_at "ENG-45 poll-slot: pipeline-wait re-dispatches via else branch (hold,advanceable=true)"
 else
   fail_at "ENG-45 poll-slot wait re-dispatch" "got slot=$slot adv=$adv (want hold/true) full=$out"
+
+# ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
+# A Todo issue carrying only pipeline:skip-until-human-acts (no state
+# file, no stage:* label) must be skipped by Pass 5's inbox jq filter.
+# Pre-fix: the issue was dispatched into stage:brainstorming.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-8001|Todo|3|Bug,pipeline:skip-until-human-acts"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "null" ]]; then
+  pass_at "AC-8 Bug A — Todo with skip-until-human-acts is NOT inbox-picked"
+else
+  fail_at "AC-8 Bug A — Todo with skip-until-human-acts is NOT inbox-picked" "out=$out"
 fi
+
+# AC-8b: same shape, code-changes label flavor.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-8002|Todo|3|Bug,pipeline:skip-until-code-changes"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "null" ]]; then
+  pass_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked"
+else
+  fail_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked" "out=$out"fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
