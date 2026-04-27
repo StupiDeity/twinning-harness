@@ -465,6 +465,7 @@ if [[ "$slot" == "hold" && "$adv" == "true" ]]; then
   pass_at "ENG-45 poll-slot: pipeline-wait re-dispatches via else branch (hold,advanceable=true)"
 else
   fail_at "ENG-45 poll-slot wait re-dispatch" "got slot=$slot adv=$adv (want hold/true) full=$out"
+fi
 
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
 # A Todo issue carrying only pipeline:skip-until-human-acts (no state
@@ -490,7 +491,8 @@ issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 if [[ "$issue_id" == "null" ]]; then
   pass_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked"
 else
-  fail_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked" "out=$out"fi
+  fail_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked" "out=$out"
+fi
 
 # ─── AC-9: ENG-24 Bug B — stage-labeled + skip-until-human-acts + no state file ──
 # An issue carrying stage:planning AND pipeline:skip-until-human-acts AND

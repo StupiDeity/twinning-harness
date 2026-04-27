@@ -440,6 +440,8 @@ main() {
        | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
        | select([.labels.nodes[].name] | index("pipeline:paused") | not)
        | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
+       | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
+       | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
        | {identifier: .identifier,
           priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
       | sort_by(-.priority_sort_rank)
