@@ -361,10 +361,17 @@ is_slack_done() {
 }
 
 # ── Phase 9: config-defaults ──────────────────────────────────────────
+# .linear.workflow_stages must match the labels created by setup-labels.sh
+# and consumed by poll.sh::STAGE_LABEL_TO_STAGE_ARG and run-local.sh's
+# arg→suffix case. Custom values silently break poll's label query (the
+# gather function constructs `stage:<entry>`), so this phase pins it to
+# the canonical list rather than preserving user edits.
+_CANONICAL_WORKFLOW_STAGES='["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]'
+
 phase_config_defaults() {
   print_phase_header "config-defaults"
   local tmp; tmp="$(mktemp)"
-  jq '
+  jq --argjson stages "$_CANONICAL_WORKFLOW_STAGES" '
     .orchestrator = (.orchestrator // {}) |
     if (.orchestrator.paused // null) == null then
       .orchestrator.paused = false
@@ -379,9 +386,7 @@ phase_config_defaults() {
     if (.linear.stage_label_prefix // null) == null then
       .linear.stage_label_prefix = "stage:"
     else . end |
-    if (.linear.workflow_stages // null) == null then
-      .linear.workflow_stages = ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]
-    else . end |
+    .linear.workflow_stages = $stages |
     .linear.native_states = (.linear.native_states // {}) |
     if (.linear.native_states.active // null) == null then
       .linear.native_states.active = "In Progress"
@@ -398,12 +403,12 @@ phase_config_defaults() {
 }
 
 is_config_defaults_done() {
-  jq -e '
+  jq -e --argjson stages "$_CANONICAL_WORKFLOW_STAGES" '
     (.orchestrator.paused != null) and
     (.orchestrator.max_concurrent_features != null) and
     (.orchestrator.alert_on_halted_over != null) and
     (.linear.stage_label_prefix != null) and
-    (.linear.workflow_stages != null and (.linear.workflow_stages | length) == 8) and
+    (.linear.workflow_stages == $stages) and
     (.linear.native_states.active != null) and
     (.linear.native_states.inbox != null) and
     (.linear.native_states.done != null)
