@@ -11,6 +11,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+# ENG-41 T3: human lane — operator CLI; all Linear writes are unrestricted.
+export PIPELINE_WRITER=human
+
 main() {
   local issue_id="${1:-}" reason="${*:2}"
   [[ -n "$issue_id" && -n "$reason" ]] || die "usage: mark-abandoned.sh <issue_id> <reason>"
