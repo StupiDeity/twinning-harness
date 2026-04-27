@@ -43,6 +43,13 @@ case "$1" in
     done
     exit 1 ;;
   stage-of) printf '%s\n' "${VH_CURRENT_STAGE_LABEL:-}" ;;
+  all-stage-labels)
+    # Returns space-separated list of all stage:* labels from $VH_CURRENT_LABELS.
+    result=""
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      [[ "$lbl" == stage:* ]] && result="${result:+$result }$lbl"
+    done
+    printf '%s\n' "$result" ;;
   *) exit 0 ;;
 esac
 SH
@@ -391,6 +398,59 @@ count_after="$(jq -r --arg t "$last_ts" \
 [[ "$count_after" == "1" ]] \
   && pass_at "case-18 counter-reset-on-forward-transition" \
   || fail_at "case-18 counter-reset-on-forward-transition" "count_after=$count_after (expected 1)"
+
+# ─── Case 19: stale-comment-eng24-resume-returns-1 ───────────────────
+# ENG-24 scenario: issue has stage:brainstorming + pipeline:halted, but
+# the latest transition comment is "planning → implementing" from 2 days
+# ago (stale, from a prior cycle). The new cross-check guard must detect
+# that comment.from (planning) != current_stage (brainstorming) and
+# return 1. Then verdict_handler falls through to find_fresh_verdict and
+# correctly transitions brainstorming → planning via the fresh
+# brainstorm done-marker.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline-transition: planning → implementing -->|2026-04-25T12:59:01.000Z" \
+  "<!-- pipeline-stage-summary: brainstorming -->|2026-04-27T06:30:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:brainstorming"
+VH_CURRENT_LABELS="stage:brainstorming pipeline:halted"
+# Assert resume_in_progress_transition returns 1 (stale comment guard fires).
+resume_rc=0
+resume_in_progress_transition "ENG-924" >/dev/null 2>&1 || resume_rc=$?
+# Now assert the full verdict_handler path transitions correctly.
+reset_calls
+rc=0; verdict_handler "ENG-924" "brainstorming" >/dev/null 2>&1 || rc=$?
+if [[ "$resume_rc" == "1" ]] \
+   && [[ "$rc" == "0" ]] \
+   && calls_contains "add-label ENG-924 stage:planning" \
+   && calls_contains "remove-label ENG-924 stage:brainstorming" \
+   && calls_contains "remove-label ENG-924 pipeline:halted" \
+   && ! calls_contains "add-label ENG-924 stage:implementing"; then
+  pass_at "case-19 stale-comment-eng24-resume-returns-1-then-fresh-verdict-transitions"
+else
+  fail_at "case-19 stale-comment-eng24-resume-returns-1-then-fresh-verdict-transitions" \
+    "resume_rc=$resume_rc rc=$rc calls=$(cat "$STUB_LOG")"
+fi
+
+# ─── Case 20: multi-stage-label-resume-returns-1 ─────────────────────
+# Issue has BOTH stage:brainstorming AND stage:implementing AND
+# pipeline:halted. The new multi-stage-label guard must detect the
+# malformed state and return 1. No apply_transition should be called.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline-transition: brainstorming → planning -->|2026-04-25T10:00:00.000Z" \
+  "<!-- pipeline-transition: planning → implementing -->|2026-04-25T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:brainstorming"
+VH_CURRENT_LABELS="stage:brainstorming stage:implementing pipeline:halted"
+resume_rc=0
+resume_in_progress_transition "ENG-920" >/dev/null 2>&1 || resume_rc=$?
+apply_calls="$(calls_grep "add-label ENG-920 stage:")"
+if [[ "$resume_rc" == "1" ]] \
+   && [[ "$apply_calls" == "0" ]]; then
+  pass_at "case-20 multi-stage-label-resume-returns-1-no-apply-transition"
+else
+  fail_at "case-20 multi-stage-label-resume-returns-1-no-apply-transition" \
+    "resume_rc=$resume_rc apply_calls=$apply_calls calls=$(cat "$STUB_LOG")"
+fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
