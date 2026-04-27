@@ -285,12 +285,6 @@ stage_of() {
   get_issue "$ident" | jq -r '[.data.issue.labels.nodes[] | select(.name | startswith("stage:")) | .name] | first // ""'
 }
 
-all_stage_labels() {
-  # Emits all stage:* labels on the issue, space-separated. Empty string when none.
-  local ident="$1"
-  get_issue "$ident" | jq -r '[.data.issue.labels.nodes[] | select(.name | startswith("stage:")) | .name] | join(" ")'
-}
-
 has_label() {
   local ident="$1" label_name="$2"
   local names
