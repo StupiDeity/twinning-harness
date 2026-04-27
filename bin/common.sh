@@ -108,6 +108,7 @@ failure_outcome_for_exit() {
       ;;
     10) printf 'guards-tripped' ;;
     11) printf 'paused' ;;
+    12) printf 'stage-drift' ;;
     13) printf 'lane-violation' ;;
     20) printf 'dispatch-failed' ;;
     21) printf 'scope-violation' ;;
