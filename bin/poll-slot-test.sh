@@ -492,6 +492,41 @@ if [[ "$issue_id" == "null" ]]; then
 else
   fail_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked" "out=$out"fi
 
+# ─── AC-9: ENG-24 Bug B — stage-labeled + skip-until-human-acts + no state file ──
+# An issue carrying stage:planning AND pipeline:skip-until-human-acts AND
+# NO state file must vacate its slot AND the label must NOT be stripped
+# by poll. Pre-fix: _poll_evaluate_skip's orphan-label branch fired
+# `linear.sh remove-label ENG-9001 pipeline:skip-until-human-acts` then
+# returned 0 (include).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-9001|In Progress|3|Bug,stage:planning,pipeline:skip-until-human-acts"
+# No mkdir / no issue-state.json — exercises the no-state-file path.
+
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ac9.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+
+# Negative assertion: the EXACT line `remove-label ENG-9001
+# pipeline:skip-until-human-acts` must not appear in the stub log.
+# `grep -Fxq` matches a full line literally (no regex), so a future
+# unrelated remove-label on ENG-9001 (different label) cannot relax
+# this guard.
+stripped=0
+grep -Fxq 'remove-label ENG-9001 pipeline:skip-until-human-acts' "$LINEAR_STUB_LOG" && stripped=1
+
+unset LINEAR_STUB_LOG
+
+if [[ "$issue_id" != "ENG-9001" ]] && (( stripped == 0 )); then
+  pass_at "AC-9 Bug B — stage+skip-until-human-acts (no state file) vacates and preserves label"
+else
+  fail_at "AC-9 Bug B — stage+skip-until-human-acts (no state file) vacates and preserves label" \
+    "issue=$issue_id stripped=$stripped"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
