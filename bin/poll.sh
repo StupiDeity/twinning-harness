@@ -89,6 +89,27 @@ _poll_evaluate_skip() {
     log "poll: evidence changed for $ident; clearing skip state"
     rm -f "$state_file"
     bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" || true
+    # classify-failure pairs every skip-until-code-changes halt with a
+    # pipeline:halted label and a <!-- pipeline-halt: --> marker comment.
+    # Without also clearing the halt label here, _poll_classify_labels'
+    # halted branch keeps the slot vacated and auto-resume can never
+    # actually advance the issue. Mirror halt.sh resolve: post an
+    # informational pipeline-decision marker (not a verdict shape — does
+    # not affect find_fresh_verdict freshness) and remove the label.
+    local has_halt
+    has_halt="$(jq -r --arg n "pipeline:halted" \
+      '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
+    if [[ "$has_halt" == "true" ]]; then
+      local resume_body
+      resume_body="$(printf '<!-- pipeline-decision: resume -->\n\nHalt auto-resolved by orchestrator: pipeline_content_hash or branch HEAD changed.')"
+      bash "$SCRIPT_DIR/linear.sh" add-comment  "$ident" "$resume_body"   || true
+      bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:halted" || true
+    fi
+    # Emit the post-resume labels on stdout so the caller can re-classify
+    # within the same tick. Without this, the local labels_json snapshot
+    # still has pipeline:halted, _poll_classify_labels' halted branch
+    # fires, and the slot stays vacated for one extra tick (~5 min).
+    jq -c '[.[] | select(. != "pipeline:halted" and . != "pipeline:skip-until-code-changes")]' <<<"$labels_json"
     return 0
   fi
   return 1
@@ -126,7 +147,11 @@ _poll_gather_stage_labeled_issues() {
 
 # Classify one issue's slot state from its labels (+ Linear comments when needed).
 # Input:  ident, labels_json  (labels_json is a JSON array of label name strings)
-# Output: {"slot": "hold"|"vacate"|"terminal", "advanceable": true|false}
+# Output: {"slot": "hold"|"vacate"|"terminal", "advanceable": true|false,
+#          "labels": [name, ...]}
+# The emitted "labels" reflects any auto-resume label mutations from
+# _poll_evaluate_skip; _poll_classify_all merges it onto the gathered item
+# so Pass 4 reads the post-resume label set in the same tick.
 #
 # Rules (evaluated top-down, first match wins):
 #   _poll_evaluate_skip returns 1 (still skipped — applies to:
@@ -160,48 +185,50 @@ _poll_gather_stage_labeled_issues() {
 # side effects — cheap.
 _poll_classify_labels() {
   local ident="$1" labels_json="$2"
+  local refreshed_labels=""
 
-  if ! _poll_evaluate_skip "$ident" "$labels_json"; then
-    printf '{"slot":"vacate","advanceable":false}'
+  if ! refreshed_labels="$(_poll_evaluate_skip "$ident" "$labels_json")"; then
+    jq -nc --argjson l "$labels_json" '{slot:"vacate",advanceable:false,labels:$l}'
     return 0
   fi
+  # _poll_evaluate_skip prints a refreshed labels_json on auto-resume so
+  # downstream label checks (here AND in Pass 4) see the post-resume
+  # state within the same tick. Empty stdout means no refresh needed —
+  # echo back the input labels_json verbatim.
+  [[ -n "$refreshed_labels" ]] && labels_json="$refreshed_labels"
 
   _has_label() {
     jq -r --arg n "$1" '[.[] | select(. == $n)] | length > 0' <<<"$labels_json"
   }
 
+  local class
   if [[ "$(_has_label pipeline:abandoned)" == "true" ]]; then
-    printf '{"slot":"terminal","advanceable":false}'
-    return 0
-  fi
-
-  if [[ "$(_has_label pipeline:paused)" == "true" ]] \
-  || [[ "$(_has_label pipeline:scope-approval-needed)" == "true" ]]; then
-    printf '{"slot":"vacate","advanceable":false}'
-    return 0
-  fi
-
-  if [[ "$(_has_label pipeline:halted)" == "true" ]]; then
+    class='{"slot":"terminal","advanceable":false}'
+  elif [[ "$(_has_label pipeline:paused)" == "true" ]] \
+    || [[ "$(_has_label pipeline:scope-approval-needed)" == "true" ]]; then
+    class='{"slot":"vacate","advanceable":false}'
+  elif [[ "$(_has_label pipeline:halted)" == "true" ]]; then
     local fresh
     fresh="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
     if [[ -z "$fresh" ]]; then
-      printf '{"slot":"hold","advanceable":false}'
-      return 0
+      class='{"slot":"hold","advanceable":false}'
+    else
+      local marker
+      marker="$(jq -r '.marker // ""' <<<"$fresh")"
+      case "$marker" in
+        pipeline-stage-summary|pipeline-rejection)
+          class='{"slot":"hold","advanceable":true}' ;;
+        pipeline-halt)
+          class='{"slot":"vacate","advanceable":false}' ;;
+        *)
+          class='{"slot":"hold","advanceable":false}' ;;
+      esac
     fi
-    local marker
-    marker="$(jq -r '.marker // ""' <<<"$fresh")"
-    case "$marker" in
-      pipeline-stage-summary|pipeline-rejection)
-        printf '{"slot":"hold","advanceable":true}' ;;
-      pipeline-halt)
-        printf '{"slot":"vacate","advanceable":false}' ;;
-      *)
-        printf '{"slot":"hold","advanceable":false}' ;;
-    esac
-    return 0
+  else
+    class='{"slot":"hold","advanceable":true}'
   fi
 
-  printf '{"slot":"hold","advanceable":true}'
+  jq -nc --argjson c "$class" --argjson l "$labels_json" '$c + {labels:$l}'
 }
 
 # Classify every issue in a gathered-issues JSON array and augment each object
@@ -220,6 +247,9 @@ _poll_classify_all() {
     ident="$(jq -r '.identifier' <<<"$item")"
     labels_json="$(jq -c '.labels' <<<"$item")"
     class="$(_poll_classify_labels "$ident" "$labels_json")"
+    # `class` includes a `labels` key reflecting any auto-resume label
+    # mutations; merging it after $item lets it override .labels so Pass 4
+    # reads the post-resume label set.
     augmented="$(jq -c --argjson c "$class" '
       . + $c + {
         priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)
