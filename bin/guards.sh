@@ -28,12 +28,11 @@ source "$SCRIPT_DIR/common.sh"
 
 count_marker() {
   local ident="$1" marker="$2"
-  local q='query($teamId: ID!, $ident: String!) { issues(first: 1, filter: { team: { id: { eq: $teamId } }, identifier: { eq: $ident } }) { nodes { id comments(first: 100) { nodes { body } } } } }'
-  local team_id vars resp
-  team_id="$(config_get '.linear.team_id')"
-  vars="$(jq -cn --arg teamId "$team_id" --arg ident "$ident" '{teamId:$teamId, ident:$ident}')"
+  local q='query($id: String!) { issue(id: $id) { comments(first: 100) { nodes { body } } } }'
+  local vars resp
+  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
   resp="$(bash "$SCRIPT_DIR/linear.sh" query "$q" "$vars")"
-  jq -r --arg m "<!-- pipeline-metric: $marker -->" '[.data.issues.nodes[0].comments.nodes[]? | .body | select(contains($m))] | length' <<<"$resp"
+  jq -r --arg m "<!-- pipeline-metric: $marker -->" '[.data.issue.comments.nodes[]? | .body | select(contains($m))] | length' <<<"$resp"
 }
 
 # Count comment bodies containing $marker whose createdAt is newer than
@@ -63,11 +62,14 @@ check() {
   gotcha_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.gotcha_trigger_count')"
   rule_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.learned_rule_renewals')"
   qa_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.qa_rejections_per_feature')"
-  # Default qa threshold if the key is absent in older configs.
-  [[ "$qa_threshold" == "null" || -z "$qa_threshold" ]] && qa_threshold=2
   impl_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.implement_rejections_per_feature')"
-  # Default impl threshold if the key is absent in older configs.
-  [[ "$impl_threshold" == "null" || -z "$impl_threshold" ]] && impl_threshold=2
+  # Default each threshold to 2 if the key is absent (older / minimal configs).
+  # Without these, `null: unbound variable` trips the arithmetic gates below.
+  [[ "$review_threshold" == "null" || -z "$review_threshold" ]] && review_threshold=2
+  [[ "$gotcha_threshold" == "null" || -z "$gotcha_threshold" ]] && gotcha_threshold=2
+  [[ "$rule_threshold"   == "null" || -z "$rule_threshold"   ]] && rule_threshold=2
+  [[ "$qa_threshold"     == "null" || -z "$qa_threshold"     ]] && qa_threshold=2
+  [[ "$impl_threshold"   == "null" || -z "$impl_threshold"   ]] && impl_threshold=2
 
   local rev got rule qa impl
   rev="$(count_marker_since_last_transition "$ident" review_rejection)"
