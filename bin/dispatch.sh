@@ -75,7 +75,10 @@ main() {
   # Auth: ANTHROPIC_API_KEY for CI/headless; claude CLI subscription session for local.
   # Don't require either here — claude errors at invocation time if no auth is available.
 
-  local cmd=(claude -p --allowed-tools "$tools")
+  # ENG-41 T3: set the agent lane only for the claude -p subprocess.
+  # Any orchestrator-side Linear writes above (none currently, but guarding for
+  # future additions) stay in the default orchestrator lane.
+  local cmd=(env PIPELINE_WRITER=agent claude -p --allowed-tools "$tools")
   if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname "$log_file")"
     log "dispatching stage=$stage, log=$log_file"

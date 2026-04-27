@@ -37,6 +37,12 @@ _cf_write_state() {
 }
 
 classify_failure() {
+  # ENG-41 T3: set classify lane for all Linear writes inside this function.
+  # Use local+export so it scopes to this function's bash subprocesses without
+  # permanently polluting the caller's environment after the function returns.
+  local PIPELINE_WRITER=classify
+  export PIPELINE_WRITER
+
   local issue="$1" stage="$2" base_policy="$3" reason="$4" exit_code="$5" subcode="${6:-}"
   local state_file; state_file="$(issue_dir "$issue")/issue-state.json"
 
