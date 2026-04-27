@@ -441,28 +441,32 @@ sub-tasks. The plan agent will own ordering and granularity.
    and no state file. Asserts (a) `main` does not dispatch this issue;
    (b) `LINEAR_STUB_LOG` contains no `remove-label ENG-XXXX
    pipeline:skip-until-human-acts` line.
-5. Optional regression spot-check: AC-10 — same as AC-9 but with
-   `pipeline:skip-until-code-changes` (uniform-treatment validation).
+5. AC-10 (required, not optional): same shape as AC-9 but with
+   `pipeline:skip-until-code-changes` instead. D-2's rationale rests on
+   "uniform treatment is correct, not a regression"; the test that
+   proves uniformity must therefore be a requirement, not optional.
 6. Run `bash bin/poll-slot-test.sh` locally and verify all of
-   AC-1..AC-7 still pass plus AC-8..AC-10. Per the issue's "AC-5
-   Regression" requirement: the existing orphan-state-file cleanup
-   path (state file without label) is intentionally not exercised in
-   `poll-slot-test.sh` today; the implementation step should add a
-   small smoke test so the regression is covered.
+   AC-1..AC-7 still pass plus AC-8..AC-10. The Linear issue's "AC-5
+   Regression" requirement (existing orphan-state-file cleanup path —
+   state file without label — still works) is satisfied by the
+   unchanged §4 branch at `bin/poll.sh:55-60`; adding a dedicated
+   `poll-slot-test.sh` case for it is OUT of scope and is intentionally
+   deferred.
 7. Hand off to plan stage / implementation.
 
 ## 10. Persona review
 
 Document-review run 2026-04-27. Six personas, executed in the prescribed
 order (design → security → scope → coherence → product → feasibility).
+Feasibility runs last because it is the gating persona.
 
-| # | Persona | Verdict | Notes |
+| # | Persona | Verdict | Findings |
 |---|---|---|---|
-| 1 | Design (UI/IA/state coverage) | PASS | All UX axes N/A — backend bash; data-flow §4 and edge-case §6 cover the analogous decision-point coverage. No findings. |
-| 2 | Security | PASS | Fix correctly repairs the human-applied-label kill-switch contract; net Linear write surface shrinks; no new attack surface, no new data exposure. Race windows acknowledged are the same property `pipeline:paused` already has. No findings. |
-| 3 | Scope | PASS | Two narrow code edits + two test cases map 1:1 to the Linear "IN" scope. All four "OUT" items explicitly listed as non-goals. No new files, no new abstractions. No findings. |
-| 4 | Coherence | PASS | §2 decisions, §4 data-flow, §6 edge cases, §8 anti-bias, §9 implementation sketch all internally consistent. Pre-fix vs post-fix terminology consistently distinguished. No findings. |
-| 5 | Product | PASS | Right problem (operator kill-switch contract is contradicted by code), direct outcome (fix in the read-side path the bug lives in), do-nothing pain real and filed. No misalignment. No findings. |
-| 6 | Feasibility (gating) | PASS · P0 = 0 | Every named code artifact verified against the current worktree (`bin/poll.sh:45-116, 64-69, 186-232, 432-439, 452-454`; `bin/common.sh:61-65`; `bin/setup-labels.sh:38`; `bin/classify-failure.sh:101-107`; `bin/poll-slot-test.sh:62-87, 185-206`). No P0/P1/P2 findings. |
+| 1 | Design (operator/decision-point + edge cases + observability + AI-slop) | PASS · P0 = 0 | UI-only axes N/A (backend bash). Decision-point coverage 9/10 (§4 traces every branch pre/post). Edge-case enumeration 9/10 (§6 covers seven cases including races). AI-slop 10/10. P1: §5 should explicitly state that no operator-visible signal is lost when the two `remove-label` calls disappear (none — confirmed; AC-9 asserts their absence in `LINEAR_STUB_LOG`). P2: §9 step 6 ambiguity (resolved by edit removing the "small smoke test" instruction); §8.3 assumption #3 stale-line caveat could be surfaced earlier. |
+| 2 | Security | PASS · P0/P1/P2 = 0 | Fix repairs the kill-switch contract correctly. Net Linear-write surface shrinks (1–2 fewer `remove-label` calls per orphan-labeled issue per tick). No new attack surface. Single-tick race window is the same property `pipeline:paused` already has — accepted, not introduced. AuthN/AuthZ/XSS/CSRF/SQLi/PII/secrets all explicitly N/A for harness bash. Highest-impact subtle case (AC-9 author seeds a state file by mistake, defeating the regression) is mitigated by §9's explicit "omit `mkdir -p`" instruction. |
+| 3 | Scope | PASS · P0/P1 = 0 | Two file edits, ~10 lines net diff, two/three test cases. 1:1 map to Linear IN scope. All four OUT items called out as non-goals. Three rejected alternatives in §2 turn down the over-engineered options. P2 (resolved by edit): §9 step 6 had an "add a small smoke test for the orphan-state-file path" instruction that risked OUT-scope creep; now dropped/deferred. P2 (resolved): AC-10 was "optional"; now required. |
+| 4 | Coherence | PASS · P0 = 0 | No contradictions. Terminology used uniformly ("orphan label" / "label without state file" used interchangeably with the term defined inline). Uniformity-of-treatment claim consistent across §1, §2 D-2, §4 data flow, §5 error handling, §6 edge cases, §8.3 assumptions, §9 ACs. Forward references all grounded in §8.4. |
+| 5 | Product | PASS · P0/P1 = 0 | Right problem (operator kill-switch contract is contradicted by code; ENG-23 prep surfaced it). Direct, single-hop fix at the two contradicting sites — no proxy work, no rollout machinery. Goal-requirement alignment 1:1 (Bug A → D-1, Bug B → D-2, regression → D-3). P2: do-nothing pain qualitatively asserted, not quantified — acceptable for a two-line fix; flagged only for completeness. P2 (resolved): AC-10 promoted to required. |
+| 6 | Feasibility (gating) | PASS · P0 = 0 | Every named code artifact verified against the current worktree on this branch: `bin/poll.sh:45-116` (`_poll_evaluate_skip`), `bin/poll.sh:64-69` (orphan-label branch — matches issue snippet exactly), `bin/poll.sh:186-232` (`_poll_classify_labels`), `bin/poll.sh:432-439` (Pass 5 inbox jq filter — issue cited 316-325 but the structure is identical; documented in §8.3 #3), `bin/poll.sh:452-454` (sentinel), `bin/common.sh:61-65` (`issue_dir`), `bin/setup-labels.sh:38` (label contract), `bin/classify-failure.sh:101-107` (pipeline-side label apply), `bin/poll-slot-test.sh:62-87, 185-206` (test scaffolding for `LINEAR_STUB_LOG` and `write_inbox_fixture`). No P0/P1/P2 findings. |
 
 Result: **6/6 PASS · gate P0 = 0**. Proceeding to planning.
