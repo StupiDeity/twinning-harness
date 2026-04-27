@@ -53,16 +53,34 @@ The orchestrator's Verdict Handler (`.pipeline/bin/verdict-handler.sh`) scans Li
 
 **Freshness rule:** the Verdict Handler considers only markers newer than the most recent `<!-- pipeline-transition: -->` comment, and picks the latest verdict-shaped marker among those. Verdict comments are append-only — use `linear.sh add-comment`, NOT `add-or-update-comment`.
 
-### Label vocabulary (post-Phase-4)
+### Label vocabulary — lane-aware write matrix (ENG-41)
 
-Only four pipeline-namespace labels are applied by the pipeline:
+Every label/comment write in the harness is gated by `bin/linear.sh`'s lane fence.
+The caller's lane is set via `PIPELINE_WRITER` (default: `orchestrator`).
+See `bin/linear.sh`'s lane fence for the source of truth and the structured deny error.
 
-| Label | Who applies | Lifecycle |
-|---|---|---|
-| `pipeline:halted` | every stage agent, classify-failure, scope-check | applied at end-of-stage; removed by the Verdict Handler on forward/loopback transition, or by `halt.sh resolve` on human decision |
-| `pipeline:supersede` | Verdict Handler (as a side-effect label on reviewing→brainstorming loopbacks) | cleared by the brainstorm agent when it regenerates the doc |
-| `pipeline:skip-until-code-changes` | classify-failure | auto-cleared when pipeline-content-hash or branch-HEAD changes |
-| `pipeline:abandoned` | human | terminal — permanently off pipeline |
+| Action / object class        | orchestrator | agent | classify | scope-check | human |
+|---|:-:|:-:|:-:|:-:|:-:|
+| add `stage:*` label          | allow | deny  | deny  | deny  | allow |
+| remove `stage:*` label       | allow | deny  | deny  | deny  | allow |
+| add `pipeline:halted`        | allow | allow | allow | allow | allow |
+| remove `pipeline:halted`     | allow | deny  | deny  | deny  | allow |
+| add `pipeline:supersede`     | allow | deny  | deny  | deny  | allow |
+| remove `pipeline:supersede`  | allow | allow | deny  | deny  | allow |
+| add `pipeline:skip-until-*`  | deny  | deny  | allow | deny  | allow |
+| remove `pipeline:skip-until-*` | allow | deny | allow | deny  | allow |
+| add `<!-- pipeline-transition: -->` comment | allow | deny | deny | deny | allow |
+| add any other comment        | allow | allow | allow | allow | allow |
+| add any other label          | allow | deny  | deny  | deny  | allow |
+| remove any other label       | allow | deny  | deny  | deny  | allow |
+
+Object classes: `stage_label` (`^stage:.+$`), `pipeline_halted` (exact), `pipeline_supersede` (exact),
+`pipeline_skip_until` (`^pipeline:skip-until-.+$`), `any_other_label` (everything else),
+`transition_comment` (first non-blank line matches `<!-- pipeline-transition: ... -->`),
+`other_comment` (any other comment body).
+
+Denial emits to stderr with exit code 11:
+`linear.sh: lane=<W> denied: <action> <object> / (allowed lanes for <action> <object>: <lanes>)`
 
 ### Operator workflow (how a human resolves a halted issue)
 
