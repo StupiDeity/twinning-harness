@@ -75,7 +75,9 @@ case "$1" in
     [[ -f "$f" ]] && cat "$f" || printf '[]'
     ;;
   remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
-    # No-op for side-effecting subcommands; tests assert on dispatch output, not side effects.
+    # No-op for side-effecting subcommands. Optionally append the call to
+    # $LINEAR_STUB_LOG so individual tests can assert on side effects.
+    [[ -n "${LINEAR_STUB_LOG:-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
     exit 0
     ;;
   *)
@@ -360,6 +362,88 @@ cat > "$STUB_DIR/metrics.sh" <<'SH'
 exit 0
 SH
 chmod +x "$STUB_DIR/metrics.sh"
+
+# ─── AC-6: skip-until-code-changes auto-resume also clears halt label ──
+# Regression: ENG-26 stayed at no-work after evidence-change cleared the
+# skip label because pipeline:halted + a <!-- pipeline-halt: --> marker
+# (both written by classify-failure) kept _poll_classify_labels in
+# vacate/not-advanceable. _poll_evaluate_skip must clear the halt label
+# AND post a pipeline-decision: resume marker so the next tick can
+# advance the issue.
+reset_fixtures
+write_label_fixture "stage:implementing" \
+  "ENG-7001|In Progress|3|Bug,stage:implementing,pipeline:halted,pipeline:skip-until-code-changes"
+write_comments_fixture "ENG-7001" \
+  "<!-- pipeline-halt: agent-failure -->|2026-04-27T05:34:40.000Z"
+
+# Plant a stale issue-state.json so the evidence-changed branch fires.
+mkdir -p "$PROJECT_STATE_DIR/ENG-7001"
+cat > "$PROJECT_STATE_DIR/ENG-7001/issue-state.json" <<JSON
+{"issue":"ENG-7001","stage":"implement","policy":"skip-until-code-changes",
+ "branch":"feat/eng-7001",
+ "evidence":{"pipeline_content_hash":"stale-hash","branch_head_sha":"stale-sha"}}
+JSON
+
+# Capture linear.sh side-effect calls.
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ac6.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
+stage="$(jq -r '.stage // ""' <<<"$out")"
+
+removed_skip=0; removed_halt=0; posted_resume=0
+grep -qE '^remove-label ENG-7001 pipeline:skip-until-code-changes$' "$LINEAR_STUB_LOG" && removed_skip=1
+grep -qE '^remove-label ENG-7001 pipeline:halted$'                  "$LINEAR_STUB_LOG" && removed_halt=1
+grep -qE 'pipeline-decision: resume'                                "$LINEAR_STUB_LOG" && posted_resume=1
+
+unset LINEAR_STUB_LOG
+rm -rf "$PROJECT_STATE_DIR/ENG-7001"
+
+if (( removed_skip == 1 )) && (( removed_halt == 1 )) && (( posted_resume == 1 )) \
+   && [[ "$issue_id" == "ENG-7001" ]] && [[ "$stage" == "implement" ]]; then
+  pass_at "AC-6 auto-resume clears skip+halt, posts resume marker, dispatches stage"
+else
+  fail_at "AC-6 auto-resume clears skip+halt, posts resume marker, dispatches stage" \
+    "removed_skip=$removed_skip removed_halt=$removed_halt posted_resume=$posted_resume issue=$issue_id stage=$stage"
+fi
+
+# ─── AC-7: auto-resume is a no-op when pipeline:halted is absent ──────
+# If the issue carries skip-until-code-changes alone (no halt), the
+# auto-resume must NOT fire remove-label pipeline:halted or post a resume
+# marker. Guards against unconditional Linear writes regressing the fix.
+reset_fixtures
+write_label_fixture "stage:implementing" \
+  "ENG-7002|In Progress|3|Bug,stage:implementing,pipeline:skip-until-code-changes"
+mkdir -p "$PROJECT_STATE_DIR/ENG-7002"
+cat > "$PROJECT_STATE_DIR/ENG-7002/issue-state.json" <<JSON
+{"issue":"ENG-7002","stage":"implement","policy":"skip-until-code-changes",
+ "branch":"feat/eng-7002",
+ "evidence":{"pipeline_content_hash":"stale-hash","branch_head_sha":"stale-sha"}}
+JSON
+
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ac7.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+# main calls `exit 0` on its happy paths; capture via $(...) so the exit
+# stays in the subshell.
+_=$(main 2>/dev/null || true)
+
+extra_halt_clear=0; extra_resume_post=0
+grep -qE '^remove-label ENG-7002 pipeline:halted$' "$LINEAR_STUB_LOG" && extra_halt_clear=1
+grep -qE 'pipeline-decision: resume'               "$LINEAR_STUB_LOG" && extra_resume_post=1
+
+unset LINEAR_STUB_LOG
+rm -rf "$PROJECT_STATE_DIR/ENG-7002"
+
+if (( extra_halt_clear == 0 )) && (( extra_resume_post == 0 )); then
+  pass_at "AC-7 auto-resume skips halt-clear when pipeline:halted absent"
+else
+  fail_at "AC-7 auto-resume skips halt-clear when pipeline:halted absent" \
+    "extra_halt_clear=$extra_halt_clear extra_resume_post=$extra_resume_post"
+fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
