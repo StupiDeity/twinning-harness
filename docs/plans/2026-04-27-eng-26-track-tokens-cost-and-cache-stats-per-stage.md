@@ -67,7 +67,7 @@ Every modified file's load-bearing function range is quoted with line numbers.
 Per learned rule P-002, no "follows the existing pattern" claim is made
 without an exact code excerpt above.
 
-## File structure
+## File Structure
 
 | File | Action | Responsibility |
 |---|---|---|
