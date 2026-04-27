@@ -373,6 +373,114 @@ else
   fail_at "case-14 NOTABLE" "unexpected bumps=$bumps"
 fi
 
+# ─── Case 19: _cost_flags_for emits 12 lines when usage file present (ENG-26 D-005) ──
+# Asserts the helper turns a six-field usage-<stage>.json into a newline-delimited
+# stream of `--key`/`value` pairs and that the model literal `claude-opus-4-7[1m]`
+# round-trips with [1m] intact (DL-202 / SEC-007 — bash array boundary preserves
+# glob chars).
+COST_DIR="$(issue_dir ENG-T-COST)"
+mkdir -p "$COST_DIR"
+cat > "$COST_DIR/usage-plan.json" <<'JSON'
+{"tokens_in":5,"tokens_out":6,"cache_read":20773,"cache_create":17419,"cost_usd":0.42,"model":"claude-opus-4-7[1m]"}
+JSON
+
+cost_flags=()
+while IFS= read -r _cf_line; do
+  cost_flags+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COST plan)
+
+# Find the `--model` slot; the next array element is the model value.
+model_idx=-1
+for i in "${!cost_flags[@]}"; do
+  [[ "${cost_flags[$i]}" == "--model" ]] && { model_idx=$((i+1)); break; }
+done
+model_val=""
+[[ $model_idx -ge 0 ]] && model_val="${cost_flags[$model_idx]}"
+
+if [[ "${#cost_flags[@]}" == "12" ]] \
+   && [[ "${cost_flags[0]}" == "--tokens-in" && "${cost_flags[1]}" == "5" ]] \
+   && [[ "${cost_flags[8]}" == "--cost-usd" && "${cost_flags[9]}" == "0.42" ]] \
+   && [[ "$model_val" == "claude-opus-4-7[1m]" ]]; then
+  pass_at "case-19 _cost_flags_for: 12 lines emitted; model literal preserved with [1m]"
+else
+  fail_at "case-19 _cost_flags_for" "count=${#cost_flags[@]} model_val=$model_val flags=$(printf '%s|' "${cost_flags[@]}")"
+fi
+
+# ─── Case 20: _cost_flags_for emits nothing when usage file absent ──────
+COST_DIR_B="$(issue_dir ENG-T-COSTB)"
+mkdir -p "$COST_DIR_B"
+rm -f "$COST_DIR_B/usage-plan.json"
+
+cost_flags_b=()
+while IFS= read -r _cf_line; do
+  [[ -z "$_cf_line" ]] && continue
+  cost_flags_b+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COSTB plan)
+
+if [[ "${#cost_flags_b[@]}" == "0" ]]; then
+  pass_at "case-20 _cost_flags_for: empty array when usage file absent"
+else
+  fail_at "case-20 _cost_flags_for absent" "got ${#cost_flags_b[@]} entries"
+fi
+
+# ─── Case 21: _cost_footer shape pinned to brainstorm D-008 format ─────
+# Pinned values: cost_usd=0.42, tokens_in=18000, tokens_out=4000,
+# cache_read=20773, cache_create=17419 → cache_pct = round(54.39…) = 54.
+COST_DIR_C="$(issue_dir ENG-T-COSTC)"
+mkdir -p "$COST_DIR_C"
+cat > "$COST_DIR_C/usage-plan.json" <<'JSON'
+{"tokens_in":18000,"tokens_out":4000,"cache_read":20773,"cache_create":17419,"cost_usd":0.42,"model":"claude-opus-4-7[1m]"}
+JSON
+
+footer_c="$(_cost_footer ENG-T-COSTC plan)"
+expected_c=$'\ncost: $0.42 · in 18.0k · out 4.0k · cache 54%'
+if [[ "$footer_c" == "$expected_c" ]]; then
+  pass_at "case-21 _cost_footer shape: 'cost: \$0.42 · in 18.0k · out 4.0k · cache 54%'"
+else
+  fail_at "case-21 _cost_footer shape" "got=$(printf '%q' "$footer_c") expected=$(printf '%q' "$expected_c")"
+fi
+
+# ─── Case 22: _cost_footer omits cache segment when denominator is zero ─
+COST_DIR_D="$(issue_dir ENG-T-COSTD)"
+mkdir -p "$COST_DIR_D"
+cat > "$COST_DIR_D/usage-plan.json" <<'JSON'
+{"tokens_in":1000,"tokens_out":500,"cache_read":0,"cache_create":0,"cost_usd":0.10,"model":"claude-opus-4-7"}
+JSON
+
+footer_d="$(_cost_footer ENG-T-COSTD plan)"
+if [[ "$footer_d" =~ cache ]]; then
+  fail_at "case-22 _cost_footer cache-zero" "footer should omit cache segment, got=$footer_d"
+elif [[ "$footer_d" =~ ^$'\n'cost:\ \$.*in.*out ]]; then
+  pass_at "case-22 _cost_footer cache-zero: '· cache N%' segment omitted when read+create == 0"
+else
+  fail_at "case-22 _cost_footer cache-zero shape" "got=$(printf '%q' "$footer_d")"
+fi
+
+# ─── Case 23: _cost_footer prints empty when usage file absent ─────────
+COST_DIR_E="$(issue_dir ENG-T-COSTE)"
+mkdir -p "$COST_DIR_E"
+rm -f "$COST_DIR_E/usage-plan.json"
+
+footer_e="$(_cost_footer ENG-T-COSTE plan)"
+if [[ -z "$footer_e" ]]; then
+  pass_at "case-23 _cost_footer absent: empty string when no usage file"
+else
+  fail_at "case-23 _cost_footer absent" "got=$(printf '%q' "$footer_e")"
+fi
+
+# ─── Case 24: D-011 stale-file removal — `rm -f` line present in run-stage.sh ──
+# Static contract test: the brainstorm D-011 fix lives at the top of the
+# skip_dispatch=1 branch in run-stage.sh::main. Future edits that move or
+# delete the `rm -f` line silently re-introduce the double-counting bug
+# that scope-approval replays would otherwise cause. Anchor on the literal
+# pattern so a refactor that renames `usage-` to `cost-` fails this test
+# before it can ship.
+if grep -E "rm -f.*usage-" "$HARNESS_DIR/run-stage.sh" >/dev/null 2>&1; then
+  pass_at "case-24 D-011: run-stage.sh has rm -f for usage-<stage>.json"
+else
+  fail_at "case-24 D-011 rm -f missing" "rm -f for usage-<stage>.json not found in run-stage.sh"
+fi
+
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
@@ -691,6 +799,7 @@ if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
 else
   fail_at "case-18c brainstorm+vh_rc=1" "capture=$(cat "$CAPTURE_FILE")"
 fi
+
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
