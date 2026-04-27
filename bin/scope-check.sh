@@ -55,7 +55,7 @@ find_canonical_plan() {
 extract_scope_section() {
   local plan="$1"
   awk '
-    /^(##|###)[[:space:]]+File Structure/ { depth=length($1); in_fs=1; next }
+    /^(##|###)[[:space:]]+[Ff]ile [Ss]tructure/ { depth=length($1); in_fs=1; next }
     in_fs && /^(##|###)[[:space:]]/ {
       this=length($1)
       if (this <= depth) { in_fs=0; next }

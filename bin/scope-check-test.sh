@@ -106,6 +106,42 @@ sc_rc=0
   || fail_at "case-3 end-to-end: undeclared CLAUDE.md SEVERE-flag" "rc=$sc_rc (expected 3)"
 rm -rf "$sandbox2"
 
+# ─── Case 4: end-to-end — `## File structure` (lowercase 's') still parses ──
+# Regression: ENG-26 implement halted with rc=2 because the extractor only
+# matched "File Structure" verbatim. Plans that title the section with any
+# of the natural casings should be accepted.
+for heading in "File Structure" "File structure" "file structure"; do
+  sandbox4="$(mktemp -d -t scope-check-test4-XXXXXX)"
+  (
+    cd "$sandbox4"
+    git init -q
+    git config user.email t@example.com
+    git config user.name 'Test'
+    mkdir -p docs/plans
+    cat > docs/plans/2026-04-27-eng-test-126.md <<PLAN
+---
+linear: ENG-T126
+---
+## ${heading}
+- \`CLAUDE.md\` — additive docs change at repo root.
+PLAN
+    printf 'baseline\n' > CLAUDE.md
+    git add -A
+    git commit -qm "initial"
+    git branch -m main
+    git checkout -qb test-branch
+    printf '+more docs\n' >> CLAUDE.md
+    git commit -aqm "test branch change"
+  )
+  if (cd "$sandbox4" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T126 test-branch) >/dev/null 2>&1; then
+    pass_at "case-4 heading '## $heading' parses and passes scope-check"
+  else
+    rc=$?
+    fail_at "case-4 heading '## $heading'" "rc=$rc (expected 0)"
+  fi
+  rm -rf "$sandbox4"
+done
+
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
