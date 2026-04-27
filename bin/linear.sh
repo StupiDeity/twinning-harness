@@ -26,6 +26,125 @@ require_bin curl jq
 
 LINEAR_ENDPOINT="https://api.linear.app/graphql"
 
+# ─── Lane fence (ENG-41) ────────────────────────────────────────────────
+# Classify a label name into one of the five object classes used by the
+# lane allow-list matrix.
+#   stage_label         — matches ^stage:.+$
+#   pipeline_halted     — exact match pipeline:halted
+#   pipeline_supersede  — exact match pipeline:supersede
+#   pipeline_skip_until — matches ^pipeline:skip-until-.+$
+#   any_other_label     — everything else
+_classify_label() {
+  local label="$1"
+  case "$label" in
+    stage:*)                       printf 'stage_label' ;;
+    pipeline:halted)               printf 'pipeline_halted' ;;
+    pipeline:supersede)            printf 'pipeline_supersede' ;;
+    pipeline:skip-until-*)         printf 'pipeline_skip_until' ;;
+    *)                             printf 'any_other_label' ;;
+  esac
+}
+
+# Classify a comment body into transition_comment or other_comment.
+# transition_comment: the first non-blank line of the body is exactly
+# <!-- pipeline-transition: <from> → <to> -->
+_classify_comment_body() {
+  local body="$1"
+  local first_nonblank
+  first_nonblank="$(printf '%s' "$body" | grep -m1 '[^ ]' || true)"
+  # Trim leading whitespace from the first non-blank line.
+  first_nonblank="$(printf '%s' "$first_nonblank" | sed 's/^[[:space:]]*//')"
+  if [[ "$first_nonblank" =~ ^'<!--'\ pipeline-transition:\ .+\ '-->' ]]; then
+    printf 'transition_comment'
+  else
+    printf 'other_comment'
+  fi
+}
+
+# Lane allow-list matrix.  Rows = "action object_class", columns = lanes.
+# Value "allow" or "deny".  All unlisted combinations default to deny.
+# Source of truth: docs/plans/2026-04-27-eng-41-pipeline-trust-model-enforce-write-lanes.md
+#   §Command API contract.
+_lane_decision() {
+  local action="$1" object_class="$2" lane="$3"
+  # Key: "<action> <object_class>" → per-lane array of allowed lanes.
+  case "${action} ${object_class}" in
+    "add stage_label")            case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "remove stage_label")         case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "add pipeline_halted")        printf 'allow' ;;  # all lanes allowed
+    "remove pipeline_halted")     case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "add pipeline_supersede")     case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "remove pipeline_supersede")  case "$lane" in orchestrator|agent|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "add pipeline_skip_until")    case "$lane" in classify|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "remove pipeline_skip_until") case "$lane" in orchestrator|classify|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "add transition_comment")     case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "add other_comment")          printf 'allow' ;;  # all lanes allowed
+    "add any_other_label")        case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "remove any_other_label")     case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    *)                            printf 'deny' ;;
+  esac
+}
+
+# Allowed lanes for a given action × object_class (for the deny error message).
+_allowed_lanes_for() {
+  local action="$1" object_class="$2"
+  case "${action} ${object_class}" in
+    "add stage_label")            printf 'orchestrator,human' ;;
+    "remove stage_label")         printf 'orchestrator,human' ;;
+    "add pipeline_halted")        printf 'orchestrator,agent,classify,scope-check,human' ;;
+    "remove pipeline_halted")     printf 'orchestrator,human' ;;
+    "add pipeline_supersede")     printf 'orchestrator,human' ;;
+    "remove pipeline_supersede")  printf 'orchestrator,agent,human' ;;
+    "add pipeline_skip_until")    printf 'classify,human' ;;
+    "remove pipeline_skip_until") printf 'orchestrator,classify,human' ;;
+    "add transition_comment")     printf 'orchestrator,human' ;;
+    "add other_comment")          printf 'orchestrator,agent,classify,scope-check,human' ;;
+    "add any_other_label")        printf 'orchestrator,human' ;;
+    "remove any_other_label")     printf 'orchestrator,human' ;;
+    *)                            printf 'none' ;;
+  esac
+}
+
+# _check_lane <action> <object_class>
+# Reads ${PIPELINE_WRITER:-orchestrator}, looks up the lane allow-list,
+# and on denial prints a structured error to stderr and returns 11.
+# Returns 0 on allow.
+_check_lane() {
+  local action="$1" object_class="$2"
+  local lane="${PIPELINE_WRITER:-orchestrator}"
+
+  # Validate lane.
+  case "$lane" in
+    orchestrator|agent|classify|scope-check|human) ;;
+    *)
+      printf 'linear.sh: unrecognized lane: %s (valid: orchestrator,agent,classify,scope-check,human)\n' \
+        "$lane" >&2
+      return 13
+      ;;
+  esac
+
+  local decision
+  decision="$(_lane_decision "$action" "$object_class" "$lane")"
+  if [[ "$decision" == "allow" ]]; then
+    return 0
+  fi
+
+  local allowed
+  allowed="$(_allowed_lanes_for "$action" "$object_class")"
+  printf 'linear.sh: lane=%s denied: %s %s\n            (allowed lanes for %s %s: %s)\n' \
+    "$lane" "$action" "$object_class" "$action" "$object_class" "$allowed" >&2
+  return 13
+}
+
+# all_stage_labels <issue>
+# Emits all stage:* labels on an issue, space-separated.
+# Used by verdict-handler's multi-stage-label guard (ENG-41 Task 4).
+all_stage_labels() {
+  local ident="$1"
+  get_issue "$ident" \
+    | jq -r '[.data.issue.labels.nodes[] | select(.name | startswith("stage:")) | .name] | join(" ")'
+}
+
 linear_query() {
   local query="$1" variables="${2:-{\}}"
   require_env LINEAR_API_KEY
@@ -105,6 +224,11 @@ _resolve_issue_uuid() {
 
 add_label() {
   local ident="$1" label_name="$2"
+  # Lane fence: check before any Linear API call.
+  local _object_class
+  _object_class="$(_classify_label "$label_name")"
+  _check_lane "add" "$_object_class" || return $?
+
   local issue_uuid label_uuid
   issue_uuid="$(_resolve_issue_uuid "$ident")"
   label_uuid="$(label_id "$label_name")"
@@ -129,6 +253,11 @@ add_label() {
 
 remove_label() {
   local ident="$1" label_name="$2"
+  # Lane fence: check before any Linear API call.
+  local _object_class
+  _object_class="$(_classify_label "$label_name")"
+  _check_lane "remove" "$_object_class" || return $?
+
   local issue_uuid label_uuid
   issue_uuid="$(_resolve_issue_uuid "$ident")"
   label_uuid="$(label_id "$label_name")"
@@ -237,6 +366,10 @@ get_comments() {
 
 add_comment() {
   local ident="$1" body="$2"
+  # Lane fence: check before any Linear API call (including dry-run).
+  local _comment_class
+  _comment_class="$(_classify_comment_body "$body")"
+  _check_lane "add" "$_comment_class" || return $?
 
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
     log "[DRY_RUN] would comment on $ident: ${body:0:80}..."
@@ -390,6 +523,7 @@ main() {
     add-comment)            add_comment "$@" ;;
     add-or-update-comment) add_or_update_comment "$@" ;;
     stage-of)               stage_of "$@" ;;
+    all-stage-labels)       all_stage_labels "$@" ;;
     has-label)              has_label "$@" ;;
     has-comment-since)      has_comment_since "$@" ;;
     get-comments)           get_comments "$@" ;;
