@@ -527,6 +527,35 @@ else
     "issue=$issue_id stripped=$stripped"
 fi
 
+# ─── AC-10: ENG-24 Bug B (uniformity) — same as AC-9 with code-changes label ──
+# The orphan-label branch must treat both skip-until-* labels identically:
+# vacate, no Linear writes. AC-10 guards the uniformity claim from
+# brainstorm §2 D-2: future regressions that special-case only human-acts
+# would otherwise pass.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-9002|In Progress|3|Bug,stage:planning,pipeline:skip-until-code-changes"
+# No mkdir / no issue-state.json.
+
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ac10.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+
+stripped=0
+grep -Fxq 'remove-label ENG-9002 pipeline:skip-until-code-changes' "$LINEAR_STUB_LOG" && stripped=1
+
+unset LINEAR_STUB_LOG
+
+if [[ "$issue_id" != "ENG-9002" ]] && (( stripped == 0 )); then
+  pass_at "AC-10 Bug B uniformity — stage+skip-until-code-changes (no state file) vacates and preserves label"
+else
+  fail_at "AC-10 Bug B uniformity — stage+skip-until-code-changes (no state file) vacates and preserves label" \
+    "issue=$issue_id stripped=$stripped"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
