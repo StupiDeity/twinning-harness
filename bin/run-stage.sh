@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Run a single pipeline stage against a Linear issue.
 # Usage: run-stage.sh <issue_id> <stage>
-# Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=reconcile-human, 20=dispatch-failed,
-#             21=scope-violation, 22=pr-opened-too-early, 24=linear-post-failed,
-#             25=agent-contract-missing (agent exited clean but emitted neither the
-#                stage-summary file nor a verdict-marker comment).
+# Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=stage-drift (post-dispatch
+#             stage label changed during run; no halt re-applied), 13=lane-violation
+#             (linear.sh write rejected for caller's PIPELINE_WRITER lane),
+#             20=dispatch-failed, 21=scope-violation, 22=pr-opened-too-early,
+#             24=linear-post-failed, 25=agent-contract-missing (agent exited clean
+#             but emitted neither the stage-summary file nor a verdict-marker comment).
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances

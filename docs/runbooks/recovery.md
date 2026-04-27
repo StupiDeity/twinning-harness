@@ -128,7 +128,7 @@ The counter-marker doesn't change labels — it just resets the freshness bounda
 Fetch the issue's comments and confirm the new marker is present:
 
 ```bash
-bash bin/linear.sh list-comments ENG-N | tail -5
+bash bin/linear.sh get-comments ENG-N | jq -r '.[-5:][] | "\(.createdAt)  \(.body[:120])"'
 ```
 
 Should show your new comment with the corrected transition. On the next poll tick (5 minutes), the orchestrator should pick up the issue and transition it to the `to` stage.

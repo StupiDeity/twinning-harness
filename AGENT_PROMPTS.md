@@ -79,8 +79,12 @@ Object classes: `stage_label` (`^stage:.+$`), `pipeline_halted` (exact), `pipeli
 `transition_comment` (first non-blank line matches `<!-- pipeline-transition: ... -->`),
 `other_comment` (any other comment body).
 
-Denial emits to stderr with exit code 11:
-`linear.sh: lane=<W> denied: <action> <object> / (allowed lanes for <action> <object>: <lanes>)`
+Denial emits to stderr with exit code 13 and `failure_outcome_for_exit 13 ""` returns `lane-violation`. The error format is two lines:
+
+```
+linear.sh: lane=<W> denied: <action> <object>
+            (allowed lanes for <action> <object>: <comma-separated lanes>)
+```
 
 ### Operator workflow (how a human resolves a halted issue)
 
