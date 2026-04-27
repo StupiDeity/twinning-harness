@@ -13,6 +13,7 @@
 #   linear.sh add-comment <ENG-n> <body>
 #   linear.sh refresh-cache
 #   linear.sh stage-of <ENG-n>   # prints current stage:* label name (or empty)
+#   linear.sh all-stage-labels <ENG-n>   # prints all stage:* labels space-separated (or empty)
 #   linear.sh has-label <ENG-n> <label_name>   # exit 0 if present, 1 otherwise
 #   linear.sh has-comment-since <ENG-n> <iso8601_ts>   # exit 0 if a comment exists whose createdAt >= ts, 1 otherwise
 #   linear.sh get-comments <ENG-n>   # prints a JSON array [{id, body, createdAt}, ...] in chronological ascending order (oldest first), paginated to the most recent 50
@@ -282,6 +283,12 @@ remove_label() {
 stage_of() {
   local ident="$1"
   get_issue "$ident" | jq -r '[.data.issue.labels.nodes[] | select(.name | startswith("stage:")) | .name] | first // ""'
+}
+
+all_stage_labels() {
+  # Emits all stage:* labels on the issue, space-separated. Empty string when none.
+  local ident="$1"
+  get_issue "$ident" | jq -r '[.data.issue.labels.nodes[] | select(.name | startswith("stage:")) | .name] | join(" ")'
 }
 
 has_label() {
