@@ -524,6 +524,99 @@ else
   fail_at "case-17 QA clear-log" "rc=$clear_log_rc output=$clear_log_output"
 fi
 
+# ─── Case 19 (ENG-41): stage-drift guard — dispatched ui, stage flips to reviewing ──
+# Simulates the ENG-26 forged-transition scenario: after dispatch, stage-of returns
+# stage:reviewing instead of stage:ui. Post-run expectations:
+#   - pipeline:halted is NOT applied (drift guard exits early before halt-add)
+#   - verdict_handler is NOT called
+#   - exit code is 0
+#   - metrics records outcome=stage-drift
+METRICS_CAPTURE_19="$STUB_DIR/metrics.capture.19"
+VH_FLAG_19="$STUB_DIR/vh-called.19"
+HALT_FLAG_19="$STUB_DIR/halt-added.19"
+: > "$METRICS_CAPTURE_19"
+rm -f "$VH_FLAG_19" "$HALT_FLAG_19"
+
+# linear.sh stub: stage-of returns stage:reviewing (simulating drift from stage:ui).
+# has-label stage:ui returns 0 (precondition check passes).
+# add-label pipeline:halted is flagged (we assert it does NOT happen).
+cat > "$STUB_DIR/linear.sh" <<SH19
+#!/usr/bin/env bash
+case "\${1:-}" in
+  has-label)
+    case "\${3:-}" in
+      pipeline:paused) exit 1 ;;
+      stage:ui)        exit 0 ;;
+      pipeline:halted) exit 1 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  stage-of)
+    printf 'stage:reviewing\n'
+    ;;
+  add-label)
+    if [[ "\${3:-}" == "pipeline:halted" ]]; then
+      printf 'halted\n' > "$HALT_FLAG_19"
+    fi
+    ;;
+  *) exit 0 ;;
+esac
+exit 0
+SH19
+chmod +x "$STUB_DIR/linear.sh"
+
+# metrics.sh: capture stage-end calls so we can verify outcome=stage-drift.
+cat > "$STUB_DIR/metrics.sh" <<SH19
+#!/usr/bin/env bash
+printf 'EVENT=%s IDENT=%s STAGE=%s OUTCOME=%s NOTES=%s\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" >> "$METRICS_CAPTURE_19"
+exit 0
+SH19
+chmod +x "$STUB_DIR/metrics.sh"
+
+# scan-gotcha-trailers.sh: no-op (needed for ui-stage flow).
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/scan-gotcha-trailers.sh"
+chmod +x "$STUB_DIR/scan-gotcha-trailers.sh"
+
+# render-prompt.sh + dispatch.sh: no-ops so main() can reach post-dispatch.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/render-prompt.sh"
+chmod +x "$STUB_DIR/render-prompt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"
+chmod +x "$STUB_DIR/dispatch.sh"
+
+mkdir -p "$(issue_dir ENG-T19)"
+
+# Run main in a subshell so exit inside main() does not kill the test process.
+# Override functions to reach the stage-drift guard without real Linear/dispatch.
+set +e
+_drift_exit_rc=0
+(
+  # Override verify_preconditions so we can reach the post-dispatch block.
+  verify_preconditions() { return 0; }
+  # Pass the agent-contract validator (needs non-empty fresh-marker or summary file).
+  find_fresh_verdict() { printf 'dummy-marker'; }
+  # Record if verdict_handler is called (we assert it is NOT).
+  verdict_handler() { printf 'called\n' > "$VH_FLAG_19"; return 0; }
+  post_completion_comment() { return 0; }
+  push_branch_if_ahead() { return 0; }
+  main ENG-T19 ui 2>/dev/null
+) || _drift_exit_rc=$?
+set -e
+
+_halt_added="$([[ -f "$HALT_FLAG_19" ]] && echo true || echo false)"
+_vh_called="$([[ -f "$VH_FLAG_19" ]] && echo true || echo false)"
+_drift_metric_count="$(grep -c 'OUTCOME=stage-drift' "$METRICS_CAPTURE_19" 2>/dev/null || true)"
+
+if [[ "$_drift_exit_rc" == "0" ]] \
+   && [[ "$_halt_added" == "false" ]] \
+   && [[ "$_vh_called" == "false" ]] \
+   && [[ "$_drift_metric_count" -ge "1" ]]; then
+  pass_at "case-19 stage-drift guard: halt NOT applied, vh NOT called, exit 0, metrics=stage-drift"
+else
+  fail_at "case-19 stage-drift guard" \
+    "exit_rc=$_drift_exit_rc halt_added=$_halt_added vh_called=$_vh_called drift_metric=$_drift_metric_count"
+fi
+
 # ─── Case 18: success-arm clears pipeline:supersede for brainstorm+plan only (ENG-6) ──
 # Drives main() for stage=brainstorm through a full-mock chain to the
 # `case "$vh_rc" in 0)` success arm. Captures every linear.sh call and asserts
