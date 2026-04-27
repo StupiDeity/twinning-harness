@@ -468,17 +468,103 @@ else
   fail_at "case-23 _cost_footer absent" "got=$(printf '%q' "$footer_e")"
 fi
 
-# ─── Case 24: D-011 stale-file removal — `rm -f` line present in run-stage.sh ──
-# Static contract test: the brainstorm D-011 fix lives at the top of the
-# skip_dispatch=1 branch in run-stage.sh::main. Future edits that move or
-# delete the `rm -f` line silently re-introduce the double-counting bug
-# that scope-approval replays would otherwise cause. Anchor on the literal
-# pattern so a refactor that renames `usage-` to `cost-` fails this test
-# before it can ship.
-if grep -E "rm -f.*usage-" "$HARNESS_DIR/run-stage.sh" >/dev/null 2>&1; then
-  pass_at "case-24 D-011: run-stage.sh has rm -f for usage-<stage>.json"
+# ─── Case 24: D-011 stale-file removal — behavioural integration test ──
+# The plan's failure-mode → test-map binds "Stale usage-<stage>.json on
+# scope-approval replay" to an *integration* test, not a source-text grep.
+# Drive the scope-approval-replay path directly via _replay_scope_approval
+# (the helper that owns the rm-f + replay metrics emit) and assert:
+#   (a) the pre-existing usage-<stage>.json is gone; and
+#   (b) the resulting metrics call carries NO `--`-prefixed cost flags,
+#       since replays must omit cost fields (D-011 double-count guard).
+# A future refactor that deletes the rm-f, hoists the helper without
+# touching the file, or accidentally feeds cost flags into the replay
+# metric will fail this test.
+reset_capture
+COST_DIR_F="$(issue_dir ENG-T-COSTF)"
+mkdir -p "$COST_DIR_F"
+cat > "$COST_DIR_F/usage-implement.json" <<'JSON'
+{"tokens_in":5,"tokens_out":6,"cache_read":20,"cache_create":10,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+
+# metrics.sh capture stub: every invocation writes its full argv to a
+# capture file so the assertions can match `--cost-usd` etc. precisely.
+METRICS_CAPTURE_F="$STUB_DIR/replay-metrics.capture"
+: > "$METRICS_CAPTURE_F"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'ARGS=%s\n' "\$*" >> "$METRICS_CAPTURE_F"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+# Drive the actual code path: SCRIPT_DIR points at $STUB_DIR (set above
+# at :87) so _replay_scope_approval invokes the stub metrics.sh.
+# `|| true` keeps the assertion path running if the helper is missing —
+# the test will fail on the (a)/(b) checks below rather than aborting.
+_replay_scope_approval ENG-T-COSTF implement 2>/dev/null || true
+
+if [[ ! -e "$COST_DIR_F/usage-implement.json" ]] \
+   && grep -q 'ARGS=stage-start ENG-T-COSTF implement scope-approval-replay 0' "$METRICS_CAPTURE_F" \
+   && ! grep -qE -- '--(tokens-in|tokens-out|cache-read|cache-create|cost-usd|model)' "$METRICS_CAPTURE_F"; then
+  pass_at "case-24 D-011 replay: usage-<stage>.json removed and metrics carries no cost flags"
 else
-  fail_at "case-24 D-011 rm -f missing" "rm -f for usage-<stage>.json not found in run-stage.sh"
+  fail_at "case-24 D-011 replay" \
+    "file_exists=$([[ -e "$COST_DIR_F/usage-implement.json" ]] && echo yes || echo no) capture=$(cat "$METRICS_CAPTURE_F")"
+fi
+
+# ─── Case 25: _cost_flags_for tolerates corrupt JSON (review blocker 1) ──
+# Plan failure-mode → test-map row "usage-<stage>.json exists but
+# _cost_flags_for jq parse fails" requires a *malformed file* fixture, not
+# just the absent path covered by case-20. Seed `not-json{` and assert the
+# helper emits zero lines AND a downstream metrics call carries zero
+# `--`-prefixed cost flags. jq's parse failure must be silent.
+reset_capture
+COST_DIR_G="$(issue_dir ENG-T-COSTG)"
+mkdir -p "$COST_DIR_G"
+printf 'not-json{' > "$COST_DIR_G/usage-plan.json"
+
+cost_flags_g=()
+while IFS= read -r _cf_line; do
+  cost_flags_g+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COSTG plan)
+
+# metrics.sh capture stub: same shape as case-24's, isolated capture file.
+METRICS_CAPTURE_G="$STUB_DIR/corrupt-flags-metrics.capture"
+: > "$METRICS_CAPTURE_G"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'ARGS=%s\n' "\$*" >> "$METRICS_CAPTURE_G"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+bash "$STUB_DIR/metrics.sh" stage-end ENG-T-COSTG plan success 100 "branch=foo" \
+  "${cost_flags_g[@]+"${cost_flags_g[@]}"}"
+
+if [[ "${#cost_flags_g[@]}" == "0" ]] \
+   && ! grep -qE -- '--(tokens-in|tokens-out|cache-read|cache-create|cost-usd|model)' "$METRICS_CAPTURE_G"; then
+  pass_at "case-25 _cost_flags_for corrupt JSON: zero lines emitted; metrics carries no cost flags"
+else
+  fail_at "case-25 corrupt-JSON _cost_flags_for" \
+    "count=${#cost_flags_g[@]} capture=$(cat "$METRICS_CAPTURE_G")"
+fi
+
+# ─── Case 26: _cost_footer empty on corrupt JSON (review blocker 3) ─────
+# `_cost_footer` previously emitted misleading `cost: $0.00 · in 0.0k ·
+# out 0.0k` to Linear when usage-<stage>.json failed to parse, because
+# bash's `local x=$(failing)` masked jq's nonzero rc and the empty values
+# arithmetic-evaluated to 0. Brainstorm D-010 specifies soft-fail
+# semantics — the corrupt-but-nonempty path must mirror the absent path
+# (return empty string).
+COST_DIR_H="$(issue_dir ENG-T-COSTH)"
+mkdir -p "$COST_DIR_H"
+printf 'not-json{' > "$COST_DIR_H/usage-plan.json"
+
+footer_h="$(_cost_footer ENG-T-COSTH plan)"
+if [[ -z "$footer_h" ]]; then
+  pass_at "case-26 _cost_footer corrupt JSON: returns empty (D-010 soft fail)"
+else
+  fail_at "case-26 _cost_footer corrupt JSON" "got=$(printf '%q' "$footer_h")"
 fi
 
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
