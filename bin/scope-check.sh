@@ -36,6 +36,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+# ENG-41 T3: scope-check lane — all Linear writes from this script are in
+# the scope-check lane, which is allowed to add/remove pipeline:skip-until-*
+# labels but not stage:* or pipeline:halted labels.
+export PIPELINE_WRITER=scope-check
+
 find_canonical_plan() {
   local issue_id="$1" root="$2" f
   while IFS= read -r -d '' f; do

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Run a single pipeline stage against a Linear issue.
 # Usage: run-stage.sh <issue_id> <stage>
-# Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=reconcile-human, 20=dispatch-failed,
-#             21=scope-violation, 22=pr-opened-too-early, 24=linear-post-failed,
-#             25=agent-contract-missing (agent exited clean but emitted neither the
-#                stage-summary file nor a verdict-marker comment).
+# Exit codes: 0=success, 10=guards-tripped, 11=paused, 12=stage-drift (post-dispatch
+#             stage label changed during run; no halt re-applied), 13=lane-violation
+#             (linear.sh write rejected for caller's PIPELINE_WRITER lane),
+#             20=dispatch-failed, 21=scope-violation, 22=pr-opened-too-early,
+#             24=linear-post-failed, 25=agent-contract-missing (agent exited clean
+#             but emitted neither the stage-summary file nor a verdict-marker comment).
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -428,6 +430,31 @@ main() {
       ;;
   esac
 
+  # Stage-drift guard (ENG-41 §4.3): if the stage label changed during the
+  # agent run, something (legitimate or forged) already transitioned the issue.
+  # Skip both the defensive halt-add AND the verdict_handler call so we do not
+  # compound a state we do not recognise. The next tick re-evaluates from poll.
+  local stage_label_long
+  case "$stage" in
+    brainstorm) stage_label_long="brainstorming" ;;
+    plan)       stage_label_long="planning" ;;
+    implement)  stage_label_long="implementing" ;;
+    review)     stage_label_long="reviewing" ;;
+    build)      stage_label_long="building" ;;
+    release)    stage_label_long="released" ;;
+    *)          stage_label_long="$stage" ;;  # ui, qa stay as-is
+  esac
+  local dispatched_stage_label="stage:$stage_label_long"
+  local current_stage_label
+  current_stage_label="$(bash "$SCRIPT_DIR/linear.sh" stage-of "$ident")"
+  if [[ "$current_stage_label" != "$dispatched_stage_label" ]]; then
+    log "post-dispatch: stage drifted ($dispatched_stage_label → ${current_stage_label:-none}) during run — skipping defensive halt apply and verdict handler"
+    t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "stage-drift" "$duration" \
+      "drift=${current_stage_label:-none}" || true
+    exit 0
+  fi
+
   # Post-dispatch halt check: every stage agent must apply pipeline:halted.
   # If it did not, apply it on the agent's behalf and let the Verdict Handler
   # surface a protocol violation on the next tick.
@@ -439,8 +466,9 @@ main() {
   # Resolve the current stage from the Linear label (long form) rather than
   # the short-form $stage argument, because the Verdict Handler tables are
   # keyed on the long form (brainstorming, planning, implementing, ...).
-  local current_stage_label vh_stage
-  current_stage_label="$(bash "$SCRIPT_DIR/linear.sh" stage-of "$ident")"
+  # current_stage_label was already fetched above in the drift guard (and
+  # confirmed equal to dispatched_stage_label, so no second linear.sh call needed).
+  local vh_stage
   vh_stage="${current_stage_label#stage:}"
   local vh_rc=0
   verdict_handler "$ident" "$vh_stage" || vh_rc=$?

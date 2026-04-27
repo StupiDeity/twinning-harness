@@ -90,7 +90,7 @@ compute_pipeline_content_hash() {
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
 # red/yellow predicate recognise. Callers: classify-failure.sh (all
-# classify_failure emissions), run-stage.sh (paused path — exit 11).
+# classify_failure emissions), run-stage.sh (paused — exit 11; lane-violation — exit 13).
 # Reconcile-human (run-local.sh) does NOT call this helper: it emits the
 # direct string "reconcile-human" per D-004 because exit_code=0
 # subcode="" would route to unknown-exit-0.
@@ -108,6 +108,8 @@ failure_outcome_for_exit() {
       ;;
     10) printf 'guards-tripped' ;;
     11) printf 'paused' ;;
+    12) printf 'stage-drift' ;;
+    13) printf 'lane-violation' ;;
     20) printf 'dispatch-failed' ;;
     21) printf 'scope-violation' ;;
     22) printf 'pr-opened-too-early' ;;
@@ -170,6 +172,9 @@ export -f acquire_lock release_lock
 
 PIPELINE_DRY_RUN="${PIPELINE_DRY_RUN:-0}"
 export PIPELINE_DRY_RUN
+
+PIPELINE_WRITER="${PIPELINE_WRITER:-orchestrator}"
+export PIPELINE_WRITER
 
 require_env() {
   for var in "$@"; do

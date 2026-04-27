@@ -15,6 +15,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+# ENG-41 T3: human lane — operator CLI; all Linear writes are unrestricted.
+export PIPELINE_WRITER=human
+
 # PROJECT_STATE_DIR + CONFIG are exported by common.sh.
 
 main() {

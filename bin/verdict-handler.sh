@@ -193,8 +193,25 @@ resume_in_progress_transition() {
   current_stage="$(bash "$_VH_SCRIPT_DIR/linear.sh" stage-of "$issue")"
   current_stage="${current_stage#stage:}"
 
-  if [[ "$current_stage" != "$to" ]] \
-     && bash "$_VH_SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted"; then
+  # Guard 1: already at destination — nothing to resume.
+  [[ "$current_stage" == "$to" ]] && return 1
+
+  # Guard 2 (NEW): comment.from disagrees with labels.from — comment is stale or forged.
+  if [[ "$current_stage" != "$from" ]]; then
+    log "verdict-handler: skipping resume — labels(from=$current_stage) disagree with comment(from=$from)"
+    return 1
+  fi
+
+  # Guard 3 (NEW): issue carries multiple stage:* labels — malformed, refuse to compound.
+  local all_stages
+  all_stages="$(bash "$_VH_SCRIPT_DIR/linear.sh" all-stage-labels "$issue")"
+  if [[ "$(wc -w <<<"$all_stages")" -gt 1 ]]; then
+    log "verdict-handler: skipping resume — multiple stage:* labels: $all_stages"
+    return 1
+  fi
+
+  # Existing condition — preserved.
+  if bash "$_VH_SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted"; then
     log "verdict-handler: resuming mid-transition $issue: $from → $to"
     apply_transition "$issue" "$from" "$to" "" 0
     return 0
