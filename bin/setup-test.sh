@@ -76,5 +76,48 @@ fresh_target() {
     || fail_at "config-defaults" "prefix=$prefix paused=$paused"
 }
 
+# ── config-defaults: pins workflow_stages to canonical (overwrites wrong) ─
+{
+  TGT="$(fresh_target)"
+  # Bare-verb form (matches workflow_stages typo seen in the wild) — must
+  # be replaced, not preserved, because poll.sh queries Linear for
+  # `stage:<entry>` labels and only the gerund forms exist in Linear.
+  printf '{"linear":{"team_id":"t","project_id":"p","workflow_stages":["brainstorm","plan","implement","ui","review","qa","build","release"]}}\n' \
+    > "$TGT/.pipeline-config/config.json"
+  HARNESS_STATE_DIR="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" \
+    bash "$HARNESS_DIR/setup.sh" "$TGT" config-defaults >/dev/null 2>&1
+  stages="$(jq -c .linear.workflow_stages "$TGT/.pipeline-config/config.json")"
+  expected='["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]'
+  [[ "$stages" == "$expected" ]] \
+    && pass_at "config-defaults pins workflow_stages to canonical" \
+    || fail_at "config-defaults workflow_stages" "got=$stages"
+}
+
+# ── is_config_defaults_done: rejects wrong workflow_stages ─────────────
+{
+  TGT="$(fresh_target)"
+  cat > "$TGT/.pipeline-config/config.json" <<'JSON'
+{
+  "orchestrator": {"paused": false, "max_concurrent_features": 2, "alert_on_halted_over": 5},
+  "linear": {
+    "team_id": "t", "project_id": "p", "stage_label_prefix": "stage:",
+    "workflow_stages": ["brainstorm","plan","implement","ui","review","qa","build","release"],
+    "native_states": {"active": "In Progress", "inbox": "Todo", "done": "Done"}
+  }
+}
+JSON
+  # Re-running setup.sh (no phase arg) must detect the bad workflow_stages
+  # and re-normalize. The state-dir / config-dir overrides keep the test
+  # hermetic but the actual phase chain runs through phase_workspace etc;
+  # we invoke just the phase to keep the test focused.
+  HARNESS_STATE_DIR="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" \
+    bash "$HARNESS_DIR/setup.sh" "$TGT" config-defaults >/dev/null 2>&1
+  stages="$(jq -c .linear.workflow_stages "$TGT/.pipeline-config/config.json")"
+  expected='["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]'
+  [[ "$stages" == "$expected" ]] \
+    && pass_at "config-defaults rewrites pre-existing wrong workflow_stages" \
+    || fail_at "config-defaults rewrites pre-existing wrong workflow_stages" "got=$stages"
+}
+
 printf '\n  passed: %d\n  failed: %d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

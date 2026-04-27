@@ -63,8 +63,8 @@ check "config: project_id present" \
   bash -c '[[ -n "$(jq -r .linear.project_id $CONFIG)" ]]'
 check "config: paused=false" \
   bash -c '[[ "$(is_orchestrator_paused)" == "false" ]]'
-check "config: all 8 workflow_stages listed" \
-  bash -c '[[ "$(jq -r ".linear.workflow_stages | length" $CONFIG)" == "8" ]]'
+check "config: workflow_stages pinned to canonical labels" \
+  jq -e '.linear.workflow_stages == ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]' "$CONFIG"
 
 check "cache: all 15 pipeline labels resolved to UUIDs" bash -c '
   missing=0
