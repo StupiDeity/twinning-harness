@@ -10,7 +10,8 @@ export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR_REAL/common.sh"
 
-export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
 
 # Allocate temp dirs captured into _TEST_* (never reassigned by sourcing
 # common.sh / poll.sh). See ENG-20 incident 2026-04-24.

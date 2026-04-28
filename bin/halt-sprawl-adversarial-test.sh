@@ -13,7 +13,8 @@ export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR_REAL/common.sh"
 
-export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
 
 _TEST_HARNESS_STATE_DIR="$(mktemp -d)"
 _TEST_STUB_DIR="$(mktemp -d)"

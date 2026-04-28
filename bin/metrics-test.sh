@@ -16,7 +16,8 @@ HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export PIPELINE_DRY_RUN=1
 export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
-export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
 export TARGET_REPO="${TARGET_REPO:-$(cd "$HARNESS_DIR/.." && pwd)}"
 
 STUB_DIR="$(mktemp -d)"
