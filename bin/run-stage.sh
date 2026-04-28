@@ -292,6 +292,122 @@ verify_preconditions() {
   return 0
 }
 
+# ─── ENG-45: build-stage wait-marker gate + budget escalation ────────────────
+# Returns the wait reason on stdout (exit 0) iff a fresh, well-formed,
+# build-only `<!-- pipeline-wait: <reason> -->` marker exists newer than the
+# most recent pipeline-transition. Else prints empty + nonzero. Build-only
+# gate (security F-1); closed reason allow-list (security F-2). Fail-closed
+# on Linear read failure: nonzero exit OR empty/null output from get-comments
+# → return 1 → caller falls through to the agent-contract validator.
+_fresh_wait_reason() {
+  local issue="$1" stage="$2"
+  [[ "$stage" == "build" ]] || return 1
+
+  local comments
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue" 2>/dev/null)" || return 1
+  [[ -z "$comments" || "$comments" == "null" ]] && return 1
+
+  local last_t
+  last_t="$(jq -r '
+    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
+    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+  local fresh
+  fresh="$(jq -r --arg t "$last_t" '
+    [.[] | select(.createdAt > $t)
+         | select(.body | test("<!-- pipeline-wait: "))]
+    | sort_by(.createdAt) | last // empty | .body // ""' <<<"$comments")"
+  [[ -z "$fresh" ]] && return 1
+
+  local reason
+  reason="$(grep -oE '<!-- pipeline-wait: [a-z-]+ -->' <<<"$fresh" \
+    | head -1 | sed -E 's/<!-- pipeline-wait: ([a-z-]+) -->/\1/')"
+
+  case "$reason" in
+    awaiting-approval|awaiting-ci) printf '%s' "$reason"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Idempotent counter mutation + budget check for wait exits. All Linear writes
+# inside this function go through the orchestrator lane (security F-4). State
+# file at $(issue_dir)/wait-${stage}.json is owned by the orchestrator (per
+# ENG-18 separation between agent signals and orchestrator-owned state).
+# Returns 0 = within budget (caller exits 0). Returns 1 = budget exhausted,
+# halt was applied (caller falls through to defensive halt-add (now a no-op)
+# and verdict_handler, which preserves the halt naturally).
+_handle_wait() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+
+  local ident="$1" stage="$2" reason="$3"
+  local f; f="$(issue_dir "$ident")/wait-${stage}.json"
+  local now; now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # Clear any stale stage-summary file so a later post_completion_comment
+  # cannot post stale content from a prior dispatch.
+  rm -f "$(issue_dir "$ident")/stage-summary-${stage}.md" 2>/dev/null || true
+
+  local first attempts
+  if [[ -s "$f" ]] && jq -e . "$f" >/dev/null 2>&1; then
+    first="$(jq -r '.first_attempt_at // ""' "$f")"
+    attempts="$(jq -r '.attempts // 0' "$f")"
+    # Field-validity guard (security F-3): regex-validate first_attempt_at
+    # before feeding it to date -j -f. An attacker-controlled file (crafted
+    # via the agent's Write tool) cannot reach the arithmetic substitution.
+    if [[ ! "$first" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+      first="$now"; attempts=0
+    fi
+    [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+    attempts=$((attempts + 1))
+  else
+    first="$now"; attempts=1
+  fi
+
+  local body tmp
+  body="$(jq -cn --arg i "$ident" --arg s "$stage" --arg r "$reason" \
+                --arg fa "$first" --arg la "$now" --argjson n "$attempts" '
+    {issue:$i, stage:$s, reason:$r, attempts:$n,
+     first_attempt_at:$fa, last_attempt_at:$la}')"
+  tmp="${f}.tmp.$$"; printf '%s' "$body" > "$tmp"; mv -f "$tmp" "$f"
+
+  local max_a max_m
+  max_a="$(config_get '.orchestrator.external_signal_budget.max_attempts // empty')"
+  max_m="$(config_get '.orchestrator.external_signal_budget.max_minutes  // empty')"
+  [[ "$max_a" == "null" ]] && max_a=""
+  [[ "$max_m" == "null" ]] && max_m=""
+
+  local exhausted=0
+  [[ -n "$max_a" && "$max_a" =~ ^[0-9]+$ ]] && (( attempts >= max_a )) && exhausted=1
+  if [[ -n "$max_m" && "$max_m" =~ ^[0-9]+$ ]]; then
+    local first_epoch elapsed_m
+    first_epoch="$(date -j -f %Y-%m-%dT%H:%M:%SZ "$first" +%s 2>/dev/null || printf '')"
+    if [[ -n "$first_epoch" ]]; then
+      elapsed_m=$(( ($(date -u +%s) - first_epoch) / 60 ))
+      (( elapsed_m < 0 )) && elapsed_m=0
+      (( elapsed_m >= max_m )) && exhausted=1
+    fi
+  fi
+
+  if (( exhausted )); then
+    local halt_body
+    halt_body="$(printf '<!-- pipeline-halt: external-signal-budget-exhausted -->\n\nBuild stage halted: %s budget exhausted (%d attempts since %s).\n\n**Resume:** approve the PR as a non-bot Code Owner, then run `bash bin/halt.sh resolve %s --decision resume`. Or raise `orchestrator.external_signal_budget.max_attempts` / `max_minutes` in `.pipeline-config/config.json` to extend the window.' \
+                "$reason" "$attempts" "$first" "$ident")"
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
+    # Only delete the wait file if the halt label actually applied. A network
+    # blip on add-label could otherwise leave the issue with no halt label AND
+    # no counter file — the next dispatch would start a brand-new wait window
+    # at attempts=1, silently bypassing the budget safety net. Preserving the
+    # file means the next dispatch retries the escalation atomically.
+    if bash "$SCRIPT_DIR/linear.sh" add-label "$ident" "pipeline:halted"; then
+      rm -f "$f"
+    else
+      log "WARN: pipeline:halted apply failed for $ident at budget exhaust; preserving $f for retry"
+    fi
+    return 1
+  fi
+  return 0
+}
+
 main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
@@ -465,6 +581,29 @@ main() {
     bash "$SCRIPT_DIR/scan-gotcha-trailers.sh" "$ident" "$branch" || true
   fi
 
+  # ENG-45: wait exit. Build agent posts <!-- pipeline-wait: <reason> --> on
+  # P2/P5 failures so the orchestrator re-dispatches next tick instead of
+  # halting. Detect BEFORE the agent-contract validator below — that
+  # validator (and the defensive halt-add + verdict_handler downstream)
+  # would otherwise trip on a legitimate wait exit (no summary file, no
+  # verdict marker).
+  if (( ! skip_dispatch )); then
+    local _sp_reason
+    _sp_reason="$(_fresh_wait_reason "$ident" "$stage" 2>/dev/null || printf '')"
+    if [[ -n "$_sp_reason" ]]; then
+      if _handle_wait "$ident" "$stage" "$_sp_reason"; then
+        bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "soft-pending" \
+          "$(( ($(date +%s) - t0) * 1000 ))" "reason=$_sp_reason" || true
+        log "stage $stage wait on $ident (reason=$_sp_reason)"
+        exit 0
+      fi
+      # Budget exhausted: pipeline:halted was applied by _handle_wait.
+      # Fall through to defensive halt-add (now a no-op, label already set)
+      # and verdict_handler, which preserves the halt and emits
+      # halt-for-human metrics naturally.
+    fi
+  fi
+
   # Agent-contract validator (ENG-7). On a fresh dispatch (not scope-approval
   # replay), the agent MUST have produced at least one of:
   #   (a) stage-summary-<stage>.md in issue_dir — read by post_completion_comment.
@@ -573,6 +712,7 @@ main() {
       log "stage $stage complete for $ident (verdict-handler transitioned)"
       # Success path: clear any prior failure state + skip labels.
       rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
+      rm -f "$(issue_dir "$ident")/wait-${stage}.json" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
       # Clear pipeline:supersede on brainstorm/plan stage success so the signal
