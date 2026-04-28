@@ -356,6 +356,17 @@ _handle_wait() {
     # via the agent's Write tool) cannot reach the arithmetic substitution.
     if [[ ! "$first" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
       first="$now"; attempts=0
+    else
+      # Value-validity guard (review-major-2): regex-valid but future-dated
+      # timestamps (e.g. 9999-12-31T23:59:59Z) produce negative elapsed and
+      # neutralise the wall-clock cap on max_minutes-only configs. Treat
+      # any first_attempt_at strictly newer than now as corrupt and reset.
+      local _first_epoch _now_epoch
+      _first_epoch="$(date -j -f %Y-%m-%dT%H:%M:%SZ "$first" +%s 2>/dev/null || printf '')"
+      _now_epoch="$(date -u +%s)"
+      if [[ -z "$_first_epoch" ]] || (( _first_epoch > _now_epoch )); then
+        first="$now"; attempts=0
+      fi
     fi
     [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
     attempts=$((attempts + 1))
