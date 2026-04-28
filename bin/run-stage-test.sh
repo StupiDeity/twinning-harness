@@ -1037,6 +1037,26 @@ else
   fail_at "ENG-45 case J" "json: $(cat "$(issue_dir ENG-45T9)/wait-build.json" 2>/dev/null)"
 fi
 
+# ─── ENG-45 case J2 (review-major-2): future-dated first_attempt_at is corrupt ─
+# A regex-valid but in-the-future timestamp (e.g. attacker-crafted or clock-skew)
+# without the `first_epoch <= now_epoch` clamp produces negative `elapsed_m`,
+# clamped to 0, which the wall-clock cap branch can NEVER trip — operator
+# running with `max_minutes`-only (no `max_attempts`) loses the safety net.
+# With the clamp, future timestamps are treated as corrupt: counter resets to
+# 0, increments to 1 on this call, fresh window from now. Test distinguishes by
+# asserting attempts==1 after the call (would be 100 without the clamp because
+# the regex would pass and attempts++ would just bump 99→100).
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T9F)"
+printf '{"first_attempt_at":"9999-12-31T23:59:59Z","attempts":99}' > "$(issue_dir ENG-45T9F)/wait-build.json"
+_handle_wait ENG-45T9F build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' \
+     "$(issue_dir ENG-45T9F)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case J2: future first_attempt_at treated as corrupt (resets counter)"
+else
+  fail_at "ENG-45 case J2" "json: $(cat "$(issue_dir ENG-45T9F)/wait-build.json" 2>/dev/null)"
+fi
+
 # ─── ENG-45 case K: wall-clock cap exhausts even when attempts < cap ────────
 # Pre-write a wait file dated 2 minutes in the past; max_minutes=1 should
 # trip exhaustion on the next call regardless of the attempts cap.
