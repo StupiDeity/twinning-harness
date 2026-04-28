@@ -1003,18 +1003,26 @@ else
 fi
 
 # ─── ENG-45 case I: budget=2 attempts → 2nd call exhausts (returns 1) ───────
+# Plan Failure Mode → Test Map row claims this verifies four artifacts:
+#   (a) returns 1, (b) wait file deleted, (c) halt comment posted with
+#   external-signal-budget-exhausted reason, (d) pipeline:halted applied.
 printf '{"orchestrator":{"external_signal_budget":{"max_attempts":2}}}' > "$ENG_45_TMP_CFG"
 mkdir -p "$(issue_dir ENG-45T8)"
 rm -f "$(issue_dir ENG-45T8)/wait-build.json"
 _handle_wait ENG-45T8 build awaiting-approval >/dev/null  # first call returns 0
+reset_capture                                              # only capture exhaust call
 if _handle_wait ENG-45T8 build awaiting-approval >/dev/null; then
   fail_at "ENG-45 case I" "expected nonzero on 2nd call (budget exhausted)"
+elif [[ -e "$(issue_dir ENG-45T8)/wait-build.json" ]]; then
+  fail_at "ENG-45 case I" "wait file should have been deleted: $(cat "$(issue_dir ENG-45T8)/wait-build.json" 2>/dev/null)"
+elif ! grep -q '^SUBCMD=add-comment$' "$CAPTURE_FILE" \
+   || ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I" "missing add-comment with external-signal-budget-exhausted body: $(cat "$CAPTURE_FILE")"
+elif ! grep -qE '^SUBCMD=add-label$' "$CAPTURE_FILE" \
+   || ! grep -q 'pipeline:halted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I" "missing add-label pipeline:halted: $(cat "$CAPTURE_FILE")"
 else
-  if [[ ! -e "$(issue_dir ENG-45T8)/wait-build.json" ]]; then
-    pass_at "ENG-45 case I: budget exhausted → wait file deleted, returned 1"
-  else
-    fail_at "ENG-45 case I" "wait file should have been deleted: $(cat "$(issue_dir ENG-45T8)/wait-build.json" 2>/dev/null)"
-  fi
+  pass_at "ENG-45 case I: budget exhausted → halt comment + pipeline:halted + wait file deleted, returned 1"
 fi
 
 # ─── ENG-45 case J: corrupt first_attempt_at resets the window (security F-3) ──
@@ -1032,16 +1040,26 @@ fi
 # ─── ENG-45 case K: wall-clock cap exhausts even when attempts < cap ────────
 # Pre-write a wait file dated 2 minutes in the past; max_minutes=1 should
 # trip exhaustion on the next call regardless of the attempts cap.
+# Same four-artifact assertion as case I — covers the wall-clock path.
 printf '{"orchestrator":{"external_signal_budget":{"max_minutes":1}}}' > "$ENG_45_TMP_CFG"
 mkdir -p "$(issue_dir ENG-45T10)"
 two_min_ago="$(date -u -j -v-2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
               || date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
 printf '{"first_attempt_at":"%s","attempts":1}' "$two_min_ago" \
   > "$(issue_dir ENG-45T10)/wait-build.json"
+reset_capture
 if _handle_wait ENG-45T10 build awaiting-approval >/dev/null; then
   fail_at "ENG-45 case K" "wall-clock cap should have exhausted; got within-budget"
+elif [[ -e "$(issue_dir ENG-45T10)/wait-build.json" ]]; then
+  fail_at "ENG-45 case K" "wait file should have been deleted on exhaust"
+elif ! grep -q '^SUBCMD=add-comment$' "$CAPTURE_FILE" \
+   || ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case K" "missing add-comment with external-signal-budget-exhausted body: $(cat "$CAPTURE_FILE")"
+elif ! grep -qE '^SUBCMD=add-label$' "$CAPTURE_FILE" \
+   || ! grep -q 'pipeline:halted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case K" "missing add-label pipeline:halted: $(cat "$CAPTURE_FILE")"
 else
-  pass_at "ENG-45 case K: wall-clock cap exhausts (attempts < cap, elapsed >= max_minutes)"
+  pass_at "ENG-45 case K: wall-clock cap exhaust → halt comment + pipeline:halted + wait file deleted"
 fi
 
 # ─── ENG-45 case M: stale stage-summary file is deleted on wait entry ───────
