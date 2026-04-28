@@ -1096,8 +1096,8 @@ FAKE_REPO="$STUB_DIR/fake-repo"
 mkdir -p "$FAKE_REPO/.pipeline/bin" "$FAKE_REPO/.pipeline/schemas"
 ln -sf "$HARNESS_DIR/guards.sh"                          "$FAKE_REPO/.pipeline/bin/guards.sh"
 ln -sf "$HARNESS_DIR/common.sh"                          "$FAKE_REPO/.pipeline/bin/common.sh"
-ln -sf "$REPO_ROOT/.pipeline/config.json"                "$FAKE_REPO/.pipeline/config.json"
-ln -sf "$REPO_ROOT/.pipeline/schemas/linear-ids.json"    "$FAKE_REPO/.pipeline/schemas/linear-ids.json"
+ln -sf "$HARNESS_ROOT/.pipeline-config/config.json"                "$FAKE_REPO/.pipeline/config.json"
+ln -sf "$HARNESS_ROOT/.pipeline-config/schemas/linear-ids.json"    "$FAKE_REPO/.pipeline/schemas/linear-ids.json"
 
 # Stub for trip path: two impl_rejection markers, no transition marker.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
@@ -1362,12 +1362,22 @@ chmod +x "$STUB_DIR/dispatch.sh"
 # drown the capture file. Harness-local; doesn't affect other cases since this
 # is the last case before the summary line.
 post_completion_comment() { return 0; }
+# ENG-45 review-major-3 (M3 follow-on): once the REPO_ROOT typo at case-15 is
+# fixed, the script reaches case-18; main()'s agent-contract validator (line
+# ~626) exits 25 unless the agent emitted a stage-summary file or fresh verdict
+# marker. Stub find_fresh_verdict to return a non-empty string so case-18 drives
+# into the success/halt arms it cares about. Same pattern case-19 uses (line
+# ~1298).
+find_fresh_verdict() { printf 'dummy-marker'; }
 
 # Drive: stage=brainstorm, vh_rc=0 → remove-label pipeline:supersede expected.
+# ENG-45 review-major-3 follow-on: wrap each main() call in a subshell so any
+# `exit` inside main() (notably the post-completion-comment exit-24 path or the
+# stage-drift exit-0 path) terminates only the subshell, not the whole test.
+# Same pattern case-19 already uses.
 reset_capture
-verdict_handler() { return 0; }
 MOCK_STAGE_OF="stage:brainstorming"
-main ENG-T18A brainstorm >/dev/null 2>&1 || true
+( verdict_handler() { return 0; }; main ENG-T18A brainstorm ) >/dev/null 2>&1 || true
 
 if grep -B2 '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null \
      | grep -q '^SUBCMD=remove-label$'; then
@@ -1378,9 +1388,8 @@ fi
 
 # Drive: stage=implement, vh_rc=0 → remove-label pipeline:supersede NOT expected.
 reset_capture
-verdict_handler() { return 0; }
 MOCK_STAGE_OF="stage:implementing"
-main ENG-T18B implement >/dev/null 2>&1 || true
+( verdict_handler() { return 0; }; main ENG-T18B implement ) >/dev/null 2>&1 || true
 
 if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
   pass_at "case-18b implement+vh_rc=0: remove-label pipeline:supersede does NOT fire"
@@ -1390,9 +1399,8 @@ fi
 
 # Drive: stage=brainstorm, vh_rc=1 (halt) → remove-label pipeline:supersede NOT expected.
 reset_capture
-verdict_handler() { return 1; }
 MOCK_STAGE_OF="stage:brainstorming"
-main ENG-T18C brainstorm >/dev/null 2>&1 || true
+( verdict_handler() { return 1; }; main ENG-T18C brainstorm ) >/dev/null 2>&1 || true
 
 if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
   pass_at "case-18c brainstorm+vh_rc=1 (halt arm): remove-label pipeline:supersede does NOT fire"
