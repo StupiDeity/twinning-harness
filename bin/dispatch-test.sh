@@ -327,6 +327,68 @@ else
   fail_at "fixture-E dry-run" "stale file still present: $(cat "$USAGE_E")"
 fi
 
+# ─── QA-authored adversarial fixtures (NOT in plan's Failure Mode → Test Map) ─
+
+# ─── Fixture F: multiple result events — last wins ─────────────────────────
+# A reconnect or partial-write scenario can theoretically emit two top-level
+# result events (e.g. claude restarts a subagent run). The renderer's
+# `grep | tail -1` contract MUST select the LAST result event, not the
+# first. Pin the behavior so a future refactor (e.g. switching to `head -1`
+# or to a streaming jq filter that keeps the first match) fails this test.
+USAGE_F="$ISSUE_DIR/usage-plan-F.json"
+rm -f "$USAGE_F" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_F" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"00000001","model":"claude-opus-4-7"}
+{"type":"result","total_cost_usd":0.10,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"first-model":{}}}
+{"type":"result","total_cost_usd":0.99,"usage":{"input_tokens":2,"output_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"second-model":{}}}
+NDJSON
+
+cost_f="$(jq -r '.cost_usd' "$USAGE_F" 2>/dev/null || printf '')"
+model_f="$(jq -r '.model' "$USAGE_F" 2>/dev/null || printf '')"
+if [[ "$cost_f" == "0.99" && "$model_f" == "second-model" ]]; then
+  pass_at "fixture-F multiple result events: last wins (cost=0.99, model=second-model)"
+else
+  fail_at "fixture-F multiple result events" "cost=$cost_f model=$model_f"
+fi
+
+# ─── Fixture G: result event missing the `usage` block ─────────────────────
+# A degraded result event (e.g. a CLI version that drops the usage rollup
+# under failure) MUST still produce a six-field file with `// 0` defaults
+# rather than crash. cost_usd and model survive even when usage is gone.
+USAGE_G="$ISSUE_DIR/usage-plan-G.json"
+rm -f "$USAGE_G" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_G" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"00000002","model":"claude-opus-4-7"}
+{"type":"result","total_cost_usd":2.50,"modelUsage":{"degraded-model":{}}}
+NDJSON
+
+keys_g="$(jq -r 'keys | sort | join(",")' "$USAGE_G" 2>/dev/null || printf '')"
+ti_g="$(jq -r '.tokens_in' "$USAGE_G" 2>/dev/null || printf '')"
+# Numeric-equal compare (jq preserves the input's textual form: 2.50 stays 2.50,
+# 2.5 stays 2.5 — both are numerically equal to 2.5).
+co_eq_g="$(jq -r '.cost_usd == 2.5' "$USAGE_G" 2>/dev/null || printf 'false')"
+mo_g="$(jq -r '.model' "$USAGE_G" 2>/dev/null || printf '')"
+if [[ "$keys_g" == "$expected_keys" ]] \
+   && [[ "$ti_g" == "0" ]] \
+   && [[ "$co_eq_g" == "true" ]] \
+   && [[ "$mo_g" == "degraded-model" ]]; then
+  pass_at "fixture-G missing usage: six-field file written with token=0 defaults; cost+model survive"
+else
+  fail_at "fixture-G missing usage" "keys=$keys_g tokens_in=$ti_g cost_eq_2.5=$co_eq_g model=$mo_g"
+fi
+
+# ─── Fixture H: empty stdin (claude died before emitting anything) ─────────
+# The renderer reads zero bytes; tee writes nothing; jq's `inputs` consumes
+# nothing; grep finds no result event. Soft-fail: no usage file written.
+USAGE_H="$ISSUE_DIR/usage-plan-H.json"
+rm -f "$USAGE_H" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+RENDER_OUT_H="$(_render_and_capture_stream "$USAGE_H" "$ISSUE_DIR" </dev/null 2>&1)"
+if [[ ! -e "$USAGE_H" ]] && grep -q 'no result event found in stream' <<<"$RENDER_OUT_H"; then
+  pass_at "fixture-H empty stdin: usage file not written; soft-fail warning logged"
+else
+  fail_at "fixture-H empty stdin" "exists=$([[ -e $USAGE_H ]] && echo y || echo n) out=$RENDER_OUT_H"
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

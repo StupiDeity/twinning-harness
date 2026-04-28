@@ -151,6 +151,62 @@ else
   fail_at "case-F append count" "line_count=$(line_count)"
 fi
 
+# ─── QA-authored adversarial cases (NOT in plan's Failure Mode → Test Map) ──
+
+# ─── Case G: unknown flag falls through to notes (backward-compat preserve) ─
+# A future caller passing an unrecognised `--foo` MUST NOT abort; the parser's
+# `*) notes_parts+=("$1"); shift` arm must absorb both the unknown flag and
+# its value as plain notes tokens. Otherwise an out-of-tree caller ships a
+# breakage every time we add a flag.
+reset_jsonl
+run_metrics stage-end ENG-T7 plan success 100 "branch=foo" --bogus 42
+line="$(last_line)"
+notes="$(jq -r '.notes' <<<"$line")"
+keys="$(jq -r 'keys | length' <<<"$line")"
+if [[ "$notes" == "branch=foo --bogus 42" ]] \
+   && [[ "$keys" == "7" ]] \
+   && [[ "$(jq -r 'has("cost_usd")' <<<"$line")" == "false" ]]; then
+  pass_at "case-G unknown flag --bogus 42: absorbed into notes; 7-key line; no spurious cost field"
+else
+  fail_at "case-G unknown flag" "notes='$notes' keys=$keys line=$line"
+fi
+
+# ─── Case H: malformed --cost-usd value (next-flag eats the value) ─────────
+# `--cost-usd --tokens-in 5` consumes `--tokens-in` as the cost value. The
+# downstream `tonumber` MUST fail loudly (rc != 0, no event written) rather
+# than silently writing a string-typed cost field that breaks every reader
+# of events.jsonl. Pin the rejection so a future "permissive" parser change
+# (e.g. silent fallback to cost_usd=null) trips this test.
+reset_jsonl
+set +e
+run_metrics stage-end ENG-T8 plan success 100 --cost-usd --tokens-in 5 >/dev/null 2>&1
+rc_h=$?
+set -e
+lines_h="$(wc -l < "$JSONL" | tr -d ' ')"
+if (( rc_h != 0 )) && [[ "$lines_h" == "0" ]]; then
+  pass_at "case-H malformed --cost-usd value: parser rejects; rc=$rc_h, no event written"
+else
+  fail_at "case-H malformed --cost-usd" "rc=$rc_h lines=$lines_h"
+fi
+
+# ─── Case I: --cost-usd value with leading dash that is NOT a known flag ───
+# A negative cost would be nonsensical, but the parser MUST treat the dash-
+# prefixed value as the value (since the flag-table's `*)` arm only catches
+# unknown flags AFTER the recognised six). Today the parser is unconditional
+# `shift 2`, so `--cost-usd -0.5` writes cost_usd=-0.5. Pin behavior — if a
+# future tightening rejects negatives, that's a deliberate change and the
+# test should be updated alongside.
+reset_jsonl
+run_metrics stage-end ENG-T9 plan success 100 --cost-usd "-0.5"
+line="$(last_line)"
+co="$(jq -r '.cost_usd' <<<"$line")"
+co_t="$(jq -r '.cost_usd | type' <<<"$line")"
+if [[ "$co" == "-0.5" && "$co_t" == "number" ]]; then
+  pass_at "case-I --cost-usd negative: numeric -0.5 accepted (current behavior pinned)"
+else
+  fail_at "case-I --cost-usd negative" "cost=$co type=$co_t line=$line"
+fi
+
 echo
 echo "metrics-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

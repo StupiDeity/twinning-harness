@@ -621,6 +621,86 @@ else
           "expected 73 (round-half-up), got=$agg_cache_pct; full row=$(awk -F'\t' '$1 == "plan"' <<<"$agg_out")"
 fi
 
+# ─── QA-authored adversarial cases (NOT in plan's Failure Mode → Test Map) ──
+
+# ─── Case 28: _cost_footer cache% exact-half boundary (round-half-up tie) ──
+# D-007 specifies `round(100 * cache_read / max(1, cache_read + cache_create))`
+# with round-half-up semantics. Pin the .5 boundary explicitly: r=99,c=101
+# → 49.500% → 50 (round-up); r=101,c=99 → 50.500% → 51 (round-up). A future
+# regression that swaps to banker's-rounding (round-half-to-even) would
+# render 50% on the first case (correct) but 50% on the SECOND case
+# (incorrect — banker's rounds 50.5 to 50, not 51). Anchor both sides.
+COST_DIR_BD1="$(issue_dir ENG-T-COST-BD1)"
+mkdir -p "$COST_DIR_BD1"
+cat > "$COST_DIR_BD1/usage-plan.json" <<'JSON'
+{"tokens_in":5000,"tokens_out":6000,"cache_read":99,"cache_create":101,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+footer_bd1="$(_cost_footer ENG-T-COST-BD1 plan)"
+if [[ "$footer_bd1" =~ cache\ 50% ]]; then
+  pass_at "case-28a _cost_footer 49.5% rounds to 50% (round-half-up)"
+else
+  fail_at "case-28a _cost_footer 49.5% boundary" "expected 'cache 50%', got=$(printf '%q' "$footer_bd1")"
+fi
+
+COST_DIR_BD2="$(issue_dir ENG-T-COST-BD2)"
+mkdir -p "$COST_DIR_BD2"
+cat > "$COST_DIR_BD2/usage-plan.json" <<'JSON'
+{"tokens_in":5000,"tokens_out":6000,"cache_read":101,"cache_create":99,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+footer_bd2="$(_cost_footer ENG-T-COST-BD2 plan)"
+if [[ "$footer_bd2" =~ cache\ 51% ]]; then
+  pass_at "case-28b _cost_footer 50.5% rounds to 51% (round-half-up — NOT banker's)"
+else
+  fail_at "case-28b _cost_footer 50.5% boundary" "expected 'cache 51%', got=$(printf '%q' "$footer_bd2")"
+fi
+
+# ─── Case 29: _cost_footer very small cost rendering ───────────────────────
+# A very small cost (e.g. a stage that finished in cache + tiny prompt)
+# truncates to $0.00 under `%.2f`. Pin the format so a future change to
+# `%.4f` doesn't quietly widen every Linear footer.
+COST_DIR_TINY="$(issue_dir ENG-T-COST-TINY)"
+mkdir -p "$COST_DIR_TINY"
+cat > "$COST_DIR_TINY/usage-plan.json" <<'JSON'
+{"tokens_in":50,"tokens_out":20,"cache_read":1000,"cache_create":0,"cost_usd":0.001,"model":"claude-opus-4-7"}
+JSON
+footer_tiny="$(_cost_footer ENG-T-COST-TINY plan)"
+if [[ "$footer_tiny" == *"cost: \$0.00"* ]] \
+   && [[ "$footer_tiny" == *"in 0.1k"* ]] \
+   && [[ "$footer_tiny" == *"out 0.0k"* ]] \
+   && [[ "$footer_tiny" == *"cache 100%"* ]]; then
+  pass_at "case-29 _cost_footer tiny cost: \$0.00 · in 0.1k · out 0.0k · cache 100%"
+else
+  fail_at "case-29 _cost_footer tiny cost" "got=$(printf '%q' "$footer_tiny")"
+fi
+
+# ─── Case 30: _cost_flags_for forward-compat — extra fields in usage file ──
+# A future dispatch.sh extension may add fields beyond the six contracted by
+# D-003 (e.g. `tools_invoked`). `_cost_flags_for` MUST emit only the six
+# contracted flags regardless. The downstream metrics.sh would otherwise
+# reject unknown flags (case-G in metrics-test) or — worse — pass through
+# whatever extra flags this helper produces. Pin the contract.
+COST_DIR_FWD="$(issue_dir ENG-T-COST-FWD)"
+mkdir -p "$COST_DIR_FWD"
+cat > "$COST_DIR_FWD/usage-plan.json" <<'JSON'
+{"tokens_in":18000,"tokens_out":4000,"cache_read":20773,"cache_create":17419,"cost_usd":0.42,"model":"claude-opus-4-7","tools_invoked":["Read","Grep"],"future_field":"some-value"}
+JSON
+
+cost_flags_fwd=()
+_cf_line=
+while IFS= read -r _cf_line; do
+  cost_flags_fwd+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COST-FWD plan)
+
+# 12 lines = six --key/value pairs. No more, no less.
+if [[ "${#cost_flags_fwd[@]}" == "12" ]] \
+   && [[ "${cost_flags_fwd[*]}" != *"--tools-invoked"* ]] \
+   && [[ "${cost_flags_fwd[*]}" != *"--future-field"* ]]; then
+  pass_at "case-30 _cost_flags_for forward-compat: only six contracted flags emitted, extras dropped"
+else
+  fail_at "case-30 _cost_flags_for forward-compat" \
+          "count=${#cost_flags_fwd[@]} flags=(${cost_flags_fwd[*]})"
+fi
+
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
