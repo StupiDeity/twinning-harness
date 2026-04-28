@@ -11,7 +11,8 @@ source "$SCRIPT_DIR/common.sh"
 # shellcheck source=classify-failure.sh
 source "$SCRIPT_DIR/classify-failure.sh"
 
-export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
 
 # Redirect bash "bash $SCRIPT_DIR/..." calls to local stubs via a tempdir.
 STUB_DIR="$(mktemp -d)"
