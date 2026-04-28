@@ -1103,6 +1103,38 @@ else
   pass_at "ENG-45 case K: wall-clock cap exhaust → halt comment + pipeline:halted + wait file deleted"
 fi
 
+# ─── ENG-45 case K2 (round-2 review M2): TZ=UTC pin on date -j -f ──────────
+# BSD `date -j -f %Y-%m-%dT%H:%M:%SZ` parses Z as a literal char and
+# interprets the H:M:S in HOST-LOCAL TZ. case K hides this via symmetry —
+# its fixture is produced by the same host-local date call. To break the
+# symmetry, hard-code a UTC-canonical fixture via epoch arithmetic and
+# force TZ=Pacific/Honolulu (UTC-10) on the call. Bug-mode: parsed epoch
+# lands ~10h in the future, M1/M2 future-clamp resets first to now and
+# attempts to 0 → call increments to 1, max_minutes=1 → NOT exhausted.
+# Fixed-mode (TZ=UTC pinned inside _handle_wait): parse is correct,
+# elapsed_m=5 → EXHAUSTED. Assertion: exhaust path's three artifacts
+# (rc!=0, file deleted, halt comment) all present.
+printf '{"orchestrator":{"external_signal_budget":{"max_minutes":1}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T10TZ)"
+five_min_ago_utc_epoch=$(( $(date -u +%s) - 300 ))
+five_min_ago_utc="$(date -u -j -f %s "$five_min_ago_utc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                  || date -u -d @"$five_min_ago_utc_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"first_attempt_at":"%s","attempts":1}' "$five_min_ago_utc" \
+  > "$(issue_dir ENG-45T10TZ)/wait-build.json"
+reset_capture
+ENG_45_K2_RC=0
+TZ=Pacific/Honolulu _handle_wait ENG-45T10TZ build awaiting-approval >/dev/null \
+  || ENG_45_K2_RC=$?
+if (( ENG_45_K2_RC == 0 )); then
+  fail_at "ENG-45 case K2" "wall-clock cap should have exhausted under TZ=Pacific/Honolulu (UTC-10); got within-budget"
+elif [[ -e "$(issue_dir ENG-45T10TZ)/wait-build.json" ]]; then
+  fail_at "ENG-45 case K2" "wait file should have been deleted on exhaust"
+elif ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case K2" "missing add-comment with exhaust reason: $(cat "$CAPTURE_FILE")"
+else
+  pass_at "ENG-45 case K2: wall-clock cap exhausts under non-UTC host TZ (TZ=UTC parse pin)"
+fi
+
 # ─── ENG-45 case M: stale stage-summary file is deleted on wait entry ───────
 # Load-bearing: prevents post_completion_comment from posting stale content
 # from a prior dispatch into the next tick's wait window.
