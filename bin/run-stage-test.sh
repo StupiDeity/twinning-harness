@@ -567,6 +567,60 @@ else
   fail_at "case-26 _cost_footer corrupt JSON" "got=$(printf '%q' "$footer_h")"
 fi
 
+# ─── Case 27: cache% formula parity across _cost_footer and status.sh ──
+# Brainstorm D-007 binds the cache-percent formula to round-half-up:
+#   round(100 * cache_read / max(1, cache_read + cache_create))
+# and "Defined once and used by both `_aggregate_cost_by_stage` and the
+# Linear footer (D-008)." A divergence (e.g. floor vs round-half-up) prints
+# different cache% values for the same numbers in the per-stage Linear
+# comment vs `bash bin/status.sh`, breaking operator trust.
+#
+# Pin a non-half ratio (r=8, c=3 → 100*8/11 = 72.727…, round-half-up = 73,
+# floor = 72) so the next regression that swaps round for floor (or vice
+# versa) fails this test. Earlier cases (case-21: r=20773, c=17419 →
+# 54.39 → 54) are floor/round-equivalent and miss the boundary.
+COST_DIR_K="$(issue_dir ENG-T-COSTK)"
+mkdir -p "$COST_DIR_K"
+cat > "$COST_DIR_K/usage-plan.json" <<'JSON'
+{"tokens_in":5000,"tokens_out":6000,"cache_read":8,"cache_create":3,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+
+footer_k="$(_cost_footer ENG-T-COSTK plan)"
+if [[ "$footer_k" =~ cache\ 73% ]]; then
+  pass_at "case-27a _cost_footer rounds 72.73% → 73% (D-007 round-half-up)"
+else
+  fail_at "case-27a _cost_footer round" "expected 'cache 73%', got=$(printf '%q' "$footer_k")"
+fi
+
+# Build a tempdir-scoped events.jsonl with one cost-bearing stage-end event
+# matching the same r=8, c=3 pin, then drive `_aggregate_cost_by_stage`
+# via a child bash that sources status.sh fresh (avoids polluting the
+# parent test's SCRIPT_DIR / set -u state). Output is TSV; column 6 is
+# cache_pct.
+mkdir -p "$PROJECT_STATE_DIR/metrics"
+cat > "$PROJECT_STATE_DIR/metrics/events.jsonl" <<'JSON'
+{"ts":"2026-04-27T12:00:00Z","event":"stage-end","issue_id":"ENG-T-COSTK","stage":"plan","outcome":"success","duration_ms":100,"notes":"","cost_usd":0.42,"tokens_in":5000,"tokens_out":6000,"cache_read":8,"cache_create":3,"model":"claude-opus-4-7"}
+JSON
+
+agg_out="$(
+  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    _aggregate_cost_by_stage "'"$PROJECT_STATE_DIR/metrics/events.jsonl"'"
+  ' 2>/dev/null || true
+)"
+agg_cache_pct="$(awk -F'\t' '$1 == "plan" {print $6}' <<<"$agg_out")"
+
+if [[ "$agg_cache_pct" == "73" ]]; then
+  pass_at "case-27b _aggregate_cost_by_stage rounds 72.73% → 73% (matches footer; D-007 single formula)"
+else
+  fail_at "case-27b cache% formula divergence (status.sh vs run-stage.sh)" \
+          "expected 73 (round-half-up), got=$agg_cache_pct; full row=$(awk -F'\t' '$1 == "plan"' <<<"$agg_out")"
+fi
+
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a

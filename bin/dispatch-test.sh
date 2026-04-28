@@ -222,6 +222,19 @@ else
   fail_at "fixture-A stdout" "unquoted=$prose_unquoted out=$RENDER_OUT_A"
 fi
 
+# Renderer stdout shape — raw vs JSON-quoted (D-002 / F3 contract).
+# `jq -n` without `-r` emits string outputs as JSON-encoded values, so
+# `[claude] session=...` becomes `"[claude] session=..."` (literal
+# surrounding double-quote bytes) on stdout. The downstream
+# `tee "$log_file"` then captures JSON-quoted prose, breaking the
+# brainstorm's "prose-ish progress lines on STDOUT" contract.
+# Catch the regression by asserting no prose line begins with `"`.
+if ! grep -qE '^"' <<<"$RENDER_OUT_A"; then
+  pass_at "fixture-A stdout: prose lines emitted raw, not JSON-quoted (D-002 / F3)"
+else
+  fail_at "fixture-A stdout JSON-quoted" "rendered prose line starts with '\"' (missing -r flag on jq?); first offending=$(grep -m1 -E '^"' <<<"$RENDER_OUT_A")"
+fi
+
 # Intermediate raw-capture cleaned by RETURN trap.
 if [[ ! -e "$RAW_A" ]]; then
   pass_at "fixture-A trap: .raw-stream.ndjson.tmp removed on RETURN"
