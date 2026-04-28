@@ -1248,8 +1248,24 @@ case "\${1:-}" in
     ;;
   stage-of)     printf 'stage:building\n' ;;
   get-comments) cat "$ENG_45_CASE_O_COMMENTS_FILE" ;;
+  add-comment)
+    # Round-2 review M3: production fidelity — posted comments become
+    # visible to subsequent get-comments. With this append, the real
+    # find_fresh_verdict (no test-side override) resolves the just-
+    # posted halt comment naturally, defending the M1 invariant against
+    # any future refactor that moves the agent-contract validator back
+    # onto the budget-exhausted path. \$3 is the body for add-comment.
+    _now="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    jq --arg b "\${3:-}" --arg t "\$_now" \\
+      '. + [{createdAt:\$t, body:\$b}]' \\
+      "$ENG_45_CASE_O_COMMENTS_FILE" \\
+      > "$ENG_45_CASE_O_COMMENTS_FILE.new" \\
+      && mv "$ENG_45_CASE_O_COMMENTS_FILE.new" "$ENG_45_CASE_O_COMMENTS_FILE"
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \\
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
   *)
-    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \\
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
     ;;
 esac
@@ -1278,13 +1294,13 @@ ENG_45_CASE_O_RC=0
   post_completion_comment() { printf 'called\n' >> "$ENG_45_CASE_O_PCC_FLAG"; return 0; }
   push_branch_if_ahead() { return 0; }
   verdict_handler() { return 0; }  # unreached if M1 fix lands
-  # Simulate production: after _handle_wait posts the halt comment, the next
-  # find_fresh_verdict call (in the agent-contract validator) sees it. Without
-  # this override, our static get-comments fixture leaves _fresh_marker empty
-  # and the validator trips exit 25 before reaching the M1 bug at
-  # post_completion_comment. The override puts the test on the actual
-  # production path the reviewer flagged.
-  find_fresh_verdict() { printf 'pipeline-halt'; }
+  # Round-2 review M3: no `find_fresh_verdict` override. The linear.sh stub
+  # above appends posted comments into the get-comments fixture, so if any
+  # future refactor moves the agent-contract validator back onto the
+  # budget-exhausted path, the real find_fresh_verdict's jq filter (and its
+  # `<!-- pipeline-halt: [a-z-]+ -->` regex) runs against actual production
+  # data — a tightening to `[a-z]+` would break a test, where the previous
+  # static stub would have hidden the regression.
   main ENG-45T-O build
 ) >/dev/null 2>&1 || ENG_45_CASE_O_RC=$?
 
