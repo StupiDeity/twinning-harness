@@ -1057,6 +1057,27 @@ else
   fail_at "ENG-45 case J2" "json: $(cat "$(issue_dir ENG-45T9F)/wait-build.json" 2>/dev/null)"
 fi
 
+# ─── ENG-45 case J3 (round-2 review M1): pre-epoch first_attempt_at is corrupt ─
+# Symmetric to J2 in the past direction. `1900-01-01T00:00:00Z` passes the
+# shape regex and parses (under BSD date) to a NEGATIVE epoch (~-2.2e9).
+# Without a `_first_epoch < 0` floor, `elapsed_m = (now - very-negative) / 60`
+# blows past any `max_minutes` budget on the FIRST tick — turning the budget
+# safety net into a one-shot trip wire. With the floor, pre-epoch timestamps
+# are treated as corrupt: counter resets to 0, increments to 1, fresh window.
+# Pin attempts==1 (would be 100 in bug-mode because the regex passes, the
+# wall-clock branch fires immediately on attempts=99→100, exhausts, deletes
+# the file — distinguishable too, but counter pin is the cleaner invariant).
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T9P)"
+printf '{"first_attempt_at":"1900-01-01T00:00:00Z","attempts":99}' > "$(issue_dir ENG-45T9P)/wait-build.json"
+_handle_wait ENG-45T9P build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' \
+     "$(issue_dir ENG-45T9P)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case J3: pre-epoch first_attempt_at treated as corrupt (resets counter)"
+else
+  fail_at "ENG-45 case J3" "json: $(cat "$(issue_dir ENG-45T9P)/wait-build.json" 2>/dev/null)"
+fi
+
 # ─── ENG-45 case K: wall-clock cap exhausts even when attempts < cap ────────
 # Pre-write a wait file dated 2 minutes in the past; max_minutes=1 should
 # trip exhaustion on the next call regardless of the attempts cap.
