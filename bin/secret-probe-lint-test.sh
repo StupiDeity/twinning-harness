@@ -56,7 +56,7 @@ run_lint_in() {
   ( cd "$dir" && bash "$LINT" >"$out" 2>"$err" )
   exit_code=$?
   set -e
-  printf '%s|%s|%s' "$exit_code" "$out" "$err"
+  printf '%s|%s|%s\n' "$exit_code" "$out" "$err"
 }
 
 ok()   { PASS=$((PASS+1)); printf 'pass: %s\n' "$1"; }
