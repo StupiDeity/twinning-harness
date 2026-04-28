@@ -73,11 +73,14 @@ _render_and_capture_stream() {
   mkdir -p "$issue_dir"
 
   # Single jq fork for the whole stream (F4 P0). `tee` mirrors raw NDJSON
-  # to $raw_capture; jq -nR --unbuffered reads via `inputs` and emits
-  # prose lines on stdout, letting the caller's `tee "$log_file"` catch
-  # them. `fromjson? // empty` silently drops malformed lines.
+  # to $raw_capture; jq -nRr --unbuffered reads via `inputs` and emits
+  # raw (unquoted) prose lines on stdout, letting the caller's
+  # `tee "$log_file"` catch them. `fromjson? // empty` silently drops
+  # malformed lines. The `-r` flag is load-bearing — without it jq
+  # emits JSON-encoded strings (`"[claude] session=…"` with literal
+  # quote bytes), breaking the D-002 / F3 prose-on-STDOUT contract.
   tee "$raw_capture" \
-    | jq -nR --unbuffered '
+    | jq -nRr --unbuffered '
         def strip_ctrl: gsub("[\u0000-\u001f]"; " ");
         inputs
         | (fromjson? // empty) as $e

@@ -204,7 +204,7 @@ _aggregate_cost_by_stage() {
         (.tokens_in),
         (.tokens_out),
         (if (.cache_read + .cache_create) > 0
-         then ((100.0 * .cache_read / (.cache_read + .cache_create)) | floor)
+         then ((100.0 * .cache_read / (.cache_read + .cache_create)) + 0.5 | floor)
          else "--"
          end)
       ]
