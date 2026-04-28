@@ -78,7 +78,7 @@ case "$1" in
   remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
     # No-op for side-effecting subcommands. Optionally append the call to
     # $LINEAR_STUB_LOG so individual tests can assert on side effects.
-    [[ -n "${LINEAR_STUB_LOG:-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
+    [[ -n "${LINEAR_STUB_LOG-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
     exit 0
     ;;
   *)
