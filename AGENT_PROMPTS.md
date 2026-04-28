@@ -1087,8 +1087,14 @@ and the only failure is P2 or P5.
       **Wait exit (ENG-45):** post (via `bash .pipeline/bin/linear.sh add-comment`,
       append-only) a comment whose first line is exactly
       `<!-- pipeline-wait: awaiting-approval -->` and whose body includes the
-      human-readable signature `awaiting-external/build/{issue_id}` and says:
-      "Awaiting human Code Owner approval. Will re-check on next tick. If
+      human-readable signature `awaiting-external/build/{issue_id}` and a
+      per-tick varying line of the exact shape
+      `tick_at: $(date -u +"%Y-%m-%d %H:%M:%SZ")` (the space separator and
+      lack of a literal `T` are required so the line survives the
+      dedup-by-normalized-hash in `bin/linear.sh::add_comment` — without it
+      ticks 2..N are silently swallowed because their bodies are identical
+      after timestamp + SHA stripping). The body says: "Awaiting human Code
+      Owner approval. Will re-check on next tick. If
       `orchestrator.external_signal_budget` is configured, will escalate to
       halt-for-human after the budget exhausts; if not configured, will retry
       indefinitely until approval lands." Do NOT apply `pipeline:halted`. Do
@@ -1119,7 +1125,12 @@ and the only failure is P2 or P5.
       `bash .pipeline/bin/linear.sh add-comment`, append-only) a comment whose
       first line is exactly `<!-- pipeline-wait: awaiting-ci -->` and whose body
       includes the human-readable signature `awaiting-external/build/{issue_id}`
-      and says: "Awaiting CI to turn green. Will re-check on next tick. If
+      and a per-tick varying line of the exact shape
+      `tick_at: $(date -u +"%Y-%m-%d %H:%M:%SZ")` (the space separator and
+      lack of a literal `T` are required so the line survives the
+      dedup-by-normalized-hash in `bin/linear.sh::add_comment` — see the
+      same rationale in the P2 wait exit above). The body says: "Awaiting CI
+      to turn green. Will re-check on next tick. If
       `orchestrator.external_signal_budget` is configured, will escalate to
       halt-for-human after the budget exhausts; if not configured, will retry
       indefinitely until CI lands." Do NOT apply `pipeline:halted`. Do NOT post
