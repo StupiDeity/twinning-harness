@@ -158,6 +158,35 @@ below. The slot list is additive to this contract — always follow the contract
 
 ---
 
+## Secret-handling preamble (ENG-46)
+
+Never use `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose
+names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*`.
+
+- `${VAR:-FALLBACK}` returns the variable's *value* when set, not the literal
+  `FALLBACK`. So `echo "${KEY:-UNSET}"` prints the actual key when set.
+- `${VAR:+ALTERNATE}` returns `ALTERNATE` when VAR is set. If `ALTERNATE`
+  references `$VAR` (e.g. `${KEY:+--auth=$KEY}`), the value is materialized
+  via the alternate string. Both halves of the composition `${KEY:+SET}${KEY:-UNSET}`
+  bite — `:-UNSET` prints the value, `:+SET` is safe alone but unsafe as a
+  template into log/argv/comment context.
+
+The canonical safe form is **single-dash, empty fallback**:
+
+  [[ -n "${VAR-}" ]] && printf SET || printf UNSET     # presence test
+  [[ -z "${VAR-}" ]]                                    # emptiness gate
+
+Also acceptable:
+
+  if [[ -n "${VAR-}" ]]; then echo SET; else echo UNSET; fi
+
+The lint `bin/secret-probe-lint.sh` (run by `bin/dry-run.sh` and CI per
+ENG-46 D-007) rejects any `${VAR:[+-]…}` form against the secret name set
+above. Fix offending lines by switching to `${VAR-}` (single-dash) or by
+restructuring the surrounding expression to avoid materializing the value.
+
+---
+
 ## 1. Brainstorm Agent
 
 ```
