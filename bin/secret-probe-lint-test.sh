@@ -155,7 +155,7 @@ SH
   cleanup_fixture "$dir"
 }
 
-# ─── case 7: docs/** + learned-rules/** prose excluded → exit 0 ───────
+# ─── case 7: docs/**, learned-rules/**, AGENT_PROMPTS.md prose excluded → 0 ─
 case_7_prose_dirs_excluded() {
   local dir; dir="$(setup_git_fixture)"
   mkdir -p "$dir/docs/brainstorms" "$dir/learned-rules/twinning"
@@ -164,6 +164,11 @@ Example of the bad pattern: `${LINEAR_API_KEY:-leak}`.
 MD
   cat >"$dir/learned-rules/twinning/foo.md" <<'MD'
 Do not write `${ANTHROPIC_KEY:-FALLBACK}`.
+MD
+  # AGENT_PROMPTS.md is the preamble file — itself prose, with literal
+  # bad-pattern examples in the "Secret-handling preamble (ENG-46)" section.
+  cat >"$dir/AGENT_PROMPTS.md" <<'MD'
+The preamble explains both halves: `${KEY:-UNSET}` and `${KEY:+SET}`.
 MD
   ( cd "$dir" && git add -A && git commit -q -m fixture )
   IFS='|' read -r exit_code _out _err < <(run_lint_in "$dir")
