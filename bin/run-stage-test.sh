@@ -1025,6 +1025,62 @@ else
   pass_at "ENG-45 case I: budget exhausted → halt comment + pipeline:halted + wait file deleted, returned 1"
 fi
 
+# ─── ENG-45 case I-LF (round-3 M-B): add-label failure preserves wait file ──
+# The else-arm at bin/run-stage.sh:419-423 is load-bearing: a transient
+# add-label failure on the budget-exhaust path must NOT delete the wait
+# file. Otherwise a network blip leaves the issue with no halt label AND
+# no counter file → the next dispatch starts a brand-new wait window at
+# attempts=1, silently bypassing the budget safety net. Case I asserts the
+# happy path (add-label succeeds, file deleted); case I-LF locks the else
+# arm. Stub `linear.sh add-label) exit 1` and assert: rc=1, file present,
+# halt comment still posted (the comment is best-effort, file lifecycle is
+# the load-bearing invariant).
+ENG_45_LF_LINEAR_SAVED="$STUB_DIR/linear-saved-pre-LF.sh"
+cp "$STUB_DIR/linear.sh" "$ENG_45_LF_LINEAR_SAVED"
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  add-label)
+    # Capture the call so the test can assert it was attempted, then fail
+    # to simulate a Linear API hiccup / network blip.
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    exit 1
+    ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":1}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-LF)"
+rm -f "$(issue_dir ENG-45T-LF)/wait-build.json"
+reset_capture
+ENG_45_LF_RC=0
+_handle_wait ENG-45T-LF build awaiting-approval >/dev/null 2>&1 || ENG_45_LF_RC=$?
+
+if (( ENG_45_LF_RC == 0 )); then
+  fail_at "ENG-45 case I-LF" "_handle_wait should return 1 on budget exhaust (got 0)"
+elif [[ ! -e "$(issue_dir ENG-45T-LF)/wait-build.json" ]]; then
+  fail_at "ENG-45 case I-LF" "wait file should be PRESERVED when add-label fails (else-arm of run-stage.sh:419-423)"
+elif ! grep -q '^SUBCMD=add-comment$' "$CAPTURE_FILE" \
+   || ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I-LF" "missing add-comment with halt body: $(cat "$CAPTURE_FILE")"
+elif ! grep -qE '^SUBCMD=add-label$' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I-LF" "add-label was never attempted: $(cat "$CAPTURE_FILE")"
+else
+  pass_at "ENG-45 case I-LF: add-label failure preserves wait file (round-3 M-B)"
+fi
+
+# Restore the pre-I-LF stub so cases J / J2 / J3 / K / K2 / M see the
+# get-comments + stage-of behavior they expect.
+mv "$ENG_45_LF_LINEAR_SAVED" "$STUB_DIR/linear.sh"
+chmod +x "$STUB_DIR/linear.sh"
+
 # ─── ENG-45 case J: corrupt first_attempt_at resets the window (security F-3) ──
 printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
 mkdir -p "$(issue_dir ENG-45T9)"
