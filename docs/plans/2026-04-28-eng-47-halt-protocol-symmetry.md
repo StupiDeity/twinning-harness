@@ -1,7 +1,7 @@
 ---
 linear: ENG-47
 date: 2026-04-28
-topic: Halt protocol symmetry — atomic operator resume, generalized pipeline-wait, marker-emission compliance
+topic: Halt protocol symmetry — atomic operator resume, generalized pipeline-wait, marker-emission compliance, stage applicability + idempotent PR creation
 depends_on: [ENG-45]
 ---
 
@@ -28,6 +28,17 @@ asymmetry surfaced today across ENG-26 / ENG-24 / ENG-45. After this lands:
   any of the four verdict shapes is present in Linear newer than the
   most recent transition. A `marker-emission-audit` log line + metric
   field surface confabulated exits.
+- Stages that don't apply to an issue (no surfaces, plan task list empty)
+  exit with a `pipeline-stage-summary: <stage>` whose body begins
+  `Not applicable: <reason>`. The verdict-handler advances the stage
+  label exactly as it would for a real pass; a new metric field
+  `applicability=skipped|applied` distinguishes for retrospective.
+- PR creation is decoupled from the UI stage: any code-changing stage
+  opens the PR via the idempotent `gh pr list --head <branch> --state
+  open --json number --jq 'length'` precondition; not-applicable exits
+  do not open a PR. Backend-only issues open their PR from implement;
+  combined issues open from implement and UI just pushes additional
+  commits.
 
 The four-shape verdict-marker vocabulary
 (`stage-summary | rejection | halt | wait`) stays bounded. New failure
@@ -241,15 +252,53 @@ visible during today's debugging: `.policy` is a top-level string field
 holding values like `skip-until-human-acts`, `skip-until-code-changes`.
 Track B's conditional removal reads this field with `jq -r '.policy // ""'`.
 
+### A-016 — `AGENT_PROMPTS.md` §3 "Do NOT create a PR" instruction (Track D target)
+
+Verified at `AGENT_PROMPTS.md:462`:
+
+> Run `cargo build`, `cargo test --workspace`, and `bun run check` before finishing.
+>   All three MUST pass.
+> - **Do NOT create a PR. The UI agent opens the combined backend+frontend PR.**
+
+Track D replaces the bolded sentence with the idempotent open from §D-D2.
+
+### A-017 — `AGENT_PROMPTS.md` §4 idempotent PR-open precondition (already in place from ENG-45 cycle 2)
+
+The UI agent's cycle-2 stage summary at 12:57 referenced:
+
+> Idempotency precondition: `gh pr list --head feat/eng-45-… --state open --json number --jq 'length'` returned 1 (PR #15). Per the system prompt, that means: "Skip `gh pr create` entirely; do NOT attempt to re-create or amend the PR. Proceed to the rest of the UI stage (stage summary, push, completion)."
+
+Track D leaves §4's precondition in place; only adds the "Not applicable"
+exit clause and the cross-reference back to the §D-D2 rule.
+
+### A-018 — Plan-doc convention for `## Backend Tasks` and `## Frontend Tasks`
+
+Recent plans (ENG-26, ENG-41, ENG-42, ENG-45) all use these two H2
+sections under "Backend Tasks" and "Frontend Tasks" with `N/A` marker
+when empty. Track D's applicability check reads these sections by name.
+
+### A-019 — `bin/verdict-handler.sh` advances on `pipeline-stage-summary` regardless of body content
+
+`bin/verdict-handler.sh:259-266`: the marker shape (`pipeline-stage-summary`)
+is what triggers the forward transition; the body is for human readability
+only. This means a `Not applicable: <reason>` body still triggers the
+same stage-label swap as a real pass. No verdict-handler changes required
+for Track D.
+
+### A-020 — `bin/run-stage.sh` `dispatched_stage_label` is in scope at the audit/applicability site
+
+Same scope analysis as A-012; both Track C's audit and Track D's
+metric-event extension run at the same call-site.
+
 ## File Structure
 
 | Path | Action | Track |
 |---|---|---|
 | `bin/halt.sh` | modify (extend `resolve()`) | B |
 | `bin/halt-resolve-test.sh` | **new** | B |
-| `bin/run-stage.sh` | modify (`_WAIT_REASONS_BY_STAGE`, three-tier budget lookup, `_marker_emission_audit`, defensive halt-add tightening) | A + C |
-| `bin/run-stage-test.sh` | modify (new ENG-47 cases for A and C) | A + C |
-| `AGENT_PROMPTS.md` | modify (preamble updates for A and C; per-stage self-verification step) | A + C |
+| `bin/run-stage.sh` | modify (`_WAIT_REASONS_BY_STAGE`, three-tier budget lookup, `_marker_emission_audit`, defensive halt-add tightening, `applicability=` metric key) | A + C + D |
+| `bin/run-stage-test.sh` | modify (new ENG-47 cases for A, C, D) | A + C + D |
+| `AGENT_PROMPTS.md` | modify (preamble updates for A and C; per-stage self-verification step; §3/§4/§5/§6/§7 prompt edits for stage-applicability + idempotent PR creation) | A + C + D |
 | `~/.pipeline-config/config.json` | optional — only needed if extending budgets to non-build stages | A |
 | `docs/plans/2026-04-28-eng-47-halt-protocol-symmetry.md` | this file (already on branch) | — |
 | `docs/brainstorms/2026-04-28-halt-protocol-symmetry-design.md` | reference (already on branch) | — |
@@ -779,6 +828,236 @@ Then a positive case:
 This test ties Track C's behavior change to the user-visible bug it
 fixes.
 
+### T-14 — Track D: AGENT_PROMPTS.md `Stage applicability` preamble
+
+`depends_on: []`
+`touches: [AGENT_PROMPTS.md]`
+
+Add a new subsection to the verdict-marker preamble (next to ENG-45's
+"Non-verdict markers" subsection introduced by `f59acf8`):
+
+```markdown
+### Stage applicability (ENG-47)
+
+Some stages apply to some issues but not to others. The harness operates
+on multiple project types (Tauri+SvelteKit, bash harness, Python service,
+docs-only repos), and not every stage has work to do on every project.
+Examples: a bash harness has no SvelteKit/Tauri surface for the UI
+stage; a docs-only repo has no implementation surface.
+
+**Before starting your stage work, evaluate applicability.** If your
+stage is not applicable to this issue's project, exit immediately with:
+
+```
+<!-- pipeline-stage-summary: <stage> -->
+
+Not applicable: <one-sentence reason citing the plan section or repo evidence>.
+```
+
+Do NOT halt; do NOT fabricate work in scope; do NOT silently no-op.
+The pass marker advances the stage label via the existing forward
+transition; `Not applicable:` body prefix is the operator-readable
+discriminator. Telemetry: emit
+`bash bin/metrics.sh stage-end {issue_id} {stage} success $duration applicability=skipped`
+to surface the skip for retrospective.
+
+A stage that DOES apply emits its normal stage-summary marker (no
+`Not applicable:` prefix) and the metric ride defaults to
+`applicability=applied`.
+```
+
+### T-15 — Track D: §3 (Implement Backend) applicability + idempotent PR open
+
+`depends_on: [T-14]`
+`touches: [AGENT_PROMPTS.md]`
+
+In `AGENT_PROMPTS.md` §3 (Implementation Agent (Backend)):
+
+1. After the existing "Read these files first" block and before the
+   precondition section, insert an "Applicability check" paragraph:
+
+```markdown
+**Applicability check (ENG-47):** Before any code work, determine
+whether the backend stage applies to this issue. The backend stage is
+applicable iff:
+
+- The plan's `## Backend Tasks` section is non-empty (NOT just `N/A`); AND
+- The repo has at least one of these surfaces present in the worktree:
+  - `Cargo.toml` (Rust workspace)
+  - `bin/*.sh` (bash harness)
+  - `*.py` files at the repo root (Python service)
+  - `package.json` WITHOUT `src/routes/` (Node service, not SvelteKit)
+  - `api/*.ts` (any other TS API surface)
+
+If neither condition holds, exit with the stage-applicability shape from
+the verdict-marker preamble:
+- `bash bin/linear.sh add-comment {issue_id} "<!-- pipeline-stage-summary: implementing -->\n\nNot applicable: <reason>"`
+- `bash bin/metrics.sh stage-end {issue_id} implement success $duration applicability=skipped`
+- exit 0
+
+Do NOT proceed to the rest of this prompt. Do NOT open a PR.
+```
+
+2. Replace the existing line at `AGENT_PROMPTS.md:462` (verified via
+   grep on main):
+
+```markdown
+- Do NOT create a PR. The UI agent opens the combined backend+frontend PR.
+```
+
+with:
+
+```markdown
+- After all code commits are pushed and tests pass, open the PR
+  idempotently. Run:
+  ```
+  PR_COUNT=$(gh pr list --head {branch_name} --state open --json number --jq 'length')
+  ```
+  If `PR_COUNT` is 0, run `gh pr create --base main --head {branch_name}
+  --title "<conventional-commit-shape title>" --body "<body referencing
+  ENG-N + summary>"`. If 1, skip — a PR already exists; subsequent
+  stages (UI if applicable, review, qa, build) will operate on the
+  existing PR. The PR description should be backend-focused if implement
+  is the only code-changing stage; if UI runs after, UI will amend the
+  description (existing §4 instruction).
+```
+
+3. Sweep §3's body for any other "UI opens the PR" references and
+   update to read "the first applicable code-changing stage opens the PR
+   idempotently."
+
+### T-16 — Track D: §4 (UI Frontend) applicability
+
+`depends_on: [T-14]`
+`touches: [AGENT_PROMPTS.md]`
+
+§4 already has the idempotent PR-open precondition (per ENG-45 cycle 2).
+Add the applicability check above the existing UI-stage instructions:
+
+```markdown
+**Applicability check (ENG-47):** Before any code work, determine
+whether the UI stage applies to this issue. The UI stage is applicable
+iff:
+
+- The plan's `## Frontend Tasks` section is non-empty (NOT just `N/A`); AND
+- The repo has at least one of these surfaces present in the worktree:
+  - `package.json` WITH `src/routes/` (SvelteKit)
+  - `src-tauri/` (Tauri)
+  - `src/lib/*.svelte` (any Svelte components)
+  - `src/components/*.tsx` (React components, future-proof)
+
+If neither condition holds, exit with the stage-applicability shape:
+- `bash bin/linear.sh add-comment {issue_id} "<!-- pipeline-stage-summary: ui -->\n\nNot applicable: <reason>"`
+- `bash bin/metrics.sh stage-end {issue_id} ui success $duration applicability=skipped`
+- exit 0
+
+Do NOT open a PR. Do NOT proceed to the rest of this prompt. The
+backend stage (§3) will have opened the PR if it was applicable; if
+backend was also not applicable, no PR opens — that's correct, since
+there is nothing to ship.
+```
+
+The existing idempotent PR-open precondition at the top of §4 already
+handles "PR exists from §3" → skip. No change to the precondition itself
+in this task; only the applicability gate is added.
+
+### T-17 — Track D: §5 (Review), §6 (QA), §7 (Build) prompt edits
+
+`depends_on: [T-15, T-16]`
+`touches: [AGENT_PROMPTS.md]`
+
+Sweep §5, §6, §7 for any wording that says or implies "the UI agent
+opened the PR" or "the PR is opened by UI." Replace with neutral
+language: "the PR opened by the most recent applicable code-changing
+stage" or simply "the PR on this branch."
+
+Examples of phrases to update (manual sweep — exact line numbers depend
+on current state of §5/§6/§7):
+
+- "the PR opened by UI" → "the PR on this branch"
+- "after UI opens the PR" → "after a code-changing stage has opened the PR"
+- "Review the PR opened by the UI stage" → "Review the PR on the
+  branch"
+
+These prompts already operate on `PR #N` discovered via
+`gh pr list --head <branch> --state open`; the change is documentation
+only (no behavioral change at runtime). The intent: future readers of
+§5/§6/§7 don't get confused into thinking the UI stage is the canonical
+PR creator — it's whichever code-changing stage ran last.
+
+### T-18 — Track D: tests for stage-applicability exits + idempotent PR creation
+
+`depends_on: [T-14, T-15, T-16]`
+`touches: [bin/run-stage-test.sh]`
+
+Insert before the latent case-15 abort (mirroring ENG-45's insertion
+strategy). These cases test the orchestrator's handling of agent-emitted
+applicability markers — not the agent prompts themselves (which are
+text). The test fixtures simulate agent output via stub Linear comment
+state.
+
+- **T-18-D1 — Stage-summary with `Not applicable:` body advances stage.**
+  Mock comments containing
+  `<!-- pipeline-stage-summary: ui -->\n\nNot applicable: harness-self has
+  no UI surface (plan §Frontend Tasks: N/A).`. Source verdict-handler;
+  assert it transitions ui → reviewing exactly as it would for any pass
+  marker. Validates §A-019 — body content doesn't affect transition.
+
+- **T-18-D2 — `_marker_emission_audit` returns `stage-summary` for
+  not-applicable pass.** Mock the same comment. Assert
+  `_marker_emission_audit` returns `stage-summary` (the audit doesn't
+  inspect body).
+
+- **T-18-D3 — Defensive halt-add stays its hand on not-applicable pass.**
+  Mock the same comment plus the audit. Source the post-dispatch block.
+  Assert no `add-label … pipeline:halted` is captured.
+
+- **T-18-D4 — `applicability=skipped` rides on metric event.** Mock a
+  not-applicable agent exit including the metric call. Assert the
+  captured `bin/metrics.sh stage-end` invocation includes
+  `applicability=skipped` as a key=value arg. (This is a prompt-prose
+  test in practice — the orchestrator doesn't enforce the key. The test
+  validates that if the agent emits the key, downstream metrics-event
+  ingestion (per ENG-26) carries it through. Sanity check.)
+
+- **T-18-D5 — Idempotent PR creation: implement opens when zero.** Mock
+  `gh pr list --head <branch> --state open --json number --jq 'length'`
+  returning 0. Assert the implement agent's PR-open code path triggers
+  `gh pr create`. (This is also prompt-prose enforcement; the test is a
+  scaffold demonstrating the contract.)
+
+- **T-18-D6 — Idempotent PR creation: UI skips when one.** Mock the
+  same query returning 1. Assert UI does NOT call `gh pr create`. (This
+  case actually exists in ENG-45 cycle 2 stage summary as evidence; the
+  test pins the behavior.)
+
+- **T-18-D7 — Both N/A: no PR opens, pipeline reaches stage:reviewing
+  cleanly.** Mock implement and UI both exit not-applicable. Source
+  verdict-handler twice. Assert stage label progresses
+  `implementing → ui → reviewing` with no halt label and no PR creation
+  attempt. (Edge case — flagged as a planning-stage gap per §D-D2.)
+
+### T-19 — Regression test: ENG-45 cycle-2 misroute exits cleanly
+
+`depends_on: [T-14, T-15, T-16, T-17]`
+`touches: [bin/run-stage-test.sh]`
+
+Replicate the ENG-45 cycle-2 scenario with the post-fix behavior:
+
+- Mock a harness-self issue at `stage:ui` with no PR open initially.
+- Mock implement run: applicable (bash backend work present), opens the
+  PR via the idempotent-zero path.
+- Mock UI run: not-applicable (no SvelteKit/Tauri surface), exits with
+  `pipeline-stage-summary: ui` + `Not applicable:` body.
+- Source verdict-handler; assert it advances ui → reviewing.
+- Assert no halt label was applied at any point.
+- Assert exactly one `gh pr create` was called (from implement, not
+  from UI).
+
+This test ties Track D's behavior change to the user-visible bug it
+fixes — the same shape that required operator intervention three times
+on ENG-45 today.
+
 ## Frontend Tasks
 
 N/A. The harness has no SvelteKit / Tauri / web UI surface. Operator-facing
@@ -814,6 +1093,14 @@ to a named test in this PR before claiming completion.)
 | 19 | Per-stage budget config: legacy flat shape silently broken | T-11-A6 | backwards-compat |
 | 20 | Confabulated marker (sig only) treated as success | T-13 | regression-bound to ENG-45 |
 | 21 | Stale rejection counter re-trips guard immediately after resume | T-12 | regression-bound to ENG-24 |
+| 22 | Stage-summary `Not applicable:` body fails to advance | T-18-D1 | verdict-handler body-blind |
+| 23 | Audit treats `Not applicable:` as missing-marker | T-18-D2 | audit body-blind |
+| 24 | Defensive halt-add fires on not-applicable pass | T-18-D3 | clean exit honored |
+| 25 | `applicability=skipped` metric not propagated | T-18-D4 | metric ingestion sanity |
+| 26 | Implement opens PR when none exists | T-18-D5 | idempotency-zero path |
+| 27 | UI re-creates PR when one exists | T-18-D6 | idempotency-one path |
+| 28 | Both N/A — pipeline gets stuck at UI | T-18-D7 | reaches reviewing cleanly |
+| 29 | Regression: harness-self UI misroute requires manual intervention | T-19 | regression-bound to ENG-45 cycle 2 |
 
 Two rows are explicitly invariant-covered, no test required:
 
@@ -828,7 +1115,7 @@ Two rows are explicitly invariant-covered, no test required:
 
 ## Commits
 
-Implement agent should ship in three commits, in this order:
+Implement agent should ship in four feature commits, in this order:
 
 1. **`docs(ENG-47): plan for halt protocol symmetry`** — already on branch
    from this plan-stage commit. Implement agent does NOT add to this
@@ -838,14 +1125,25 @@ Implement agent should ship in three commits, in this order:
 3. **`feat(ENG-47): defensive halt-add audit (Track C)`** — T-3, T-4, T-5,
    T-6, T-7, T-13. Depends on ENG-45 ONLY for the line numbers; the
    functional change is also independent.
-4. **`feat(ENG-47): generalize pipeline-wait gate (Track A)`** — T-8, T-9,
+4. **`feat(ENG-47): stage applicability + idempotent PR creation (Track D)`**
+   — T-14, T-15, T-16, T-17, T-18, T-19. Functionally independent of
+   ENG-45 (prompt-prose edits + tests); depends on Track C for clean
+   exit semantics (Track C's audit recognizes the stage-summary shape
+   regardless of body, enabling D's not-applicable exit to bypass
+   defensive halt-add).
+5. **`feat(ENG-47): generalize pipeline-wait gate (Track A)`** — T-8, T-9,
    T-10, T-11. **Depends on ENG-45 having merged.**
 
-Three feature commits, one doc commit; the doc commit is already in
+Four feature commits, one doc commit; the doc commit is already in
 place. If ENG-45 hasn't merged at implement time, the implement agent
 should rebase ENG-47 onto ENG-45's tip before starting Track A — same
 pattern as the ENG-26 rebase we did today (per the
 `project_implement_agent_loopback_competence` learned rule).
+
+Track ordering rationale: B is independent and smallest; C is a
+prerequisite for D's not-applicable exit recognition; D is the
+prompt-heavy track but small in code; A modifies ENG-45-introduced
+functions and goes last.
 
 ## Persona Reviews
 
@@ -855,24 +1153,37 @@ Manual review notes:
 - **Coherence (P0):** the wait-gate sequencing in `_handle_wait` is
   preserved by Track A's gate change (only the inner `[[ "$stage" ==
   "build" ]]` line moves to a per-stage allow-list; everything else
-  unchanged). No new ordering risk.
-- **Scope (P0):** Tracks B and C are net additions, no behavior removal.
-  Track A is a 1-line replacement of an existing gate with a 6-line case
-  statement; behavior identical for build, additive for future stages.
-  No scope creep.
+  unchanged). Track D's applicability check fires before Track C's audit
+  in the agent flow but doesn't interact with C in the orchestrator —
+  the audit reads Linear comments regardless of whether they came from a
+  "real pass" or a "not-applicable pass". No new ordering risk across
+  tracks.
+- **Scope (P0):** Tracks B, C, and D are net additions. Track A is a
+  1-line replacement of an existing gate with a case statement.
+  Behavior identical for build (post-A); behavior on harness-self
+  improves substantially (post-D). No scope creep beyond the brainstorm.
 - **Security (P0):** Track A preserves ENG-45's cross-stage-forgery
-  defense (case statement default returns 1, equivalent to the original
-  `[[ … ]] || return 1`). Track B's operator-attributed transition is
-  written under `PIPELINE_WRITER=human`. Track C's audit is read-only.
-  No new write permissions, no new secret handling.
+  defense (case statement default returns 1). Track B's
+  operator-attributed transition is written under
+  `PIPELINE_WRITER=human`. Track C's audit is read-only. Track D's
+  applicability check is agent-prose; the orchestrator-side enforcement
+  (audit on `pipeline-stage-summary` shape) is unchanged. No new write
+  permissions, no new secret handling.
 - **Test (P0):** every modified function has at least one positive +
-  one negative case. Two regression cases (T-12, T-13) tie back to the
-  user-visible bugs.
+  one negative case. Three regression cases (T-12, T-13, T-19) tie back
+  to the user-visible bugs.
 - **Performance (P1):** `_marker_emission_audit` adds one `linear.sh
   get-comments` call per dispatch. The same call is already made by
   `find_fresh_verdict` later in the same flow; if performance becomes a
   concern, fold the two into a single read with a shared output. Not in
   v1.
+- **Product (P1):** Track D's `applicability=skipped` metric is the
+  retrospective hook to detect "this project type never uses this stage"
+  patterns. After ENG-47 lands, expect a follow-up retrospective ticket
+  that consumes these events to either (a) propose stage-skip lists per
+  project, or (b) inform the longer-term master+sub-agent architecture
+  brainstorm (out of scope here, mentioned in §3.4 D-D5 rejected
+  alternatives).
 
 ## Open Questions
 
@@ -900,5 +1211,23 @@ the operator wants it.
 block, since `verdict_handler` will read the same comments later?
 **Plan answer:** out of scope for v1; if performance becomes an issue,
 add a `--cached` flag to `bin/linear.sh get-comments` in a follow-up.
+
+**Q6 (Track D).** Should Track D's per-stage applicability rules extend
+to brainstorm/plan/review/qa/build? **Plan answer:** no for v1.
+brainstorm and plan are always applicable. review/qa/build need a PR;
+if no PR exists they trip their own preconditions and halt, which is
+correct. Scope to implement and UI for v1.
+
+**Q7 (Track D).** Should the orchestrator pre-flight applicability
+before dispatching `claude -p` (saving the cost of a no-op claude run)?
+**Plan answer:** defer. Pre-flight requires duplicating the agent's
+plan-reading + repo-inspection logic in bash. Cost of a no-op claude
+run is small. Revisit if cost telemetry from ENG-26 shows persistent
+skip-stage waste.
+
+**Q8 (Track D).** Should `applicability=skipped` events trigger
+operator alerts? **Plan answer:** no. Skip is a normal expected state
+for multi-target operation. Patterns are retrospective-level
+observations, not per-event alerts.
 
 Personas: 5/5 PASS · gate P0: 0 · proceeding to implementing
