@@ -5,6 +5,12 @@
 #
 # CWD is the feature's worktree when called from run-local.sh (ENG-13 D-011),
 # or the main repo root for legacy feature/* branches.
+#
+# Cost telemetry (ENG-26): when env var PIPELINE_ISSUE_ID is set, the
+# stream-json renderer extracts the final `result` event and writes a
+# six-field usage-<stage>.json into $issue_dir. Other callers (release,
+# retrospective, mutex-test, dry-run-self-check) leave PIPELINE_ISSUE_ID
+# unset and the renderer block is bypassed.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,6 +37,88 @@ acquire_claude_mutex() {
 
 release_claude_mutex() {
   rm -rf "$CLAUDE_MUTEX_DIR"
+}
+
+# ─── Stream-json renderer (ENG-26 D-002) ─────────────────────────────────
+# Reads NDJSON on stdin; emits prose-ish progress lines on STDOUT (so the
+# caller's `tee "$log_file"` captures them); mirrors the raw NDJSON to a
+# private capture file under $issue_dir; after the stream ends, extracts
+# only six fields from the LAST type==result line and writes them to
+# $usage_file at mode 0600 (umask 077).
+#
+# Args: $1 = usage_file, $2 = issue_dir.
+#
+# Tolerances:
+#   - F2 (D-002): malformed NDJSON lines are silently dropped via
+#     `fromjson? // empty`. One bad line cannot abort dispatch.
+#   - D-010: missing result event → no usage file, soft-fail log line,
+#     return 0. Cost telemetry is observability, not control flow.
+#
+# Defenses:
+#   - SEC-001: tool_use input payloads never logged. Renderer emits
+#     `[tool] <name>` only.
+#   - SEC-002: usage file holds exactly six fields. session_id /
+#     permission_denials / result text / modelUsage rollup never written.
+#   - SEC-005: usage file written under `(umask 077; …)` so default-022
+#     hosts cannot leave it world-readable.
+#   - SEC-008: intermediate raw-NDJSON capture lives under $issue_dir
+#     (per-issue trust scope), prefixed with `.` (artifact-scanner-invisible),
+#     and is removed by a RETURN trap.
+#   - SEC-010: C0 control chars stripped from agent text before logging
+#     (defends against `\r[FAKE LOG]` log forging).
+_render_and_capture_stream() {
+  local usage_file="$1" issue_dir="$2"
+  local raw_capture="${issue_dir}/.raw-stream.ndjson.tmp"
+  trap 'rm -f "$raw_capture"' RETURN
+  mkdir -p "$issue_dir"
+
+  # Single jq fork for the whole stream (F4 P0). `tee` mirrors raw NDJSON
+  # to $raw_capture; jq -nRr --unbuffered reads via `inputs` and emits
+  # raw (unquoted) prose lines on stdout, letting the caller's
+  # `tee "$log_file"` catch them. `fromjson? // empty` silently drops
+  # malformed lines. The `-r` flag is load-bearing — without it jq
+  # emits JSON-encoded strings (`"[claude] session=…"` with literal
+  # quote bytes), breaking the D-002 / F3 prose-on-STDOUT contract.
+  tee "$raw_capture" \
+    | jq -nRr --unbuffered '
+        def strip_ctrl: gsub("[\u0000-\u001f]"; " ");
+        inputs
+        | (fromjson? // empty) as $e
+        | if   $e.type == "system" and $e.subtype == "init"
+                 then "[claude] session=\($e.session_id[0:8]) model=\($e.model // "?")"
+          elif $e.type == "assistant"
+                 then (([$e.message.content[]? | select(.type=="text")    | .text  | strip_ctrl] | join(" "))
+                      + ([$e.message.content[]? | select(.type=="tool_use") | "[tool] " + .name] | join(" ")))
+          elif $e.type == "user"
+                 then ([$e.message.content[]? | select(.type=="tool_result") | "[tool-result] " + ((.tool_use_id // "?")[0:12])] | join(" "))
+          else empty
+          end
+        | select(. != "")
+      '
+
+  # Post-stream: extract only the six required fields from the LAST
+  # type==result line. Allowlist by construction (SEC-002). On parse
+  # failure, remove any partial and log soft-fail (D-010).
+  local last_result
+  last_result="$(grep '"type":"result"' "$raw_capture" 2>/dev/null | tail -1 || true)"
+  if [[ -n "$last_result" ]]; then
+    if ( umask 077; printf '%s' "$last_result" \
+         | jq -c '{
+             tokens_in:    (.usage.input_tokens // 0),
+             tokens_out:   (.usage.output_tokens // 0),
+             cache_read:   (.usage.cache_read_input_tokens // 0),
+             cache_create: (.usage.cache_creation_input_tokens // 0),
+             cost_usd:     (.total_cost_usd // 0),
+             model:        ((.modelUsage // {}) | keys | (.[0] // ""))
+           }' > "$usage_file" ); then
+      log "[cost] result event captured: cost=$(jq -r '.cost_usd' "$usage_file" 2>/dev/null)"
+    else
+      log "[cost] no result event found in stream (post-extract jq failed; usage-<stage>.json not written)"
+      rm -f "$usage_file"
+    fi
+  else
+    log "[cost] no result event found in stream (soft fail; usage-<stage>.json not written)"
+  fi
 }
 
 allowed_tools_for() {
@@ -60,11 +148,26 @@ main() {
   local tools
   tools="$(allowed_tools_for "$stage")"
 
+  # Resolve the per-stage usage-file path. Empty string when
+  # PIPELINE_ISSUE_ID is unset (release / retrospective / dry-run-self-check
+  # / mutex-test): the renderer block is then bypassed and the live pipe
+  # keeps its pre-ENG-26 shape. Resolution lives inside main() because
+  # $stage is local to main (D-012 / F-IT3-001).
+  local usage_file=""
+  local issue_state_dir=""
+  if [[ -n "${PIPELINE_ISSUE_ID:-}" ]]; then
+    issue_state_dir="$(issue_dir "$PIPELINE_ISSUE_ID")"
+    usage_file="${issue_state_dir}/usage-${stage}.json"
+    # Pre-emptive cleanup so a missing file is the canonical "no usage to
+    # report" signal — applies to BOTH branches below (E-04 / D-006).
+    rm -f "$usage_file"
+  fi
+
   acquire_claude_mutex
   trap 'release_claude_mutex' EXIT
 
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
-    log "[DRY_RUN] would invoke: claude -p --allowed-tools \"$tools\" < $prompt_file"
+    log "[DRY_RUN] would invoke: claude -p --output-format stream-json --verbose --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
     head -c 500 "$prompt_file" >&2
     printf '\n' >&2
@@ -78,14 +181,30 @@ main() {
   # ENG-41 T3: set the agent lane only for the claude -p subprocess.
   # Any orchestrator-side Linear writes above (none currently, but guarding for
   # future additions) stay in the default orchestrator lane.
-  local cmd=(env PIPELINE_WRITER=agent claude -p --allowed-tools "$tools")
+  # ENG-26: `--output-format stream-json --verbose` emits one NDJSON event
+  # per message and a final `{"type":"result", …}` carrying total_cost_usd
+  # and the aggregated `usage` block. The renderer extracts cost; the
+  # operator-facing log keeps prose-ish progress lines via the renderer's
+  # stdout (D-002 / F3 / F4).
+  local cmd=(env PIPELINE_WRITER=agent claude -p --output-format stream-json --verbose --allowed-tools "$tools")
   if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname "$log_file")"
     log "dispatching stage=$stage, log=$log_file"
-    "${cmd[@]}" < "$prompt_file" | tee "$log_file"
+    if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
+      "${cmd[@]}" < "$prompt_file" \
+        | _render_and_capture_stream "$usage_file" "$issue_state_dir" \
+        | tee "$log_file"
+    else
+      "${cmd[@]}" < "$prompt_file" | tee "$log_file"
+    fi
   else
     log "dispatching stage=$stage"
-    "${cmd[@]}" < "$prompt_file"
+    if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
+      "${cmd[@]}" < "$prompt_file" \
+        | _render_and_capture_stream "$usage_file" "$issue_state_dir"
+    else
+      "${cmd[@]}" < "$prompt_file"
+    fi
   fi
 }
 

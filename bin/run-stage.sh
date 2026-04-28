@@ -56,6 +56,80 @@ _stage_artifacts_footer() {
   printf '\n\n**Artifacts detected in worktree (%s):**\n\n%s' "$doc_dir" "$lines"
 }
 
+# ─── Cost-telemetry helpers (ENG-26) ─────────────────────────────────────────
+# Read $issue_dir/usage-<stage>.json (six fields written by dispatch.sh's
+# stream-json renderer) and turn it into the per-stage `metrics.sh stage-end`
+# flag stream / Linear footer string. Both helpers are silent on missing or
+# malformed file (D-010 — soft fail; cost telemetry is observability, not
+# control flow).
+#
+# The flag stream is newline-delimited: one `--key` per line, one value per
+# line. The caller slurps it into a bash array and passes it via
+# `"${cost_flags[@]+"${cost_flags[@]}"}"` (bash-3.2 / set -u safe expansion).
+# Newline-delimited output is the contract that preserves the captured
+# `claude-opus-4-7[1m]` model name verbatim across the function boundary —
+# the model literal contains glob chars and would word-split if returned as
+# a single string (DL-202 / SEC-007).
+_cost_flags_for() {
+  local issue="$1" stage="$2"
+  local f; f="$(issue_dir "$issue")/usage-${stage}.json"
+  [[ -s "$f" ]] || return 0
+  jq -r '
+    "--tokens-in",    (.tokens_in    // 0 | tostring),
+    "--tokens-out",   (.tokens_out   // 0 | tostring),
+    "--cache-read",   (.cache_read   // 0 | tostring),
+    "--cache-create", (.cache_create // 0 | tostring),
+    "--cost-usd",     (.cost_usd     // 0 | tostring),
+    "--model",        (.model        // "unknown")
+  ' "$f" 2>/dev/null || true
+}
+
+# Format: leading newline so the caller can append unconditionally.
+# Cache% (D-007): round(100 * cache_read / (cache_read + cache_create)).
+# When read+create == 0, omit the `· cache N%` segment entirely — do NOT
+# print `0%` (that misleads the operator into thinking the cache failed
+# rather than that there was no cache traffic at all).
+#
+# Soft-fail semantics (D-010): a corrupt-but-nonempty usage file MUST
+# return empty, mirroring the absent-file path. The single `jq @tsv`
+# extraction returns nothing when the file does not parse as JSON
+# (errors silenced); an empty TSV short-circuits before any awk
+# formatting can render misleading `cost: $0.00 · in 0.0k …` output.
+_cost_footer() {
+  local issue="$1" stage="$2"
+  local f; f="$(issue_dir "$issue")/usage-${stage}.json"
+  [[ -s "$f" ]] || { printf ''; return 0; }
+
+  local tsv
+  tsv="$(jq -r '[.cost_usd // 0, .tokens_in // 0, .tokens_out // 0, .cache_read // 0, .cache_create // 0] | @tsv' \
+    "$f" 2>/dev/null)" || tsv=""
+  [[ -z "$tsv" ]] && { printf ''; return 0; }
+
+  local cost_usd tokens_in tokens_out cache_read cache_create
+  IFS=$'\t' read -r cost_usd tokens_in tokens_out cache_read cache_create <<<"$tsv"
+
+  local cache_seg=""
+  if (( cache_read + cache_create > 0 )); then
+    local cache_pct
+    cache_pct="$(awk -v r="$cache_read" -v c="$cache_create" \
+      'BEGIN{ printf("%d", (100.0 * r) / (r + c) + 0.5) }')"
+    cache_seg=" · cache ${cache_pct}%"
+  fi
+
+  awk -v cost="$cost_usd" -v ti="$tokens_in" -v to="$tokens_out" -v cs="$cache_seg" \
+    'BEGIN{ printf("\ncost: $%.2f · in %.1fk · out %.1fk%s", cost, ti/1000.0, to/1000.0, cs) }'
+}
+
+# ENG-26 D-011: scope-approval replay does NOT invoke claude this tick,
+# so a usage-<stage>.json from the prior real dispatch would otherwise
+# be re-read by `_cost_flags_for` and double-count cost. Remove the file
+# before the replay metrics emit so it cleanly omits cost fields.
+_replay_scope_approval() {
+  local ident="$1" stage="$2"
+  rm -f "$(issue_dir "$ident")/usage-${stage}.json"
+  bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "scope-approval-replay" 0
+}
+
 # ─── Per-stage success-path completion comment (ENG-11) ──────────────────────
 # Read the agent-authored summary file, wrap with header + PR tail, and
 # upsert under sig completion/<stage>/<issue>. On missing/empty/symlink,
@@ -116,12 +190,20 @@ post_completion_comment() {
     # sees what (if anything) it managed to produce before the silent exit. ENG-7
     # was the motivating case: a 571-line brainstorm doc sat untracked in the
     # worktree while Linear showed only "Agent did not write a stage summary".
+    # The cost footer is intentionally NOT appended on the fallback path —
+    # symmetric with _stage_artifacts_footer's "artifacts-only-on-fallback"
+    # design (no usage to report on a silent-exit / dispatch-crashed run).
     local artifacts_tail
     artifacts_tail="$(_stage_artifacts_footer "$issue" "$stage")"
     comment_body="$(printf '%s\n\n_Agent did not write a stage summary; posting mechanical completion._%s%s\n<!-- pipeline-metric: %s -->' \
       "$header" "$pr_tail" "$artifacts_tail" "$fallback_marker")"
   else
-    comment_body="$(printf '%s\n\n%s%s' "$header" "$body" "$pr_tail")"
+    # Cost footer (ENG-26 D-008): one line of `cost: $X · in Yk · out Zk
+    # · cache N%` between body and PR tail. Empty string when the usage
+    # file is missing/malformed (legacy / dispatch-crashed / dry-run).
+    local cost_footer
+    cost_footer="$(_cost_footer "$issue" "$stage")"
+    comment_body="$(printf '%s\n\n%s%s%s' "$header" "$body" "$cost_footer" "$pr_tail")"
   fi
 
   # Retry once on failure. add-or-update-comment appends the canonical sig itself.
@@ -274,8 +356,11 @@ main() {
 
     bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "dispatching" 0
 
-    # Dispatch.
-    if ! bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$prompt_file" "$log_file"; then
+    # Dispatch. Export PIPELINE_ISSUE_ID so dispatch.sh can resolve the
+    # per-stage usage-file path (ENG-26 D-012). Ambient-context env var
+    # mirrors the existing PIPELINE_DRY_RUN pattern (common.sh:171).
+    if ! PIPELINE_ISSUE_ID="$ident" \
+         bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$prompt_file" "$log_file"; then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20
       rm -f "$prompt_file"
@@ -283,7 +368,7 @@ main() {
     fi
     rm -f "$prompt_file"
   else
-    bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "scope-approval-replay" 0
+    _replay_scope_approval "$ident" "$stage"
   fi
 
   # Post-review premise-failure is now expressed as a pipeline-rejection
@@ -340,9 +425,18 @@ main() {
           t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
           # ENG-10: emit typed outcome via the failure taxonomy so
           # retrospective §1's filter picks up the halt event.
+          # ENG-26 (D-005): claude ran on this branch, so attach cost
+          # flags. Empty array (no usage file) expands to zero args
+          # under the bash-3.2-safe `[@]+…` form.
+          local _cf_pending=()
+          local _cf_line
+          while IFS= read -r _cf_line; do
+            _cf_pending+=("$_cf_line")
+          done < <(_cost_flags_for "$ident" "$stage")
           bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" \
             "$(failure_outcome_for_exit 0 1)" "$duration" \
-            "branch=$branch notable_count=$(wc -l <<<"$notable_files" | tr -d ' ')" || true
+            "branch=$branch notable_count=$(wc -l <<<"$notable_files" | tr -d ' ')" \
+            "${_cf_pending[@]+"${_cf_pending[@]}"}" || true
           exit 0
         fi
         ;;
@@ -461,9 +555,21 @@ main() {
   verdict_handler "$ident" "$vh_stage" || vh_rc=$?
 
   t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+  # ENG-26 D-005: claude ran for all three vh_rc arms below (success,
+  # halt-for-human, protocol-violation), so each site receives cost
+  # flags. Read once into a bash array, then expand under the
+  # `${arr[@]+"${arr[@]}"}` empty-safe form (bash 3.2 + set -u; A-23).
+  # The empty array preserves the legacy positional shape on missing
+  # usage file (D-005 absence path).
+  local cost_flags=()
+  local _cf_line
+  while IFS= read -r _cf_line; do
+    cost_flags+=("$_cf_line")
+  done < <(_cost_flags_for "$ident" "$stage")
   case "$vh_rc" in
     0)
-      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" "verdict=transitioned"
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" "verdict=transitioned" \
+        "${cost_flags[@]+"${cost_flags[@]}"}"
       log "stage $stage complete for $ident (verdict-handler transitioned)"
       # Success path: clear any prior failure state + skip labels.
       rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
@@ -479,11 +585,13 @@ main() {
       fi
       ;;
     1)
-      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "halt-for-human" "$duration" "verdict=halt"
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "halt-for-human" "$duration" "verdict=halt" \
+        "${cost_flags[@]+"${cost_flags[@]}"}"
       log "stage $stage halted on $ident (human intervention required)"
       ;;
     2)
-      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "protocol-violation" "$duration" "verdict=violation"
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "protocol-violation" "$duration" "verdict=violation" \
+        "${cost_flags[@]+"${cost_flags[@]}"}"
       log "stage $stage protocol violation on $ident"
       ;;
   esac

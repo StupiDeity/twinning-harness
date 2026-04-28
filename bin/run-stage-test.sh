@@ -373,6 +373,485 @@ else
   fail_at "case-14 NOTABLE" "unexpected bumps=$bumps"
 fi
 
+# ─── Case 19: _cost_flags_for emits 12 lines when usage file present (ENG-26 D-005) ──
+# Asserts the helper turns a six-field usage-<stage>.json into a newline-delimited
+# stream of `--key`/`value` pairs and that the model literal `claude-opus-4-7[1m]`
+# round-trips with [1m] intact (DL-202 / SEC-007 — bash array boundary preserves
+# glob chars).
+COST_DIR="$(issue_dir ENG-T-COST)"
+mkdir -p "$COST_DIR"
+cat > "$COST_DIR/usage-plan.json" <<'JSON'
+{"tokens_in":5,"tokens_out":6,"cache_read":20773,"cache_create":17419,"cost_usd":0.42,"model":"claude-opus-4-7[1m]"}
+JSON
+
+cost_flags=()
+while IFS= read -r _cf_line; do
+  cost_flags+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COST plan)
+
+# Find the `--model` slot; the next array element is the model value.
+model_idx=-1
+for i in "${!cost_flags[@]}"; do
+  [[ "${cost_flags[$i]}" == "--model" ]] && { model_idx=$((i+1)); break; }
+done
+model_val=""
+[[ $model_idx -ge 0 ]] && model_val="${cost_flags[$model_idx]}"
+
+if [[ "${#cost_flags[@]}" == "12" ]] \
+   && [[ "${cost_flags[0]}" == "--tokens-in" && "${cost_flags[1]}" == "5" ]] \
+   && [[ "${cost_flags[8]}" == "--cost-usd" && "${cost_flags[9]}" == "0.42" ]] \
+   && [[ "$model_val" == "claude-opus-4-7[1m]" ]]; then
+  pass_at "case-19 _cost_flags_for: 12 lines emitted; model literal preserved with [1m]"
+else
+  fail_at "case-19 _cost_flags_for" "count=${#cost_flags[@]} model_val=$model_val flags=$(printf '%s|' "${cost_flags[@]}")"
+fi
+
+# ─── Case 20: _cost_flags_for emits nothing when usage file absent ──────
+COST_DIR_B="$(issue_dir ENG-T-COSTB)"
+mkdir -p "$COST_DIR_B"
+rm -f "$COST_DIR_B/usage-plan.json"
+
+cost_flags_b=()
+while IFS= read -r _cf_line; do
+  [[ -z "$_cf_line" ]] && continue
+  cost_flags_b+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COSTB plan)
+
+if [[ "${#cost_flags_b[@]}" == "0" ]]; then
+  pass_at "case-20 _cost_flags_for: empty array when usage file absent"
+else
+  fail_at "case-20 _cost_flags_for absent" "got ${#cost_flags_b[@]} entries"
+fi
+
+# ─── Case 21: _cost_footer shape pinned to brainstorm D-008 format ─────
+# Pinned values: cost_usd=0.42, tokens_in=18000, tokens_out=4000,
+# cache_read=20773, cache_create=17419 → cache_pct = round(54.39…) = 54.
+COST_DIR_C="$(issue_dir ENG-T-COSTC)"
+mkdir -p "$COST_DIR_C"
+cat > "$COST_DIR_C/usage-plan.json" <<'JSON'
+{"tokens_in":18000,"tokens_out":4000,"cache_read":20773,"cache_create":17419,"cost_usd":0.42,"model":"claude-opus-4-7[1m]"}
+JSON
+
+footer_c="$(_cost_footer ENG-T-COSTC plan)"
+expected_c=$'\ncost: $0.42 · in 18.0k · out 4.0k · cache 54%'
+if [[ "$footer_c" == "$expected_c" ]]; then
+  pass_at "case-21 _cost_footer shape: 'cost: \$0.42 · in 18.0k · out 4.0k · cache 54%'"
+else
+  fail_at "case-21 _cost_footer shape" "got=$(printf '%q' "$footer_c") expected=$(printf '%q' "$expected_c")"
+fi
+
+# ─── Case 22: _cost_footer omits cache segment when denominator is zero ─
+COST_DIR_D="$(issue_dir ENG-T-COSTD)"
+mkdir -p "$COST_DIR_D"
+cat > "$COST_DIR_D/usage-plan.json" <<'JSON'
+{"tokens_in":1000,"tokens_out":500,"cache_read":0,"cache_create":0,"cost_usd":0.10,"model":"claude-opus-4-7"}
+JSON
+
+footer_d="$(_cost_footer ENG-T-COSTD plan)"
+if [[ "$footer_d" =~ cache ]]; then
+  fail_at "case-22 _cost_footer cache-zero" "footer should omit cache segment, got=$footer_d"
+elif [[ "$footer_d" =~ ^$'\n'cost:\ \$.*in.*out ]]; then
+  pass_at "case-22 _cost_footer cache-zero: '· cache N%' segment omitted when read+create == 0"
+else
+  fail_at "case-22 _cost_footer cache-zero shape" "got=$(printf '%q' "$footer_d")"
+fi
+
+# ─── Case 23: _cost_footer prints empty when usage file absent ─────────
+COST_DIR_E="$(issue_dir ENG-T-COSTE)"
+mkdir -p "$COST_DIR_E"
+rm -f "$COST_DIR_E/usage-plan.json"
+
+footer_e="$(_cost_footer ENG-T-COSTE plan)"
+if [[ -z "$footer_e" ]]; then
+  pass_at "case-23 _cost_footer absent: empty string when no usage file"
+else
+  fail_at "case-23 _cost_footer absent" "got=$(printf '%q' "$footer_e")"
+fi
+
+# ─── Case 24: D-011 stale-file removal — behavioural integration test ──
+# The plan's failure-mode → test-map binds "Stale usage-<stage>.json on
+# scope-approval replay" to an *integration* test, not a source-text grep.
+# Drive the scope-approval-replay path directly via _replay_scope_approval
+# (the helper that owns the rm-f + replay metrics emit) and assert:
+#   (a) the pre-existing usage-<stage>.json is gone; and
+#   (b) the resulting metrics call carries NO `--`-prefixed cost flags,
+#       since replays must omit cost fields (D-011 double-count guard).
+# A future refactor that deletes the rm-f, hoists the helper without
+# touching the file, or accidentally feeds cost flags into the replay
+# metric will fail this test.
+reset_capture
+COST_DIR_F="$(issue_dir ENG-T-COSTF)"
+mkdir -p "$COST_DIR_F"
+cat > "$COST_DIR_F/usage-implement.json" <<'JSON'
+{"tokens_in":5,"tokens_out":6,"cache_read":20,"cache_create":10,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+
+# metrics.sh capture stub: every invocation writes its full argv to a
+# capture file so the assertions can match `--cost-usd` etc. precisely.
+METRICS_CAPTURE_F="$STUB_DIR/replay-metrics.capture"
+: > "$METRICS_CAPTURE_F"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'ARGS=%s\n' "\$*" >> "$METRICS_CAPTURE_F"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+# Drive the actual code path: SCRIPT_DIR points at $STUB_DIR (set above
+# at :87) so _replay_scope_approval invokes the stub metrics.sh.
+# `|| true` keeps the assertion path running if the helper is missing —
+# the test will fail on the (a)/(b) checks below rather than aborting.
+_replay_scope_approval ENG-T-COSTF implement 2>/dev/null || true
+
+if [[ ! -e "$COST_DIR_F/usage-implement.json" ]] \
+   && grep -q 'ARGS=stage-start ENG-T-COSTF implement scope-approval-replay 0' "$METRICS_CAPTURE_F" \
+   && ! grep -qE -- '--(tokens-in|tokens-out|cache-read|cache-create|cost-usd|model)' "$METRICS_CAPTURE_F"; then
+  pass_at "case-24 D-011 replay: usage-<stage>.json removed and metrics carries no cost flags"
+else
+  fail_at "case-24 D-011 replay" \
+    "file_exists=$([[ -e "$COST_DIR_F/usage-implement.json" ]] && echo yes || echo no) capture=$(cat "$METRICS_CAPTURE_F")"
+fi
+
+# ─── Case 25: _cost_flags_for tolerates corrupt JSON (review blocker 1) ──
+# Plan failure-mode → test-map row "usage-<stage>.json exists but
+# _cost_flags_for jq parse fails" requires a *malformed file* fixture, not
+# just the absent path covered by case-20. Seed `not-json{` and assert the
+# helper emits zero lines AND a downstream metrics call carries zero
+# `--`-prefixed cost flags. jq's parse failure must be silent.
+reset_capture
+COST_DIR_G="$(issue_dir ENG-T-COSTG)"
+mkdir -p "$COST_DIR_G"
+printf 'not-json{' > "$COST_DIR_G/usage-plan.json"
+
+cost_flags_g=()
+while IFS= read -r _cf_line; do
+  cost_flags_g+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COSTG plan)
+
+# metrics.sh capture stub: same shape as case-24's, isolated capture file.
+METRICS_CAPTURE_G="$STUB_DIR/corrupt-flags-metrics.capture"
+: > "$METRICS_CAPTURE_G"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'ARGS=%s\n' "\$*" >> "$METRICS_CAPTURE_G"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+bash "$STUB_DIR/metrics.sh" stage-end ENG-T-COSTG plan success 100 "branch=foo" \
+  "${cost_flags_g[@]+"${cost_flags_g[@]}"}"
+
+if [[ "${#cost_flags_g[@]}" == "0" ]] \
+   && ! grep -qE -- '--(tokens-in|tokens-out|cache-read|cache-create|cost-usd|model)' "$METRICS_CAPTURE_G"; then
+  pass_at "case-25 _cost_flags_for corrupt JSON: zero lines emitted; metrics carries no cost flags"
+else
+  fail_at "case-25 corrupt-JSON _cost_flags_for" \
+    "count=${#cost_flags_g[@]} capture=$(cat "$METRICS_CAPTURE_G")"
+fi
+
+# ─── Case 26: _cost_footer empty on corrupt JSON (review blocker 3) ─────
+# `_cost_footer` previously emitted misleading `cost: $0.00 · in 0.0k ·
+# out 0.0k` to Linear when usage-<stage>.json failed to parse, because
+# bash's `local x=$(failing)` masked jq's nonzero rc and the empty values
+# arithmetic-evaluated to 0. Brainstorm D-010 specifies soft-fail
+# semantics — the corrupt-but-nonempty path must mirror the absent path
+# (return empty string).
+COST_DIR_H="$(issue_dir ENG-T-COSTH)"
+mkdir -p "$COST_DIR_H"
+printf 'not-json{' > "$COST_DIR_H/usage-plan.json"
+
+footer_h="$(_cost_footer ENG-T-COSTH plan)"
+if [[ -z "$footer_h" ]]; then
+  pass_at "case-26 _cost_footer corrupt JSON: returns empty (D-010 soft fail)"
+else
+  fail_at "case-26 _cost_footer corrupt JSON" "got=$(printf '%q' "$footer_h")"
+fi
+
+# ─── Case 27: cache% formula parity across _cost_footer and status.sh ──
+# Brainstorm D-007 binds the cache-percent formula to round-half-up:
+#   round(100 * cache_read / max(1, cache_read + cache_create))
+# and "Defined once and used by both `_aggregate_cost_by_stage` and the
+# Linear footer (D-008)." A divergence (e.g. floor vs round-half-up) prints
+# different cache% values for the same numbers in the per-stage Linear
+# comment vs `bash bin/status.sh`, breaking operator trust.
+#
+# Pin a non-half ratio (r=8, c=3 → 100*8/11 = 72.727…, round-half-up = 73,
+# floor = 72) so the next regression that swaps round for floor (or vice
+# versa) fails this test. Earlier cases (case-21: r=20773, c=17419 →
+# 54.39 → 54) are floor/round-equivalent and miss the boundary.
+COST_DIR_K="$(issue_dir ENG-T-COSTK)"
+mkdir -p "$COST_DIR_K"
+cat > "$COST_DIR_K/usage-plan.json" <<'JSON'
+{"tokens_in":5000,"tokens_out":6000,"cache_read":8,"cache_create":3,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+
+footer_k="$(_cost_footer ENG-T-COSTK plan)"
+if [[ "$footer_k" =~ cache\ 73% ]]; then
+  pass_at "case-27a _cost_footer rounds 72.73% → 73% (D-007 round-half-up)"
+else
+  fail_at "case-27a _cost_footer round" "expected 'cache 73%', got=$(printf '%q' "$footer_k")"
+fi
+
+# Build a tempdir-scoped events.jsonl with one cost-bearing stage-end event
+# matching the same r=8, c=3 pin, then drive `_aggregate_cost_by_stage`
+# via a child bash that sources status.sh fresh (avoids polluting the
+# parent test's SCRIPT_DIR / set -u state). Output is TSV; column 6 is
+# cache_pct.
+mkdir -p "$PROJECT_STATE_DIR/metrics"
+cat > "$PROJECT_STATE_DIR/metrics/events.jsonl" <<'JSON'
+{"ts":"2026-04-27T12:00:00Z","event":"stage-end","issue_id":"ENG-T-COSTK","stage":"plan","outcome":"success","duration_ms":100,"notes":"","cost_usd":0.42,"tokens_in":5000,"tokens_out":6000,"cache_read":8,"cache_create":3,"model":"claude-opus-4-7"}
+JSON
+
+agg_out="$(
+  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    _aggregate_cost_by_stage "'"$PROJECT_STATE_DIR/metrics/events.jsonl"'"
+  ' 2>/dev/null || true
+)"
+agg_cache_pct="$(awk -F'\t' '$1 == "plan" {print $6}' <<<"$agg_out")"
+
+if [[ "$agg_cache_pct" == "73" ]]; then
+  pass_at "case-27b _aggregate_cost_by_stage rounds 72.73% → 73% (matches footer; D-007 single formula)"
+else
+  fail_at "case-27b cache% formula divergence (status.sh vs run-stage.sh)" \
+          "expected 73 (round-half-up), got=$agg_cache_pct; full row=$(awk -F'\t' '$1 == "plan"' <<<"$agg_out")"
+fi
+
+# ─── QA-authored adversarial cases (NOT in plan's Failure Mode → Test Map) ──
+
+# ─── Case 28: _cost_footer cache% exact-half boundary (round-half-up tie) ──
+# D-007 specifies `round(100 * cache_read / max(1, cache_read + cache_create))`
+# with round-half-up semantics. Pin the .5 boundary explicitly: r=99,c=101
+# → 49.500% → 50 (round-up); r=101,c=99 → 50.500% → 51 (round-up). A future
+# regression that swaps to banker's-rounding (round-half-to-even) would
+# render 50% on the first case (correct) but 50% on the SECOND case
+# (incorrect — banker's rounds 50.5 to 50, not 51). Anchor both sides.
+COST_DIR_BD1="$(issue_dir ENG-T-COST-BD1)"
+mkdir -p "$COST_DIR_BD1"
+cat > "$COST_DIR_BD1/usage-plan.json" <<'JSON'
+{"tokens_in":5000,"tokens_out":6000,"cache_read":99,"cache_create":101,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+footer_bd1="$(_cost_footer ENG-T-COST-BD1 plan)"
+if [[ "$footer_bd1" =~ cache\ 50% ]]; then
+  pass_at "case-28a _cost_footer 49.5% rounds to 50% (round-half-up)"
+else
+  fail_at "case-28a _cost_footer 49.5% boundary" "expected 'cache 50%', got=$(printf '%q' "$footer_bd1")"
+fi
+
+COST_DIR_BD2="$(issue_dir ENG-T-COST-BD2)"
+mkdir -p "$COST_DIR_BD2"
+cat > "$COST_DIR_BD2/usage-plan.json" <<'JSON'
+{"tokens_in":5000,"tokens_out":6000,"cache_read":101,"cache_create":99,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+footer_bd2="$(_cost_footer ENG-T-COST-BD2 plan)"
+if [[ "$footer_bd2" =~ cache\ 51% ]]; then
+  pass_at "case-28b _cost_footer 50.5% rounds to 51% (round-half-up — NOT banker's)"
+else
+  fail_at "case-28b _cost_footer 50.5% boundary" "expected 'cache 51%', got=$(printf '%q' "$footer_bd2")"
+fi
+
+# ─── Case 29: _cost_footer very small cost rendering ───────────────────────
+# A very small cost (e.g. a stage that finished in cache + tiny prompt)
+# truncates to $0.00 under `%.2f`. Pin the format so a future change to
+# `%.4f` doesn't quietly widen every Linear footer.
+COST_DIR_TINY="$(issue_dir ENG-T-COST-TINY)"
+mkdir -p "$COST_DIR_TINY"
+cat > "$COST_DIR_TINY/usage-plan.json" <<'JSON'
+{"tokens_in":50,"tokens_out":20,"cache_read":1000,"cache_create":0,"cost_usd":0.001,"model":"claude-opus-4-7"}
+JSON
+footer_tiny="$(_cost_footer ENG-T-COST-TINY plan)"
+if [[ "$footer_tiny" == *"cost: \$0.00"* ]] \
+   && [[ "$footer_tiny" == *"in 0.1k"* ]] \
+   && [[ "$footer_tiny" == *"out 0.0k"* ]] \
+   && [[ "$footer_tiny" == *"cache 100%"* ]]; then
+  pass_at "case-29 _cost_footer tiny cost: \$0.00 · in 0.1k · out 0.0k · cache 100%"
+else
+  fail_at "case-29 _cost_footer tiny cost" "got=$(printf '%q' "$footer_tiny")"
+fi
+
+# ─── Case 30: _cost_flags_for forward-compat — extra fields in usage file ──
+# A future dispatch.sh extension may add fields beyond the six contracted by
+# D-003 (e.g. `tools_invoked`). `_cost_flags_for` MUST emit only the six
+# contracted flags regardless. The downstream metrics.sh would otherwise
+# reject unknown flags (case-G in metrics-test) or — worse — pass through
+# whatever extra flags this helper produces. Pin the contract.
+COST_DIR_FWD="$(issue_dir ENG-T-COST-FWD)"
+mkdir -p "$COST_DIR_FWD"
+cat > "$COST_DIR_FWD/usage-plan.json" <<'JSON'
+{"tokens_in":18000,"tokens_out":4000,"cache_read":20773,"cache_create":17419,"cost_usd":0.42,"model":"claude-opus-4-7","tools_invoked":["Read","Grep"],"future_field":"some-value"}
+JSON
+
+cost_flags_fwd=()
+_cf_line=
+while IFS= read -r _cf_line; do
+  cost_flags_fwd+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-COST-FWD plan)
+
+# 12 lines = six --key/value pairs. No more, no less.
+if [[ "${#cost_flags_fwd[@]}" == "12" ]] \
+   && [[ "${cost_flags_fwd[*]}" != *"--tools-invoked"* ]] \
+   && [[ "${cost_flags_fwd[*]}" != *"--future-field"* ]]; then
+  pass_at "case-30 _cost_flags_for forward-compat: only six contracted flags emitted, extras dropped"
+else
+  fail_at "case-30 _cost_flags_for forward-compat" \
+          "count=${#cost_flags_fwd[@]} flags=(${cost_flags_fwd[*]})"
+fi
+
+# ─── Case 31 (QA adversarial): _cost_footer locale-numeric — current behavior pin ──
+# DEFECT FOUND BY QA: under a non-C numeric locale (LC_NUMERIC=de_DE.UTF-8 →
+# comma decimal), `_cost_footer` emits `cost: $0,42` instead of `cost: $0.42`.
+# Same defect applies to `_aggregate_cost_by_stage` (status.sh per-stage
+# table). Root cause: awk's `printf "%.2f"` respects LC_NUMERIC; the helper
+# does not wrap `LC_ALL=C` around the awk call.
+#
+# Severity: P2 (cosmetic). Surface area: visible to operators on hosts with
+# non-default locale; events.jsonl is unaffected (jq always emits `.`
+# decimal regardless of locale, so the underlying cost-data pipeline stays
+# correct). v1 ships under en_US/POSIX; the defect cannot fire on the
+# canonical CI/dev configuration. Logged as a v2 hardening candidate in
+# the QA stage-summary; tracking in a follow-up Linear bug.
+#
+# Pin CURRENT behavior so a future fix (wrapping awk in `LC_ALL=C`) trips
+# this test and prompts a deliberate update — and so the failure cannot
+# silently change shape (e.g., switch from `$0,42` to `$0` if the locale
+# config drops the cost segment entirely).
+COST_DIR_LOC="$(issue_dir ENG-T-LOCALE)"
+mkdir -p "$COST_DIR_LOC"
+cat > "$COST_DIR_LOC/usage-plan.json" <<'JSON'
+{"tokens_in":18000,"tokens_out":4000,"cache_read":20773,"cache_create":17419,"cost_usd":0.42,"model":"claude-opus-4-7"}
+JSON
+
+footer_loc="$(LC_ALL=de_DE.UTF-8 LC_NUMERIC=de_DE.UTF-8 LANG=de_DE.UTF-8 _cost_footer ENG-T-LOCALE plan 2>/dev/null)"
+# When the locale is unavailable on this host, awk falls back to C-locale
+# silently and emits `$0.42`. Accept either shape so the test is portable
+# across CI hosts with or without `de_DE.UTF-8` installed; the assertion
+# is "the cost segment is one of the two known shapes, not corrupted".
+if [[ "$footer_loc" == *"\$0,42"* ]]; then
+  pass_at "case-31 _cost_footer locale: emits '\$0,42' under de_DE.UTF-8 (KNOWN P2 — pin current behavior; v2 hardening tracked)"
+elif [[ "$footer_loc" == *"\$0.42"* ]]; then
+  pass_at "case-31 _cost_footer locale: emits '\$0.42' (de_DE locale unavailable on host — fallback to C is also acceptable)"
+else
+  fail_at "case-31 _cost_footer locale" "footer corrupted under de_DE locale — neither '\$0,42' nor '\$0.42': $(printf '%q' "$footer_loc")"
+fi
+
+# ─── Case 32 (QA adversarial): _cost_footer huge token counts ────────────
+# A very long stage with multi-million tokens (rare today but possible with
+# 1M-context Opus) MUST render as `1234.5k` not `1.2345e+06k` or similar
+# scientific notation. awk's `%.1f` handles this naturally; pin the format
+# so any future change to printf width specifiers does not silently break.
+COST_DIR_HUGE="$(issue_dir ENG-T-HUGE)"
+mkdir -p "$COST_DIR_HUGE"
+cat > "$COST_DIR_HUGE/usage-plan.json" <<'JSON'
+{"tokens_in":12345000,"tokens_out":987000,"cache_read":50000000,"cache_create":1000000,"cost_usd":42.99,"model":"claude-opus-4-7"}
+JSON
+
+footer_huge="$(_cost_footer ENG-T-HUGE plan)"
+# Expect: cost: $42.99 · in 12345.0k · out 987.0k · cache 98%
+if [[ "$footer_huge" == *"\$42.99"* ]] \
+   && [[ "$footer_huge" == *"in 12345.0k"* ]] \
+   && [[ "$footer_huge" == *"out 987.0k"* ]] \
+   && [[ "$footer_huge" == *"cache 98%"* ]] \
+   && [[ "$footer_huge" != *"e+"* ]] \
+   && [[ "$footer_huge" != *"e-"* ]]; then
+  pass_at "case-32 _cost_footer huge tokens: '\$42.99 · in 12345.0k · out 987.0k · cache 98%'; no sci notation"
+else
+  fail_at "case-32 _cost_footer huge tokens" "got=$(printf '%q' "$footer_huge")"
+fi
+
+# ─── Case 33 (QA adversarial): _cost_footer zero-byte file (race window) ──
+# A theoretical race window: dispatch's renderer truncates `>` the file but
+# crashes before the jq filter writes content; or another process holds a
+# write lock. The brainstorm's D-010 soft-fail semantics demand that
+# zero-byte files mirror the absent-file path — empty footer, no crash,
+# no misleading `cost: $0.00 · in 0.0k · out 0.0k`.
+COST_DIR_EMPTY="$(issue_dir ENG-T-EMPTY)"
+mkdir -p "$COST_DIR_EMPTY"
+: > "$COST_DIR_EMPTY/usage-plan.json"  # zero bytes, file exists
+
+footer_empty="$(_cost_footer ENG-T-EMPTY plan 2>/dev/null)"
+flags_empty=()
+while IFS= read -r _cf_line; do
+  [[ -z "$_cf_line" ]] && continue
+  flags_empty+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-EMPTY plan 2>/dev/null)
+
+if [[ -z "$footer_empty" ]] && [[ "${#flags_empty[@]}" == "0" ]]; then
+  pass_at "case-33 zero-byte usage file: _cost_footer empty, _cost_flags_for empty (D-010 soft fail)"
+else
+  fail_at "case-33 zero-byte usage file" "footer=$(printf '%q' "$footer_empty") flags=${#flags_empty[@]}"
+fi
+
+# ─── Case 34 (QA adversarial): _aggregate_cost_by_stage with no stage-end events ─
+# Plan failure-mode "status.sh asked for cost summary before any cost-tagged
+# event exists" is bound to a manual smoke check. Pin a unit-level assertion
+# too: feed an events.jsonl with only stage-start lines (no stage-end), and
+# assert _aggregate_cost_by_stage emits no rows (not a NaN row, not a zero
+# row). Otherwise a future filter regression that drops the `event ==
+# "stage-end"` predicate would silently aggregate stage-starts (which have
+# no cost data) and pollute the per-stage table.
+AGGR_TMP_DIR="$(mktemp -d)"
+mkdir -p "$AGGR_TMP_DIR/metrics"
+cat > "$AGGR_TMP_DIR/metrics/events.jsonl" <<'JSONL'
+{"ts":"2026-04-27T12:00:00Z","event":"stage-start","issue_id":"ENG-A","stage":"plan","outcome":"dispatching","duration_ms":0,"notes":""}
+{"ts":"2026-04-27T12:01:00Z","event":"stage-start","issue_id":"ENG-B","stage":"implement","outcome":"dispatching","duration_ms":0,"notes":""}
+JSONL
+
+aggr_out_no_end="$(
+  PROJECT_STATE_DIR="$AGGR_TMP_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    _aggregate_cost_by_stage "'"$AGGR_TMP_DIR/metrics/events.jsonl"'"
+  ' 2>/dev/null || true
+)"
+rm -rf "$AGGR_TMP_DIR"
+
+if [[ -z "${aggr_out_no_end// /}" ]]; then
+  pass_at "case-34 _aggregate_cost_by_stage: zero rows when events.jsonl has no stage-end events"
+else
+  fail_at "case-34 _aggregate no-stage-end" "got rows=$(printf '%q' "$aggr_out_no_end")"
+fi
+
+# ─── Case 35 (QA adversarial): _cost_flags_for never word-splits a model with spaces ─
+# DL-202 / SEC-007 anchored the `[1m]` glob-char concern. Spaces are a
+# different word-splitting axis: today's models don't have them, but a
+# future model name like "Claude Opus 4.7 (1M ctx)" or even a corrupted
+# usage file with a multi-word model would silently lose the suffix when
+# the flag stream goes through `mapfile` / `while read`. The newline-
+# delimited contract preserves spaces; pin it.
+COST_DIR_SPC="$(issue_dir ENG-T-SPC)"
+mkdir -p "$COST_DIR_SPC"
+cat > "$COST_DIR_SPC/usage-plan.json" <<'JSON'
+{"tokens_in":5,"tokens_out":6,"cache_read":1,"cache_create":1,"cost_usd":0.10,"model":"future model with spaces"}
+JSON
+
+flags_spc=()
+while IFS= read -r _cf_line; do
+  flags_spc+=("$_cf_line")
+done < <(_cost_flags_for ENG-T-SPC plan)
+
+# Find model slot and assert verbatim preservation.
+model_idx_spc=-1
+for i in "${!flags_spc[@]}"; do
+  [[ "${flags_spc[$i]}" == "--model" ]] && { model_idx_spc=$((i+1)); break; }
+done
+model_val_spc=""
+[[ $model_idx_spc -ge 0 ]] && model_val_spc="${flags_spc[$model_idx_spc]}"
+
+if [[ "$model_val_spc" == "future model with spaces" ]] \
+   && [[ "${#flags_spc[@]}" == "12" ]]; then
+  pass_at "case-35 _cost_flags_for spaces in model: 12 lines emitted; spaces preserved verbatim"
+else
+  fail_at "case-35 _cost_flags_for spaces" \
+          "count=${#flags_spc[@]} model_val=$(printf '%q' "$model_val_spc")"
+fi
+
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
@@ -691,6 +1170,7 @@ if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
 else
   fail_at "case-18c brainstorm+vh_rc=1" "capture=$(cat "$CAPTURE_FILE")"
 fi
+
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"

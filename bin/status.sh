@@ -168,6 +168,113 @@ show_metrics() {
   }'
 }
 
+# ─────────────────────────────────────────────── Section 3.5: cost summary (ENG-26)
+# Read $PROJECT_STATE_DIR/metrics/events.jsonl. Aggregates `stage-end`
+# events with a present `cost_usd` field; legacy lines (no cost field)
+# read through `// 0` defaults so historical events do not skew totals.
+# Time-window boundaries are UTC (D-007 — stated in the section header
+# so an operator reading at 11pm Pacific understands the boundary).
+
+# Internal helper: per-stage breakdown table. Reads $1 = jsonl path,
+# emits one tab-separated row per stage sorted by cost desc:
+#   stage<TAB>events<TAB>cost_usd<TAB>tokens_in<TAB>tokens_out<TAB>cache_pct
+# When the cache_read+cache_create denominator is zero for a stage, the
+# cache_pct column is "--" rather than "0%" (D-007 — same convention as
+# the Linear footer).
+_aggregate_cost_by_stage() {
+  local jsonl="$1"
+  jq -s -r '
+    map(select(.event == "stage-end" and (.cost_usd != null)))
+    | group_by(.stage)
+    | map({
+        stage:        (.[0].stage // "-"),
+        events:       length,
+        cost:         (map(.cost_usd        // 0) | add),
+        tokens_in:    (map(.tokens_in       // 0) | add),
+        tokens_out:   (map(.tokens_out      // 0) | add),
+        cache_read:   (map(.cache_read      // 0) | add),
+        cache_create: (map(.cache_create    // 0) | add)
+      })
+    | sort_by(-.cost)
+    | .[]
+    | [
+        .stage,
+        .events,
+        (.cost),
+        (.tokens_in),
+        (.tokens_out),
+        (if (.cache_read + .cache_create) > 0
+         then ((100.0 * .cache_read / (.cache_read + .cache_create)) + 0.5 | floor)
+         else "--"
+         end)
+      ]
+    | @tsv
+  ' "$jsonl" 2>/dev/null
+}
+
+show_cost_summary() {
+  section "Cost summary (subscription proxy, UTC)"
+
+  local jsonl="$PROJECT_STATE_DIR/metrics/events.jsonl"
+  if [[ ! -f "$jsonl" ]]; then
+    printf '  %s(no events.jsonl yet)%s\n' "$C_DIM" "$C_RST"
+    return 0
+  fi
+
+  # UTC window boundaries computed in shell so jq can compare strings.
+  local today_iso week_iso month_iso
+  today_iso="$(date -u +%Y-%m-%dT00:00:00Z)"
+  if ! week_iso="$(date -u -v-7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
+    week_iso="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+  fi
+  month_iso="$(date -u +%Y-%m-01T00:00:00Z)"
+
+  # Totals + legacy counter in one jq pass.
+  local totals
+  totals="$(jq -s -r --arg today "$today_iso" --arg week "$week_iso" --arg month "$month_iso" '
+    [.[] | select(.event == "stage-end")] as $ends
+    | {
+        today_cost: ([$ends[] | select(.ts >= $today) | (.cost_usd // 0)] | add // 0),
+        week_cost:  ([$ends[] | select(.ts >= $week)  | (.cost_usd // 0)] | add // 0),
+        month_cost: ([$ends[] | select(.ts >= $month) | (.cost_usd // 0)] | add // 0),
+        legacy_in_week:  ([$ends[] | select(.ts >= $week) | select(.cost_usd == null)] | length),
+        total_in_week:   ([$ends[] | select(.ts >= $week)] | length)
+      }
+    | "\(.today_cost)\t\(.week_cost)\t\(.month_cost)\t\(.legacy_in_week)\t\(.total_in_week)"
+  ' "$jsonl" 2>/dev/null || printf '0\t0\t0\t0\t0')"
+
+  IFS=$'\t' read -r today_cost week_cost month_cost legacy_n total_n <<<"$totals"
+  awk -v t="${today_cost:-0}" -v w="${week_cost:-0}" -v m="${month_cost:-0}" \
+      -v lg="${legacy_n:-0}"   -v tn="${total_n:-0}" \
+    'BEGIN{ printf("  today=$%.2f · 7d=$%.2f · MTD=$%.2f  (legacy events: %d/%d)\n", t, w, m, lg, tn) }'
+
+  # Per-stage breakdown.
+  local rows
+  rows="$(_aggregate_cost_by_stage "$jsonl")"
+  if [[ -z "${rows// /}" ]]; then
+    printf '  %s(no stage-end events with cost data)%s\n' "$C_DIM" "$C_RST"
+    return 0
+  fi
+
+  printf '\n  %-12s %7s %9s %9s %9s %7s\n' "stage" "events" "cost" "in" "out" "cache%"
+  printf '  %s\n' "------------ ------- --------- --------- --------- -------"
+  while IFS=$'\t' read -r stage events cost ti to cache; do
+    [[ -z "$stage" ]] && continue
+    if [[ "$cache" == "--" ]]; then
+      cache_disp="--"
+    else
+      cache_disp="${cache}%"
+    fi
+    awk -v st="$stage" -v ev="$events" -v co="$cost" -v ti="$ti" -v to="$to" -v ch="$cache_disp" \
+      'BEGIN{ printf("  %-12s %7d %9s %9s %9s %7s\n",
+                     st, ev,
+                     sprintf("$%.2f", co),
+                     sprintf("%.1fk", ti/1000.0),
+                     sprintf("%.1fk", to/1000.0),
+                     ch) }'
+  done <<<"$rows"
+}
+
 # ───────────────────────────────────────────────────── Section 4: marker comments
 
 show_markers() {
@@ -229,6 +336,7 @@ main() {
   printf '%sTwinning pipeline status — %s UTC%s\n' "$C_BLD" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$C_RST"
   show_runs          || true
   show_active_issues || true
+  show_cost_summary  || true
   show_metrics       || true
   show_markers       || true
   printf '\n'
