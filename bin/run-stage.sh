@@ -618,10 +618,23 @@ main() {
         log "stage $stage wait on $ident (reason=$_sp_reason)"
         exit 0
       fi
-      # Budget exhausted: pipeline:halted was applied by _handle_wait.
-      # Fall through to defensive halt-add (now a no-op, label already set)
-      # and verdict_handler, which preserves the halt and emits
-      # halt-for-human metrics naturally.
+      # Budget exhausted: _handle_wait already posted the halt comment and
+      # applied pipeline:halted. Skip the rest of the dispatch flow entirely.
+      # The previous design fell through, but post_completion_comment then
+      # fired against the just-deleted stage-summary file and posted a
+      # contradictory `summary_missing` follow-up (review-major-1). Emit the
+      # halt-for-human metric explicitly here and exit clean — verdict_handler
+      # will re-classify the halt naturally on the next tick.
+      local _halt_cost_flags=()
+      local _halt_cf_line
+      while IFS= read -r _halt_cf_line; do
+        _halt_cost_flags+=("$_halt_cf_line")
+      done < <(_cost_flags_for "$ident" "$stage")
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "halt-for-human" \
+        "$(( ($(date +%s) - t0) * 1000 ))" "verdict=halt reason=$_sp_reason exhausted=external-signal-budget" \
+        "${_halt_cost_flags[@]+"${_halt_cost_flags[@]}"}" || true
+      log "stage $stage halt-for-human on $ident (external-signal-budget exhausted, reason=$_sp_reason)"
+      exit 0
     fi
   fi
 

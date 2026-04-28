@@ -1177,7 +1177,11 @@ CONFIG="$ENG_45_CASE_O_CFG"
 
 # Linear stub: get-comments returns a fresh wait marker so the gate fires;
 # stage-of returns stage:building so no drift; has-label answers as case N.
-ENG_45_CASE_O_COMMENTS='[{"createdAt":"2026-04-28T18:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
+# Comments fixture lives in a file so the stub heredoc doesn't have to escape
+# the embedded JSON quotes.
+ENG_45_CASE_O_COMMENTS_FILE="$STUB_DIR/case-o-comments.json"
+printf '%s' '[{"createdAt":"2026-04-28T18:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]' \
+  > "$ENG_45_CASE_O_COMMENTS_FILE"
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
 case "\${1:-}" in
@@ -1190,7 +1194,7 @@ case "\${1:-}" in
     esac
     ;;
   stage-of)     printf 'stage:building\n' ;;
-  get-comments) printf '%s' "$ENG_45_CASE_O_COMMENTS" ;;
+  get-comments) cat "$ENG_45_CASE_O_COMMENTS_FILE" ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -1237,7 +1241,7 @@ rm -f "$STUB_DIR/metrics.sh"
 if (( ENG_45_CASE_O_RC != 0 )); then
   fail_at "ENG-45 case O" "main exited rc=$ENG_45_CASE_O_RC (expected 0; M1 fix should yield clean halt)"
 elif [[ -s "$ENG_45_CASE_O_PCC_FLAG" ]]; then
-  fail_at "ENG-45 case O" "post_completion_comment fired on budget-exhausted path (should be skipped per M1)"
+  fail_at "ENG-45 case O" "post_completion_comment fired on budget-exhausted path (should be skipped per M1) — flag=$(cat "$ENG_45_CASE_O_PCC_FLAG") metrics=$(cat "$ENG_45_CASE_O_METRICS")"
 elif ! grep -q 'OUTCOME=halt-for-human' "$ENG_45_CASE_O_METRICS"; then
   fail_at "ENG-45 case O" "missing OUTCOME=halt-for-human metric: $(cat "$ENG_45_CASE_O_METRICS")"
 else
