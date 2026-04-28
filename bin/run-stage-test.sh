@@ -1030,7 +1030,10 @@ printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
 mkdir -p "$(issue_dir ENG-45T9)"
 printf '{"first_attempt_at":"NOT-A-DATE","attempts":99}' > "$(issue_dir ENG-45T9)/wait-build.json"
 _handle_wait ENG-45T9 build awaiting-approval >/dev/null
-if jq -e '.attempts == 0 or .attempts == 1' \
+# Pin attempts==1 (round-2 review n3): first reset to "now" with attempts=0,
+# then incremented to 1 on this very call. The previous disjunction muddied
+# the increment-ordering invariant the security F-3 guard depends on.
+if jq -e '.attempts == 1' \
      "$(issue_dir ENG-45T9)/wait-build.json" >/dev/null 2>&1; then
   pass_at "ENG-45 case J: corrupt first_attempt_at resets counter (no arbitrary date input)"
 else

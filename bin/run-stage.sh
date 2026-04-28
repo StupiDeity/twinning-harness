@@ -391,8 +391,6 @@ _handle_wait() {
   local max_a max_m
   max_a="$(config_get '.orchestrator.external_signal_budget.max_attempts // empty')"
   max_m="$(config_get '.orchestrator.external_signal_budget.max_minutes  // empty')"
-  [[ "$max_a" == "null" ]] && max_a=""
-  [[ "$max_m" == "null" ]] && max_m=""
 
   local exhausted=0
   [[ -n "$max_a" && "$max_a" =~ ^[0-9]+$ ]] && (( attempts >= max_a )) && exhausted=1
@@ -608,10 +606,10 @@ main() {
   # would otherwise trip on a legitimate wait exit (no summary file, no
   # verdict marker).
   if (( ! skip_dispatch )); then
-    local _sp_reason
-    _sp_reason="$(_fresh_wait_reason "$ident" "$stage" 2>/dev/null || printf '')"
-    if [[ -n "$_sp_reason" ]]; then
-      if _handle_wait "$ident" "$stage" "$_sp_reason"; then
+    local _wait_reason
+    _wait_reason="$(_fresh_wait_reason "$ident" "$stage" 2>/dev/null || printf '')"
+    if [[ -n "$_wait_reason" ]]; then
+      if _handle_wait "$ident" "$stage" "$_wait_reason"; then
         # ENG-45 review-major-1: wait-exit must propagate ENG-26 D-008 cost
         # flags. dispatch.sh ran (we're inside `! skip_dispatch`) and wrote
         # usage-${stage}.json; without these flags the retrospective per-stage
@@ -622,9 +620,9 @@ main() {
           _wait_cost_flags+=("$_wait_cf_line")
         done < <(_cost_flags_for "$ident" "$stage")
         bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "soft-pending" \
-          "$(( ($(date +%s) - t0) * 1000 ))" "reason=$_sp_reason" \
+          "$(( ($(date +%s) - t0) * 1000 ))" "reason=$_wait_reason" \
           "${_wait_cost_flags[@]+"${_wait_cost_flags[@]}"}" || true
-        log "stage $stage wait on $ident (reason=$_sp_reason)"
+        log "stage $stage wait on $ident (reason=$_wait_reason)"
         exit 0
       fi
       # Budget exhausted: _handle_wait already posted the halt comment and
@@ -640,9 +638,9 @@ main() {
         _halt_cost_flags+=("$_halt_cf_line")
       done < <(_cost_flags_for "$ident" "$stage")
       bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "halt-for-human" \
-        "$(( ($(date +%s) - t0) * 1000 ))" "verdict=halt reason=$_sp_reason exhausted=external-signal-budget" \
+        "$(( ($(date +%s) - t0) * 1000 ))" "verdict=halt reason=$_wait_reason exhausted=external-signal-budget" \
         "${_halt_cost_flags[@]+"${_halt_cost_flags[@]}"}" || true
-      log "stage $stage halt-for-human on $ident (external-signal-budget exhausted, reason=$_sp_reason)"
+      log "stage $stage halt-for-human on $ident (external-signal-budget exhausted, reason=$_wait_reason)"
       exit 0
     fi
   fi
