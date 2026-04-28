@@ -365,7 +365,11 @@ _handle_wait() {
       # ~-2.2e9, blowing past any max_minutes on the first tick. Treat any
       # first_attempt_at outside [0, now] as corrupt and reset.
       local _first_epoch _now_epoch
-      _first_epoch="$(date -j -f %Y-%m-%dT%H:%M:%SZ "$first" +%s 2>/dev/null || printf '')"
+      # TZ=UTC pin: the `Z` in the format string is matched as a literal
+      # character, not interpreted as zulu. Without TZ=UTC, date interprets
+      # the H:M:S in host-local TZ and the resulting epoch is off by the
+      # host TZ offset (round-2 review M2).
+      _first_epoch="$(TZ=UTC date -j -f %Y-%m-%dT%H:%M:%SZ "$first" +%s 2>/dev/null || printf '')"
       _now_epoch="$(date -u +%s)"
       if [[ -z "$_first_epoch" ]] || (( _first_epoch < 0 )) || (( _first_epoch > _now_epoch )); then
         first="$now"; attempts=0
@@ -394,7 +398,9 @@ _handle_wait() {
   [[ -n "$max_a" && "$max_a" =~ ^[0-9]+$ ]] && (( attempts >= max_a )) && exhausted=1
   if [[ -n "$max_m" && "$max_m" =~ ^[0-9]+$ ]]; then
     local first_epoch elapsed_m
-    first_epoch="$(date -j -f %Y-%m-%dT%H:%M:%SZ "$first" +%s 2>/dev/null || printf '')"
+    # TZ=UTC pin (round-2 review M2): see analogous note above. case K2
+    # fails on a non-UTC host without this prefix.
+    first_epoch="$(TZ=UTC date -j -f %Y-%m-%dT%H:%M:%SZ "$first" +%s 2>/dev/null || printf '')"
     if [[ -n "$first_epoch" ]]; then
       elapsed_m=$(( ($(date -u +%s) - first_epoch) / 60 ))
       (( elapsed_m < 0 )) && elapsed_m=0
