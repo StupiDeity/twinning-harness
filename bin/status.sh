@@ -90,7 +90,7 @@ show_runs() {
 show_active_issues() {
   section "Active issues (stage:* labels)"
 
-  if [[ -z "${LINEAR_API_KEY:-}" ]]; then
+  if [[ -z "${LINEAR_API_KEY-}" ]]; then
     printf '  %s(LINEAR_API_KEY not set; skip)%s\n' "$C_DIM" "$C_RST"
     return 0
   fi
@@ -280,7 +280,7 @@ show_cost_summary() {
 show_markers() {
   section "pipeline-metric:* markers on active issues (last 60 min)"
 
-  if [[ -z "${LINEAR_API_KEY:-}" ]]; then
+  if [[ -z "${LINEAR_API_KEY-}" ]]; then
     printf '  %s(LINEAR_API_KEY not set; skip)%s\n' "$C_DIM" "$C_RST"
     return 0
   fi
