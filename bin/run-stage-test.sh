@@ -1081,6 +1081,57 @@ fi
 rm -f "$ENG_45_TMP_CFG"
 CONFIG="$ENG_45_CFG_SAVED"
 
+# ─── ENG-45 case N (review-major-4): vh_rc=0 success arm clears wait-build.json
+# Plan AC-3 ("once approval lands, the next build tick passes P2 and proceeds
+# to merge") depends on the wait-counter being cleared after a successful
+# build dispatch. This case drives main() with stage=build through to the
+# `case "$vh_rc" in 0)` arm and asserts the counter file is gone. Subshell
+# isolates stub overrides + any in-main exit.
+
+ENG_45_CASE_N_DIR="$(issue_dir ENG-45T-N)"
+mkdir -p "$ENG_45_CASE_N_DIR"
+printf '{"issue":"ENG-45T-N","stage":"build","reason":"awaiting-approval","attempts":3,"first_attempt_at":"2026-04-28T10:00:00Z","last_attempt_at":"2026-04-28T10:30:00Z"}' \
+  > "$ENG_45_CASE_N_DIR/wait-build.json"
+# Pre-write stage-summary file so the agent-contract validator (run-stage.sh
+# line ~626) doesn't exit 25 before reaching the success arm.
+printf 'build summary\n' > "$ENG_45_CASE_N_DIR/stage-summary-build.md"
+
+# Build-stage linear.sh stub: stage-of returns stage:building (no drift),
+# has-label answers stage:* and pipeline:halted yes / paused no, get-comments
+# returns empty so _fresh_wait_reason finds no wait marker.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  has-label)
+    case "\${3:-}" in
+      pipeline:paused) exit 1 ;;
+      stage:*)         exit 0 ;;
+      pipeline:halted) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  stage-of)     printf 'stage:building\n' ;;
+  get-comments) printf '[]' ;;
+  *)            exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/render-prompt.sh"; chmod +x "$STUB_DIR/render-prompt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"; chmod +x "$STUB_DIR/dispatch.sh"
+
+(
+  verdict_handler() { return 0; }
+  post_completion_comment() { return 0; }
+  push_branch_if_ahead() { return 0; }
+  main ENG-45T-N build
+) >/dev/null 2>&1 || true
+
+if [[ ! -e "$ENG_45_CASE_N_DIR/wait-build.json" ]]; then
+  pass_at "ENG-45 case N: vh_rc=0 success arm clears wait-build.json (AC-3)"
+else
+  fail_at "ENG-45 case N" "wait file still present: $(cat "$ENG_45_CASE_N_DIR/wait-build.json" 2>/dev/null)"
+fi
+
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
