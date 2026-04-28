@@ -592,8 +592,18 @@ main() {
     _sp_reason="$(_fresh_wait_reason "$ident" "$stage" 2>/dev/null || printf '')"
     if [[ -n "$_sp_reason" ]]; then
       if _handle_wait "$ident" "$stage" "$_sp_reason"; then
+        # ENG-45 review-major-1: wait-exit must propagate ENG-26 D-008 cost
+        # flags. dispatch.sh ran (we're inside `! skip_dispatch`) and wrote
+        # usage-${stage}.json; without these flags the retrospective per-stage
+        # cost aggregation under-counts Opus spend by one row per wait dispatch.
+        local _wait_cost_flags=()
+        local _wait_cf_line
+        while IFS= read -r _wait_cf_line; do
+          _wait_cost_flags+=("$_wait_cf_line")
+        done < <(_cost_flags_for "$ident" "$stage")
         bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "soft-pending" \
-          "$(( ($(date +%s) - t0) * 1000 ))" "reason=$_sp_reason" || true
+          "$(( ($(date +%s) - t0) * 1000 ))" "reason=$_sp_reason" \
+          "${_wait_cost_flags[@]+"${_wait_cost_flags[@]}"}" || true
         log "stage $stage wait on $ident (reason=$_sp_reason)"
         exit 0
       fi
