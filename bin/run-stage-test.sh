@@ -1706,6 +1706,45 @@ else
   fail_at "case-18c brainstorm+vh_rc=1" "capture=$(cat "$CAPTURE_FILE")"
 fi
 
+# ─── ENG-45 case TICK (round-3 M-A): wait body must include per-tick token ──
+# bin/linear.sh add-comment dedups identical bodies after stripping ISO
+# timestamps + git SHAs (bin/linear.sh:380-411). Without a per-tick varying
+# token in the wait body, ticks 2..N are silently swallowed and the
+# brainstorm §4.2 "operator sees tick N/M trail" UX claim is broken.
+# AGENT_PROMPTS.md §7 P2 + P5 wait bodies must instruct the agent to
+# include a `tick_at: <human-readable UTC time>` token whose format
+# (yyyy-mm-dd HH:MM:SSZ with a SPACE separator, not a `T`) survives both
+# dedup regexes:
+#   - ISO regex `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z`
+#     does not match (literal T required).
+#   - SHA regex `[0-9a-f]{7,40}` does not match (max contiguous hex run
+#     in `2026-04-29 03:14:00Z` is 4 chars: `2026`).
+ENG_45_PROMPTS_PATH="$HARNESS_DIR/../AGENT_PROMPTS.md"
+[[ -f "$ENG_45_PROMPTS_PATH" ]] || ENG_45_PROMPTS_PATH="$HARNESS_ROOT/AGENT_PROMPTS.md"
+if [[ ! -f "$ENG_45_PROMPTS_PATH" ]]; then
+  fail_at "ENG-45 case TICK" "AGENT_PROMPTS.md not found at $ENG_45_PROMPTS_PATH"
+else
+  # Two grep checks — one per wait reason. Each must mention `tick_at` in
+  # the wait body section. Failing either is a P0 prompt-prose drift.
+  if grep -A8 'pipeline-wait: awaiting-approval' "$ENG_45_PROMPTS_PATH" \
+       | grep -q 'tick_at'; then
+    p2_ok=1
+  else
+    p2_ok=0
+  fi
+  if grep -A8 'pipeline-wait: awaiting-ci' "$ENG_45_PROMPTS_PATH" \
+       | grep -q 'tick_at'; then
+    p5_ok=1
+  else
+    p5_ok=0
+  fi
+  if (( p2_ok == 1 && p5_ok == 1 )); then
+    pass_at "ENG-45 case TICK: AGENT_PROMPTS §7 P2+P5 wait bodies instruct per-tick tick_at token"
+  else
+    fail_at "ENG-45 case TICK" "missing tick_at instruction in wait body — P2_ok=$p2_ok P5_ok=$p5_ok"
+  fi
+fi
+
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
