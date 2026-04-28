@@ -389,6 +389,77 @@ else
   fail_at "fixture-H empty stdin" "exists=$([[ -e $USAGE_H ]] && echo y || echo n) out=$RENDER_OUT_H"
 fi
 
+# ─── Fixture I: type:"result" substring inside assistant text (FALSE POSITIVE) ─
+# An agent debugging this very feature could legitimately emit the literal text
+# `{"type":"result","total_cost_usd":99999}` inside an assistant text payload
+# (e.g. transcribing a stream-json sample for the user). The renderer's
+# extraction is `grep '"type":"result"' raw_capture | tail -1` — a naive
+# substring grep that matches anywhere on the line, including inside JSON-
+# encoded `text` fields. The current renderer's tee writes one NDJSON event
+# per line, so an inline `type":"result"` substring DOES appear on the
+# assistant event's line, and `tail -1` would pick the LAST line — which is
+# the real result event. Confirm the real cost is extracted (0.42), NOT the
+# fake $99999 from the assistant's debug transcript. A future refactor that
+# changes the extraction to "first match" or to a JSON-path filter that
+# crawls .text fields would silently leak the fake value.
+USAGE_I="$ISSUE_DIR/usage-plan-I.json"
+rm -f "$USAGE_I" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_I" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"deadbeef","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Here is a fake stream-json sample I am debugging: {\"type\":\"result\",\"total_cost_usd\":99999,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0},\"modelUsage\":{\"fake-model\":{}}}"}]}}
+{"type":"result","total_cost_usd":0.42,"usage":{"input_tokens":5,"output_tokens":6,"cache_creation_input_tokens":17,"cache_read_input_tokens":20},"modelUsage":{"real-model":{}}}
+NDJSON
+cost_i="$(jq -r '.cost_usd' "$USAGE_I" 2>/dev/null || printf '')"
+model_i="$(jq -r '.model' "$USAGE_I" 2>/dev/null || printf '')"
+if [[ "$cost_i" == "0.42" ]] && [[ "$model_i" == "real-model" ]]; then
+  pass_at "fixture-I substring false-positive: real result wins over inline 'type:\"result\"' in assistant text"
+else
+  fail_at "fixture-I substring false-positive" "cost=$cost_i (expected 0.42) model=$model_i (expected real-model)"
+fi
+
+# ─── Fixture J: zero-byte usage file race window (post-truncate, pre-write) ──
+# A theoretical race: dispatch.sh's renderer truncates `>` the file but
+# crashes before jq writes the body. A subsequent reader (`_cost_flags_for`
+# or `_cost_footer`) MUST treat a zero-byte usage file the same as missing
+# (soft-fail D-010), not as a parse error that bubbles up to the operator.
+# Pin the renderer's behavior on a pre-existing zero-byte file: it should
+# overwrite cleanly when a new stream arrives.
+USAGE_J="$ISSUE_DIR/usage-plan-J.json"
+rm -f "$USAGE_J" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+: > "$USAGE_J"  # zero-byte seed file
+_render_and_capture_stream "$USAGE_J" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"00000003","model":"claude-opus-4-7"}
+{"type":"result","total_cost_usd":0.55,"usage":{"input_tokens":3,"output_tokens":4,"cache_creation_input_tokens":1,"cache_read_input_tokens":1},"modelUsage":{"recovered-model":{}}}
+NDJSON
+keys_j="$(jq -r 'keys | sort | join(",")' "$USAGE_J" 2>/dev/null || printf '')"
+cost_j="$(jq -r '.cost_usd' "$USAGE_J" 2>/dev/null || printf '')"
+if [[ "$keys_j" == "$expected_keys" ]] && [[ "$cost_j" == "0.55" ]]; then
+  pass_at "fixture-J zero-byte seed: renderer overwrites cleanly with six-field payload"
+else
+  fail_at "fixture-J zero-byte seed" "keys=$keys_j cost=$cost_j"
+fi
+
+# ─── Fixture K: unknown future field in result event (forward-compat) ─────
+# A future claude release may add fields like `thinking_tokens`, `priority`,
+# or `request_id` to the result event. The renderer's six-field allowlist
+# extraction (.usage.input_tokens, etc.) MUST silently ignore unknown top-
+# level fields and unknown nested usage fields — never panic, never leak.
+USAGE_K="$ISSUE_DIR/usage-plan-K.json"
+rm -f "$USAGE_K" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_K" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"result","total_cost_usd":0.07,"usage":{"input_tokens":2,"output_tokens":3,"cache_creation_input_tokens":4,"cache_read_input_tokens":5,"thinking_tokens":999,"future_nested_field":"x"},"modelUsage":{"future-model":{}},"request_id":"req_abc","priority":"high","new_top_level_field":[1,2,3]}
+NDJSON
+keys_k="$(jq -r 'keys | sort | join(",")' "$USAGE_K" 2>/dev/null || printf '')"
+has_request_id_k="$(jq -r 'has("request_id")' "$USAGE_K" 2>/dev/null || printf 'true')"
+has_thinking_k="$(jq -r 'has("thinking_tokens")' "$USAGE_K" 2>/dev/null || printf 'true')"
+if [[ "$keys_k" == "$expected_keys" ]] \
+   && [[ "$has_request_id_k" == "false" ]] \
+   && [[ "$has_thinking_k" == "false" ]]; then
+  pass_at "fixture-K forward-compat: unknown future fields ignored; six-field allowlist enforced"
+else
+  fail_at "fixture-K forward-compat" "keys=$keys_k request_id=$has_request_id_k thinking=$has_thinking_k"
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
