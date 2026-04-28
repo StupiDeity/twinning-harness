@@ -369,19 +369,6 @@ main() {
     # Non-blocking: telemetry only. Retrospective reads both the aggregate git log
     # AND the per-issue counter.
     bash "$SCRIPT_DIR/scan-gotcha-trailers.sh" "$ident" "$branch" || true
-
-    if [[ "$stage" == "implement" ]]; then
-      if command -v gh >/dev/null 2>&1; then
-        local pr_count
-        pr_count="$(gh pr list --head "$branch" --state open --json number --jq 'length' 2>/dev/null || printf '0')"
-        if (( pr_count > 0 )); then
-          bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
-          classify_failure "$ident" "$stage" "skip-until-human-acts" \
-            "implement stage opened a PR on $branch — UI stage should own PR creation" 22
-          exit 22
-        fi
-      fi
-    fi
   fi
 
   # Agent-contract validator (ENG-7). On a fresh dispatch (not scope-approval

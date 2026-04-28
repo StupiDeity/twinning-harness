@@ -661,6 +661,17 @@ Gotcha telemetry (same contract as Implementation):
     Do NOT edit gotchas.md directly (CODEOWNERS-protected).
 
 PR creation (at exit — UI stage owns PR creation for this branch):
+
+  Idempotency precondition (MANDATORY, BEFORE `gh pr create`):
+  - Run: gh pr list --head {branch_name} --state open --json number --jq 'length'
+  - If the result is 0, proceed with `gh pr create …` per the template below.
+  - If the result is ≥ 1, a PR already exists on this branch (typically
+    from a prior cycle's UI stage that was rerun via a `reviewing →
+    implementing → ui` loopback). Skip `gh pr create` entirely; do NOT
+    attempt to re-create or amend the PR. Proceed to the rest of the UI
+    stage (stage summary, push, completion). The existing PR's number
+    is available via the same `gh pr list` call with `--json number`.
+
   Open the PR against main from `{branch_name}` using this template:
 
     Title:  `<type>({issue_id}): <imperative summary>`   (type ∈ feat|fix|chore|docs|refactor)
