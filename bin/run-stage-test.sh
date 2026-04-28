@@ -335,25 +335,18 @@ else
   fail_at "case-12 unknown-rc" "bumps=$bumps last_counter=$last_counter"
 fi
 
-# ─── Case 13: pr-opened-too-early bumps implement_rejection ────────────
-reset_capture
-reset_guards_capture
-bash -c '
-  ident="ENG-T13"; stage="implement"; branch="feat/eng-t13"
-  # Mirror run-stage.sh:336-346: pr_count > 0 → bump + classify.
-  pr_count=1
-  if (( pr_count > 0 )); then
-    bash "'"$STUB_DIR"'/guards.sh" bump "$ident" implement_rejection || true
-  fi
-' 2>/dev/null
-
-bumps=$(guards_bump_count)
-last_counter=$(guards_counter_for_last_bump)
-if [[ "$bumps" == "1" && "$last_counter" == "implement_rejection" ]]; then
-  pass_at "case-13 pr-opened-too-early: exactly one implement_rejection bump"
-else
-  fail_at "case-13 pr-too-early" "bumps=$bumps last_counter=$last_counter"
-fi
+# ─── Case 13: removed in ENG-42 ────────────────────────────────────────
+# The PR-opened-too-early guard at run-stage.sh:373-384 was a state-check
+# proxy for "implement agent invoked gh pr create". The implement stage's
+# tool lane (dispatch.sh:44) already denies `gh pr create` and `Agent`,
+# so the guard could only fire on PRs opened by other actors — i.e., on
+# false positives. Deleted in ENG-42 (see brainstorm D-001). The
+# transcript-based assertion that answers the contract question directly
+# is captured in the brainstorm §2.1 and shipped as ENG-43, after ENG-26
+# lands the stream-json infrastructure on main.
+#
+# Case numbering preserved (no renumber of cases 14-24) — the gap is
+# intentional and self-documents the deletion.
 
 # ─── Case 14: NOTABLE scope-approval (rc=1) does NOT bump counter ──────
 # Anti-regression per D-003: the soft-pause branch must never bump.
