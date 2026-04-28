@@ -357,14 +357,17 @@ _handle_wait() {
     if [[ ! "$first" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
       first="$now"; attempts=0
     else
-      # Value-validity guard (review-major-2): regex-valid but future-dated
-      # timestamps (e.g. 9999-12-31T23:59:59Z) produce negative elapsed and
-      # neutralise the wall-clock cap on max_minutes-only configs. Treat
-      # any first_attempt_at strictly newer than now as corrupt and reset.
+      # Value-validity guard (review-major-2 + round-2 M1): regex-valid but
+      # out-of-band timestamps neutralise the wall-clock cap. The future-
+      # clamp closes 9999-12-31T… (negative elapsed → clamp to 0 → never
+      # exhausts on max_minutes-only). The pre-epoch floor closes the
+      # symmetric attack: 1900-01-01T00:00:00Z parses (under BSD date) to
+      # ~-2.2e9, blowing past any max_minutes on the first tick. Treat any
+      # first_attempt_at outside [0, now] as corrupt and reset.
       local _first_epoch _now_epoch
       _first_epoch="$(date -j -f %Y-%m-%dT%H:%M:%SZ "$first" +%s 2>/dev/null || printf '')"
       _now_epoch="$(date -u +%s)"
-      if [[ -z "$_first_epoch" ]] || (( _first_epoch > _now_epoch )); then
+      if [[ -z "$_first_epoch" ]] || (( _first_epoch < 0 )) || (( _first_epoch > _now_epoch )); then
         first="$now"; attempts=0
       fi
     fi
