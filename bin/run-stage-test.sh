@@ -20,8 +20,18 @@ CAPTURE_FILE="$STUB_DIR/capture.txt"
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
 # args: \$1 subcommand \$2 sig \$3 ident \$4 body
-printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
-  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+# ENG-45: get-comments returns \$MOCK_COMMENTS_JSON (default '[]') so unit tests
+# of _fresh_wait_reason can inject fixture comment streams without standing up
+# a full Linear stub.
+case "\${1:-}" in
+  get-comments)
+    printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
+    ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
 exit 0
 SH
 chmod +x "$STUB_DIR/linear.sh"
@@ -851,6 +861,207 @@ else
   fail_at "case-35 _cost_flags_for spaces" \
           "count=${#flags_spc[@]} model_val=$(printf '%q' "$model_val_spc")"
 fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENG-45 — build-stage wait-marker gate + budget escalation
+# ════════════════════════════════════════════════════════════════════════════
+# Inserted BEFORE case-15 because the pre-existing $REPO_ROOT unbound-var bug
+# at line ~870 aborts the script (set -u) and any cases appended after it
+# never run. Same insertion pattern as cases 19-35 already followed.
+#
+# Rebuild the linear.sh stub: case-8 (line ~220) overwrote the initial stub
+# with a smaller variant that only handles stage-of/add-or-update-comment, so
+# get-comments would silently exit 0 with empty output here. The variant below
+# preserves all paths the rest of the suite (and case-15+) might need.
+
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments)
+    # ENG-45: fixture-injected comment stream for _fresh_wait_reason cases.
+    printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
+    ;;
+  stage-of) printf 'stage:qa\n' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# ─── ENG-45 case A: fresh wait marker on build → returns reason ──────────────
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
+out="$(_fresh_wait_reason ENG-45T1 build || printf '')"
+if [[ "$out" == "awaiting-approval" ]]; then
+  pass_at "ENG-45 case A: fresh wait marker → returns awaiting-approval"
+else
+  fail_at "ENG-45 case A" "got: $out"
+fi
+
+# ─── ENG-45 case A2: fresh CI wait marker → returns awaiting-ci ──────────────
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-ci -->\n\nAwaiting CI to turn green."}]'
+out="$(_fresh_wait_reason ENG-45T1B build || printf '')"
+if [[ "$out" == "awaiting-ci" ]]; then
+  pass_at "ENG-45 case A2: fresh CI wait marker → returns awaiting-ci"
+else
+  fail_at "ENG-45 case A2" "got: $out"
+fi
+
+# ─── ENG-45 case B: stage != build → empty (build-only gate, security F-1) ──
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"}]'
+out="$(_fresh_wait_reason ENG-45T2 review || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case B: review stage rejected by build-only gate"
+else
+  fail_at "ENG-45 case B" "got: $out"
+fi
+
+# ─── ENG-45 case C: invented reason rejected by allow-list (security F-2) ───
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: never-escalate -->"}]'
+out="$(_fresh_wait_reason ENG-45T3 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case C: invented reason rejected by allow-list"
+else
+  fail_at "ENG-45 case C" "got: $out"
+fi
+
+# ─── ENG-45 case D: wait marker older than last pipeline-transition → empty ──
+export MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"},
+  {"createdAt":"2026-04-28T08:05:00Z","body":"<!-- pipeline-transition: implementing → building -->"}
+]'
+out="$(_fresh_wait_reason ENG-45T4 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case D: stale wait marker (pre-transition) is ignored"
+else
+  fail_at "ENG-45 case D" "got: $out"
+fi
+
+# ─── ENG-45 case E: empty get-comments → fail-closed (return 1) ─────────────
+export MOCK_COMMENTS_JSON=''
+out="$(_fresh_wait_reason ENG-45T5 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case E: empty get-comments fails closed"
+else
+  fail_at "ENG-45 case E" "got: $out"
+fi
+
+# ─── ENG-45 case F: get-comments returns "null" → fail-closed (return 1) ────
+export MOCK_COMMENTS_JSON='null'
+out="$(_fresh_wait_reason ENG-45T6 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case F: 'null' get-comments fails closed"
+else
+  fail_at "ENG-45 case F" "got: $out"
+fi
+
+# ─── ENG-45 case P6: rejection marker present, wait gate must NOT fire ──────
+# Linear issue's IN list (Task 8a). The wait gate must NOT fire on a rejection-
+# marker-only fixture — the existing rejection loopback flow must remain
+# reachable.
+export MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline-transition: implementing → building -->"},
+  {"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-rejection: building -->\n<!-- pipeline-rejection-target: implementing -->\nMerge conflict on rebase."}
+]'
+out="$(_fresh_wait_reason ENG-45T-P6 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case P6: rejection marker is invisible to wait gate"
+else
+  fail_at "ENG-45 case P6" "wait gate spuriously matched: $out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── ENG-45 case G: first wait → attempts=1, file written, returns 0 ────────
+ENG_45_TMP_CFG="$(mktemp)"
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+ENG_45_CFG_SAVED="${CONFIG:-}"
+CONFIG="$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T7)"
+rm -f "$(issue_dir ENG-45T7)/wait-build.json"
+if _handle_wait ENG-45T7 build awaiting-approval; then
+  if jq -e '.attempts == 1 and .reason == "awaiting-approval" and .stage == "build" and .issue == "ENG-45T7"' \
+       "$(issue_dir ENG-45T7)/wait-build.json" >/dev/null 2>&1; then
+    pass_at "ENG-45 case G: first wait writes attempts=1 with reason+stage+issue, returns 0"
+  else
+    fail_at "ENG-45 case G" "json: $(cat "$(issue_dir ENG-45T7)/wait-build.json" 2>/dev/null)"
+  fi
+else
+  fail_at "ENG-45 case G" "_handle_wait returned nonzero on first attempt"
+fi
+
+# ─── ENG-45 case H: 2nd wait increments attempts to 2 ───────────────────────
+if _handle_wait ENG-45T7 build awaiting-approval; then
+  if jq -e '.attempts == 2' "$(issue_dir ENG-45T7)/wait-build.json" >/dev/null 2>&1; then
+    pass_at "ENG-45 case H: 2nd wait increments to 2"
+  else
+    fail_at "ENG-45 case H" "json: $(cat "$(issue_dir ENG-45T7)/wait-build.json" 2>/dev/null)"
+  fi
+else
+  fail_at "ENG-45 case H" "_handle_wait returned nonzero on within-budget 2nd attempt"
+fi
+
+# ─── ENG-45 case I: budget=2 attempts → 2nd call exhausts (returns 1) ───────
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":2}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T8)"
+rm -f "$(issue_dir ENG-45T8)/wait-build.json"
+_handle_wait ENG-45T8 build awaiting-approval >/dev/null  # first call returns 0
+if _handle_wait ENG-45T8 build awaiting-approval >/dev/null; then
+  fail_at "ENG-45 case I" "expected nonzero on 2nd call (budget exhausted)"
+else
+  if [[ ! -e "$(issue_dir ENG-45T8)/wait-build.json" ]]; then
+    pass_at "ENG-45 case I: budget exhausted → wait file deleted, returned 1"
+  else
+    fail_at "ENG-45 case I" "wait file should have been deleted: $(cat "$(issue_dir ENG-45T8)/wait-build.json" 2>/dev/null)"
+  fi
+fi
+
+# ─── ENG-45 case J: corrupt first_attempt_at resets the window (security F-3) ──
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T9)"
+printf '{"first_attempt_at":"NOT-A-DATE","attempts":99}' > "$(issue_dir ENG-45T9)/wait-build.json"
+_handle_wait ENG-45T9 build awaiting-approval >/dev/null
+if jq -e '.attempts == 0 or .attempts == 1' \
+     "$(issue_dir ENG-45T9)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case J: corrupt first_attempt_at resets counter (no arbitrary date input)"
+else
+  fail_at "ENG-45 case J" "json: $(cat "$(issue_dir ENG-45T9)/wait-build.json" 2>/dev/null)"
+fi
+
+# ─── ENG-45 case K: wall-clock cap exhausts even when attempts < cap ────────
+# Pre-write a wait file dated 2 minutes in the past; max_minutes=1 should
+# trip exhaustion on the next call regardless of the attempts cap.
+printf '{"orchestrator":{"external_signal_budget":{"max_minutes":1}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T10)"
+two_min_ago="$(date -u -j -v-2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+              || date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"first_attempt_at":"%s","attempts":1}' "$two_min_ago" \
+  > "$(issue_dir ENG-45T10)/wait-build.json"
+if _handle_wait ENG-45T10 build awaiting-approval >/dev/null; then
+  fail_at "ENG-45 case K" "wall-clock cap should have exhausted; got within-budget"
+else
+  pass_at "ENG-45 case K: wall-clock cap exhausts (attempts < cap, elapsed >= max_minutes)"
+fi
+
+# ─── ENG-45 case M: stale stage-summary file is deleted on wait entry ───────
+# Load-bearing: prevents post_completion_comment from posting stale content
+# from a prior dispatch into the next tick's wait window.
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T11)"
+rm -f "$(issue_dir ENG-45T11)/wait-build.json"
+printf 'STALE CONTENT FROM PRIOR DISPATCH\n' > "$(issue_dir ENG-45T11)/stage-summary-build.md"
+_handle_wait ENG-45T11 build awaiting-approval >/dev/null
+if [[ ! -e "$(issue_dir ENG-45T11)/stage-summary-build.md" ]]; then
+  pass_at "ENG-45 case M: stale stage-summary-build.md deleted on wait entry"
+else
+  fail_at "ENG-45 case M" "stale summary file still present"
+fi
+
+# Restore CONFIG to whatever case-15 expects (which never runs anyway, but
+# preserve invariants for any future case inserted here).
+rm -f "$ENG_45_TMP_CFG"
+CONFIG="$ENG_45_CFG_SAVED"
 
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
