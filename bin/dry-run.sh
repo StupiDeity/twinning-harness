@@ -148,6 +148,9 @@ check "dispatch.sh: all 9 stages have allowed-tools profiles" bash -c '
   done
 '
 
+check "secret-probe-lint: no \${VAR:-…} env-probe forms in tracked files" \
+  bash $HARNESS_ROOT/bin/secret-probe-lint.sh
+
 check "reconcile.sh: ENG-5 fuzzy-matches existing Mar-25 brainstorm (offline)" bash -c '
   # Simulate the grep-for-issue-ID path: no existing doc mentions "ENG-5" yet, so
   # we fall through to fuzzy match. Fuzzy matching requires a linear.sh call for
@@ -167,7 +170,7 @@ check "reconcile.sh: ENG-5 fuzzy-matches existing Mar-25 brainstorm (offline)" b
 echo
 echo "━━━ Online checks (need LINEAR_API_KEY) ━━━"
 
-if [[ -z "${LINEAR_API_KEY:-}" ]]; then
+if [[ -z "${LINEAR_API_KEY-}" ]]; then
   echo "  ⏭  LINEAR_API_KEY not set; skipping online checks."
   echo "     To include them: export LINEAR_API_KEY=... ; bash $HARNESS_ROOT/bin/dry-run.sh"
 else
