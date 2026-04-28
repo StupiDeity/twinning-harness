@@ -1152,6 +1152,101 @@ else
   fail_at "ENG-45 case N" "wait file still present: $(cat "$ENG_45_CASE_N_DIR/wait-build.json" 2>/dev/null)"
 fi
 
+# ─── ENG-45 case O (review-major-1): budget-exhausted exits clean halt-for-human
+# Without M1's explicit-exit fix, after _handle_wait deletes stage-summary and
+# returns 1, main() falls through to post_completion_comment which posts a
+# misleading `summary_missing` Linear comment, contradicting the clean halt
+# the wait gate just produced. The fix replaces the fall-through with an
+# explicit `metrics.sh stage-end halt-for-human` + exit 0. Test asserts:
+#   (a) main exits 0 (clean halt, NOT exit 25 from agent-contract validator
+#       and NOT exit 24 from post_completion_comment)
+#   (b) post_completion_comment was NOT invoked (no contradictory summary
+#       comment)
+#   (c) metrics.sh stage-end recorded outcome=halt-for-human
+
+ENG_45_CASE_O_DIR="$(issue_dir ENG-45T-O)"
+mkdir -p "$ENG_45_CASE_O_DIR"
+rm -f "$ENG_45_CASE_O_DIR/wait-build.json" "$ENG_45_CASE_O_DIR/stage-summary-build.md"
+
+# Force exhaustion on the very first wait dispatch by setting max_attempts=1.
+ENG_45_CASE_O_CFG="$(mktemp)"
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":1}},"linear":{"stage_label_prefix":"stage:"}}' \
+  > "$ENG_45_CASE_O_CFG"
+ENG_45_CASE_O_CFG_SAVED="$CONFIG"
+CONFIG="$ENG_45_CASE_O_CFG"
+
+# Linear stub: get-comments returns a fresh wait marker so the gate fires;
+# stage-of returns stage:building so no drift; has-label answers as case N.
+ENG_45_CASE_O_COMMENTS='[{"createdAt":"2026-04-28T18:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  has-label)
+    case "\${3:-}" in
+      pipeline:paused) exit 1 ;;
+      stage:*)         exit 0 ;;
+      pipeline:halted) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  stage-of)     printf 'stage:building\n' ;;
+  get-comments) printf '%s' "$ENG_45_CASE_O_COMMENTS" ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/render-prompt.sh"; chmod +x "$STUB_DIR/render-prompt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"; chmod +x "$STUB_DIR/dispatch.sh"
+
+# Track post_completion_comment invocations and capture metrics.sh args.
+ENG_45_CASE_O_PCC_FLAG="$STUB_DIR/case-o-pcc.flag"
+ENG_45_CASE_O_METRICS="$STUB_DIR/case-o-metrics.capture"
+: > "$ENG_45_CASE_O_PCC_FLAG"
+: > "$ENG_45_CASE_O_METRICS"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'EVENT=%s IDENT=%s STAGE=%s OUTCOME=%s\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$ENG_45_CASE_O_METRICS"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+reset_capture
+ENG_45_CASE_O_RC=0
+(
+  post_completion_comment() { printf 'called\n' >> "$ENG_45_CASE_O_PCC_FLAG"; return 0; }
+  push_branch_if_ahead() { return 0; }
+  verdict_handler() { return 0; }  # unreached if M1 fix lands
+  # Simulate production: after _handle_wait posts the halt comment, the next
+  # find_fresh_verdict call (in the agent-contract validator) sees it. Without
+  # this override, our static get-comments fixture leaves _fresh_marker empty
+  # and the validator trips exit 25 before reaching the M1 bug at
+  # post_completion_comment. The override puts the test on the actual
+  # production path the reviewer flagged.
+  find_fresh_verdict() { printf 'pipeline-halt'; }
+  main ENG-45T-O build
+) >/dev/null 2>&1 || ENG_45_CASE_O_RC=$?
+
+# Cleanup metrics.sh stub so subsequent cases (case-15+) use the original.
+rm -f "$STUB_DIR/metrics.sh"
+
+if (( ENG_45_CASE_O_RC != 0 )); then
+  fail_at "ENG-45 case O" "main exited rc=$ENG_45_CASE_O_RC (expected 0; M1 fix should yield clean halt)"
+elif [[ -s "$ENG_45_CASE_O_PCC_FLAG" ]]; then
+  fail_at "ENG-45 case O" "post_completion_comment fired on budget-exhausted path (should be skipped per M1)"
+elif ! grep -q 'OUTCOME=halt-for-human' "$ENG_45_CASE_O_METRICS"; then
+  fail_at "ENG-45 case O" "missing OUTCOME=halt-for-human metric: $(cat "$ENG_45_CASE_O_METRICS")"
+else
+  pass_at "ENG-45 case O: budget-exhausted exits clean halt-for-human (no summary_missing follow-on)"
+fi
+
+CONFIG="$ENG_45_CASE_O_CFG_SAVED"
+rm -f "$ENG_45_CASE_O_CFG"
+
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
