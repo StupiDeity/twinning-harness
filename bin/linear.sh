@@ -365,6 +365,13 @@ get_comments() {
   jq -c '[.data.issue.comments.nodes[]? ] | sort_by(.createdAt)' <<<"$resp"
 }
 
+# Dedup gotcha for callers: a body whose normalized hash matches any of
+# the last 10 normalized comments is silently suppressed. The two regexes
+# below strip anything that varies *only* by timestamp or SHA — including
+# 10-digit unix epochs and uuidgen output. To force a fresh post on a
+# recurring body, embed a token that survives both regexes — e.g. a
+# space-separated date ("2026-04-29 03:14:00Z", no literal T) or a 6-digit
+# HHMMSS (under the 7-char SHA threshold).
 add_comment() {
   local ident="$1" body="$2"
   # Lane fence: check before any Linear API call (including dry-run).
