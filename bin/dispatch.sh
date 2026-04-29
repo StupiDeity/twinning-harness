@@ -188,8 +188,15 @@ main() {
   # can't hold the run-local lock for hours unnoticed. Override via
   # config.json::orchestrator.dispatch_timeout_minutes (per-stage
   # overrides can be added later if any stage routinely exceeds this).
-  local timeout_minutes
-  timeout_minutes="$(jq -r '.orchestrator.dispatch_timeout_minutes // 30' "$CONFIG")"
+  # The CONFIG read is defensive — the mutex-test contract assumes
+  # dispatch.sh needs TARGET_REPO only for the directory-existence
+  # check, not for a real config.json.
+  local timeout_minutes=30
+  if [[ -f "$CONFIG" ]]; then
+    local _cfg_minutes
+    _cfg_minutes="$(jq -r '.orchestrator.dispatch_timeout_minutes // empty' "$CONFIG" 2>/dev/null || true)"
+    [[ -n "$_cfg_minutes" && "$_cfg_minutes" =~ ^[0-9]+$ ]] && timeout_minutes="$_cfg_minutes"
+  fi
   local timeout_seconds=$(( timeout_minutes * 60 ))
 
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
