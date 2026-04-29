@@ -151,8 +151,13 @@ main() {
   # only repo-root files (no nested paths) produce no allowed_dirs matches; the
   # explicit empty check below handles the empty-allowed-set case.
   allowed_files="$(grep -oE '([a-zA-Z0-9_./-]+/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+' <<<"$body" | sort -u || true)"
+  # Anchored-base awk filter: drop only `<basename>.<ext>/` malformed captures
+  # (e.g., `secret-probe-lint.yml/`), NOT `.<name>/` dotfile dirs (e.g.,
+  # `.github/`). The earlier `\.[a-zA-Z0-9]+\/$` pattern over-matched and
+  # stripped legitimate dotfile directories — first hit by ENG-46's plan
+  # introducing `.github/workflows/`.
   allowed_dirs="$(grep -oE '([a-zA-Z0-9_.-]+/){1,}' <<<"$body" \
-    | awk '!/\.[a-zA-Z0-9]+\/$/' | sort -u || true)"
+    | awk '!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.[a-zA-Z0-9]+\/$/' | sort -u || true)"
 
   if [[ -z "$allowed_files$allowed_dirs" ]]; then
     log "scope-check: no file or directory tokens parsed from File Structure"

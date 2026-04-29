@@ -142,6 +142,49 @@ PLAN
   rm -rf "$sandbox4"
 done
 
+# ─── Case 5: dotfile directory in plan File Structure ────────────────────────
+# A plan declaring `.github/workflows/foo.yml` (the harness's first CI workflow,
+# ENG-46) must parse `.github/` as an allowed directory. Earlier the awk filter
+# `!/\.[a-zA-Z0-9]+\/$/` over-aggressively excluded any `.X/`-shaped match,
+# stripping `.github/` along with any malformed `file.ext/` capture. Result:
+# the file matched no allowed dir → SEVERE → halt on every subsequent stage.
+sandbox5="$(mktemp -d)"
+(
+  cd "$sandbox5"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans .github/workflows
+  cat > docs/plans/2026-04-29-eng-test-5.md <<'PLAN'
+---
+linear: ENG-T5
+---
+## File Structure
+.github/
+  workflows/
+    foo.yml          NEW (the disputed file)
+PLAN
+  printf 'baseline\n' > docs/plans/2026-04-29-eng-test-5.md.lock  # noise
+  git add docs/plans
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  cat > .github/workflows/foo.yml <<'YML'
+name: foo
+on: { push: {} }
+jobs: { lint: { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@v4 } ] } }
+YML
+  git add .github
+  git commit -qm "add foo workflow"
+)
+if (cd "$sandbox5" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T5 test-branch) >/dev/null 2>&1; then
+  pass_at "case-5 dotfile dir: .github/workflows/foo.yml is in-plan when File Structure declares .github/"
+else
+  rc=$?
+  fail_at "case-5 dotfile dir" "rc=$rc (expected 0; .github/ should parse as allowed dir)"
+fi
+rm -rf "$sandbox5"
+
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
