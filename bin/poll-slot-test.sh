@@ -467,6 +467,172 @@ else
   fail_at "ENG-45 poll-slot wait re-dispatch" "got slot=$slot adv=$adv (want hold/true) full=$out"
 fi
 
+# ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
+# A Todo issue carrying only pipeline:skip-until-human-acts (no state
+# file, no stage:* label) must be skipped by Pass 5's inbox jq filter.
+# Pre-fix: the issue was dispatched into stage:brainstorming.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-8001|Todo|3|Bug,pipeline:skip-until-human-acts"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "null" ]]; then
+  pass_at "AC-8 Bug A — Todo with skip-until-human-acts is NOT inbox-picked"
+else
+  fail_at "AC-8 Bug A — Todo with skip-until-human-acts is NOT inbox-picked" "out=$out"
+fi
+
+# AC-8b: same shape, code-changes label flavor.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-8002|Todo|3|Bug,pipeline:skip-until-code-changes"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "null" ]]; then
+  pass_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked"
+else
+  fail_at "AC-8b Bug A — Todo with skip-until-code-changes is NOT inbox-picked" "out=$out"
+fi
+
+# ─── AC-9: ENG-24 Bug B — stage-labeled + skip-until-human-acts + no state file ──
+# An issue carrying stage:planning AND pipeline:skip-until-human-acts AND
+# NO state file must vacate its slot AND the label must NOT be stripped
+# by poll. Pre-fix: _poll_evaluate_skip's orphan-label branch fired
+# `linear.sh remove-label ENG-9001 pipeline:skip-until-human-acts` then
+# returned 0 (include).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-9001|In Progress|3|Bug,stage:planning,pipeline:skip-until-human-acts"
+# No mkdir / no issue-state.json — exercises the no-state-file path.
+
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ac9.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+
+# Negative assertion: the EXACT line `remove-label ENG-9001
+# pipeline:skip-until-human-acts` must not appear in the stub log.
+# `grep -Fxq` matches a full line literally (no regex), so a future
+# unrelated remove-label on ENG-9001 (different label) cannot relax
+# this guard.
+stripped=0
+grep -Fxq 'remove-label ENG-9001 pipeline:skip-until-human-acts' "$LINEAR_STUB_LOG" && stripped=1
+
+unset LINEAR_STUB_LOG
+
+if [[ "$issue_id" != "ENG-9001" ]] && (( stripped == 0 )); then
+  pass_at "AC-9 Bug B — stage+skip-until-human-acts (no state file) vacates and preserves label"
+else
+  fail_at "AC-9 Bug B — stage+skip-until-human-acts (no state file) vacates and preserves label" \
+    "issue=$issue_id stripped=$stripped"
+fi
+
+# ─── AC-10: ENG-24 Bug B (uniformity) — same as AC-9 with code-changes label ──
+# The orphan-label branch must treat both skip-until-* labels identically:
+# vacate, no Linear writes. AC-10 guards the uniformity claim from
+# brainstorm §2 D-2: future regressions that special-case only human-acts
+# would otherwise pass.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-9002|In Progress|3|Bug,stage:planning,pipeline:skip-until-code-changes"
+# No mkdir / no issue-state.json.
+
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ac10.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+
+stripped=0
+grep -Fxq 'remove-label ENG-9002 pipeline:skip-until-code-changes' "$LINEAR_STUB_LOG" && stripped=1
+
+unset LINEAR_STUB_LOG
+
+if [[ "$issue_id" != "ENG-9002" ]] && (( stripped == 0 )); then
+  pass_at "AC-10 Bug B uniformity — stage+skip-until-code-changes (no state file) vacates and preserves label"
+else
+  fail_at "AC-10 Bug B uniformity — stage+skip-until-code-changes (no state file) vacates and preserves label" \
+    "issue=$issue_id stripped=$stripped"
+fi
+
+# ─── AC-11: ENG-24 QA adversarial — Bug A inbox filter uses EXACT label match ──
+# A Todo issue carrying a label whose name is a strict superstring of
+# pipeline:skip-until-human-acts (e.g. a custom human-coined
+# pipeline:skip-until-human-acts-tomorrow) MUST still be inbox-picked.
+# jq's `index($n)` does exact array-element equality, so the new filter
+# clauses must NOT match prefixes/superstrings. Pins the semantic so a
+# future refactor to `any(. | startswith("pipeline:skip-until-"))` would
+# fail this test instead of silently over-blocking the inbox.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-AD11|Todo|3|Bug,pipeline:skip-until-human-acts-tomorrow"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-AD11" ]] && [[ "$entry" == "apply-stage-label" ]]; then
+  pass_at "AC-11 QA — inbox filter is exact-match (skip-until-human-acts-tomorrow IS picked)"
+else
+  fail_at "AC-11 QA — inbox filter is exact-match (skip-until-human-acts-tomorrow IS picked)" "out=$out"
+fi
+
+# ─── AC-12: ENG-24 QA adversarial — Bug B uniformity for BOTH labels at once ──
+# A stage-labeled issue carrying BOTH pipeline:skip-until-human-acts AND
+# pipeline:skip-until-code-changes simultaneously, with NO state file,
+# must vacate AND have NEITHER label stripped. The brainstorm §6 case 1
+# claims this is "transitively covered by AC-9 + AC-10 — both labels
+# exercise the same branch" but neither AC-9 nor AC-10 actually plants
+# both labels. This pins the uniformity-claim directly: a future refactor
+# that conditionally strips one label depending on the other being
+# present would pass AC-9/AC-10 individually but fail this test.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-AD12|In Progress|3|Bug,stage:planning,pipeline:skip-until-human-acts,pipeline:skip-until-code-changes"
+# No mkdir / no issue-state.json — exercises the orphan-skip-label branch
+# with both labels set.
+
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ad12.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+
+stripped_human=0; stripped_code=0
+grep -Fxq 'remove-label ENG-AD12 pipeline:skip-until-human-acts' "$LINEAR_STUB_LOG" && stripped_human=1
+grep -Fxq 'remove-label ENG-AD12 pipeline:skip-until-code-changes' "$LINEAR_STUB_LOG" && stripped_code=1
+
+unset LINEAR_STUB_LOG
+
+if [[ "$issue_id" != "ENG-AD12" ]] && (( stripped_human == 0 )) && (( stripped_code == 0 )); then
+  pass_at "AC-12 QA — both skip labels + no state file vacates and preserves BOTH labels"
+else
+  fail_at "AC-12 QA — both skip labels + no state file vacates and preserves BOTH labels" \
+    "issue=$issue_id stripped_human=$stripped_human stripped_code=$stripped_code"
+fi
+
+# ─── AC-13: ENG-24 QA adversarial — Bug A inbox filter, BOTH labels at once ──
+# A Todo issue carrying BOTH pipeline:skip-until-human-acts AND
+# pipeline:skip-until-code-changes must be filtered out. Either filter
+# clause alone is sufficient, so AC-8 / AC-8b each prove only one. This
+# guards against a future jq refactor that combines the two clauses with
+# `or` semantics or accidentally drops one — either way, AC-8 + AC-8b
+# would still pass (each label is present in only one of the single-
+# label fixtures), but co-occurrence on the same issue would leak
+# through. Tests order-independent dropping.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-AD13|Todo|3|Bug,pipeline:skip-until-human-acts,pipeline:skip-until-code-changes"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "null" ]]; then
+  pass_at "AC-13 QA — Todo carrying BOTH skip-until-* labels is NOT inbox-picked"
+else
+  fail_at "AC-13 QA — Todo carrying BOTH skip-until-* labels is NOT inbox-picked" "out=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

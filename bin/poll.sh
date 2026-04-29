@@ -38,10 +38,13 @@ stage_arg_for_label() {
 }
 
 # Return 0 iff the candidate should be INCLUDED (i.e., not currently in a
-# resolved-but-cleared skip state). Side effects: if the skip state's evidence
-# has changed, deletes the state file and removes the label. For orphan
-# labels (no state file), removes the label and includes the candidate.
-# For orphan state files (label absent), deletes the state file.
+# resolved-but-cleared skip state). Side effects: if the skip state's
+# evidence has changed, deletes the state file, removes the
+# skip-until-code-changes label, and (if pipeline:halted is also present)
+# clears the halt label and posts a pipeline-decision: resume marker.
+# For orphan state files (label absent), deletes the state file. For a
+# skip label without a state file, skips and performs no Linear writes
+# — see ENG-24.
 _poll_evaluate_skip() {
   local ident="$1" labels_json="$2"
   local state_file; state_file="$(issue_dir "$ident")/issue-state.json"
@@ -60,12 +63,16 @@ _poll_evaluate_skip() {
     return 0
   fi
 
-  # Label without file → orphan; remove label, include.
+  # Skip label present without a state file → respect the label and skip.
+  # Either a human applied it (the documented contract — see
+  # bin/setup-labels.sh:38) or classify-failure.sh has not yet written the
+  # state file. In every case, the conservative default is to leave the
+  # label in place and let either a human remove-label call or the next
+  # classify-failure.sh write resolve. Do NOT call linear.sh remove-label
+  # here — that silently undid human pauses (ENG-24 Bug B).
   if [[ ! -f "$state_file" ]]; then
-    log "poll: orphan skip label on $ident (no state file); clearing"
-    [[ "$has_code_label" == "true" ]]  && bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" || true
-    [[ "$has_human_label" == "true" ]] && bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   || true
-    return 0
+    log "poll: $ident has skip label without state file (code=$has_code_label human=$has_human_label); skipping"
+    return 1
   fi
 
   # skip-until-human-acts: label present → still skipped. Include NOT allowed.
@@ -433,6 +440,8 @@ main() {
        | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
        | select([.labels.nodes[].name] | index("pipeline:paused") | not)
        | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
+       | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
+       | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
        | {identifier: .identifier,
           priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
       | sort_by(-.priority_sort_rank)
