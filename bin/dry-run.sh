@@ -135,7 +135,7 @@ check "dispatch.sh: dry-run prints prompt preview" bash -c '
   echo "PROMPT TEST BODY line 1" > "$tmp"
   echo "PROMPT TEST BODY line 2" >> "$tmp"
   out=$(PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/dispatch.sh brainstorm "$tmp" 2>&1)
-  grep -q "would invoke: claude" <<<"$out" || { echo "$out"; exit 1; }
+  grep -q "would invoke: gtimeout" <<<"$out" || { echo "$out"; exit 1; }
   grep -q "PROMPT TEST BODY" <<<"$out" || { echo "$out"; exit 1; }
   rm "$tmp"
 '
