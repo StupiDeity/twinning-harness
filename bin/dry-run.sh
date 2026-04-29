@@ -31,6 +31,14 @@ check() {
 
 echo "━━━ Offline checks ━━━"
 
+check "project-profile: present and complete for slug=$PROJECT_SLUG" bash -c '
+  source "$HARNESS_ROOT/bin/setup-helpers.sh"
+  p="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG/project-profile.md"
+  test -f "$p" || { echo "missing: $p" >&2; exit 1; }
+  _validate_project_profile_schema "$p" || exit 1
+  ! grep -q "<<NEEDS-INPUT:" "$p" || { echo "markers present in $p" >&2; exit 1; }
+'
+
 check "bash syntax: all $HARNESS_ROOT/bin/*.sh" bash -c '
   for f in $HARNESS_ROOT/bin/*.sh; do bash -n "$f" || exit 1; done
 '
