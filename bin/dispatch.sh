@@ -242,12 +242,17 @@ main() {
   if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname "$log_file")"
     log "dispatching stage=$stage, log=$log_file"
+    # Renderer prose (and raw stream-json on the no-renderer branch) lands in
+    # the per-stage log only. Letting it bubble up to local-*.log via `tee`
+    # duplicates every [tool] / [tool-result] line into the orchestrator's
+    # day-log, which (post-ENG-26 stream-json renderer) made local-*.log
+    # nearly unreadable on busy days.
     if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
       "${cmd[@]}" < "$prompt_file" \
         | _render_and_capture_stream "$usage_file" "$issue_state_dir" \
-        | tee "$log_file"
+        > "$log_file"
     else
-      "${cmd[@]}" < "$prompt_file" | tee "$log_file"
+      "${cmd[@]}" < "$prompt_file" > "$log_file"
     fi
   else
     log "dispatching stage=$stage"
