@@ -157,3 +157,49 @@ _validate_project_profile_schema() {
   fi
   return 0
 }
+
+# _resolve_profile_markers <path>
+# Reads <path>, finds <<NEEDS-INPUT: question>> markers, prompts the
+# operator (stdin) for each, replaces the entire line containing the
+# marker with the answer (preserving the line's leading text up to the
+# marker). Empty answers re-prompt; after 3 consecutive empties, returns
+# non-zero. Uses fd 3 for the profile read so the operator-prompt read
+# stays bound to stdin.
+_resolve_profile_markers() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf '_resolve_profile_markers: not a file: %s\n' "$path" >&2; return 1; }
+  if ! grep -q '<<NEEDS-INPUT:' "$path"; then
+    return 0
+  fi
+
+  local tmp; tmp="$(mktemp "${path}.XXXXXX")"
+  local line answer retries
+  while IFS='' read -r -u 3 line || [[ -n "$line" ]]; do
+    if [[ "$line" == *'<<NEEDS-INPUT:'* ]]; then
+      local prefix question
+      prefix="${line%%<<NEEDS-INPUT:*}"
+      question="${line#*<<NEEDS-INPUT:}"
+      question="${question%%>>*}"
+      question="${question# }"
+      retries=0
+      answer=""
+      while [[ -z "$answer" ]]; do
+        printf '\n  %s\n  > ' "$question" >&2
+        IFS='' read -r answer || answer=""
+        if [[ -z "$answer" ]]; then
+          retries=$((retries + 1))
+          if (( retries >= 3 )); then
+            rm -f "$tmp"
+            printf '_resolve_profile_markers: 3 empty answers; aborting\n' >&2
+            return 1
+          fi
+        fi
+      done
+      printf '%s%s\n' "$prefix" "$answer" >> "$tmp"
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done 3< "$path"
+  mv "$tmp" "$path"
+  return 0
+}

@@ -102,6 +102,68 @@ else
   pass_at "case-1.5: sections out of order rejected"
 fi
 
+# ─── _resolve_profile_markers ──────────────────────────────────────────
+echo "━━━ _resolve_profile_markers ━━━"
+
+# Case 2.1: single marker, single answer
+cat > "$sandbox/one-marker.md" <<'P'
+## Stack
+<<NEEDS-INPUT: What is the build command?>>
+## Done
+P
+printf 'cargo build\n' | _resolve_profile_markers "$sandbox/one-marker.md" >/dev/null
+if grep -q 'cargo build' "$sandbox/one-marker.md" && ! grep -q 'NEEDS-INPUT' "$sandbox/one-marker.md"; then
+  pass_at "case-2.1: single marker resolved"
+else
+  fail_at "case-2.1: single marker resolved" "$(cat "$sandbox/one-marker.md")"
+fi
+
+# Case 2.2: three markers, three answers in order
+cat > "$sandbox/three-markers.md" <<'P'
+A: <<NEEDS-INPUT: q1?>>
+B: <<NEEDS-INPUT: q2?>>
+C: <<NEEDS-INPUT: q3?>>
+P
+printf 'one\ntwo\nthree\n' | _resolve_profile_markers "$sandbox/three-markers.md" >/dev/null
+if grep -qx 'A: one' "$sandbox/three-markers.md" \
+   && grep -qx 'B: two' "$sandbox/three-markers.md" \
+   && grep -qx 'C: three' "$sandbox/three-markers.md"; then
+  pass_at "case-2.2: three markers resolved in order"
+else
+  fail_at "case-2.2: three markers resolved in order" "$(cat "$sandbox/three-markers.md")"
+fi
+
+# Case 2.3: empty answer re-prompts (3 retries then fails)
+cat > "$sandbox/empty.md" <<'P'
+X: <<NEEDS-INPUT: q?>>
+P
+if printf '\n\n\n\n' | _resolve_profile_markers "$sandbox/empty.md" >/dev/null 2>&1; then
+  fail_at "case-2.3: empty-answer abort after 3 retries" "returned 0"
+else
+  pass_at "case-2.3: empty-answer abort after 3 retries"
+fi
+
+# Case 2.4: clean file → no prompts, exit 0
+cat > "$sandbox/clean.md" <<'P'
+nothing to resolve here.
+P
+if </dev/null _resolve_profile_markers "$sandbox/clean.md" >/dev/null; then
+  pass_at "case-2.4: clean file exits 0 with no input"
+else
+  fail_at "case-2.4: clean file exits 0 with no input" "rc=$?"
+fi
+
+# Case 2.5: marker with embedded ':' in question
+cat > "$sandbox/colon.md" <<'P'
+Q: <<NEEDS-INPUT: ratio of frontend:backend code?>>
+P
+printf '50:50\n' | _resolve_profile_markers "$sandbox/colon.md" >/dev/null
+if grep -qx 'Q: 50:50' "$sandbox/colon.md"; then
+  pass_at "case-2.5: marker question with embedded colon"
+else
+  fail_at "case-2.5: marker question with embedded colon" "$(cat "$sandbox/colon.md")"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
