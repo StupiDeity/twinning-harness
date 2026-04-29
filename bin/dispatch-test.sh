@@ -90,14 +90,18 @@ done
 # ─── Group 2: PIPELINE_WRITER env propagation ───────────────────────────
 printf '\n--- PIPELINE_WRITER=agent propagated to claude -p invocation ---\n'
 
-# Create a stub for 'claude' that captures its environment.
+# Create a stub for 'claude' that captures its environment AND its argv.
 ENV_CAPTURE="$_TEST_STUB_DIR/env.capture"
+ARGV_CAPTURE="$_TEST_STUB_DIR/argv.capture"
 : > "$ENV_CAPTURE"
+: > "$ARGV_CAPTURE"
 
 cat > "$_TEST_STUB_DIR/claude" <<SH
 #!/usr/bin/env bash
-# Stub: capture PIPELINE_WRITER from the environment into a file, then exit 0.
+# Stub: capture PIPELINE_WRITER from the environment, capture argv (one arg
+# per line) for ENG-48 isolation-flag assertions, then exit 0.
 printf 'PIPELINE_WRITER=%s\n' "\${PIPELINE_WRITER:-<unset>}" >> "$ENV_CAPTURE"
+printf '%s\n' "\$@" > "$ARGV_CAPTURE"
 # Consume stdin (like real claude would) so the caller's pipe doesn't break.
 cat > /dev/null
 exit 0
@@ -137,6 +141,77 @@ if [[ "$captured_val" == "agent" ]]; then
 else
   fail_at "PIPELINE_WRITER=agent was set in claude -p environment" \
     "claude saw PIPELINE_WRITER='${captured_val:-<nothing captured>}' (parent had 'canary-parent-lane')"
+fi
+
+# ─── Group 4 (ENG-48): isolation flags reach claude -p invocation ────────
+# A 2026-04-28 wedged tick traced to the operator's superpowers plugin's
+# SessionStart hook firing inside `claude -p`. Headless dispatches must
+# neutralize user-level config:
+#   --setting-sources project,local  → skip ~/.claude (plugins, hooks)
+#   --disable-slash-commands         → block skill auto-load
+#   --disallowed-tools <list>        → deny platform tools that aren't
+#                                       in any stage's allowed-tools list
+#                                       and whose call would let the agent
+#                                       self-loop (ScheduleWakeup), self-
+#                                       coordinate (TodoWrite), enter plan
+#                                       mode (EnterPlanMode), etc.
+# This group asserts the constructed claude argv carries those flags,
+# using the argv capture seeded by the stub above.
+printf '\n--- ENG-48: isolation flags reach claude -p invocation ---\n'
+
+# --setting-sources project,local
+if grep -Fxq -- '--setting-sources' "$ARGV_CAPTURE" \
+   && grep -Fxq -- 'project,local' "$ARGV_CAPTURE"; then
+  pass_at "--setting-sources project,local present in claude argv"
+else
+  fail_at "--setting-sources project,local missing from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+fi
+
+# --disable-slash-commands
+if grep -Fxq -- '--disable-slash-commands' "$ARGV_CAPTURE"; then
+  pass_at "--disable-slash-commands present in claude argv"
+else
+  fail_at "--disable-slash-commands missing from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+fi
+
+# --disallowed-tools must list every platform tool that demonstrated or
+# could enable a runaway in a headless dispatch. The value follows the
+# flag as the next arg.
+disallowed_idx="$(grep -nFx -- '--disallowed-tools' "$ARGV_CAPTURE" | head -1 | cut -d: -f1 || true)"
+if [[ -z "$disallowed_idx" ]]; then
+  fail_at "--disallowed-tools flag missing from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+else
+  disallowed_value="$(sed -n "$((disallowed_idx + 1))p" "$ARGV_CAPTURE")"
+  required_denies=(
+    ScheduleWakeup TodoWrite Skill Task
+    EnterPlanMode ExitPlanMode EnterWorktree ExitWorktree
+    RemoteTrigger PushNotification
+    CronCreate CronDelete CronList Monitor
+    WebFetch WebSearch ToolSearch AskUserQuestion
+  )
+  missing_denies=()
+  for required in "${required_denies[@]}"; do
+    grep -qw -- "$required" <<<"$disallowed_value" || missing_denies+=("$required")
+  done
+  if (( ${#missing_denies[@]} == 0 )); then
+    pass_at "--disallowed-tools denies all required platform tools (${#required_denies[@]} entries)"
+  else
+    fail_at "--disallowed-tools missing required denies" \
+      "missing: ${missing_denies[*]} | value: $disallowed_value"
+  fi
+fi
+
+# Regression: --allowed-tools must STILL appear (the existing per-stage
+# allowlist contract from Group 1 must not be silently dropped during
+# the isolation-flag refactor).
+if grep -Fxq -- '--allowed-tools' "$ARGV_CAPTURE"; then
+  pass_at "--allowed-tools regression: per-stage allowlist contract preserved"
+else
+  fail_at "--allowed-tools regression: flag dropped from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
 fi
 
 # ─── Group 3: stream-json renderer fixtures (ENG-26 Task 5) ──────────────
