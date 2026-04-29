@@ -108,6 +108,26 @@ exit 0
 SH
 chmod +x "$_TEST_STUB_DIR/claude"
 
+# ENG-48 watchdog: the production cmd wraps claude with `gtimeout
+# --signal=TERM --kill-after=10 <seconds> claude ...`. Provide a thin
+# pass-through stub so the existing claude stub still receives the inner
+# argv unchanged for Group 2 / Group 4 assertions.
+cat > "$_TEST_STUB_DIR/gtimeout" <<'SH'
+#!/usr/bin/env bash
+# Skip --signal=…, --kill-after=… flags, then the seconds arg, then exec
+# the inner command.
+while (( $# > 0 )); do
+  case "$1" in
+    --signal=*|--kill-after=*) shift ;;
+    *) break ;;
+  esac
+done
+# Next arg is the timeout in seconds — eat it.
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then shift; fi
+exec "$@"
+SH
+chmod +x "$_TEST_STUB_DIR/gtimeout"
+
 # Create a minimal prompt file.
 _PROMPT_FILE="$_TEST_STUB_DIR/test-prompt.txt"
 printf 'test prompt\n' > "$_PROMPT_FILE"
@@ -216,6 +236,68 @@ if grep -Fxq -- '--allowed-tools' "$ARGV_CAPTURE"; then
 else
   fail_at "--allowed-tools regression: flag dropped from claude argv" \
     "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+fi
+
+# ─── Group 5 (ENG-48): wall-clock watchdog wraps claude -p ──────────────
+# A dispatch that enters a self-loop (e.g. ScheduleWakeup re-firing) must
+# be SIGTERM'd by the orchestrator within a bounded budget — operator
+# intervention should never be required to free the run-local lock. The
+# wrapper is `gtimeout` (GNU coreutils on macOS via brew); the budget is
+# read from config.json::orchestrator.dispatch_timeout_minutes (default
+# 30 min = 1800s). The dispatched cmd's exit 124 (gtimeout's SIGTERM
+# convention) will be mapped by failure_outcome_for_exit in a separate
+# commit.
+printf '\n--- ENG-48: gtimeout watchdog wraps claude -p ---\n'
+
+DRYRUN_OUT="$_TEST_STUB_DIR/dryrun.out"
+PIPELINE_DRY_RUN=1 \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorm "$_PROMPT_FILE" 2>"$DRYRUN_OUT" >/dev/null || true
+
+# Default budget (config has no override): 30 min = 1800s.
+if grep -qE 'gtimeout.*\b1800\b' "$DRYRUN_OUT"; then
+  pass_at "dry-run log: gtimeout wrapper with default 30-min (1800s) budget"
+else
+  fail_at "dry-run log missing gtimeout wrapper or default budget" \
+    "log: $(cat "$DRYRUN_OUT")"
+fi
+
+# --signal=TERM and --kill-after=10 must both be present so the wrapper
+# escalates from SIGTERM to SIGKILL after 10s if the dispatched claude
+# refuses to exit (defensive escalation, not the common case).
+if grep -qE 'gtimeout.*--signal=TERM' "$DRYRUN_OUT" \
+   && grep -qE 'gtimeout.*--kill-after=10' "$DRYRUN_OUT"; then
+  pass_at "dry-run log: gtimeout uses --signal=TERM --kill-after=10 escalation"
+else
+  fail_at "dry-run log missing gtimeout signal/kill-after escalation flags" \
+    "log: $(cat "$DRYRUN_OUT")"
+fi
+
+# Custom budget — when orchestrator.dispatch_timeout_minutes is overridden
+# (e.g. to 5 for a stage that legitimately runs short), the wrapper
+# picks it up.
+TARGET_REPO_CUSTOM="$_TEST_STUB_DIR/target-custom"
+mkdir -p "$TARGET_REPO_CUSTOM/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "custom-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes: 5 }
+}' > "$TARGET_REPO_CUSTOM/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_CUSTOM/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_C="$_TEST_STUB_DIR/dryrun-custom.out"
+PIPELINE_DRY_RUN=1 \
+TARGET_REPO="$TARGET_REPO_CUSTOM" \
+PROJECT_SLUG="custom-slug" \
+HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+PROJECT_STATE_DIR="$HARNESS_STATE_DIR/custom-slug" \
+LINEAR_API_KEY="$LINEAR_API_KEY" \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorm "$_PROMPT_FILE" 2>"$DRYRUN_OUT_C" >/dev/null || true
+
+if grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_C"; then
+  pass_at "dry-run log honors config orchestrator.dispatch_timeout_minutes=5 (300s)"
+else
+  fail_at "dry-run log did not pick up custom dispatch_timeout_minutes" \
+    "log: $(cat "$DRYRUN_OUT_C")"
 fi
 
 # ─── Group 3: stream-json renderer fixtures (ENG-26 Task 5) ──────────────

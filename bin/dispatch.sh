@@ -183,17 +183,27 @@ main() {
   local denies
   denies="$(disallowed_platform_tools)"
 
+  # ENG-48 watchdog budget. Default 30 min — long enough for any legit
+  # stage we have today, short enough that a self-rescheduling agent
+  # can't hold the run-local lock for hours unnoticed. Override via
+  # config.json::orchestrator.dispatch_timeout_minutes (per-stage
+  # overrides can be added later if any stage routinely exceeds this).
+  local timeout_minutes
+  timeout_minutes="$(jq -r '.orchestrator.dispatch_timeout_minutes // 30' "$CONFIG")"
+  local timeout_seconds=$(( timeout_minutes * 60 ))
+
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
-    log "[DRY_RUN] would invoke: claude -p --output-format stream-json --verbose --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
+    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
     head -c 500 "$prompt_file" >&2
     printf '\n' >&2
     return 0
   fi
 
-  require_bin claude
+  require_bin claude gtimeout
   # Auth: ANTHROPIC_API_KEY for CI/headless; claude CLI subscription session for local.
   # Don't require either here — claude errors at invocation time if no auth is available.
+  # gtimeout: GNU coreutils. macOS operators install via `brew install coreutils`.
 
   # ENG-41 T3: set the agent lane only for the claude -p subprocess.
   # Any orchestrator-side Linear writes above (none currently, but guarding for
@@ -208,8 +218,14 @@ main() {
   # --disable-slash-commands blocks skill auto-load (using-superpowers,
   # /loop, etc.); --disallowed-tools denies platform tools that aren't
   # in any stage's allowlist and could enable a runaway (ScheduleWakeup
-  # was the demonstrated escape on 2026-04-28).
-  local cmd=(env PIPELINE_WRITER=agent claude -p
+  # was the demonstrated escape on 2026-04-28). gtimeout wraps claude
+  # with a wall-clock budget — on expiry SIGTERM is sent, then SIGKILL
+  # after 10s if claude ignores the term. gtimeout's exit 124 propagates
+  # via the pipeline (set -o pipefail) so failure_outcome_for_exit can
+  # classify it as dispatch-timeout.
+  local cmd=(env PIPELINE_WRITER=agent
+    gtimeout --signal=TERM --kill-after=10 "$timeout_seconds"
+    claude -p
     --output-format stream-json --verbose
     --setting-sources project,local
     --disable-slash-commands
