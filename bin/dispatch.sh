@@ -121,6 +121,20 @@ _render_and_capture_stream() {
   fi
 }
 
+# ENG-48 isolation: platform tools whose call from a headless dispatch
+# either demonstrated a runaway (ScheduleWakeup → 2026-04-28 ENG-45 7h
+# wedge) or could enable one (subagent escape, plan-mode entry, cron
+# creation, network egress not guarded by per-stage allowlists). The
+# --allowed-tools flag is a permission allowlist, not an availability
+# list — these tools are still callable unless explicitly denied.
+disallowed_platform_tools() {
+  # Excluded from this list: Task / WebFetch. Task may alias the Agent tool
+  # that ui/review/qa/retrospective stages legitimately allow; WebFetch is
+  # in brainstorm's allowed-tools. Denials win over allows in claude's
+  # tool-resolution, so denying either would break working stages.
+  printf 'ScheduleWakeup TodoWrite Skill EnterPlanMode ExitPlanMode EnterWorktree ExitWorktree RemoteTrigger PushNotification CronCreate CronDelete CronList Monitor WebSearch ToolSearch AskUserQuestion'
+}
+
 allowed_tools_for() {
   # Every stage gets `Bash(bash .pipeline/bin/linear.sh:*)` so agents can always post
   # Linear comments via the canonical bash path. MCP Linear remains available in parallel;
@@ -166,8 +180,11 @@ main() {
   acquire_claude_mutex
   trap 'release_claude_mutex' EXIT
 
+  local denies
+  denies="$(disallowed_platform_tools)"
+
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
-    log "[DRY_RUN] would invoke: claude -p --output-format stream-json --verbose --allowed-tools \"$tools\" < $prompt_file"
+    log "[DRY_RUN] would invoke: claude -p --output-format stream-json --verbose --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
     head -c 500 "$prompt_file" >&2
     printf '\n' >&2
@@ -186,7 +203,19 @@ main() {
   # and the aggregated `usage` block. The renderer extracts cost; the
   # operator-facing log keeps prose-ish progress lines via the renderer's
   # stdout (D-002 / F3 / F4).
-  local cmd=(env PIPELINE_WRITER=agent claude -p --output-format stream-json --verbose --allowed-tools "$tools")
+  # ENG-48: --setting-sources project,local skips ~/.claude (so the
+  # operator's installed plugins and SessionStart hooks don't fire);
+  # --disable-slash-commands blocks skill auto-load (using-superpowers,
+  # /loop, etc.); --disallowed-tools denies platform tools that aren't
+  # in any stage's allowlist and could enable a runaway (ScheduleWakeup
+  # was the demonstrated escape on 2026-04-28).
+  local cmd=(env PIPELINE_WRITER=agent claude -p
+    --output-format stream-json --verbose
+    --setting-sources project,local
+    --disable-slash-commands
+    --disallowed-tools "$denies"
+    --allowed-tools "$tools"
+  )
   if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname "$log_file")"
     log "dispatching stage=$stage, log=$log_file"

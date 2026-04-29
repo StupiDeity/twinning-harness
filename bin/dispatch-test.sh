@@ -185,12 +185,16 @@ if [[ -z "$disallowed_idx" ]]; then
     "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
 else
   disallowed_value="$(sed -n "$((disallowed_idx + 1))p" "$ARGV_CAPTURE")"
+  # Task / WebFetch deliberately excluded: Task may alias the Agent tool
+  # used by ui/review/qa/retrospective stages, and brainstorm's allowed-
+  # tools includes WebFetch. Denials win over allows in claude's tool-
+  # resolution.
   required_denies=(
-    ScheduleWakeup TodoWrite Skill Task
+    ScheduleWakeup TodoWrite Skill
     EnterPlanMode ExitPlanMode EnterWorktree ExitWorktree
     RemoteTrigger PushNotification
     CronCreate CronDelete CronList Monitor
-    WebFetch WebSearch ToolSearch AskUserQuestion
+    WebSearch ToolSearch AskUserQuestion
   )
   missing_denies=()
   for required in "${required_denies[@]}"; do
