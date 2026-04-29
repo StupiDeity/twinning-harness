@@ -85,6 +85,18 @@ for stage in brainstorm plan implement ui review qa build release; do
   else
     pass_at "stage=$stage: no mcp__*linear* in allowed-tools"
   fi
+
+  # Both linear.sh paths must be present so harness-self (bin/) and
+  # target-symlinked (.pipeline/bin/) layouts both work.
+  if ! printf '%s' "$tools" | grep -q 'Bash(bash \.pipeline/bin/linear\.sh:\*)'; then
+    fail_at "stage=$stage: missing Bash(bash .pipeline/bin/linear.sh:*) in allowed-tools" \
+      "tools=$tools"
+  elif ! printf '%s' "$tools" | grep -q 'Bash(bash bin/linear\.sh:\*)'; then
+    fail_at "stage=$stage: missing Bash(bash bin/linear.sh:*) in allowed-tools" \
+      "tools=$tools"
+  else
+    pass_at "stage=$stage: both linear.sh paths present (.pipeline/ + harness-self)"
+  fi
 done
 
 # ─── Group 2: PIPELINE_WRITER env propagation ───────────────────────────
