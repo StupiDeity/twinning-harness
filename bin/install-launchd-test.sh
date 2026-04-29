@@ -35,7 +35,45 @@ HOME_BACKUP="$HOME"
 export HOME="$fake_la/home"
 mkdir -p "$HOME/Library/LaunchAgents"
 
-trap 'rm -rf "$STUB" "$TGT" "$HSD" "$fake_la"; export HOME="$HOME_BACKUP"' EXIT
+# ENG-stack-aware: install-launchd.sh now refuses to run without a
+# complete project-profile.md for the slug. Seed minimal profiles for
+# the test slugs and clean them up afterwards.
+HARNESS_REPO_ROOT="$(cd "$HARNESS_DIR/.." && pwd)"
+seed_profile() {
+  local slug="$1"
+  mkdir -p "$HARNESS_REPO_ROOT/learned-rules/$slug"
+  cat > "$HARNESS_REPO_ROOT/learned-rules/$slug/project-profile.md" <<PROFILE
+---
+slug: $slug
+generated_at: 2026-04-27T00:00:00Z
+generated_by: install-launchd-test
+schema_version: 1
+---
+
+# Project profile — $slug
+
+## Stack
+test fixture.
+
+## Build & test gates
+- Build: \`(n/a)\`
+- Test: \`bash bin/$slug-test.sh\`
+- Lint/check: \`(n/a)\`
+- Integration/E2E: \`(n/a)\`
+
+## File layout
+- \`bin/\` — scripts.
+
+## Language idioms
+- bash.
+
+## Don'ts
+(none observed)
+PROFILE
+}
+seed_profile foo
+seed_profile bar
+trap 'rm -rf "$STUB" "$TGT" "$HSD" "$fake_la" "$HARNESS_REPO_ROOT/learned-rules/foo" "$HARNESS_REPO_ROOT/learned-rules/bar"; export HOME="$HOME_BACKUP"' EXIT
 
 HARNESS_STATE_DIR="$HSD" bash "$HARNESS_DIR/install-launchd.sh" "$TGT" >/dev/null 2>&1
 

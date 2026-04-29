@@ -549,6 +549,9 @@ is_validate_done() { return 1; }  # always re-run on demand
 # ── Phase 11: launchd ─────────────────────────────────────────────────
 phase_launchd() {
   print_phase_header "launchd"
+  if ! is_project_profile_done; then
+    die "launchd: project-profile incomplete; run: bash bin/setup.sh project-profile"
+  fi
   local slug; slug="$(jq -r '.project.slug' "$CONFIG")"
   printf 'Install launchd agents for project '\''%s'\'' now? [Y/n]: ' "$slug" >&2
   local ans; read -r ans
