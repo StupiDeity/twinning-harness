@@ -124,6 +124,46 @@ find_doc() {
   fi
 }
 
+# Append the per-slug project profile to <stdin>, if applicable.
+# Reads piped stage prompt on stdin, writes augmented prompt to stdout.
+# Skips for stage=retrospective. Dies if profile is missing or has markers
+# (unless PIPELINE_PROFILE_ADDENDUM=0 — then passes through unchanged).
+# Default off in this initial commit; flipped on after both live slugs
+# have valid profiles (Task 12).
+append_project_profile() {
+  local stage="$1"
+  local addendum_enabled="${PIPELINE_PROFILE_ADDENDUM:-0}"
+
+  if [[ "$addendum_enabled" != "1" ]]; then
+    cat
+    return 0
+  fi
+
+  if [[ "$stage" == "retrospective" ]]; then
+    cat
+    return 0
+  fi
+
+  local profile_path="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG/project-profile.md"
+  if [[ ! -f "$profile_path" ]]; then
+    cat >/dev/null
+    die "render-prompt: no project-profile.md for slug=$PROJECT_SLUG; run: bash bin/setup.sh project-profile"
+  fi
+  if grep -q '<<NEEDS-INPUT:' "$profile_path"; then
+    cat >/dev/null
+    die "render-prompt: project-profile.md contains unresolved markers; run: bash bin/setup.sh project-profile"
+  fi
+  # Schema version warning (non-fatal).
+  if ! grep -qE '^schema_version:[[:space:]]+1[[:space:]]*$' "$profile_path"; then
+    log "render-prompt: WARNING — project-profile schema_version != 1, continuing"
+  fi
+
+  cat
+  printf '\n\n---\n\n## Project profile (addendum)\n\n'
+  cat "$profile_path"
+  printf '\n'
+}
+
 main() {
   local stage="${1:-}" issue_id="${2:-}"
   [[ -n "$stage" ]] || die "usage: render-prompt.sh <stage> <issue_id|release-meta>"
@@ -152,7 +192,8 @@ main() {
       | sed \
         -e "s|{version}|$version|g" \
         -e "s|{tag}|$tag|g" \
-        -e "s|{prev_tag}|$prev_tag|g"
+        -e "s|{prev_tag}|$prev_tag|g" \
+      | append_project_profile "$stage"
     return 0
   fi
 
@@ -179,7 +220,8 @@ main() {
   learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
 
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" "$stage_summary_path" "$learned_rules_dir" <<'PY'
+    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" "$stage_summary_path" "$learned_rules_dir" <<'PY' \
+      | append_project_profile "$stage"
 import sys
 tmpl, issue_id, issue_id_lower, title, description, date, slug, brainstorm_file, plan_file, branch_name, stage_summary_path, learned_rules_dir = sys.argv[1:]
 out = tmpl
@@ -211,7 +253,8 @@ PY
         -e "s|{plan_file}|$plan_file|g" \
         -e "s|{branch_name}|$branch_name|g" \
         -e "s|{stage_summary_path}|$stage_summary_path|g" \
-        -e "s|{learned_rules_dir}|$learned_rules_dir|g"
+        -e "s|{learned_rules_dir}|$learned_rules_dir|g" \
+      | append_project_profile "$stage"
     # title and description may contain sed metacharacters — fall back users: install python3.
   fi
 }
