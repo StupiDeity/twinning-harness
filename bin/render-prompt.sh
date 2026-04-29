@@ -124,20 +124,14 @@ find_doc() {
   fi
 }
 
-# Append the per-slug project profile to <stdin>, if applicable.
+# Append the per-slug project profile to <stdin>.
 # Reads piped stage prompt on stdin, writes augmented prompt to stdout.
-# Skips for stage=retrospective. Dies if profile is missing or has markers
-# (unless PIPELINE_PROFILE_ADDENDUM=0 — then passes through unchanged).
-# Default off in this initial commit; flipped on after both live slugs
-# have valid profiles (Task 12).
+# Skips for stage=retrospective (the retrospective agent is cross-slug).
+# Dies if profile is missing or has unresolved <<NEEDS-INPUT:>> markers —
+# both are setup-time configuration errors the operator must address via
+# `bash bin/setup.sh project-profile`.
 append_project_profile() {
   local stage="$1"
-  local addendum_enabled="${PIPELINE_PROFILE_ADDENDUM:-0}"
-
-  if [[ "$addendum_enabled" != "1" ]]; then
-    cat
-    return 0
-  fi
 
   if [[ "$stage" == "retrospective" ]]; then
     cat

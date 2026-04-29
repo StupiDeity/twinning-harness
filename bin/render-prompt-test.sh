@@ -66,23 +66,23 @@ src_with_env() {
   )
 }
 
-# Case 6.1: addendum on, profile present → output contains addendum heading
+# Case 6.1: addendum default-on, profile present → output contains addendum heading
 out="$(src_with_env brainstorm 1 2>/dev/null)"
 if grep -q 'Project profile (addendum)' <<<"$out" && grep -q '## Stack' <<<"$out"; then
-  pass_at "case-6.1: profile appended when flag on"
+  pass_at "case-6.1: profile appended for non-retrospective stage"
 else
-  fail_at "case-6.1: profile appended when flag on" "out=$out"
+  fail_at "case-6.1: profile appended for non-retrospective stage" "out=$out"
 fi
 
-# Case 6.2: addendum off → output is base only
-out="$(src_with_env brainstorm 0 2>/dev/null)"
-if [[ "$out" == "BASE PROMPT BODY" ]]; then
-  pass_at "case-6.2: flag off bypasses addendum"
+# Case 6.2: addendum default-on with no flag set → addendum still applies
+out="$(src_with_env brainstorm '' 2>/dev/null)"
+if grep -q 'Project profile (addendum)' <<<"$out"; then
+  pass_at "case-6.2: addendum applies by default (no flag set)"
 else
-  fail_at "case-6.2: flag off bypasses addendum" "out=$out"
+  fail_at "case-6.2: addendum applies by default (no flag set)" "out=$out"
 fi
 
-# Case 6.3: retrospective stage → no addendum even with flag on
+# Case 6.3: retrospective stage → no addendum
 out="$(src_with_env retrospective 1 2>/dev/null)"
 if [[ "$out" == "BASE PROMPT BODY" ]]; then
   pass_at "case-6.3: retrospective stage skips addendum"
