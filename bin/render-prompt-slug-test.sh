@@ -27,7 +27,41 @@ esac
 SH
 chmod +x "$STUB/linear.sh"
 
-trap 'rm -rf "$FAKE" "$STUB" "$HARNESS_STATE_DIR"' EXIT
+# Seed a minimal valid project-profile.md for the test slug so the
+# stack-aware addendum injector doesn't die. Cleaned up via the trap.
+HARNESS_REPO_ROOT="$(cd "$HARNESS_DIR/.." && pwd)"
+PROFILE_DIR="$HARNESS_REPO_ROOT/learned-rules/test-slug"
+mkdir -p "$PROFILE_DIR"
+cat > "$PROFILE_DIR/project-profile.md" <<'PROFILE'
+---
+slug: test-slug
+generated_at: 2026-04-29T00:00:00Z
+generated_by: render-prompt-slug-test
+schema_version: 1
+---
+
+# Project profile — test-slug
+
+## Stack
+test fixture.
+
+## Build & test gates
+- Build: `(n/a)`
+- Test: `bash bin/render-prompt-slug-test.sh`
+- Lint/check: `(n/a)`
+- Integration/E2E: `(n/a)`
+
+## File layout
+- `bin/` — scripts.
+
+## Language idioms
+- bash.
+
+## Don'ts
+(none observed)
+PROFILE
+
+trap 'rm -rf "$FAKE" "$STUB" "$HARNESS_STATE_DIR" "$PROFILE_DIR"' EXIT
 
 # render-prompt.sh calls `bash "$SCRIPT_DIR/linear.sh"`, so PATH stubbing
 # won't intercept it. Use the canonical source-and-override pattern:
