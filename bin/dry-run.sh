@@ -31,6 +31,14 @@ check() {
 
 echo "━━━ Offline checks ━━━"
 
+check "project-profile: present and complete for slug=$PROJECT_SLUG" bash -c '
+  source "$HARNESS_ROOT/bin/setup-helpers.sh"
+  p="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG/project-profile.md"
+  test -f "$p" || { echo "missing: $p" >&2; exit 1; }
+  _validate_project_profile_schema "$p" || exit 1
+  ! grep -q "<<NEEDS-INPUT:" "$p" || { echo "markers present in $p" >&2; exit 1; }
+'
+
 check "bash syntax: all $HARNESS_ROOT/bin/*.sh" bash -c '
   for f in $HARNESS_ROOT/bin/*.sh; do bash -n "$f" || exit 1; done
 '
@@ -127,7 +135,7 @@ check "dispatch.sh: dry-run prints prompt preview" bash -c '
   echo "PROMPT TEST BODY line 1" > "$tmp"
   echo "PROMPT TEST BODY line 2" >> "$tmp"
   out=$(PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/dispatch.sh brainstorm "$tmp" 2>&1)
-  grep -q "would invoke: claude" <<<"$out" || { echo "$out"; exit 1; }
+  grep -q "would invoke: gtimeout" <<<"$out" || { echo "$out"; exit 1; }
   grep -q "PROMPT TEST BODY" <<<"$out" || { echo "$out"; exit 1; }
   rm "$tmp"
 '

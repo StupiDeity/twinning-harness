@@ -249,6 +249,124 @@ is_slug_freeze_done() {
   [[ -f "$HARNESS_STATE_DIR/$slug/target-repo" ]] || return 1
 }
 
+# ── Phase 5b: project-profile ─────────────────────────────────────────
+# Discovery agent that authors learned-rules/<slug>/project-profile.md.
+# Invoked once at setup time (not from the orchestrator). Profile content
+# is appended to all non-retrospective stage prompts at dispatch time so
+# the harness's prompts are stack-aware regardless of target repo.
+phase_project_profile() {
+  print_phase_header "project-profile"
+  local slug; slug="$(jq -r '.project.slug // empty' "$CONFIG")"
+  [[ -n "$slug" ]] || die "project-profile: project.slug missing — run slug-freeze first"
+
+  local profile_dir="$HARNESS_ROOT/learned-rules/$slug"
+  local profile_path="$profile_dir/project-profile.md"
+  mkdir -p "$profile_dir"
+
+  # Skip-discovery rule: file exists with valid schema and no markers → done.
+  if [[ -f "$profile_path" ]] \
+     && _validate_project_profile_schema "$profile_path" 2>/dev/null \
+     && ! grep -q '<<NEEDS-INPUT:' "$profile_path"; then
+    log "project-profile: $profile_path already complete"
+    return 0
+  fi
+
+  # Skip-discovery rule: file exists with valid schema but has markers → resolve only.
+  if [[ -f "$profile_path" ]] && _validate_project_profile_schema "$profile_path" 2>/dev/null; then
+    log "project-profile: $profile_path has markers; skipping discovery, resolving markers"
+    _resolve_profile_markers "$profile_path" \
+      || die "project-profile: marker resolution aborted"
+    return 0
+  fi
+
+  # Fresh discovery.
+  require_bin claude gtimeout
+  local prompt_template="$SCRIPT_DIR/setup-prompts/discovery.md"
+  [[ -f "$prompt_template" ]] || die "project-profile: missing $prompt_template"
+
+  local date; date="$(date -u +%Y-%m-%d)"
+  local rendered_prompt; rendered_prompt="$(mktemp -t discovery-prompt-XXXXXX.md)"
+  _render_discovery_prompt "$prompt_template" "$TARGET_REPO" "$slug" "$date" "$profile_dir" > "$rendered_prompt"
+
+  local log_dir="$PROJECT_STATE_DIR/logs"
+  mkdir -p "$log_dir"
+  local log_file="$log_dir/setup-discovery-$date.log"
+
+  # Hold the claude-mutex tightly around the claude call only; releasing
+  # in the same block (rather than via RETURN trap) survives a die()
+  # inside the validation steps that follow. RETURN does not fire on exit.
+  local mutex="$HARNESS_STATE_DIR/.claude-mutex.lock"
+  local waited=0
+  while ! mkdir "$mutex" 2>/dev/null; do
+    (( waited == 0 )) && log "project-profile: waiting for claude-mutex"
+    (( waited >= 600 )) && { rm -f "$rendered_prompt"; die "project-profile: claude-mutex timeout after 600s"; }
+    sleep 1; waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "$mutex/pid"
+
+  local tools='Read,Glob,Grep,Write,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(head:*),Bash(tail:*),Bash(wc:*)'
+
+  # ENG-48 isolation: same defenses as dispatch.sh — block user-level
+  # plugins, skills, and platform tools that could let discovery escape
+  # its scope (ScheduleWakeup, TodoWrite, etc.). gtimeout caps the
+  # discovery wall-clock budget at 10 minutes; the agent should finish
+  # in a couple of minutes on any sane repo.
+  local denies='ScheduleWakeup TodoWrite Skill EnterPlanMode ExitPlanMode EnterWorktree ExitWorktree RemoteTrigger PushNotification CronCreate CronDelete CronList Monitor WebSearch ToolSearch AskUserQuestion'
+
+  log "project-profile: invoking claude (log: $log_file)"
+  local claude_rc=0
+  gtimeout --signal=TERM --kill-after=10 600 \
+    claude -p \
+      --setting-sources project,local \
+      --disable-slash-commands \
+      --disallowed-tools "$denies" \
+      --allowed-tools "$tools" \
+    < "$rendered_prompt" | tee "$log_file" || claude_rc=$?
+
+  # Release the mutex and the temp prompt before any further die() can fire.
+  rm -rf "$mutex"
+  rm -f "$rendered_prompt"
+
+  if (( claude_rc != 0 )); then
+    die "project-profile: claude invocation failed rc=$claude_rc (log: $log_file)"
+  fi
+
+  # Validate output.
+  if [[ ! -f "$profile_path" ]]; then
+    die "project-profile: discovery did not write $profile_path (log: $log_file)"
+  fi
+  if ! _validate_project_profile_schema "$profile_path"; then
+    rm -f "$profile_path"
+    die "project-profile: discovery output failed schema validation; removed (log: $log_file)"
+  fi
+
+  # Resolve markers.
+  if grep -q '<<NEEDS-INPUT:' "$profile_path"; then
+    log "project-profile: resolving markers"
+    _resolve_profile_markers "$profile_path" \
+      || die "project-profile: marker resolution aborted (file retains markers)"
+  fi
+
+  # Optional editor review.
+  if [[ "${PIPELINE_PROFILE_EDIT:-0}" == "1" ]]; then
+    : "${EDITOR:=vi}"
+    "$EDITOR" "$profile_path" || true
+    _validate_project_profile_schema "$profile_path" \
+      || die "project-profile: post-edit schema validation failed"
+  fi
+
+  log "project-profile: complete ($profile_path)"
+}
+
+is_project_profile_done() {
+  local slug; slug="$(jq -r '.project.slug // empty' "$CONFIG" 2>/dev/null)"
+  [[ -n "$slug" ]] || return 1
+  local p="$HARNESS_ROOT/learned-rules/$slug/project-profile.md"
+  [[ -f "$p" ]] || return 1
+  _validate_project_profile_schema "$p" 2>/dev/null || return 1
+  ! grep -q '<<NEEDS-INPUT:' "$p"
+}
+
 # ── Phase 6: github-app ───────────────────────────────────────────────
 phase_github_app() {
   print_phase_header "github-app"
@@ -431,6 +549,9 @@ is_validate_done() { return 1; }  # always re-run on demand
 # ── Phase 11: launchd ─────────────────────────────────────────────────
 phase_launchd() {
   print_phase_header "launchd"
+  if ! is_project_profile_done; then
+    die "launchd: project-profile incomplete; run: bash bin/setup.sh project-profile"
+  fi
   local slug; slug="$(jq -r '.project.slug' "$CONFIG")"
   printf 'Install launchd agents for project '\''%s'\'' now? [Y/n]: ' "$slug" >&2
   local ans; read -r ans
@@ -470,6 +591,14 @@ phase_migrate() {
 
   local slug; slug="$(jq -r '.project.slug' "$CONFIG")"
   local project_state="$HARNESS_STATE_DIR/$slug"
+
+  # 2b. Project profile (delegate; idempotent). Existing single-project
+  # installs predate the stack-aware addendum and won't have a profile;
+  # populate it here so phase_launchd's guard doesn't block migration.
+  if ! is_project_profile_done; then
+    log "migrate: project-profile not yet populated; running discovery"
+    phase_project_profile
+  fi
 
   # 3. Lift shared credentials from per-project .env.local into shared secrets.env.
   mkdir -p "$HARNESS_CONFIG_DIR" && chmod 0700 "$HARNESS_CONFIG_DIR"
@@ -556,7 +685,7 @@ phase_migrate() {
 is_migrate_done() { return 1; }   # always re-run on demand; substeps are individually idempotent
 
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze github-app gh-cli slack config-defaults validate launchd)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze project-profile github-app gh-cli slack config-defaults validate launchd)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"

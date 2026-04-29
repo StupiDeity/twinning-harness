@@ -12,6 +12,17 @@ export TARGET_REPO
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+# Guard: project-profile must be complete before launchd can be installed.
+# This prevents a half-set-up project from being scheduled by launchd.
+_profile_path="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG/project-profile.md"
+if [[ ! -f "$_profile_path" ]]; then
+  die "install-launchd: project-profile.md missing for slug=$PROJECT_SLUG; run: bash bin/setup.sh project-profile"
+fi
+if grep -q '<<NEEDS-INPUT:' "$_profile_path" 2>/dev/null; then
+  die "install-launchd: project-profile.md has unresolved markers; run: bash bin/setup.sh project-profile"
+fi
+unset _profile_path
+
 LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 mkdir -p "$LAUNCHD_DIR" "$PROJECT_STATE_DIR/logs"

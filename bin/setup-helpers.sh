@@ -116,3 +116,105 @@ prompt_secret() {
 print_phase_header() {
   printf '\n=== %s ===\n' "$1" >&2
 }
+
+# _validate_project_profile_schema <path>
+# Returns 0 if path is a valid project-profile.md per the stack-aware
+# addendum spec §6:
+#   - YAML frontmatter (--- ... ---) at top
+#   - frontmatter contains schema_version: 1
+#   - five H2 sections in exact order: Stack, Build & test gates,
+#     File layout, Language idioms, Don'ts
+# Returns non-zero with a one-line reason on stderr otherwise.
+_validate_project_profile_schema() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf '_validate_project_profile_schema: not a file: %s\n' "$path" >&2; return 1; }
+
+  # Frontmatter must open at line 1 with `---` and close before any H1/H2.
+  local has_fm
+  has_fm="$(awk '
+    NR==1 { if ($0=="---") { in_fm=1; next } else { exit 1 } }
+    in_fm && $0=="---" { print "yes"; exit 0 }
+    NR>40 { exit 1 }
+  ' "$path")"
+  [[ "$has_fm" == "yes" ]] || { printf '_validate_project_profile_schema: missing frontmatter\n' >&2; return 1; }
+
+  # schema_version: 1 must appear inside frontmatter
+  local has_ver
+  has_ver="$(awk '
+    NR==1 && $0=="---" { in_fm=1; next }
+    in_fm && $0=="---" { exit }
+    in_fm && /^schema_version:[[:space:]]+1[[:space:]]*$/ { print "yes"; exit }
+  ' "$path")"
+  [[ "$has_ver" == "yes" ]] || { printf '_validate_project_profile_schema: schema_version != 1\n' >&2; return 1; }
+
+  # Required H2 sections in exact order.
+  local sections
+  sections="$(grep -E '^## ' "$path" | head -5 | tr '\n' '|')"
+  local expected='## Stack|## Build & test gates|## File layout|## Language idioms|## Don'\''ts|'
+  if [[ "$sections" != "$expected" ]]; then
+    printf '_validate_project_profile_schema: expected sections [%s], got [%s]\n' "$expected" "$sections" >&2
+    return 1
+  fi
+  return 0
+}
+
+# _resolve_profile_markers <path>
+# Reads <path>, finds <<NEEDS-INPUT: question>> markers, prompts the
+# operator (stdin) for each, replaces the entire line containing the
+# marker with the answer (preserving the line's leading text up to the
+# marker). Empty answers re-prompt; after 3 consecutive empties, returns
+# non-zero. Uses fd 3 for the profile read so the operator-prompt read
+# stays bound to stdin.
+_resolve_profile_markers() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf '_resolve_profile_markers: not a file: %s\n' "$path" >&2; return 1; }
+  if ! grep -q '<<NEEDS-INPUT:' "$path"; then
+    return 0
+  fi
+
+  local tmp; tmp="$(mktemp "${path}.XXXXXX")"
+  local line answer retries
+  while IFS='' read -r -u 3 line || [[ -n "$line" ]]; do
+    if [[ "$line" == *'<<NEEDS-INPUT:'* ]]; then
+      local prefix question
+      prefix="${line%%<<NEEDS-INPUT:*}"
+      question="${line#*<<NEEDS-INPUT:}"
+      question="${question%%>>*}"
+      question="${question# }"
+      retries=0
+      answer=""
+      while [[ -z "$answer" ]]; do
+        printf '\n  %s\n  > ' "$question" >&2
+        IFS='' read -r answer || answer=""
+        if [[ -z "$answer" ]]; then
+          retries=$((retries + 1))
+          if (( retries >= 3 )); then
+            rm -f "$tmp"
+            printf '_resolve_profile_markers: 3 empty answers; aborting\n' >&2
+            return 1
+          fi
+        fi
+      done
+      printf '%s%s\n' "$prefix" "$answer" >> "$tmp"
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done 3< "$path"
+  mv "$tmp" "$path"
+  return 0
+}
+
+# _render_discovery_prompt <template-path> <target_repo> <slug> <date> <learned_rules_dir>
+# Echoes the rendered prompt on stdout. Substitutes only the four known
+# tokens; leaves any other {token} literals untouched (so the agent sees
+# them in illustrative schema blocks).
+_render_discovery_prompt() {
+  local template="$1" target_repo="$2" slug="$3" date="$4" learned_rules_dir="$5"
+  [[ -f "$template" ]] || { printf '_render_discovery_prompt: not a file: %s\n' "$template" >&2; return 1; }
+  sed \
+    -e "s|{target_repo_path}|${target_repo}|g" \
+    -e "s|{slug}|${slug}|g" \
+    -e "s|{date}|${date}|g" \
+    -e "s|{learned_rules_dir}|${learned_rules_dir}|g" \
+    "$template"
+}
