@@ -359,8 +359,22 @@ main() {
     # Dispatch. Export PIPELINE_ISSUE_ID so dispatch.sh can resolve the
     # per-stage usage-file path (ENG-26 D-012). Ambient-context env var
     # mirrors the existing PIPELINE_DRY_RUN pattern (common.sh:171).
-    if ! PIPELINE_ISSUE_ID="$ident" \
-         bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$prompt_file" "$log_file"; then
+    local dispatch_rc=0
+    PIPELINE_ISSUE_ID="$ident" \
+      bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$prompt_file" "$log_file" \
+      || dispatch_rc=$?
+
+    if (( dispatch_rc == 124 )); then
+      # ENG-48: gtimeout SIGTERM'd a wedged dispatch. This is a hard halt,
+      # not a transient failure — the agent likely entered a self-loop
+      # and operator review is required. skip-until-human-acts policy
+      # (vs. retry-immediately for generic exit 20) ensures the next
+      # tick won't re-dispatch automatically.
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "dispatch wall-clock timeout — agent exceeded budget without exiting" 124
+      rm -f "$prompt_file"
+      exit 124
+    elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20
       rm -f "$prompt_file"

@@ -285,6 +285,18 @@ else
   fail_at "case-10" "got $outcome"
 fi
 
+# ─── Case 10b (ENG-48): exit 124 → dispatch-timeout outcome ────────────
+# When gtimeout SIGTERM's a wedged dispatch, the pipeline propagates
+# exit 124. Pin the failure_outcome_for_exit mapping so the metrics
+# stream and the retrospective agent's exit-code-bucketing groups
+# this distinct from generic dispatch-failed (exit 20).
+outcome=$(failure_outcome_for_exit 124 "")
+if [[ "$outcome" == "dispatch-timeout" ]]; then
+  pass_at "case-10b failure_outcome_for_exit(124,'') → dispatch-timeout"
+else
+  fail_at "case-10b" "got $outcome"
+fi
+
 # ─── Case 11: SEVERE scope-violation bumps implement_rejection ─────────
 # Stub scope-check.sh to return rc=3 with a `severe\t<file>` row; call the
 # scope-check branch inline; assert the bump stub captured exactly one
