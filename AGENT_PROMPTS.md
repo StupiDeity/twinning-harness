@@ -53,6 +53,14 @@ The orchestrator's Verdict Handler (`.pipeline/bin/verdict-handler.sh`) scans Li
 
 **Freshness rule:** the Verdict Handler considers only markers newer than the most recent `<!-- pipeline-transition: -->` comment, and picks the latest verdict-shaped marker among those. Verdict comments are append-only — use `linear.sh add-comment`, NOT `add-or-update-comment`.
 
+### Non-verdict markers
+
+Non-verdict markers communicate state OTHER than a stage outcome and are NOT consumed by `verdict-handler.sh`. They are read by the orchestrator's per-stage gates in `run-stage.sh`.
+
+| Marker | Who posts | When | Meaning |
+|---|---|---|---|
+| `<!-- pipeline-wait: <reason> -->` | build agent only | external-signal precondition unmet (P2 / P5) | exit clean; orchestrator re-dispatches next tick until budget exhausts (ENG-45) |
+
 ### Label vocabulary — lane-aware write matrix (ENG-41)
 
 Every label/comment write in the harness is gated by `bin/linear.sh`'s lane fence.
@@ -1017,6 +1025,11 @@ Branch: `{branch_name}` — the feature PR opened by UI, reviewed by Review, ver
 
 Preconditions (MANDATORY — all must be true; fail fast on any false):
 
+**Precondition ordering (ENG-45):** If P1, P3, P4, P6, or P7 fail, post the
+existing hard-halt marker (`pipeline-halt: agent-blocked`) and exit. The wait
+path on P2 / P5 below applies ONLY when every other precondition has passed
+and the only failure is P2 or P5.
+
   P1. **Exactly one open PR** on this branch:
         gh pr list --head {branch_name} --state open --json number | jq 'length == 1'
       Zero open PRs means UI stage never opened one. More than one means something is
@@ -1025,9 +1038,28 @@ Preconditions (MANDATORY — all must be true; fail fast on any false):
   P2. **Review was approved by a non-bot Code Owner** (bot self-approval does NOT count):
         gh pr view <N> --json reviews --jq \
           '[.reviews[] | select(.state == "APPROVED" and (.author.login | test("\\[bot\\]$") | not))] | length >= 1'
-      If this returns false, the PR is not ready; do NOT merge. Post a Linear
-      comment noting "awaiting human Code Owner approval" and exit. The
-      orchestrator will retry on the next tick.
+      If this returns false, the PR is not ready; do NOT merge. Confirm P1, P3,
+      P4, P6, P7 all passed (otherwise halt-for-human, see precondition-ordering
+      clause above).
+
+      **Wait exit (ENG-45):** post (via `bash .pipeline/bin/linear.sh add-comment`,
+      append-only) a comment whose first line is exactly
+      `<!-- pipeline-wait: awaiting-approval -->` and whose body includes the
+      human-readable signature `awaiting-external/build/{issue_id}` and a
+      per-tick varying line of the exact shape
+      `tick_at: $(date -u +"%Y-%m-%d %H:%M:%SZ")` (the space separator and
+      lack of a literal `T` are required so the line survives the
+      dedup-by-normalized-hash in `bin/linear.sh::add_comment` — without it
+      ticks 2..N are silently swallowed because their bodies are identical
+      after timestamp + SHA stripping). The body says: "Awaiting human Code
+      Owner approval. Will re-check on next tick. If
+      `orchestrator.external_signal_budget` is configured, will escalate to
+      halt-for-human after the budget exhausts; if not configured, will retry
+      indefinitely until approval lands." Do NOT apply `pipeline:halted`. Do
+      NOT post a verdict marker. Do NOT write a stage-summary file. Exit. The
+      orchestrator increments a per-issue counter and re-dispatches build on
+      the next tick; once the budget is exhausted (if configured) it escalates
+      to `pipeline-halt: external-signal-budget-exhausted` automatically.
 
   P3. **No outstanding review comments in "CHANGES_REQUESTED" state:**
         gh pr view <N> --json reviews --jq \
@@ -1042,8 +1074,29 @@ Preconditions (MANDATORY — all must be true; fail fast on any false):
       If the command exits 0 with no output, no required checks are configured —
       treat P5 as PASSING and proceed. Fail only if a required check is red or
       cancelled. Flaky checks count as red — re-run via
-      `gh run rerun --failed <run-id>` up to 2 times; after that, file a Linear
-      bug and loop back.
+      `gh run rerun --failed <run-id>` up to 2 times (in-tick retry; independent
+      of the between-tick wait counter below).
+
+      If after the in-tick reruns CI is still pending (not red — pending checks
+      are an external signal, not a hard fail), confirm P1, P3, P4, P6, P7 all
+      passed and take the **wait exit (ENG-45):** post (via
+      `bash .pipeline/bin/linear.sh add-comment`, append-only) a comment whose
+      first line is exactly `<!-- pipeline-wait: awaiting-ci -->` and whose body
+      includes the human-readable signature `awaiting-external/build/{issue_id}`
+      and a per-tick varying line of the exact shape
+      `tick_at: $(date -u +"%Y-%m-%d %H:%M:%SZ")` (the space separator and
+      lack of a literal `T` are required so the line survives the
+      dedup-by-normalized-hash in `bin/linear.sh::add_comment` — see the
+      same rationale in the P2 wait exit above). The body says: "Awaiting CI
+      to turn green. Will re-check on next tick. If
+      `orchestrator.external_signal_budget` is configured, will escalate to
+      halt-for-human after the budget exhausts; if not configured, will retry
+      indefinitely until CI lands." Do NOT apply `pipeline:halted`. Do NOT post
+      a verdict marker. Do NOT write a stage-summary file. Exit.
+
+      A required check that is RED (failed/cancelled) after the two in-tick
+      reruns is a hard fail, not a wait — file a Linear bug and loop back via
+      `<!-- pipeline-rejection: building --><!-- pipeline-rejection-target: implementing -->`.
 
   P6. **No conflicts with main** (dry rebase check):
         git fetch origin main && git -C $(mktemp -d) clone --quiet --branch {branch_name} \
@@ -1146,9 +1199,10 @@ Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
     - merged and CI green → `<!-- pipeline-stage-summary: building -->`
     - blocked-by-conflict or CI red → `<!-- pipeline-rejection: building --><!-- pipeline-rejection-target: implementing -->`
-    - halt-for-human (missing approval, WIP label, etc.) → `<!-- pipeline-halt: agent-blocked -->`
+    - halt-for-human (WIP / blocked label, malformed PR title, etc.) → `<!-- pipeline-halt: agent-blocked -->`
+    - awaiting external signal (P2 OR P5 only, all hard preconditions passed; ENG-45) → `<!-- pipeline-wait: awaiting-approval -->` or `<!-- pipeline-wait: awaiting-ci -->` (NOT a verdict shape — see "Non-verdict markers" in the protocol preamble; do NOT apply `pipeline:halted` for this case)
   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
-- Apply `pipeline:halted`:
+- Apply `pipeline:halted` (skip for the `pipeline-wait` exit above):
   `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
 ```
 

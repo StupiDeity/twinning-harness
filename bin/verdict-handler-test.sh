@@ -452,6 +452,28 @@ else
     "resume_rc=$resume_rc apply_calls=$apply_calls calls=$(cat "$STUB_LOG")"
 fi
 
+# ─── ENG-45: pipeline-wait alone is NOT a verdict shape ────────────────
+# Asserts the load-bearing claim from plan A-005: find_fresh_verdict's jq
+# filter enumerates only the three verdict shapes (pipeline-stage-summary,
+# pipeline-rejection, pipeline-halt). A `pipeline-wait` marker — even when
+# it is the freshest comment newer than the most recent pipeline-transition
+# — must NOT be matched. Without this guarantee, the wait flow would post
+# a verdict marker on every wait dispatch and the orchestrator would
+# happily transition the issue forward on a not-yet-merged PR.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline-transition: implementing → building -->|2026-04-28T08:00:00.000Z" \
+  "<!-- pipeline-wait: awaiting-approval -->|2026-04-28T08:17:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:building"
+VH_CURRENT_LABELS="stage:building"
+result="$(find_fresh_verdict "ENG-45-WAIT" 2>/dev/null || printf '')"
+if [[ -z "$result" ]]; then
+  pass_at "ENG-45 case-21 find_fresh_verdict ignores pipeline-wait marker (load-bearing for soft re-dispatch)"
+else
+  fail_at "ENG-45 case-21 find_fresh_verdict ignores pipeline-wait" \
+    "got: $result"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

@@ -445,6 +445,27 @@ else
     "extra_halt_clear=$extra_halt_clear extra_resume_post=$extra_resume_post"
 fi
 
+# ─── ENG-45: stage:building + only pipeline-wait fresh → hold,advanceable=true
+# Asserts the load-bearing claim from plan A-004: _poll_classify_labels' else
+# branch (the soft-redispatch path) classifies an issue with stage:building, no
+# halt label, no skip labels, and only a pipeline-wait fresh comment as
+# slot=hold,advanceable=true. This is the path the new wait flow exploits to
+# get the orchestrator to re-dispatch build on the next tick without operator
+# intervention.
+reset_fixtures
+write_comments_fixture "ENG-45-WAIT" \
+  '<!-- pipeline-transition: implementing → building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline-wait: awaiting-approval -->|2026-04-28T08:17:00Z'
+
+out="$(_poll_classify_labels "ENG-45-WAIT" '["stage:building"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable // ""'  <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" ]]; then
+  pass_at "ENG-45 poll-slot: pipeline-wait re-dispatches via else branch (hold,advanceable=true)"
+else
+  fail_at "ENG-45 poll-slot wait re-dispatch" "got slot=$slot adv=$adv (want hold/true) full=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

@@ -20,8 +20,18 @@ CAPTURE_FILE="$STUB_DIR/capture.txt"
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
 # args: \$1 subcommand \$2 sig \$3 ident \$4 body
-printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
-  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+# ENG-45: get-comments returns \$MOCK_COMMENTS_JSON (default '[]') so unit tests
+# of _fresh_wait_reason can inject fixture comment streams without standing up
+# a full Linear stub.
+case "\${1:-}" in
+  get-comments)
+    printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
+    ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
 exit 0
 SH
 chmod +x "$STUB_DIR/linear.sh"
@@ -864,6 +874,523 @@ else
           "count=${#flags_spc[@]} model_val=$(printf '%q' "$model_val_spc")"
 fi
 
+# ════════════════════════════════════════════════════════════════════════════
+# ENG-45 — build-stage wait-marker gate + budget escalation
+# ════════════════════════════════════════════════════════════════════════════
+# Inserted BEFORE case-15 because the pre-existing $REPO_ROOT unbound-var bug
+# at line ~870 aborts the script (set -u) and any cases appended after it
+# never run. Same insertion pattern as cases 19-35 already followed.
+#
+# Rebuild the linear.sh stub: case-8 (line ~220) overwrote the initial stub
+# with a smaller variant that only handles stage-of/add-or-update-comment, so
+# get-comments would silently exit 0 with empty output here. The variant below
+# preserves all paths the rest of the suite (and case-15+) might need.
+
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments)
+    # ENG-45: fixture-injected comment stream for _fresh_wait_reason cases.
+    printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
+    ;;
+  stage-of) printf 'stage:qa\n' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# ─── ENG-45 case A: fresh wait marker on build → returns reason ──────────────
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
+out="$(_fresh_wait_reason ENG-45T1 build || printf '')"
+if [[ "$out" == "awaiting-approval" ]]; then
+  pass_at "ENG-45 case A: fresh wait marker → returns awaiting-approval"
+else
+  fail_at "ENG-45 case A" "got: $out"
+fi
+
+# ─── ENG-45 case A2: fresh CI wait marker → returns awaiting-ci ──────────────
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-ci -->\n\nAwaiting CI to turn green."}]'
+out="$(_fresh_wait_reason ENG-45T1B build || printf '')"
+if [[ "$out" == "awaiting-ci" ]]; then
+  pass_at "ENG-45 case A2: fresh CI wait marker → returns awaiting-ci"
+else
+  fail_at "ENG-45 case A2" "got: $out"
+fi
+
+# ─── ENG-45 case B: stage != build → empty (build-only gate, security F-1) ──
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"}]'
+out="$(_fresh_wait_reason ENG-45T2 review || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case B: review stage rejected by build-only gate"
+else
+  fail_at "ENG-45 case B" "got: $out"
+fi
+
+# ─── ENG-45 case C: invented reason rejected by allow-list (security F-2) ───
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: never-escalate -->"}]'
+out="$(_fresh_wait_reason ENG-45T3 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case C: invented reason rejected by allow-list"
+else
+  fail_at "ENG-45 case C" "got: $out"
+fi
+
+# ─── ENG-45 case D: wait marker older than last pipeline-transition → empty ──
+export MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"},
+  {"createdAt":"2026-04-28T08:05:00Z","body":"<!-- pipeline-transition: implementing → building -->"}
+]'
+out="$(_fresh_wait_reason ENG-45T4 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case D: stale wait marker (pre-transition) is ignored"
+else
+  fail_at "ENG-45 case D" "got: $out"
+fi
+
+# ─── ENG-45 case E: empty get-comments → fail-closed (return 1) ─────────────
+export MOCK_COMMENTS_JSON=''
+out="$(_fresh_wait_reason ENG-45T5 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case E: empty get-comments fails closed"
+else
+  fail_at "ENG-45 case E" "got: $out"
+fi
+
+# ─── ENG-45 case F: get-comments returns "null" → fail-closed (return 1) ────
+export MOCK_COMMENTS_JSON='null'
+out="$(_fresh_wait_reason ENG-45T6 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case F: 'null' get-comments fails closed"
+else
+  fail_at "ENG-45 case F" "got: $out"
+fi
+
+# ─── ENG-45 case P6: rejection marker present, wait gate must NOT fire ──────
+# Linear issue's IN list (Task 8a). The wait gate must NOT fire on a rejection-
+# marker-only fixture — the existing rejection loopback flow must remain
+# reachable.
+export MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline-transition: implementing → building -->"},
+  {"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-rejection: building -->\n<!-- pipeline-rejection-target: implementing -->\nMerge conflict on rebase."}
+]'
+out="$(_fresh_wait_reason ENG-45T-P6 build || printf '')"
+if [[ -z "$out" ]]; then
+  pass_at "ENG-45 case P6: rejection marker is invisible to wait gate"
+else
+  fail_at "ENG-45 case P6" "wait gate spuriously matched: $out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── ENG-45 case G: first wait → attempts=1, file written, returns 0 ────────
+ENG_45_TMP_CFG="$(mktemp)"
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+ENG_45_CFG_SAVED="${CONFIG:-}"
+CONFIG="$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T7)"
+rm -f "$(issue_dir ENG-45T7)/wait-build.json"
+if _handle_wait ENG-45T7 build awaiting-approval; then
+  if jq -e '.attempts == 1 and .reason == "awaiting-approval" and .stage == "build" and .issue == "ENG-45T7"' \
+       "$(issue_dir ENG-45T7)/wait-build.json" >/dev/null 2>&1; then
+    pass_at "ENG-45 case G: first wait writes attempts=1 with reason+stage+issue, returns 0"
+  else
+    fail_at "ENG-45 case G" "json: $(cat "$(issue_dir ENG-45T7)/wait-build.json" 2>/dev/null)"
+  fi
+else
+  fail_at "ENG-45 case G" "_handle_wait returned nonzero on first attempt"
+fi
+
+# ─── ENG-45 case H: 2nd wait increments attempts to 2 ───────────────────────
+if _handle_wait ENG-45T7 build awaiting-approval; then
+  if jq -e '.attempts == 2' "$(issue_dir ENG-45T7)/wait-build.json" >/dev/null 2>&1; then
+    pass_at "ENG-45 case H: 2nd wait increments to 2"
+  else
+    fail_at "ENG-45 case H" "json: $(cat "$(issue_dir ENG-45T7)/wait-build.json" 2>/dev/null)"
+  fi
+else
+  fail_at "ENG-45 case H" "_handle_wait returned nonzero on within-budget 2nd attempt"
+fi
+
+# ─── ENG-45 case I: budget=2 attempts → 2nd call exhausts (returns 1) ───────
+# Plan Failure Mode → Test Map row claims this verifies four artifacts:
+#   (a) returns 1, (b) wait file deleted, (c) halt comment posted with
+#   external-signal-budget-exhausted reason, (d) pipeline:halted applied.
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":2}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T8)"
+rm -f "$(issue_dir ENG-45T8)/wait-build.json"
+_handle_wait ENG-45T8 build awaiting-approval >/dev/null  # first call returns 0
+reset_capture                                              # only capture exhaust call
+if _handle_wait ENG-45T8 build awaiting-approval >/dev/null; then
+  fail_at "ENG-45 case I" "expected nonzero on 2nd call (budget exhausted)"
+elif [[ -e "$(issue_dir ENG-45T8)/wait-build.json" ]]; then
+  fail_at "ENG-45 case I" "wait file should have been deleted: $(cat "$(issue_dir ENG-45T8)/wait-build.json" 2>/dev/null)"
+elif ! grep -q '^SUBCMD=add-comment$' "$CAPTURE_FILE" \
+   || ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I" "missing add-comment with external-signal-budget-exhausted body: $(cat "$CAPTURE_FILE")"
+elif ! grep -qE '^SUBCMD=add-label$' "$CAPTURE_FILE" \
+   || ! grep -q 'pipeline:halted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I" "missing add-label pipeline:halted: $(cat "$CAPTURE_FILE")"
+else
+  pass_at "ENG-45 case I: budget exhausted → halt comment + pipeline:halted + wait file deleted, returned 1"
+fi
+
+# ─── ENG-45 case I-LF (round-3 M-B): add-label failure preserves wait file ──
+# The else-arm at bin/run-stage.sh:419-423 is load-bearing: a transient
+# add-label failure on the budget-exhaust path must NOT delete the wait
+# file. Otherwise a network blip leaves the issue with no halt label AND
+# no counter file → the next dispatch starts a brand-new wait window at
+# attempts=1, silently bypassing the budget safety net. Case I asserts the
+# happy path (add-label succeeds, file deleted); case I-LF locks the else
+# arm. Stub `linear.sh add-label) exit 1` and assert: rc=1, file present,
+# halt comment still posted (the comment is best-effort, file lifecycle is
+# the load-bearing invariant).
+ENG_45_LF_LINEAR_SAVED="$STUB_DIR/linear-saved-pre-LF.sh"
+cp "$STUB_DIR/linear.sh" "$ENG_45_LF_LINEAR_SAVED"
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  add-label)
+    # Capture the call so the test can assert it was attempted, then fail
+    # to simulate a Linear API hiccup / network blip.
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    exit 1
+    ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":1}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-LF)"
+rm -f "$(issue_dir ENG-45T-LF)/wait-build.json"
+reset_capture
+ENG_45_LF_RC=0
+_handle_wait ENG-45T-LF build awaiting-approval >/dev/null 2>&1 || ENG_45_LF_RC=$?
+
+if (( ENG_45_LF_RC == 0 )); then
+  fail_at "ENG-45 case I-LF" "_handle_wait should return 1 on budget exhaust (got 0)"
+elif [[ ! -e "$(issue_dir ENG-45T-LF)/wait-build.json" ]]; then
+  fail_at "ENG-45 case I-LF" "wait file should be PRESERVED when add-label fails (else-arm of run-stage.sh:419-423)"
+elif ! grep -q '^SUBCMD=add-comment$' "$CAPTURE_FILE" \
+   || ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I-LF" "missing add-comment with halt body: $(cat "$CAPTURE_FILE")"
+elif ! grep -qE '^SUBCMD=add-label$' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case I-LF" "add-label was never attempted: $(cat "$CAPTURE_FILE")"
+else
+  pass_at "ENG-45 case I-LF: add-label failure preserves wait file (round-3 M-B)"
+fi
+
+# Restore the pre-I-LF stub so cases J / J2 / J3 / K / K2 / M see the
+# get-comments + stage-of behavior they expect.
+mv "$ENG_45_LF_LINEAR_SAVED" "$STUB_DIR/linear.sh"
+chmod +x "$STUB_DIR/linear.sh"
+
+# ─── ENG-45 case J: corrupt first_attempt_at resets the window (security F-3) ──
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T9)"
+printf '{"first_attempt_at":"NOT-A-DATE","attempts":99}' > "$(issue_dir ENG-45T9)/wait-build.json"
+_handle_wait ENG-45T9 build awaiting-approval >/dev/null
+# Pin attempts==1 (round-2 review n3): first reset to "now" with attempts=0,
+# then incremented to 1 on this very call. The previous disjunction muddied
+# the increment-ordering invariant the security F-3 guard depends on.
+if jq -e '.attempts == 1' \
+     "$(issue_dir ENG-45T9)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case J: corrupt first_attempt_at resets counter (no arbitrary date input)"
+else
+  fail_at "ENG-45 case J" "json: $(cat "$(issue_dir ENG-45T9)/wait-build.json" 2>/dev/null)"
+fi
+
+# ─── ENG-45 case J2 (review-major-2): future-dated first_attempt_at is corrupt ─
+# A regex-valid but in-the-future timestamp (e.g. attacker-crafted or clock-skew)
+# without the `first_epoch <= now_epoch` clamp produces negative `elapsed_m`,
+# clamped to 0, which the wall-clock cap branch can NEVER trip — operator
+# running with `max_minutes`-only (no `max_attempts`) loses the safety net.
+# With the clamp, future timestamps are treated as corrupt: counter resets to
+# 0, increments to 1 on this call, fresh window from now. Test distinguishes by
+# asserting attempts==1 after the call (would be 100 without the clamp because
+# the regex would pass and attempts++ would just bump 99→100).
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T9F)"
+printf '{"first_attempt_at":"9999-12-31T23:59:59Z","attempts":99}' > "$(issue_dir ENG-45T9F)/wait-build.json"
+_handle_wait ENG-45T9F build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' \
+     "$(issue_dir ENG-45T9F)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case J2: future first_attempt_at treated as corrupt (resets counter)"
+else
+  fail_at "ENG-45 case J2" "json: $(cat "$(issue_dir ENG-45T9F)/wait-build.json" 2>/dev/null)"
+fi
+
+# ─── ENG-45 case J3 (round-2 review M1): pre-epoch first_attempt_at is corrupt ─
+# Symmetric to J2 in the past direction. `1900-01-01T00:00:00Z` passes the
+# shape regex and parses (under BSD date) to a NEGATIVE epoch (~-2.2e9).
+# Without a `_first_epoch < 0` floor, `elapsed_m = (now - very-negative) / 60`
+# blows past any `max_minutes` budget on the FIRST tick — turning the budget
+# safety net into a one-shot trip wire. With the floor, pre-epoch timestamps
+# are treated as corrupt: counter resets to 0, increments to 1, fresh window.
+# Pin attempts==1 (would be 100 in bug-mode because the regex passes, the
+# wall-clock branch fires immediately on attempts=99→100, exhausts, deletes
+# the file — distinguishable too, but counter pin is the cleaner invariant).
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T9P)"
+printf '{"first_attempt_at":"1900-01-01T00:00:00Z","attempts":99}' > "$(issue_dir ENG-45T9P)/wait-build.json"
+_handle_wait ENG-45T9P build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' \
+     "$(issue_dir ENG-45T9P)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case J3: pre-epoch first_attempt_at treated as corrupt (resets counter)"
+else
+  fail_at "ENG-45 case J3" "json: $(cat "$(issue_dir ENG-45T9P)/wait-build.json" 2>/dev/null)"
+fi
+
+# ─── ENG-45 case K: wall-clock cap exhausts even when attempts < cap ────────
+# Pre-write a wait file dated 2 minutes in the past; max_minutes=1 should
+# trip exhaustion on the next call regardless of the attempts cap.
+# Same four-artifact assertion as case I — covers the wall-clock path.
+printf '{"orchestrator":{"external_signal_budget":{"max_minutes":1}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T10)"
+two_min_ago="$(date -u -j -v-2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+              || date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"first_attempt_at":"%s","attempts":1}' "$two_min_ago" \
+  > "$(issue_dir ENG-45T10)/wait-build.json"
+reset_capture
+if _handle_wait ENG-45T10 build awaiting-approval >/dev/null; then
+  fail_at "ENG-45 case K" "wall-clock cap should have exhausted; got within-budget"
+elif [[ -e "$(issue_dir ENG-45T10)/wait-build.json" ]]; then
+  fail_at "ENG-45 case K" "wait file should have been deleted on exhaust"
+elif ! grep -q '^SUBCMD=add-comment$' "$CAPTURE_FILE" \
+   || ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case K" "missing add-comment with external-signal-budget-exhausted body: $(cat "$CAPTURE_FILE")"
+elif ! grep -qE '^SUBCMD=add-label$' "$CAPTURE_FILE" \
+   || ! grep -q 'pipeline:halted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case K" "missing add-label pipeline:halted: $(cat "$CAPTURE_FILE")"
+else
+  pass_at "ENG-45 case K: wall-clock cap exhaust → halt comment + pipeline:halted + wait file deleted"
+fi
+
+# ─── ENG-45 case K2 (round-2 review M2): TZ=UTC pin on date -j -f ──────────
+# BSD `date -j -f %Y-%m-%dT%H:%M:%SZ` parses Z as a literal char and
+# interprets the H:M:S in HOST-LOCAL TZ. case K hides this via symmetry —
+# its fixture is produced by the same host-local date call. To break the
+# symmetry, hard-code a UTC-canonical fixture via epoch arithmetic and
+# force TZ=Pacific/Honolulu (UTC-10) on the call. Bug-mode: parsed epoch
+# lands ~10h in the future, M1/M2 future-clamp resets first to now and
+# attempts to 0 → call increments to 1, max_minutes=1 → NOT exhausted.
+# Fixed-mode (TZ=UTC pinned inside _handle_wait): parse is correct,
+# elapsed_m=5 → EXHAUSTED. Assertion: exhaust path's three artifacts
+# (rc!=0, file deleted, halt comment) all present.
+printf '{"orchestrator":{"external_signal_budget":{"max_minutes":1}}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T10TZ)"
+five_min_ago_utc_epoch=$(( $(date -u +%s) - 300 ))
+five_min_ago_utc="$(date -u -j -f %s "$five_min_ago_utc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                  || date -u -d @"$five_min_ago_utc_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"first_attempt_at":"%s","attempts":1}' "$five_min_ago_utc" \
+  > "$(issue_dir ENG-45T10TZ)/wait-build.json"
+reset_capture
+ENG_45_K2_RC=0
+TZ=Pacific/Honolulu _handle_wait ENG-45T10TZ build awaiting-approval >/dev/null \
+  || ENG_45_K2_RC=$?
+if (( ENG_45_K2_RC == 0 )); then
+  fail_at "ENG-45 case K2" "wall-clock cap should have exhausted under TZ=Pacific/Honolulu (UTC-10); got within-budget"
+elif [[ -e "$(issue_dir ENG-45T10TZ)/wait-build.json" ]]; then
+  fail_at "ENG-45 case K2" "wait file should have been deleted on exhaust"
+elif ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-45 case K2" "missing add-comment with exhaust reason: $(cat "$CAPTURE_FILE")"
+else
+  pass_at "ENG-45 case K2: wall-clock cap exhausts under non-UTC host TZ (TZ=UTC parse pin)"
+fi
+
+# ─── ENG-45 case M: stale stage-summary file is deleted on wait entry ───────
+# Load-bearing: prevents post_completion_comment from posting stale content
+# from a prior dispatch into the next tick's wait window.
+printf '{"orchestrator":{}}' > "$ENG_45_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T11)"
+rm -f "$(issue_dir ENG-45T11)/wait-build.json"
+printf 'STALE CONTENT FROM PRIOR DISPATCH\n' > "$(issue_dir ENG-45T11)/stage-summary-build.md"
+_handle_wait ENG-45T11 build awaiting-approval >/dev/null
+if [[ ! -e "$(issue_dir ENG-45T11)/stage-summary-build.md" ]]; then
+  pass_at "ENG-45 case M: stale stage-summary-build.md deleted on wait entry"
+else
+  fail_at "ENG-45 case M" "stale summary file still present"
+fi
+
+# Restore CONFIG to whatever case-15 expects (which never runs anyway, but
+# preserve invariants for any future case inserted here).
+rm -f "$ENG_45_TMP_CFG"
+CONFIG="$ENG_45_CFG_SAVED"
+
+# ─── ENG-45 case N (review-major-4): vh_rc=0 success arm clears wait-build.json
+# Plan AC-3 ("once approval lands, the next build tick passes P2 and proceeds
+# to merge") depends on the wait-counter being cleared after a successful
+# build dispatch. This case drives main() with stage=build through to the
+# `case "$vh_rc" in 0)` arm and asserts the counter file is gone. Subshell
+# isolates stub overrides + any in-main exit.
+
+ENG_45_CASE_N_DIR="$(issue_dir ENG-45T-N)"
+mkdir -p "$ENG_45_CASE_N_DIR"
+printf '{"issue":"ENG-45T-N","stage":"build","reason":"awaiting-approval","attempts":3,"first_attempt_at":"2026-04-28T10:00:00Z","last_attempt_at":"2026-04-28T10:30:00Z"}' \
+  > "$ENG_45_CASE_N_DIR/wait-build.json"
+# Pre-write stage-summary file so the agent-contract validator (run-stage.sh
+# line ~626) doesn't exit 25 before reaching the success arm.
+printf 'build summary\n' > "$ENG_45_CASE_N_DIR/stage-summary-build.md"
+
+# Build-stage linear.sh stub: stage-of returns stage:building (no drift),
+# has-label answers stage:* and pipeline:halted yes / paused no, get-comments
+# returns empty so _fresh_wait_reason finds no wait marker.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  has-label)
+    case "\${3:-}" in
+      pipeline:paused) exit 1 ;;
+      stage:*)         exit 0 ;;
+      pipeline:halted) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  stage-of)     printf 'stage:building\n' ;;
+  get-comments) printf '[]' ;;
+  *)            exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/render-prompt.sh"; chmod +x "$STUB_DIR/render-prompt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"; chmod +x "$STUB_DIR/dispatch.sh"
+
+(
+  verdict_handler() { return 0; }
+  post_completion_comment() { return 0; }
+  push_branch_if_ahead() { return 0; }
+  main ENG-45T-N build
+) >/dev/null 2>&1 || true
+
+if [[ ! -e "$ENG_45_CASE_N_DIR/wait-build.json" ]]; then
+  pass_at "ENG-45 case N: vh_rc=0 success arm clears wait-build.json (AC-3)"
+else
+  fail_at "ENG-45 case N" "wait file still present: $(cat "$ENG_45_CASE_N_DIR/wait-build.json" 2>/dev/null)"
+fi
+
+# ─── ENG-45 case O (review-major-1): budget-exhausted exits clean halt-for-human
+# Without M1's explicit-exit fix, after _handle_wait deletes stage-summary and
+# returns 1, main() falls through to post_completion_comment which posts a
+# misleading `summary_missing` Linear comment, contradicting the clean halt
+# the wait gate just produced. The fix replaces the fall-through with an
+# explicit `metrics.sh stage-end halt-for-human` + exit 0. Test asserts:
+#   (a) main exits 0 (clean halt, NOT exit 25 from agent-contract validator
+#       and NOT exit 24 from post_completion_comment)
+#   (b) post_completion_comment was NOT invoked (no contradictory summary
+#       comment)
+#   (c) metrics.sh stage-end recorded outcome=halt-for-human
+
+ENG_45_CASE_O_DIR="$(issue_dir ENG-45T-O)"
+mkdir -p "$ENG_45_CASE_O_DIR"
+rm -f "$ENG_45_CASE_O_DIR/wait-build.json" "$ENG_45_CASE_O_DIR/stage-summary-build.md"
+
+# Force exhaustion on the very first wait dispatch by setting max_attempts=1.
+ENG_45_CASE_O_CFG="$(mktemp)"
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":1}},"linear":{"stage_label_prefix":"stage:"}}' \
+  > "$ENG_45_CASE_O_CFG"
+ENG_45_CASE_O_CFG_SAVED="$CONFIG"
+CONFIG="$ENG_45_CASE_O_CFG"
+
+# Linear stub: get-comments returns a fresh wait marker so the gate fires;
+# stage-of returns stage:building so no drift; has-label answers as case N.
+# Comments fixture lives in a file so the stub heredoc doesn't have to escape
+# the embedded JSON quotes.
+ENG_45_CASE_O_COMMENTS_FILE="$STUB_DIR/case-o-comments.json"
+printf '%s' '[{"createdAt":"2026-04-28T18:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]' \
+  > "$ENG_45_CASE_O_COMMENTS_FILE"
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  has-label)
+    case "\${3:-}" in
+      pipeline:paused) exit 1 ;;
+      stage:*)         exit 0 ;;
+      pipeline:halted) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  stage-of)     printf 'stage:building\n' ;;
+  get-comments) cat "$ENG_45_CASE_O_COMMENTS_FILE" ;;
+  add-comment)
+    # Round-2 review M3: production fidelity — posted comments become
+    # visible to subsequent get-comments. With this append, the real
+    # find_fresh_verdict (no test-side override) resolves the just-
+    # posted halt comment naturally, defending the M1 invariant against
+    # any future refactor that moves the agent-contract validator back
+    # onto the budget-exhausted path. \$3 is the body for add-comment.
+    _now="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    jq --arg b "\${3:-}" --arg t "\$_now" \\
+      '. + [{createdAt:\$t, body:\$b}]' \\
+      "$ENG_45_CASE_O_COMMENTS_FILE" \\
+      > "$ENG_45_CASE_O_COMMENTS_FILE.new" \\
+      && mv "$ENG_45_CASE_O_COMMENTS_FILE.new" "$ENG_45_CASE_O_COMMENTS_FILE"
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \\
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \\
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/render-prompt.sh"; chmod +x "$STUB_DIR/render-prompt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"; chmod +x "$STUB_DIR/dispatch.sh"
+
+# Track post_completion_comment invocations and capture metrics.sh args.
+ENG_45_CASE_O_PCC_FLAG="$STUB_DIR/case-o-pcc.flag"
+ENG_45_CASE_O_METRICS="$STUB_DIR/case-o-metrics.capture"
+: > "$ENG_45_CASE_O_PCC_FLAG"
+: > "$ENG_45_CASE_O_METRICS"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'EVENT=%s IDENT=%s STAGE=%s OUTCOME=%s\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$ENG_45_CASE_O_METRICS"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+reset_capture
+ENG_45_CASE_O_RC=0
+(
+  post_completion_comment() { printf 'called\n' >> "$ENG_45_CASE_O_PCC_FLAG"; return 0; }
+  push_branch_if_ahead() { return 0; }
+  verdict_handler() { return 0; }  # unreached if M1 fix lands
+  # Round-2 review M3: no `find_fresh_verdict` override. The linear.sh stub
+  # above appends posted comments into the get-comments fixture, so if any
+  # future refactor moves the agent-contract validator back onto the
+  # budget-exhausted path, the real find_fresh_verdict's jq filter (and its
+  # `<!-- pipeline-halt: [a-z-]+ -->` regex) runs against actual production
+  # data — a tightening to `[a-z]+` would break a test, where the previous
+  # static stub would have hidden the regression.
+  main ENG-45T-O build
+) >/dev/null 2>&1 || ENG_45_CASE_O_RC=$?
+
+# Cleanup metrics.sh stub so subsequent cases (case-15+) use the original.
+rm -f "$STUB_DIR/metrics.sh"
+
+if (( ENG_45_CASE_O_RC != 0 )); then
+  fail_at "ENG-45 case O" "main exited rc=$ENG_45_CASE_O_RC (expected 0; M1 fix should yield clean halt)"
+elif [[ -s "$ENG_45_CASE_O_PCC_FLAG" ]]; then
+  fail_at "ENG-45 case O" "post_completion_comment fired on budget-exhausted path (should be skipped per M1) — flag=$(cat "$ENG_45_CASE_O_PCC_FLAG") metrics=$(cat "$ENG_45_CASE_O_METRICS")"
+elif ! grep -q 'OUTCOME=halt-for-human' "$ENG_45_CASE_O_METRICS"; then
+  fail_at "ENG-45 case O" "missing OUTCOME=halt-for-human metric: $(cat "$ENG_45_CASE_O_METRICS")"
+else
+  pass_at "ENG-45 case O: budget-exhausted exits clean halt-for-human (no summary_missing follow-on)"
+fi
+
+CONFIG="$ENG_45_CASE_O_CFG_SAVED"
+rm -f "$ENG_45_CASE_O_CFG"
+
 # ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
@@ -879,8 +1406,8 @@ FAKE_REPO="$STUB_DIR/fake-repo"
 mkdir -p "$FAKE_REPO/.pipeline/bin" "$FAKE_REPO/.pipeline/schemas"
 ln -sf "$HARNESS_DIR/guards.sh"                          "$FAKE_REPO/.pipeline/bin/guards.sh"
 ln -sf "$HARNESS_DIR/common.sh"                          "$FAKE_REPO/.pipeline/bin/common.sh"
-ln -sf "$REPO_ROOT/.pipeline/config.json"                "$FAKE_REPO/.pipeline/config.json"
-ln -sf "$REPO_ROOT/.pipeline/schemas/linear-ids.json"    "$FAKE_REPO/.pipeline/schemas/linear-ids.json"
+ln -sf "$HARNESS_ROOT/.pipeline-config/config.json"                "$FAKE_REPO/.pipeline/config.json"
+ln -sf "$HARNESS_ROOT/.pipeline-config/schemas/linear-ids.json"    "$FAKE_REPO/.pipeline/schemas/linear-ids.json"
 
 # Stub for trip path: two impl_rejection markers, no transition marker.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
@@ -1145,12 +1672,22 @@ chmod +x "$STUB_DIR/dispatch.sh"
 # drown the capture file. Harness-local; doesn't affect other cases since this
 # is the last case before the summary line.
 post_completion_comment() { return 0; }
+# ENG-45 review-major-3 (M3 follow-on): once the REPO_ROOT typo at case-15 is
+# fixed, the script reaches case-18; main()'s agent-contract validator (line
+# ~626) exits 25 unless the agent emitted a stage-summary file or fresh verdict
+# marker. Stub find_fresh_verdict to return a non-empty string so case-18 drives
+# into the success/halt arms it cares about. Same pattern case-19 uses (line
+# ~1298).
+find_fresh_verdict() { printf 'dummy-marker'; }
 
 # Drive: stage=brainstorm, vh_rc=0 → remove-label pipeline:supersede expected.
+# ENG-45 review-major-3 follow-on: wrap each main() call in a subshell so any
+# `exit` inside main() (notably the post-completion-comment exit-24 path or the
+# stage-drift exit-0 path) terminates only the subshell, not the whole test.
+# Same pattern case-19 already uses.
 reset_capture
-verdict_handler() { return 0; }
 MOCK_STAGE_OF="stage:brainstorming"
-main ENG-T18A brainstorm >/dev/null 2>&1 || true
+( verdict_handler() { return 0; }; main ENG-T18A brainstorm ) >/dev/null 2>&1 || true
 
 if grep -B2 '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null \
      | grep -q '^SUBCMD=remove-label$'; then
@@ -1161,9 +1698,8 @@ fi
 
 # Drive: stage=implement, vh_rc=0 → remove-label pipeline:supersede NOT expected.
 reset_capture
-verdict_handler() { return 0; }
 MOCK_STAGE_OF="stage:implementing"
-main ENG-T18B implement >/dev/null 2>&1 || true
+( verdict_handler() { return 0; }; main ENG-T18B implement ) >/dev/null 2>&1 || true
 
 if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
   pass_at "case-18b implement+vh_rc=0: remove-label pipeline:supersede does NOT fire"
@@ -1173,15 +1709,210 @@ fi
 
 # Drive: stage=brainstorm, vh_rc=1 (halt) → remove-label pipeline:supersede NOT expected.
 reset_capture
-verdict_handler() { return 1; }
 MOCK_STAGE_OF="stage:brainstorming"
-main ENG-T18C brainstorm >/dev/null 2>&1 || true
+( verdict_handler() { return 1; }; main ENG-T18C brainstorm ) >/dev/null 2>&1 || true
 
 if ! grep -q '^IDENT=pipeline:supersede$' "$CAPTURE_FILE" 2>/dev/null; then
   pass_at "case-18c brainstorm+vh_rc=1 (halt arm): remove-label pipeline:supersede does NOT fire"
 else
   fail_at "case-18c brainstorm+vh_rc=1" "capture=$(cat "$CAPTURE_FILE")"
 fi
+
+# ─── ENG-45 case TICK (round-3 M-A): wait body must include per-tick token ──
+# bin/linear.sh add-comment dedups identical bodies after stripping ISO
+# timestamps + git SHAs (bin/linear.sh:380-411). Without a per-tick varying
+# token in the wait body, ticks 2..N are silently swallowed and the
+# brainstorm §4.2 "operator sees tick N/M trail" UX claim is broken.
+# AGENT_PROMPTS.md §7 P2 + P5 wait bodies must instruct the agent to
+# include a `tick_at: <human-readable UTC time>` token whose format
+# (yyyy-mm-dd HH:MM:SSZ with a SPACE separator, not a `T`) survives both
+# dedup regexes:
+#   - ISO regex `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z`
+#     does not match (literal T required).
+#   - SHA regex `[0-9a-f]{7,40}` does not match (max contiguous hex run
+#     in `2026-04-29 03:14:00Z` is 4 chars: `2026`).
+ENG_45_PROMPTS_PATH="$HARNESS_DIR/../AGENT_PROMPTS.md"
+[[ -f "$ENG_45_PROMPTS_PATH" ]] || ENG_45_PROMPTS_PATH="$HARNESS_ROOT/AGENT_PROMPTS.md"
+if [[ ! -f "$ENG_45_PROMPTS_PATH" ]]; then
+  fail_at "ENG-45 case TICK" "AGENT_PROMPTS.md not found at $ENG_45_PROMPTS_PATH"
+else
+  # Two grep checks — one per wait reason. Each must mention `tick_at` in
+  # the wait body section. Failing either is a P0 prompt-prose drift.
+  if grep -A8 'pipeline-wait: awaiting-approval' "$ENG_45_PROMPTS_PATH" \
+       | grep -q 'tick_at'; then
+    p2_ok=1
+  else
+    p2_ok=0
+  fi
+  if grep -A8 'pipeline-wait: awaiting-ci' "$ENG_45_PROMPTS_PATH" \
+       | grep -q 'tick_at'; then
+    p5_ok=1
+  else
+    p5_ok=0
+  fi
+  if (( p2_ok == 1 && p5_ok == 1 )); then
+    pass_at "ENG-45 case TICK: AGENT_PROMPTS §7 P2+P5 wait bodies instruct per-tick tick_at token"
+  else
+    fail_at "ENG-45 case TICK" "missing tick_at instruction in wait body — P2_ok=$p2_ok P5_ok=$p5_ok"
+  fi
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENG-45 — QA-authored adversarial cases (NOT in plan's Failure Mode → Test Map)
+# ════════════════════════════════════════════════════════════════════════════
+# These cases were identified during QA by an adversarial-coverage sweep over
+# `_fresh_wait_reason` and `_handle_wait`. They pin behaviors that the plan
+# rows do not enumerate but that a future refactor could silently change.
+
+# Restore the get-comments-aware linear.sh stub (cases N, O, 19, 18 above
+# overwrote it) so QA-A1..QA-A3 can inject MOCK_COMMENTS_JSON fixtures.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  stage-of)     printf 'stage:qa\n' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# ─── Case QA-A1: empty array `[]` is distinct from empty string and "null" ──
+# Plan cases E and F cover MOCK_COMMENTS_JSON='' and ='null' (both fail at
+# the `-z` / literal-string short-circuit before jq runs). The third empty-
+# shape — a syntactically valid empty array — exercises the jq filters end
+# to end and must also return 1 (no fresh marker found). A future refactor
+# that swaps `[[ -z … ]]` for `jq 'length == 0'` (or vice versa) would change
+# which empty shape short-circuits and which falls through; pinning all
+# three keeps the read path's fail-closed contract uniform.
+export MOCK_COMMENTS_JSON='[]'
+qa_a1_out="$(_fresh_wait_reason ENG-45T-QA1 build || printf '')"
+if [[ -z "$qa_a1_out" ]]; then
+  pass_at "ENG-45 case QA-A1: empty comments array [] returns empty (distinct from '' / 'null', covers jq path)"
+else
+  fail_at "ENG-45 case QA-A1" "got: $qa_a1_out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── Case QA-A2: pipeline-transition substring inside wait body breaks gate ─
+# Latent regression risk: `_fresh_wait_reason`'s `last_t` jq filter uses
+# `contains("<!-- pipeline-transition:")` (run-stage.sh:312) which matches
+# the substring ANYWHERE in a comment body — including inside a wait
+# comment that quotes the literal text (e.g., as documentation, an error
+# message, or a transcript paste). When that happens, `last_t` advances to
+# the wait comment's own createdAt; the freshness filter `createdAt > $t`
+# is strictly-greater, so the wait comment cannot match itself → gate
+# returns empty → falls through to the agent-contract validator → exit 25.
+#
+# Net effect: the wait window FAILS to start on the very tick the agent
+# posted the marker. The orchestrator falls back to halt-for-human (a
+# graceful degradation, not a security hole, since the wait gate's
+# job is to avoid premature halts — failing closed is correct). But pin
+# the current behavior: a future fix that anchors the contains-check (e.g.,
+# `startswith("<!-- pipeline-transition:")` after a leading-whitespace strip)
+# would change this test's outcome to "wait fires correctly", and that fix
+# should be explicit and reviewed.
+#
+# Build agent's authored wait body does NOT contain this substring (verified
+# AGENT_PROMPTS.md §7), so this is a defensive pin against future prompt
+# rewrites or operator-pasted comments.
+export MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-04-29T08:00:00Z","body":"<!-- pipeline-transition: implementing → building -->"},
+  {"createdAt":"2026-04-29T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting approval. (See doc: <!-- pipeline-transition: ... --> markers are orchestrator-only.)"}
+]'
+qa_a2_out="$(_fresh_wait_reason ENG-45T-QA2 build || printf '')"
+if [[ -z "$qa_a2_out" ]]; then
+  pass_at "ENG-45 case QA-A2: wait body containing 'pipeline-transition:' substring fails closed (current contains() behavior pinned)"
+else
+  fail_at "ENG-45 case QA-A2" "wait gate spuriously matched a body that quotes pipeline-transition: got=$qa_a2_out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── Case QA-A3: marker without trailing space silently fails (closed) ──────
+# `_fresh_wait_reason`'s jq freshness filter uses `test("<!-- pipeline-wait: ")`
+# (note trailing space). A typoed marker like `<!-- pipeline-wait:awaiting-ci -->`
+# (no space after colon) won't match, so the gate returns empty. The grep
+# regex on the freshness branch enforces the same trailing-space requirement.
+# Fail-closed semantic: a malformed marker degrades to halt-for-human rather
+# than silently allowing the wait. Pin so a future relaxation (e.g., dropping
+# the trailing space from the test() argument) is a deliberate, reviewed change.
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-29T08:17:00Z","body":"<!-- pipeline-wait:awaiting-approval -->"}]'
+qa_a3_out="$(_fresh_wait_reason ENG-45T-QA3 build || printf '')"
+if [[ -z "$qa_a3_out" ]]; then
+  pass_at "ENG-45 case QA-A3: marker missing trailing space fails closed (jq test() string is space-anchored)"
+else
+  fail_at "ENG-45 case QA-A3" "no-space-after-colon marker spuriously matched: $qa_a3_out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── Case QA-B1: max_attempts: 0 halts on the very first attempt ────────────
+# Operator foot-gun pin. Setting `max_attempts: 0` in config.json is a
+# plausible typo (e.g., when the operator intends to "disable the budget"
+# they might write 0 instead of removing the key or setting null).
+# Current behavior: `(( attempts >= 0 ))` is true after the first increment
+# (attempts=1), so `_handle_wait` returns 1 on the very first call →
+# halt-for-human via the budget-exhausted path. This is the most
+# conservative interpretation of "0 attempts allowed". Pin explicitly so a
+# future change that adds `(( max_a > 0 ))` validation (treating 0 as
+# disabled) is a deliberate, reviewed semantic flip.
+ENG_45_QA_TMP_CFG="$(mktemp)"
+ENG_45_QA_CFG_SAVED="${CONFIG:-}"
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":0}}}' > "$ENG_45_QA_TMP_CFG"
+CONFIG="$ENG_45_QA_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-QA-B1)"
+rm -f "$(issue_dir ENG-45T-QA-B1)/wait-build.json"
+reset_capture
+qa_b1_rc=0
+_handle_wait ENG-45T-QA-B1 build awaiting-approval >/dev/null 2>&1 || qa_b1_rc=$?
+if (( qa_b1_rc != 0 )) \
+   && [[ ! -e "$(issue_dir ENG-45T-QA-B1)/wait-build.json" ]] \
+   && grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  pass_at "ENG-45 case QA-B1: max_attempts=0 halts on first attempt (no infinite-loop foot-gun)"
+else
+  fail_at "ENG-45 case QA-B1" "rc=$qa_b1_rc file_present=$([[ -e "$(issue_dir ENG-45T-QA-B1)/wait-build.json" ]] && echo yes || echo no) capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ─── Case QA-B2: wait file with empty-string first_attempt_at resets ────────
+# Plan cases J/J2/J3 cover non-date / future / pre-epoch first_attempt_at.
+# A fourth corruption shape — explicit empty string `""` — slips through the
+# jq path with `// ""` returning empty, and the regex `^[0-9]{4}-...` fails
+# the empty string. The expected reset-then-increment path produces
+# attempts==1. Pin so a future regex relaxation (e.g., `^[0-9-T:Z]*$`
+# accidentally matching empty) is caught.
+printf '{"orchestrator":{}}' > "$ENG_45_QA_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-QA-B2)"
+printf '{"first_attempt_at":"","attempts":99}' > "$(issue_dir ENG-45T-QA-B2)/wait-build.json"
+_handle_wait ENG-45T-QA-B2 build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' "$(issue_dir ENG-45T-QA-B2)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case QA-B2: empty-string first_attempt_at resets counter (4th corruption shape)"
+else
+  fail_at "ENG-45 case QA-B2" "json: $(cat "$(issue_dir ENG-45T-QA-B2)/wait-build.json" 2>/dev/null)"
+fi
+
+# ─── Case QA-B3: wait file with missing attempts key still increments ───────
+# A wait file that's valid JSON object with `first_attempt_at` but no
+# `attempts` key (e.g., crafted by an older code path that forgot to write
+# the field). `jq -r '.attempts // 0'` defaults to 0; the regex
+# `^[0-9]+$` matches "0"; attempts++=1. Pin so a future jq filter swap
+# (e.g., `.attempts | tonumber` which would error on missing) is caught.
+printf '{"orchestrator":{}}' > "$ENG_45_QA_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-QA-B3)"
+# first_attempt_at = now-ish to dodge the future-clamp; omit attempts entirely.
+qa_b3_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"first_attempt_at":"%s"}' "$qa_b3_now" > "$(issue_dir ENG-45T-QA-B3)/wait-build.json"
+_handle_wait ENG-45T-QA-B3 build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' "$(issue_dir ENG-45T-QA-B3)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case QA-B3: wait file with missing attempts key defaults to 0 then increments to 1"
+else
+  fail_at "ENG-45 case QA-B3" "json: $(cat "$(issue_dir ENG-45T-QA-B3)/wait-build.json" 2>/dev/null)"
+fi
+
+# Restore CONFIG and clean up.
+CONFIG="$ENG_45_QA_CFG_SAVED"
+rm -f "$ENG_45_QA_TMP_CFG"
 
 
 echo
