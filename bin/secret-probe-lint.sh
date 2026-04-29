@@ -26,6 +26,7 @@ fi
 EXCLUDE=(
   ':!bin/secret-probe-lint.sh'
   ':!bin/secret-probe-lint-test.sh'
+  ':!bin/secret-probe-lint-adversarial-test.sh'
   ':!AGENT_PROMPTS.md'
   ':!docs/**'
   ':!learned-rules/**'
