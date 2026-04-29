@@ -1745,6 +1745,163 @@ else
   fi
 fi
 
+# ════════════════════════════════════════════════════════════════════════════
+# ENG-45 — QA-authored adversarial cases (NOT in plan's Failure Mode → Test Map)
+# ════════════════════════════════════════════════════════════════════════════
+# These cases were identified during QA by an adversarial-coverage sweep over
+# `_fresh_wait_reason` and `_handle_wait`. They pin behaviors that the plan
+# rows do not enumerate but that a future refactor could silently change.
+
+# Restore the get-comments-aware linear.sh stub (cases N, O, 19, 18 above
+# overwrote it) so QA-A1..QA-A3 can inject MOCK_COMMENTS_JSON fixtures.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  stage-of)     printf 'stage:qa\n' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# ─── Case QA-A1: empty array `[]` is distinct from empty string and "null" ──
+# Plan cases E and F cover MOCK_COMMENTS_JSON='' and ='null' (both fail at
+# the `-z` / literal-string short-circuit before jq runs). The third empty-
+# shape — a syntactically valid empty array — exercises the jq filters end
+# to end and must also return 1 (no fresh marker found). A future refactor
+# that swaps `[[ -z … ]]` for `jq 'length == 0'` (or vice versa) would change
+# which empty shape short-circuits and which falls through; pinning all
+# three keeps the read path's fail-closed contract uniform.
+export MOCK_COMMENTS_JSON='[]'
+qa_a1_out="$(_fresh_wait_reason ENG-45T-QA1 build || printf '')"
+if [[ -z "$qa_a1_out" ]]; then
+  pass_at "ENG-45 case QA-A1: empty comments array [] returns empty (distinct from '' / 'null', covers jq path)"
+else
+  fail_at "ENG-45 case QA-A1" "got: $qa_a1_out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── Case QA-A2: pipeline-transition substring inside wait body breaks gate ─
+# Latent regression risk: `_fresh_wait_reason`'s `last_t` jq filter uses
+# `contains("<!-- pipeline-transition:")` (run-stage.sh:312) which matches
+# the substring ANYWHERE in a comment body — including inside a wait
+# comment that quotes the literal text (e.g., as documentation, an error
+# message, or a transcript paste). When that happens, `last_t` advances to
+# the wait comment's own createdAt; the freshness filter `createdAt > $t`
+# is strictly-greater, so the wait comment cannot match itself → gate
+# returns empty → falls through to the agent-contract validator → exit 25.
+#
+# Net effect: the wait window FAILS to start on the very tick the agent
+# posted the marker. The orchestrator falls back to halt-for-human (a
+# graceful degradation, not a security hole, since the wait gate's
+# job is to avoid premature halts — failing closed is correct). But pin
+# the current behavior: a future fix that anchors the contains-check (e.g.,
+# `startswith("<!-- pipeline-transition:")` after a leading-whitespace strip)
+# would change this test's outcome to "wait fires correctly", and that fix
+# should be explicit and reviewed.
+#
+# Build agent's authored wait body does NOT contain this substring (verified
+# AGENT_PROMPTS.md §7), so this is a defensive pin against future prompt
+# rewrites or operator-pasted comments.
+export MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-04-29T08:00:00Z","body":"<!-- pipeline-transition: implementing → building -->"},
+  {"createdAt":"2026-04-29T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting approval. (See doc: <!-- pipeline-transition: ... --> markers are orchestrator-only.)"}
+]'
+qa_a2_out="$(_fresh_wait_reason ENG-45T-QA2 build || printf '')"
+if [[ -z "$qa_a2_out" ]]; then
+  pass_at "ENG-45 case QA-A2: wait body containing 'pipeline-transition:' substring fails closed (current contains() behavior pinned)"
+else
+  fail_at "ENG-45 case QA-A2" "wait gate spuriously matched a body that quotes pipeline-transition: got=$qa_a2_out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── Case QA-A3: marker without trailing space silently fails (closed) ──────
+# `_fresh_wait_reason`'s jq freshness filter uses `test("<!-- pipeline-wait: ")`
+# (note trailing space). A typoed marker like `<!-- pipeline-wait:awaiting-ci -->`
+# (no space after colon) won't match, so the gate returns empty. The grep
+# regex on the freshness branch enforces the same trailing-space requirement.
+# Fail-closed semantic: a malformed marker degrades to halt-for-human rather
+# than silently allowing the wait. Pin so a future relaxation (e.g., dropping
+# the trailing space from the test() argument) is a deliberate, reviewed change.
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-29T08:17:00Z","body":"<!-- pipeline-wait:awaiting-approval -->"}]'
+qa_a3_out="$(_fresh_wait_reason ENG-45T-QA3 build || printf '')"
+if [[ -z "$qa_a3_out" ]]; then
+  pass_at "ENG-45 case QA-A3: marker missing trailing space fails closed (jq test() string is space-anchored)"
+else
+  fail_at "ENG-45 case QA-A3" "no-space-after-colon marker spuriously matched: $qa_a3_out"
+fi
+unset MOCK_COMMENTS_JSON
+
+# ─── Case QA-B1: max_attempts: 0 halts on the very first attempt ────────────
+# Operator foot-gun pin. Setting `max_attempts: 0` in config.json is a
+# plausible typo (e.g., when the operator intends to "disable the budget"
+# they might write 0 instead of removing the key or setting null).
+# Current behavior: `(( attempts >= 0 ))` is true after the first increment
+# (attempts=1), so `_handle_wait` returns 1 on the very first call →
+# halt-for-human via the budget-exhausted path. This is the most
+# conservative interpretation of "0 attempts allowed". Pin explicitly so a
+# future change that adds `(( max_a > 0 ))` validation (treating 0 as
+# disabled) is a deliberate, reviewed semantic flip.
+ENG_45_QA_TMP_CFG="$(mktemp)"
+ENG_45_QA_CFG_SAVED="${CONFIG:-}"
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":0}}}' > "$ENG_45_QA_TMP_CFG"
+CONFIG="$ENG_45_QA_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-QA-B1)"
+rm -f "$(issue_dir ENG-45T-QA-B1)/wait-build.json"
+reset_capture
+qa_b1_rc=0
+_handle_wait ENG-45T-QA-B1 build awaiting-approval >/dev/null 2>&1 || qa_b1_rc=$?
+if (( qa_b1_rc != 0 )) \
+   && [[ ! -e "$(issue_dir ENG-45T-QA-B1)/wait-build.json" ]] \
+   && grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  pass_at "ENG-45 case QA-B1: max_attempts=0 halts on first attempt (no infinite-loop foot-gun)"
+else
+  fail_at "ENG-45 case QA-B1" "rc=$qa_b1_rc file_present=$([[ -e "$(issue_dir ENG-45T-QA-B1)/wait-build.json" ]] && echo yes || echo no) capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ─── Case QA-B2: wait file with empty-string first_attempt_at resets ────────
+# Plan cases J/J2/J3 cover non-date / future / pre-epoch first_attempt_at.
+# A fourth corruption shape — explicit empty string `""` — slips through the
+# jq path with `// ""` returning empty, and the regex `^[0-9]{4}-...` fails
+# the empty string. The expected reset-then-increment path produces
+# attempts==1. Pin so a future regex relaxation (e.g., `^[0-9-T:Z]*$`
+# accidentally matching empty) is caught.
+printf '{"orchestrator":{}}' > "$ENG_45_QA_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-QA-B2)"
+printf '{"first_attempt_at":"","attempts":99}' > "$(issue_dir ENG-45T-QA-B2)/wait-build.json"
+_handle_wait ENG-45T-QA-B2 build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' "$(issue_dir ENG-45T-QA-B2)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case QA-B2: empty-string first_attempt_at resets counter (4th corruption shape)"
+else
+  fail_at "ENG-45 case QA-B2" "json: $(cat "$(issue_dir ENG-45T-QA-B2)/wait-build.json" 2>/dev/null)"
+fi
+
+# ─── Case QA-B3: wait file with missing attempts key still increments ───────
+# A wait file that's valid JSON object with `first_attempt_at` but no
+# `attempts` key (e.g., crafted by an older code path that forgot to write
+# the field). `jq -r '.attempts // 0'` defaults to 0; the regex
+# `^[0-9]+$` matches "0"; attempts++=1. Pin so a future jq filter swap
+# (e.g., `.attempts | tonumber` which would error on missing) is caught.
+printf '{"orchestrator":{}}' > "$ENG_45_QA_TMP_CFG"
+mkdir -p "$(issue_dir ENG-45T-QA-B3)"
+# first_attempt_at = now-ish to dodge the future-clamp; omit attempts entirely.
+qa_b3_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"first_attempt_at":"%s"}' "$qa_b3_now" > "$(issue_dir ENG-45T-QA-B3)/wait-build.json"
+_handle_wait ENG-45T-QA-B3 build awaiting-approval >/dev/null
+if jq -e '.attempts == 1' "$(issue_dir ENG-45T-QA-B3)/wait-build.json" >/dev/null 2>&1; then
+  pass_at "ENG-45 case QA-B3: wait file with missing attempts key defaults to 0 then increments to 1"
+else
+  fail_at "ENG-45 case QA-B3" "json: $(cat "$(issue_dir ENG-45T-QA-B3)/wait-build.json" 2>/dev/null)"
+fi
+
+# Restore CONFIG and clean up.
+CONFIG="$ENG_45_QA_CFG_SAVED"
+rm -f "$ENG_45_QA_TMP_CFG"
+
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
