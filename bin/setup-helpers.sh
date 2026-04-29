@@ -203,3 +203,18 @@ _resolve_profile_markers() {
   mv "$tmp" "$path"
   return 0
 }
+
+# _render_discovery_prompt <template-path> <target_repo> <slug> <date> <learned_rules_dir>
+# Echoes the rendered prompt on stdout. Substitutes only the four known
+# tokens; leaves any other {token} literals untouched (so the agent sees
+# them in illustrative schema blocks).
+_render_discovery_prompt() {
+  local template="$1" target_repo="$2" slug="$3" date="$4" learned_rules_dir="$5"
+  [[ -f "$template" ]] || { printf '_render_discovery_prompt: not a file: %s\n' "$template" >&2; return 1; }
+  sed \
+    -e "s|{target_repo_path}|${target_repo}|g" \
+    -e "s|{slug}|${slug}|g" \
+    -e "s|{date}|${date}|g" \
+    -e "s|{learned_rules_dir}|${learned_rules_dir}|g" \
+    "$template"
+}

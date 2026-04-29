@@ -164,6 +164,39 @@ else
   fail_at "case-2.5: marker question with embedded colon" "$(cat "$sandbox/colon.md")"
 fi
 
+# ─── _render_discovery_prompt ──────────────────────────────────────────
+echo "━━━ _render_discovery_prompt ━━━"
+
+cat > "$sandbox/template.md" <<'T'
+TARGET={target_repo_path}
+SLUG={slug}
+DATE={date}
+DIR={learned_rules_dir}
+T
+
+rendered="$(_render_discovery_prompt "$sandbox/template.md" /tmp/foo my-slug 2026-04-27 /tmp/foo/learned-rules/my-slug)"
+
+if grep -qx 'TARGET=/tmp/foo' <<<"$rendered" \
+   && grep -qx 'SLUG=my-slug' <<<"$rendered" \
+   && grep -qx 'DATE=2026-04-27' <<<"$rendered" \
+   && grep -qx 'DIR=/tmp/foo/learned-rules/my-slug' <<<"$rendered"; then
+  pass_at "case-3.1: all four tokens substituted"
+else
+  fail_at "case-3.1: all four tokens substituted" "rendered=$rendered"
+fi
+
+# Case 3.2: unknown token left as-is (literal {unknown})
+cat > "$sandbox/template2.md" <<'T'
+KEEP={unknown_token}
+SUB={slug}
+T
+rendered2="$(_render_discovery_prompt "$sandbox/template2.md" /x my-slug 2026-04-27 /x/y)"
+if grep -qx 'KEEP={unknown_token}' <<<"$rendered2" && grep -qx 'SUB=my-slug' <<<"$rendered2"; then
+  pass_at "case-3.2: unknown token left intact"
+else
+  fail_at "case-3.2: unknown token left intact" "rendered=$rendered2"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
