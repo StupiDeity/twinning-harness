@@ -558,6 +558,81 @@ else
     "issue=$issue_id stripped=$stripped"
 fi
 
+# ─── AC-11: ENG-24 QA adversarial — Bug A inbox filter uses EXACT label match ──
+# A Todo issue carrying a label whose name is a strict superstring of
+# pipeline:skip-until-human-acts (e.g. a custom human-coined
+# pipeline:skip-until-human-acts-tomorrow) MUST still be inbox-picked.
+# jq's `index($n)` does exact array-element equality, so the new filter
+# clauses must NOT match prefixes/superstrings. Pins the semantic so a
+# future refactor to `any(. | startswith("pipeline:skip-until-"))` would
+# fail this test instead of silently over-blocking the inbox.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-AD11|Todo|3|Bug,pipeline:skip-until-human-acts-tomorrow"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-AD11" ]] && [[ "$entry" == "apply-stage-label" ]]; then
+  pass_at "AC-11 QA — inbox filter is exact-match (skip-until-human-acts-tomorrow IS picked)"
+else
+  fail_at "AC-11 QA — inbox filter is exact-match (skip-until-human-acts-tomorrow IS picked)" "out=$out"
+fi
+
+# ─── AC-12: ENG-24 QA adversarial — Bug B uniformity for BOTH labels at once ──
+# A stage-labeled issue carrying BOTH pipeline:skip-until-human-acts AND
+# pipeline:skip-until-code-changes simultaneously, with NO state file,
+# must vacate AND have NEITHER label stripped. The brainstorm §6 case 1
+# claims this is "transitively covered by AC-9 + AC-10 — both labels
+# exercise the same branch" but neither AC-9 nor AC-10 actually plants
+# both labels. This pins the uniformity-claim directly: a future refactor
+# that conditionally strips one label depending on the other being
+# present would pass AC-9/AC-10 individually but fail this test.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-AD12|In Progress|3|Bug,stage:planning,pipeline:skip-until-human-acts,pipeline:skip-until-code-changes"
+# No mkdir / no issue-state.json — exercises the orphan-skip-label branch
+# with both labels set.
+
+LINEAR_STUB_LOG="$STUB_DIR/linear-calls-ad12.log"
+: > "$LINEAR_STUB_LOG"
+export LINEAR_STUB_LOG
+
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+
+stripped_human=0; stripped_code=0
+grep -Fxq 'remove-label ENG-AD12 pipeline:skip-until-human-acts' "$LINEAR_STUB_LOG" && stripped_human=1
+grep -Fxq 'remove-label ENG-AD12 pipeline:skip-until-code-changes' "$LINEAR_STUB_LOG" && stripped_code=1
+
+unset LINEAR_STUB_LOG
+
+if [[ "$issue_id" != "ENG-AD12" ]] && (( stripped_human == 0 )) && (( stripped_code == 0 )); then
+  pass_at "AC-12 QA — both skip labels + no state file vacates and preserves BOTH labels"
+else
+  fail_at "AC-12 QA — both skip labels + no state file vacates and preserves BOTH labels" \
+    "issue=$issue_id stripped_human=$stripped_human stripped_code=$stripped_code"
+fi
+
+# ─── AC-13: ENG-24 QA adversarial — Bug A inbox filter, BOTH labels at once ──
+# A Todo issue carrying BOTH pipeline:skip-until-human-acts AND
+# pipeline:skip-until-code-changes must be filtered out. Either filter
+# clause alone is sufficient, so AC-8 / AC-8b each prove only one. This
+# guards against a future jq refactor that combines the two clauses with
+# `or` semantics or accidentally drops one — either way, AC-8 + AC-8b
+# would still pass (each label is present in only one of the single-
+# label fixtures), but co-occurrence on the same issue would leak
+# through. Tests order-independent dropping.
+reset_fixtures
+write_inbox_fixture \
+  "ENG-AD13|Todo|3|Bug,pipeline:skip-until-human-acts,pipeline:skip-until-code-changes"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "null" ]]; then
+  pass_at "AC-13 QA — Todo carrying BOTH skip-until-* labels is NOT inbox-picked"
+else
+  fail_at "AC-13 QA — Todo carrying BOTH skip-until-* labels is NOT inbox-picked" "out=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
