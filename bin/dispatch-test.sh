@@ -90,19 +90,43 @@ done
 # ─── Group 2: PIPELINE_WRITER env propagation ───────────────────────────
 printf '\n--- PIPELINE_WRITER=agent propagated to claude -p invocation ---\n'
 
-# Create a stub for 'claude' that captures its environment.
+# Create a stub for 'claude' that captures its environment AND its argv.
 ENV_CAPTURE="$_TEST_STUB_DIR/env.capture"
+ARGV_CAPTURE="$_TEST_STUB_DIR/argv.capture"
 : > "$ENV_CAPTURE"
+: > "$ARGV_CAPTURE"
 
 cat > "$_TEST_STUB_DIR/claude" <<SH
 #!/usr/bin/env bash
-# Stub: capture PIPELINE_WRITER from the environment into a file, then exit 0.
+# Stub: capture PIPELINE_WRITER from the environment, capture argv (one arg
+# per line) for ENG-48 isolation-flag assertions, then exit 0.
 printf 'PIPELINE_WRITER=%s\n' "\${PIPELINE_WRITER:-<unset>}" >> "$ENV_CAPTURE"
+printf '%s\n' "\$@" > "$ARGV_CAPTURE"
 # Consume stdin (like real claude would) so the caller's pipe doesn't break.
 cat > /dev/null
 exit 0
 SH
 chmod +x "$_TEST_STUB_DIR/claude"
+
+# ENG-48 watchdog: the production cmd wraps claude with `gtimeout
+# --signal=TERM --kill-after=10 <seconds> claude ...`. Provide a thin
+# pass-through stub so the existing claude stub still receives the inner
+# argv unchanged for Group 2 / Group 4 assertions.
+cat > "$_TEST_STUB_DIR/gtimeout" <<'SH'
+#!/usr/bin/env bash
+# Skip --signal=…, --kill-after=… flags, then the seconds arg, then exec
+# the inner command.
+while (( $# > 0 )); do
+  case "$1" in
+    --signal=*|--kill-after=*) shift ;;
+    *) break ;;
+  esac
+done
+# Next arg is the timeout in seconds — eat it.
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then shift; fi
+exec "$@"
+SH
+chmod +x "$_TEST_STUB_DIR/gtimeout"
 
 # Create a minimal prompt file.
 _PROMPT_FILE="$_TEST_STUB_DIR/test-prompt.txt"
@@ -137,6 +161,143 @@ if [[ "$captured_val" == "agent" ]]; then
 else
   fail_at "PIPELINE_WRITER=agent was set in claude -p environment" \
     "claude saw PIPELINE_WRITER='${captured_val:-<nothing captured>}' (parent had 'canary-parent-lane')"
+fi
+
+# ─── Group 4 (ENG-48): isolation flags reach claude -p invocation ────────
+# A 2026-04-28 wedged tick traced to the operator's superpowers plugin's
+# SessionStart hook firing inside `claude -p`. Headless dispatches must
+# neutralize user-level config:
+#   --setting-sources project,local  → skip ~/.claude (plugins, hooks)
+#   --disable-slash-commands         → block skill auto-load
+#   --disallowed-tools <list>        → deny platform tools that aren't
+#                                       in any stage's allowed-tools list
+#                                       and whose call would let the agent
+#                                       self-loop (ScheduleWakeup), self-
+#                                       coordinate (TodoWrite), enter plan
+#                                       mode (EnterPlanMode), etc.
+# This group asserts the constructed claude argv carries those flags,
+# using the argv capture seeded by the stub above.
+printf '\n--- ENG-48: isolation flags reach claude -p invocation ---\n'
+
+# --setting-sources project,local
+if grep -Fxq -- '--setting-sources' "$ARGV_CAPTURE" \
+   && grep -Fxq -- 'project,local' "$ARGV_CAPTURE"; then
+  pass_at "--setting-sources project,local present in claude argv"
+else
+  fail_at "--setting-sources project,local missing from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+fi
+
+# --disable-slash-commands
+if grep -Fxq -- '--disable-slash-commands' "$ARGV_CAPTURE"; then
+  pass_at "--disable-slash-commands present in claude argv"
+else
+  fail_at "--disable-slash-commands missing from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+fi
+
+# --disallowed-tools must list every platform tool that demonstrated or
+# could enable a runaway in a headless dispatch. The value follows the
+# flag as the next arg.
+disallowed_idx="$(grep -nFx -- '--disallowed-tools' "$ARGV_CAPTURE" | head -1 | cut -d: -f1 || true)"
+if [[ -z "$disallowed_idx" ]]; then
+  fail_at "--disallowed-tools flag missing from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+else
+  disallowed_value="$(sed -n "$((disallowed_idx + 1))p" "$ARGV_CAPTURE")"
+  # Task / WebFetch deliberately excluded: Task may alias the Agent tool
+  # used by ui/review/qa/retrospective stages, and brainstorm's allowed-
+  # tools includes WebFetch. Denials win over allows in claude's tool-
+  # resolution.
+  required_denies=(
+    ScheduleWakeup TodoWrite Skill
+    EnterPlanMode ExitPlanMode EnterWorktree ExitWorktree
+    RemoteTrigger PushNotification
+    CronCreate CronDelete CronList Monitor
+    WebSearch ToolSearch AskUserQuestion
+  )
+  missing_denies=()
+  for required in "${required_denies[@]}"; do
+    grep -qw -- "$required" <<<"$disallowed_value" || missing_denies+=("$required")
+  done
+  if (( ${#missing_denies[@]} == 0 )); then
+    pass_at "--disallowed-tools denies all required platform tools (${#required_denies[@]} entries)"
+  else
+    fail_at "--disallowed-tools missing required denies" \
+      "missing: ${missing_denies[*]} | value: $disallowed_value"
+  fi
+fi
+
+# Regression: --allowed-tools must STILL appear (the existing per-stage
+# allowlist contract from Group 1 must not be silently dropped during
+# the isolation-flag refactor).
+if grep -Fxq -- '--allowed-tools' "$ARGV_CAPTURE"; then
+  pass_at "--allowed-tools regression: per-stage allowlist contract preserved"
+else
+  fail_at "--allowed-tools regression: flag dropped from claude argv" \
+    "argv: $(tr '\n' ' ' < "$ARGV_CAPTURE")"
+fi
+
+# ─── Group 5 (ENG-48): wall-clock watchdog wraps claude -p ──────────────
+# A dispatch that enters a self-loop (e.g. ScheduleWakeup re-firing) must
+# be SIGTERM'd by the orchestrator within a bounded budget — operator
+# intervention should never be required to free the run-local lock. The
+# wrapper is `gtimeout` (GNU coreutils on macOS via brew); the budget is
+# read from config.json::orchestrator.dispatch_timeout_minutes (default
+# 30 min = 1800s). The dispatched cmd's exit 124 (gtimeout's SIGTERM
+# convention) will be mapped by failure_outcome_for_exit in a separate
+# commit.
+printf '\n--- ENG-48: gtimeout watchdog wraps claude -p ---\n'
+
+DRYRUN_OUT="$_TEST_STUB_DIR/dryrun.out"
+PIPELINE_DRY_RUN=1 \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorm "$_PROMPT_FILE" 2>"$DRYRUN_OUT" >/dev/null || true
+
+# Default budget (config has no override): 30 min = 1800s.
+if grep -qE 'gtimeout.*\b1800\b' "$DRYRUN_OUT"; then
+  pass_at "dry-run log: gtimeout wrapper with default 30-min (1800s) budget"
+else
+  fail_at "dry-run log missing gtimeout wrapper or default budget" \
+    "log: $(cat "$DRYRUN_OUT")"
+fi
+
+# --signal=TERM and --kill-after=10 must both be present so the wrapper
+# escalates from SIGTERM to SIGKILL after 10s if the dispatched claude
+# refuses to exit (defensive escalation, not the common case).
+if grep -qE 'gtimeout.*--signal=TERM' "$DRYRUN_OUT" \
+   && grep -qE 'gtimeout.*--kill-after=10' "$DRYRUN_OUT"; then
+  pass_at "dry-run log: gtimeout uses --signal=TERM --kill-after=10 escalation"
+else
+  fail_at "dry-run log missing gtimeout signal/kill-after escalation flags" \
+    "log: $(cat "$DRYRUN_OUT")"
+fi
+
+# Custom budget — when orchestrator.dispatch_timeout_minutes is overridden
+# (e.g. to 5 for a stage that legitimately runs short), the wrapper
+# picks it up.
+TARGET_REPO_CUSTOM="$_TEST_STUB_DIR/target-custom"
+mkdir -p "$TARGET_REPO_CUSTOM/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "custom-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes: 5 }
+}' > "$TARGET_REPO_CUSTOM/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_CUSTOM/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_C="$_TEST_STUB_DIR/dryrun-custom.out"
+PIPELINE_DRY_RUN=1 \
+TARGET_REPO="$TARGET_REPO_CUSTOM" \
+PROJECT_SLUG="custom-slug" \
+HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+PROJECT_STATE_DIR="$HARNESS_STATE_DIR/custom-slug" \
+LINEAR_API_KEY="$LINEAR_API_KEY" \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorm "$_PROMPT_FILE" 2>"$DRYRUN_OUT_C" >/dev/null || true
+
+if grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_C"; then
+  pass_at "dry-run log honors config orchestrator.dispatch_timeout_minutes=5 (300s)"
+else
+  fail_at "dry-run log did not pick up custom dispatch_timeout_minutes" \
+    "log: $(cat "$DRYRUN_OUT_C")"
 fi
 
 # ─── Group 3: stream-json renderer fixtures (ENG-26 Task 5) ──────────────

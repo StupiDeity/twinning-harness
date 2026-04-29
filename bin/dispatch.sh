@@ -121,6 +121,20 @@ _render_and_capture_stream() {
   fi
 }
 
+# ENG-48 isolation: platform tools whose call from a headless dispatch
+# either demonstrated a runaway (ScheduleWakeup → 2026-04-28 ENG-45 7h
+# wedge) or could enable one (subagent escape, plan-mode entry, cron
+# creation, network egress not guarded by per-stage allowlists). The
+# --allowed-tools flag is a permission allowlist, not an availability
+# list — these tools are still callable unless explicitly denied.
+disallowed_platform_tools() {
+  # Excluded from this list: Task / WebFetch. Task may alias the Agent tool
+  # that ui/review/qa/retrospective stages legitimately allow; WebFetch is
+  # in brainstorm's allowed-tools. Denials win over allows in claude's
+  # tool-resolution, so denying either would break working stages.
+  printf 'ScheduleWakeup TodoWrite Skill EnterPlanMode ExitPlanMode EnterWorktree ExitWorktree RemoteTrigger PushNotification CronCreate CronDelete CronList Monitor WebSearch ToolSearch AskUserQuestion'
+}
+
 allowed_tools_for() {
   # Every stage gets `Bash(bash .pipeline/bin/linear.sh:*)` so agents can always post
   # Linear comments via the canonical bash path. MCP Linear remains available in parallel;
@@ -166,17 +180,37 @@ main() {
   acquire_claude_mutex
   trap 'release_claude_mutex' EXIT
 
+  local denies
+  denies="$(disallowed_platform_tools)"
+
+  # ENG-48 watchdog budget. Default 30 min — long enough for any legit
+  # stage we have today, short enough that a self-rescheduling agent
+  # can't hold the run-local lock for hours unnoticed. Override via
+  # config.json::orchestrator.dispatch_timeout_minutes (per-stage
+  # overrides can be added later if any stage routinely exceeds this).
+  # The CONFIG read is defensive — the mutex-test contract assumes
+  # dispatch.sh needs TARGET_REPO only for the directory-existence
+  # check, not for a real config.json.
+  local timeout_minutes=30
+  if [[ -f "$CONFIG" ]]; then
+    local _cfg_minutes
+    _cfg_minutes="$(jq -r '.orchestrator.dispatch_timeout_minutes // empty' "$CONFIG" 2>/dev/null || true)"
+    [[ -n "$_cfg_minutes" && "$_cfg_minutes" =~ ^[0-9]+$ ]] && timeout_minutes="$_cfg_minutes"
+  fi
+  local timeout_seconds=$(( timeout_minutes * 60 ))
+
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
-    log "[DRY_RUN] would invoke: claude -p --output-format stream-json --verbose --allowed-tools \"$tools\" < $prompt_file"
+    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
     head -c 500 "$prompt_file" >&2
     printf '\n' >&2
     return 0
   fi
 
-  require_bin claude
+  require_bin claude gtimeout
   # Auth: ANTHROPIC_API_KEY for CI/headless; claude CLI subscription session for local.
   # Don't require either here — claude errors at invocation time if no auth is available.
+  # gtimeout: GNU coreutils. macOS operators install via `brew install coreutils`.
 
   # ENG-41 T3: set the agent lane only for the claude -p subprocess.
   # Any orchestrator-side Linear writes above (none currently, but guarding for
@@ -186,7 +220,25 @@ main() {
   # and the aggregated `usage` block. The renderer extracts cost; the
   # operator-facing log keeps prose-ish progress lines via the renderer's
   # stdout (D-002 / F3 / F4).
-  local cmd=(env PIPELINE_WRITER=agent claude -p --output-format stream-json --verbose --allowed-tools "$tools")
+  # ENG-48: --setting-sources project,local skips ~/.claude (so the
+  # operator's installed plugins and SessionStart hooks don't fire);
+  # --disable-slash-commands blocks skill auto-load (using-superpowers,
+  # /loop, etc.); --disallowed-tools denies platform tools that aren't
+  # in any stage's allowlist and could enable a runaway (ScheduleWakeup
+  # was the demonstrated escape on 2026-04-28). gtimeout wraps claude
+  # with a wall-clock budget — on expiry SIGTERM is sent, then SIGKILL
+  # after 10s if claude ignores the term. gtimeout's exit 124 propagates
+  # via the pipeline (set -o pipefail) so failure_outcome_for_exit can
+  # classify it as dispatch-timeout.
+  local cmd=(env PIPELINE_WRITER=agent
+    gtimeout --signal=TERM --kill-after=10 "$timeout_seconds"
+    claude -p
+    --output-format stream-json --verbose
+    --setting-sources project,local
+    --disable-slash-commands
+    --disallowed-tools "$denies"
+    --allowed-tools "$tools"
+  )
   if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname "$log_file")"
     log "dispatching stage=$stage, log=$log_file"
