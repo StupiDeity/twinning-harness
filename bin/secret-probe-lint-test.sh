@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Unit tests for bin/secret-probe-lint.sh (ENG-46).
 #
-# Eight fixture cases — see plan Task 2 / Failure Mode → Test Map. Each case
+# Cases 1-8 are fixture cases per plan Task 2 / Failure Mode → Test Map: each
 # builds a temp `git init`'d repo, drops the relevant fixtures, invokes the
 # lint, and asserts exit code + (for hit cases) stderr content.
+# Cases 9-10 are review-loopback regressions (P0 #1: per-stage inline rule;
+# P0 #2: dry-run smoke wiring) — they read the live harness's AGENT_PROMPTS.md
+# and bin/dry-run.sh rather than building fixtures.
 #
 # Note: the lint itself deliberately does NOT source common.sh (D-007). This
 # test DOES source common.sh — the test still runs in the harness env.
@@ -201,6 +204,76 @@ case_8_no_git_repo() {
   cleanup_fixture "$dir"
 }
 
+# ─── case 9: AGENT_PROMPTS.md per-stage blocks inline the secret-handling rule ─
+# Review-loopback P0 #1 — the file-level "## Secret-handling preamble (ENG-46)"
+# section is invisible to dispatched agents because `bin/render-prompt.sh::extract_block`
+# emits only content inside `## N. <Stage> Agent` fenced blocks. The fix is to
+# inline a brief restatement of the rule inside each per-stage fenced block; this
+# test asserts every stage carries the inline rule.
+case_9_per_stage_secret_rule_inlined() {
+  local prompts="$SCRIPT_DIR_REAL/../AGENT_PROMPTS.md"
+  if [[ ! -f "$prompts" ]]; then
+    bad 'case-9' "AGENT_PROMPTS.md not found at $prompts"
+    return
+  fi
+  local stages=(
+    'Brainstorm Agent'
+    'Plan Agent'
+    'Implementation Agent (Backend)'
+    'UI Agent (Frontend)'
+    'Review Agent'
+    'QA Agent'
+    'Build Agent'
+    'Release Agent'
+    'Retrospective Agent (Scheduled)'
+  )
+  local missing=()
+  local s body
+  for s in "${stages[@]}"; do
+    body="$(awk -v section="$s" '
+      /^## [0-9]+\. / {
+        if (in_section) { exit }
+        line = $0
+        sub(/^## /, "", line)
+        if (line == section) { in_section=1 }
+        next
+      }
+      in_section && /^```/ {
+        fence_count++
+        if (fence_count == 1) { in_block=1; next }
+        if (fence_count == 2) { exit }
+      }
+      in_section && in_block { print }
+    ' "$prompts")"
+    if ! grep -qE 'Secret-handling \(ENG-46\)' <<<"$body"; then
+      missing+=("$s")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    bad 'case-9' "per-stage fenced blocks missing inline 'Secret-handling (ENG-46)' rule: ${missing[*]}"
+  else
+    ok 'case-9'
+  fi
+}
+
+# ─── case 10: bin/dry-run.sh wires bin/secret-probe-lint.sh ───────────────
+# Review-loopback P0 #2 — the plan's Failure Mode → Test Map row "Lint missing
+# from dry-run smoke (regression after merge)" had no executable assertion. This
+# case grep-asserts the wiring; a future refactor that drops the `check` line
+# from bin/dry-run.sh will fail this case.
+case_10_dry_run_wires_lint() {
+  local dry="$SCRIPT_DIR_REAL/../bin/dry-run.sh"
+  if [[ ! -f "$dry" ]]; then
+    bad 'case-10' "bin/dry-run.sh not found at $dry"
+    return
+  fi
+  if grep -qE 'secret-probe-lint\.sh' "$dry"; then
+    ok 'case-10'
+  else
+    bad 'case-10' "bin/dry-run.sh does not invoke bin/secret-probe-lint.sh — failure mode 'Lint missing from dry-run smoke' would not be caught by smoke run"
+  fi
+}
+
 main() {
   if [[ ! -f "$LINT" ]]; then
     printf 'fail: lint script not found at %s\n' "$LINT" >&2
@@ -214,6 +287,8 @@ main() {
   case_6_lint_self_exclusion
   case_7_prose_dirs_excluded
   case_8_no_git_repo
+  case_9_per_stage_secret_rule_inlined
+  case_10_dry_run_wires_lint
   printf '\n'
   printf 'passed: %d\nfailed: %d\n' "$PASS" "$FAIL"
   (( FAIL == 0 ))
