@@ -216,16 +216,18 @@ case_9_per_stage_secret_rule_inlined() {
     bad 'case-9' "AGENT_PROMPTS.md not found at $prompts"
     return
   fi
+  # Section keys carry the numeric prefix used by render-prompt.sh's
+  # STAGE_TO_SECTION table; matches `extract_block`'s comparison form.
   local stages=(
-    'Brainstorm Agent'
-    'Plan Agent'
-    'Implementation Agent (Backend)'
-    'UI Agent (Frontend)'
-    'Review Agent'
-    'QA Agent'
-    'Build Agent'
-    'Release Agent'
-    'Retrospective Agent (Scheduled)'
+    '1. Brainstorm Agent'
+    '2. Plan Agent'
+    '3. Implementation Agent (Backend)'
+    '4. UI Agent (Frontend)'
+    '5. Review Agent'
+    '6. QA Agent'
+    '7. Build Agent'
+    '8. Release Agent'
+    '9. Retrospective Agent (Scheduled)'
   )
   local missing=()
   local s body
