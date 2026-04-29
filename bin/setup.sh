@@ -592,6 +592,14 @@ phase_migrate() {
   local slug; slug="$(jq -r '.project.slug' "$CONFIG")"
   local project_state="$HARNESS_STATE_DIR/$slug"
 
+  # 2b. Project profile (delegate; idempotent). Existing single-project
+  # installs predate the stack-aware addendum and won't have a profile;
+  # populate it here so phase_launchd's guard doesn't block migration.
+  if ! is_project_profile_done; then
+    log "migrate: project-profile not yet populated; running discovery"
+    phase_project_profile
+  fi
+
   # 3. Lift shared credentials from per-project .env.local into shared secrets.env.
   mkdir -p "$HARNESS_CONFIG_DIR" && chmod 0700 "$HARNESS_CONFIG_DIR"
   local var
