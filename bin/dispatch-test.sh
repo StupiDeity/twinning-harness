@@ -13,7 +13,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export PIPELINE_DRY_RUN=1
-export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
 export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 
 # ─── Temp dirs ──────────────────────────────────────────────────────────

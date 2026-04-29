@@ -11,7 +11,8 @@ export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
 
 # ─── Stub external scripts ───────────────────────────────────────────
 # Redirect bash "bash $SCRIPT_DIR/..." calls in verdict-handler.sh to

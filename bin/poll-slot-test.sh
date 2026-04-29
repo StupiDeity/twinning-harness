@@ -10,7 +10,8 @@ export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR_REAL/common.sh"
 
-export LINEAR_API_KEY="${LINEAR_API_KEY:-test-mock-key}"
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
 
 # Allocate temp dirs. These paths are captured into _TEST_* variables that
 # never get reassigned by sourcing common.sh / poll.sh (both of which reset
@@ -77,7 +78,7 @@ case "$1" in
   remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
     # No-op for side-effecting subcommands. Optionally append the call to
     # $LINEAR_STUB_LOG so individual tests can assert on side effects.
-    [[ -n "${LINEAR_STUB_LOG:-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
+    [[ -n "${LINEAR_STUB_LOG-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
     exit 0
     ;;
   *)

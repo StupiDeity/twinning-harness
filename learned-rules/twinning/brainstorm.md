@@ -50,3 +50,17 @@
 **Why:** Grep-over-body matches false-positive on any doc that incidentally mentions the issue ID (examples, cross-references, prior work). The reconcile result "link" silently prevents the plan agent from running, and the skip is invisible until the feature ships buggy.
 
 **Evidence:** `.pipeline/bin/reconcile.sh` pre-patch; `docs/knowledge/pipeline-metrics.md` line `2026-04-17T10:15:50Z event=stage-end issue=ENG-5 stage=plan outcome=linked notes="doc=docs/plans/2026-04-17-pipeline-automated-harness.md"`. Fix in `.pipeline/bin/reconcile.sh` (frontmatter + H1 matcher).
+
+---
+
+### Rule B-003: Forbid `${SECRET:-FALLBACK}` and `${SECRET:+ALT}` env-probe forms against secret-named env vars
+**Added:** 2026-04-28
+**Expires:** 2026-06-27
+**Last verified:** 2026-04-28
+**Source:** Surfaced by ENG-45 UI stage's pre-flight env probe self-flag (`stage-summary-ui.md` line 17). The agent emitted `${LINEAR_API_KEY:+SET}${LINEAR_API_KEY:-UNSET}`; the `:-UNSET` half materialized the live key value into the local shell context. Same idiom anywhere that pipes its output to a durable destination (Linear comment, log file, argv list) would leak the secret.
+
+**Rule:** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*`. The canonical safe form for presence/emptiness checks is **single-dash, empty fallback**: `[[ -n "${VAR-}" ]]` and `[[ -z "${VAR-}" ]]`. For non-empty defaults in test code (mock keys etc.), use the **assign-default** form `: "${VAR:=default}"; export VAR` — `:=` does not match the lint regex (`:[\+\-]`) and has identical user-facing semantics. The lint `bin/secret-probe-lint.sh` (run by `bin/dry-run.sh` and `.github/workflows/secret-probe-lint.yml`) enforces this on every commit.
+
+**Why:** `${VAR:-FALLBACK}` returns the variable's *value* when set, not the literal `FALLBACK`. So `echo "${KEY:-UNSET}"` prints the actual key when set. The `:+` half is unsafe when `ALTERNATE` references `$VAR` (e.g. `${KEY:+--auth=$KEY}`) — the value is materialized via the alternate string. Both halves of a presence-probe composition `${KEY:+SET}${KEY:-UNSET}` bite. Pattern recurs because it is a common training-data idiom for "include flag if set" / "default if unset"; prose-only guards (preamble rules) get forgotten — the lint is the structural defense.
+
+**Evidence:** ENG-45 UI agent self-flag (Linear ENG-45 § stage-summary-ui.md line 17); ENG-46 issue (this rule's home); brainstorm at `docs/brainstorms/2026-04-28-agent-env-probe-pattern-secret-unset-leaks-key-values-into-agent-context-design.md`; lint at `bin/secret-probe-lint.sh`; preamble at `AGENT_PROMPTS.md "Secret-handling preamble (ENG-46)"`.
