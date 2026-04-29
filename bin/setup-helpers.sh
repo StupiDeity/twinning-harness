@@ -116,3 +116,44 @@ prompt_secret() {
 print_phase_header() {
   printf '\n=== %s ===\n' "$1" >&2
 }
+
+# _validate_project_profile_schema <path>
+# Returns 0 if path is a valid project-profile.md per the stack-aware
+# addendum spec §6:
+#   - YAML frontmatter (--- ... ---) at top
+#   - frontmatter contains schema_version: 1
+#   - five H2 sections in exact order: Stack, Build & test gates,
+#     File layout, Language idioms, Don'ts
+# Returns non-zero with a one-line reason on stderr otherwise.
+_validate_project_profile_schema() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf '_validate_project_profile_schema: not a file: %s\n' "$path" >&2; return 1; }
+
+  # Frontmatter must open at line 1 with `---` and close before any H1/H2.
+  local has_fm
+  has_fm="$(awk '
+    NR==1 { if ($0=="---") { in_fm=1; next } else { exit 1 } }
+    in_fm && $0=="---" { print "yes"; exit 0 }
+    NR>40 { exit 1 }
+  ' "$path")"
+  [[ "$has_fm" == "yes" ]] || { printf '_validate_project_profile_schema: missing frontmatter\n' >&2; return 1; }
+
+  # schema_version: 1 must appear inside frontmatter
+  local has_ver
+  has_ver="$(awk '
+    NR==1 && $0=="---" { in_fm=1; next }
+    in_fm && $0=="---" { exit }
+    in_fm && /^schema_version:[[:space:]]+1[[:space:]]*$/ { print "yes"; exit }
+  ' "$path")"
+  [[ "$has_ver" == "yes" ]] || { printf '_validate_project_profile_schema: schema_version != 1\n' >&2; return 1; }
+
+  # Required H2 sections in exact order.
+  local sections
+  sections="$(grep -E '^## ' "$path" | head -5 | tr '\n' '|')"
+  local expected='## Stack|## Build & test gates|## File layout|## Language idioms|## Don'\''ts|'
+  if [[ "$sections" != "$expected" ]]; then
+    printf '_validate_project_profile_schema: expected sections [%s], got [%s]\n' "$expected" "$sections" >&2
+    return 1
+  fi
+  return 0
+}
