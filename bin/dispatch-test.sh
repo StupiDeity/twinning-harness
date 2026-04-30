@@ -679,6 +679,45 @@ contract_check_stage review        "## 5. Review Agent"
 contract_check_stage qa            "## 6. QA Agent"
 contract_check_stage build         "## 7. Build Agent"
 
+# ─── ENG-53 #8: harness target's dispatch.tools populated ──────────────
+# Per the ENG-44 dogfood post-mortem: the implement and qa stages on
+# harness-self had no allowlisted way to invoke `bash bin/<name>-test.sh`
+# (the harness's testing convention per learned-rules/harness/project-
+# profile.md). Implement shipped a broken `read -r cfg sf` test that
+# pass-by-accident; qa explicitly flagged "harness sandbox blocked
+# direct `bash bin/<test>.sh` execution" before proceeding. The fix is
+# pure config — populate harness's own .pipeline-config/config.json::
+# dispatch.tools.{implement,qa}[] with the test-runner pattern. ENG-51's
+# dispatch.tools mechanism does the rest.
+#
+# This assertion is a static check on the committed config — if a future
+# edit drops the entries, this trips.
+printf '\n--- ENG-53 #8: harness profile populates dispatch.tools test-runner ---\n'
+# .pipeline-config/ is gitignored — config.json is per-operator. This
+# assertion warns the operator running tests against TARGET_REPO=harness
+# if their local config drifts from the recommended dispatch.tools
+# population. CI / other-target operators (file missing) skip silently.
+HARNESS_CONFIG="$HARNESS_ROOT/.pipeline-config/config.json"
+if [[ -f "$HARNESS_CONFIG" ]]; then
+  for stage in implement qa; do
+    has_runner="$(jq -r --arg s "$stage" '
+      (.dispatch.tools[$s] // []) as $arr
+      | if ($arr | type) == "array"
+        then $arr | any(. == "Bash(bash bin/*-test.sh:*)")
+        else false end
+    ' "$HARNESS_CONFIG" 2>/dev/null || printf 'false')"
+    if [[ "$has_runner" == "true" ]]; then
+      pass_at "ENG-53#8: harness config.json::dispatch.tools.${stage} includes Bash(bash bin/*-test.sh:*)"
+    else
+      current="$(jq -c --arg s "$stage" '.dispatch.tools[$s] // null' "$HARNESS_CONFIG" 2>/dev/null || printf 'null')"
+      fail_at "ENG-53#8: harness config.json::dispatch.tools.${stage} missing Bash(bash bin/*-test.sh:*)" \
+        "current: ${current} — see CLAUDE.md or run: jq '.dispatch.tools.${stage} = [\"Bash(bash bin/*-test.sh:*)\"]' \$CONFIG > /tmp/c && mv /tmp/c \$CONFIG"
+    fi
+  done
+else
+  printf 'SKIP ENG-53#8: %s not present (CI or non-harness target) — skipping config drift check\n' "$HARNESS_CONFIG"
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
