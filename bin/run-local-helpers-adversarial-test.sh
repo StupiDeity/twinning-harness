@@ -593,6 +593,34 @@ rm -rf "$_qtdir"
 
 # ─── Summary ────────────────────────────────────────────────────────────
 
+# ─── Gap #6: state.local.json paused override is honored ──────────────
+# Reproducer for ENG-49 Gap #6. config.json::orchestrator.paused=true must
+# be overridden by state.local.json::orchestrator.paused=false so the
+# orchestrator can resume after a manual paused-state edit. Both poll.sh
+# and run-local.sh must consult is_orchestrator_paused (not config_get).
+test_paused_override_honored() {
+  local tdir; tdir="$(mktemp -d -t twinning-paused.XXXXXX)"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:true}}' > "$cfg"
+  jq -n '{orchestrator:{paused:false}}' > "$sf"
+  local got
+  CONFIG="$cfg" STATE_FILE="$sf" got="$(is_orchestrator_paused)"
+  assert_eq "paused-override state.local wins" "false" "$got"
+  rm -rf "$tdir"
+}
+test_paused_override_honored
+
+# Verify poll.sh and run-local.sh USE is_orchestrator_paused, not the
+# bypass call config_get '.orchestrator.paused'. This is a static check:
+# fail if the bypass appears outside common.sh (its definitional home).
+test_paused_callsites_use_helper() {
+  local bypass_found=0
+  [[ $(grep -c "config_get.*'\.orchestrator\.paused'" "$SCRIPT_DIR/poll.sh" 2>/dev/null) -gt 0 ]] && bypass_found=1
+  [[ $(grep -c "config_get.*'\.orchestrator\.paused'" "$SCRIPT_DIR/run-local.sh" 2>/dev/null) -gt 0 ]] && bypass_found=1
+  assert_eq "no config_get bypass in poll.sh/run-local.sh" "0" "$bypass_found"
+}
+test_paused_callsites_use_helper
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then

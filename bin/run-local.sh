@@ -88,10 +88,11 @@ GITHUB_TOKEN="$(bash "$SCRIPT_DIR/gh-app-token.sh")"
 export GITHUB_TOKEN
 log "minted GitHub App installation token (~1h TTL)"
 
-paused="$(config_get '.orchestrator.paused')"
+paused="$(is_orchestrator_paused)"
 if [[ "$paused" == "true" ]]; then
   log "tick skipped: orchestrator.paused=true"
-  log "reset with: jq '.orchestrator.paused=false' $CONFIG > /tmp/c && mv /tmp/c $CONFIG"
+  log "reset with: bash $HARNESS_ROOT/bin/reset-pipeline.sh   # writes state.local.json (preferred)"
+  log "             OR: jq '.orchestrator.paused=false' \$CONFIG > /tmp/c && mv /tmp/c \$CONFIG (legacy)"
   exit 0
 fi
 

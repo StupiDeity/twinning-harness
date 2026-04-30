@@ -348,7 +348,7 @@ main() {
   require_env LINEAR_API_KEY
 
   local paused
-  paused="$(config_get '.orchestrator.paused')"
+  paused="$(is_orchestrator_paused)"
   [[ "$paused" == "true" ]] && idle "orchestrator-paused"
 
   local max_concurrent
