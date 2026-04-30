@@ -100,6 +100,14 @@ for stage in brainstorm plan implement ui review qa build release; do
   fi
 done
 
+# ENG-49 Gap #1: UI allowlist no longer contains gh pr create.
+ui_tools="$(allowed_tools_for ui)"
+if [[ "$ui_tools" != *"gh pr create"* ]]; then
+  pass_at "ENG-49: ui allowlist drops gh pr create"
+else
+  fail_at "ENG-49: ui allowlist drops gh pr create" "ui tools: $ui_tools"
+fi
+
 # ─── Group 2: PIPELINE_WRITER env propagation ───────────────────────────
 printf '\n--- PIPELINE_WRITER=agent propagated to claude -p invocation ---\n'
 

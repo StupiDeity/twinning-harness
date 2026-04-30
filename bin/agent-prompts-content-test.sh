@@ -39,9 +39,16 @@ else
   ok "§3 lacks 'gh pr create'"
 fi
 
-# §4 PR-creation removal asserted in Task 5 (this commit only seeds §3/§8).
-ok "§4 PR-creation removal — asserted in Task 5"
-ok "§4 'PR creation' heading removal — asserted in Task 5"
+if printf '%s\n' "$s4" | grep -qE 'gh pr create'; then
+  nope "§4 lacks 'gh pr create'" "string 'gh pr create' present"
+else
+  ok "§4 lacks 'gh pr create'"
+fi
+if printf '%s\n' "$s4" | grep -qE '^[[:space:]]*PR creation'; then
+  nope "§4 lacks 'PR creation' heading" "heading present"
+else
+  ok "§4 lacks 'PR creation' heading"
+fi
 
 # §4 pass-through clause is preserved verbatim (regression — must not tighten).
 if printf '%s\n' "$s4" | grep -qF 'this stage is a pass-through: skip implementation, write a stage summary noting the no-op, post `<!-- pipeline-stage-summary: ui -->`, and exit'; then

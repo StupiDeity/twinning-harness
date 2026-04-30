@@ -508,7 +508,7 @@ Your task:
 - Follow testing conventions from docs/knowledge/conventions.md and the profile's "Language idioms" section.
 - For projects with an FE↔BE API surface: every new or modified backend handler MUST match its declared signature in the `api-contract` block (name, arg names/types, return type, event name and payload fields).
 - Run the gates listed in the Project profile addendum's "Build & test gates" section before finishing. All MUST pass.
-- Do NOT create a PR. The UI agent opens the combined backend+frontend PR (or, on backend-only stacks, the review agent does — per the profile).
+- Do NOT create a PR. The orchestrator opens the PR on transition to `reviewing` as a side-effect of `apply_transition`.
 
 Scope discipline (MANDATORY — enforced post-exit by `.pipeline/bin/scope-check.sh`):
   - Modify ONLY files listed in the plan's File Structure (Backend-side entries).
@@ -628,7 +628,7 @@ Your task:
   add new CSS frameworks or component libraries not already declared in the project's manifest.
 
 Scope discipline (enforced post-exit by `.pipeline/bin/scope-check.sh`):
-  - Modify ONLY files in the plan's Frontend-side File Structure plus the PR metadata.
+  - Modify ONLY files in the plan's Frontend-side File Structure.
   - If you discover the API contract is wrong or incomplete, STOP and comment
     `<!-- pipeline-metric: contract_gap -->` — do not work around it by editing
     backend code or reshaping data in the frontend.
@@ -680,58 +680,22 @@ Gotcha telemetry (same contract as Implementation):
   - New gotchas → Linear comment tagged `<!-- pipeline-metric: gotcha_new -->`.
     Do NOT edit gotchas.md directly (CODEOWNERS-protected).
 
-PR creation (at exit — UI stage owns PR creation for this branch):
-
-  Idempotency precondition (MANDATORY, BEFORE `gh pr create`):
-  - Run: gh pr list --head {branch_name} --state open --json number --jq 'length'
-  - If the result is 0, proceed with `gh pr create …` per the template below.
-  - If the result is ≥ 1, a PR already exists on this branch (typically
-    from a prior cycle's UI stage that was rerun via a `reviewing →
-    implementing → ui` loopback). Skip `gh pr create` entirely; do NOT
-    attempt to re-create or amend the PR. Proceed to the rest of the UI
-    stage (stage summary, push, completion). The existing PR's number
-    is available via the same `gh pr list` call with `--json number`.
-
-  Open the PR against main from `{branch_name}` using this template:
-
-    Title:  `<type>({issue_id}): <imperative summary>`   (type ∈ feat|fix|chore|docs|refactor)
-
-    Body:
-      ## Summary
-      <2–3 bullets pulled from the brainstorm Overview>
-
-      ## Linear
-      - {issue_id} — <linear issue title>
-
-      ## Changes
-      - Backend: <one-line per Backend Task>
-      - Frontend: <one-line per Frontend Task>
-
-      ## Test plan
-      - [ ] Every gate from the Project profile's "Build & test gates" section
-      - [ ] <smoke tests named in Failure Mode → Test Map>
-      - [ ] Manual: <1–3 happy-path steps from brainstorm>
-
-      ## Screenshots
-      <one per NEW component, or "N/A — no user-visible changes">
-
-      ## Notes
-      <any deviations from plan, dep additions, gotcha trailers>
+Do NOT create or edit the pull request. The orchestrator opens it on transition to `reviewing` (verdict-handler::apply_transition).
 
 Output:
-- Commit any remaining work on `{branch_name}` and push.
-- Open the PR per the template above.
+- Commit any remaining work on `{branch_name}` and push. Do NOT open the pull request yourself — the orchestrator handles it.
 - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
   comment format contract (preamble). Stage-specific slots:
-  - Artifact link: the PR URL.
+  - Artifact link: the branch-compare URL (`https://github.com/<owner>/<repo>/compare/main...<branch>`). The orchestrator opens the PR after this stage exits, so the PR URL is not yet available.
   - TL;DR: 1–2 sentences on what the user sees change and the single biggest design
     call (e.g. new view vs. extending an existing one, chart library choice).
   - Status line (clean): e.g.
-    `PR #NNN opened · K components · second-review: approve · proceeding to reviewing`.
+    `K components · second-review: approve · proceeding to reviewing`.
   - Notes (only on deviations / per-component checklist misses / second-reviewer
     request-changes): concise paragraph per miss.
-  Full per-component checklist scores and the second-reviewer verdict go into the PR
-  description, not this comment.
+  Full per-component checklist scores and the second-reviewer verdict go into the
+  stage-summary file's Notes section, not this comment. (The orchestrator constructs
+  the PR body from these stage summaries.)
 - Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" …` yourself.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 

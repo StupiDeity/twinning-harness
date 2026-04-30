@@ -166,6 +166,59 @@ apply_transition() {
     fi
   fi
 
+  # ENG-49 Gap #1: orchestrator opens PR when transitioning to reviewing.
+  # Idempotent — skipped if a PR already exists on the branch. Failure
+  # logs and proceeds; resume_in_progress_transition re-enters next tick.
+  #
+  # ENG-49 Gap #8 (out-of-scope): the PR is opened by the same GitHub
+  # App identity that runs the review stage, so `gh pr review` is
+  # blocked. Fix needs a separate bot identity; tracked as a follow-up.
+  if [[ "$to" == "reviewing" ]]; then
+    local branch pr_count
+    branch="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-issue "$issue" 2>/dev/null \
+      | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
+    if [[ -z "$branch" ]]; then
+      log "verdict-handler: skipping PR-create hook (no branch on $issue)"
+    else
+      pr_count="$(gh pr list --head "$branch" --state open --json number --jq 'length' 2>/dev/null || printf '0')"
+      if (( pr_count == 0 )); then
+        # Source render-pr-body.sh on demand. Prefer same-dir; fall back to PATH.
+        if [[ -z "${_RPB_LOADED:-}" ]]; then
+          local rpb
+          rpb="$_VH_SCRIPT_DIR/render-pr-body.sh"
+          [[ -f "$rpb" ]] || rpb="$(command -v render-pr-body.sh || true)"
+          if [[ -f "$rpb" ]]; then
+            # shellcheck source=render-pr-body.sh
+            source "$rpb"
+            _RPB_LOADED=1
+          else
+            log "verdict-handler: render-pr-body.sh not found; cannot open PR"
+            return 0
+          fi
+        fi
+        # Use _rpb_title and _rpb_title_type from render-pr-body.sh.
+        # _RPB_LINEAR_SH defaults to $_RPB_SCRIPT_DIR/linear.sh which
+        # equals $_VH_SCRIPT_DIR/linear.sh in production; tests override
+        # _VH_SCRIPT_DIR and PATH-prepend their stub dir so the stubbed
+        # render-pr-body.sh's helpers fire instead.
+        local title type linear_title body
+        linear_title="$(_rpb_title "$issue")"
+        [[ -z "$linear_title" ]] && linear_title="$issue"
+        type="$(_rpb_title_type "$issue")"
+        title="$(printf '%s(%s): %s' "$type" "$issue" "$linear_title")"
+        body="$(render_pr_body "$issue" "$branch" 2>/dev/null || printf '%s\n' "Linear: $issue")"
+        if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+          log "verdict-handler: [DRY_RUN] would gh pr create --head $branch --title '$title'"
+        else
+          gh pr create --head "$branch" --title "$title" --body "$body" >/dev/null 2>&1 \
+            || log "verdict-handler: gh pr create failed for $issue (next tick will retry idempotently)"
+        fi
+      else
+        log "verdict-handler: PR already open for $issue on $branch — skipping create"
+      fi
+    fi
+  fi
+
   if [[ -n "$side_labels" ]]; then
     local IFS_SAVE="$IFS"
     IFS=','
