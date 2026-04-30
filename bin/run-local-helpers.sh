@@ -4,6 +4,21 @@
 # `set -euo pipefail` here — option side effects belong to the caller.
 # Assumes common.sh has been sourced first (provides `die`).
 
+# ENG-51: read a per-stage scope override from CONFIG. Returns one entry
+# per line on stdout, or nothing if the override is missing/empty/non-array.
+# Empty arrays intentionally fall back (an empty list as configured override
+# would route every dirty path to self-leak — almost always a misconfig).
+_scope_allowlist_override() {
+  local stage="$1"
+  [[ -f "${CONFIG:-}" ]] || return 0
+  jq -r --arg s "$stage" '
+    (.scope.allowlist[$s] // []) as $arr
+    | if ($arr | type) == "array" and ($arr | length) > 0
+      then $arr[] | select(type == "string")
+      else empty end
+  ' "$CONFIG" 2>/dev/null || true
+}
+
 stage_output_paths() {
   local stage="$1"
   case "$stage" in
@@ -16,10 +31,16 @@ stage_output_paths() {
       printf '%s\n' 'docs/plans/'
       ;;
     implement|ui|qa)
-      printf '%s\n' \
-        'src/' 'src-tauri/' 'crates/' 'tests/' 'docs/' \
-        'package.json' 'package-lock.json' 'bun.lock' 'bun.lockb' \
-        'Cargo.toml' 'Cargo.lock'
+      local override
+      override="$(_scope_allowlist_override "$stage")"
+      if [[ -n "$override" ]]; then
+        printf '%s\n' "$override"
+      else
+        printf '%s\n' \
+          'src/' 'src-tauri/' 'crates/' 'tests/' 'docs/' \
+          'package.json' 'package-lock.json' 'bun.lock' 'bun.lockb' \
+          'Cargo.toml' 'Cargo.lock'
+      fi
       ;;
     retrospective)
       printf '%s\n' \
