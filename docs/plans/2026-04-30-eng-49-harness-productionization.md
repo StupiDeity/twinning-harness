@@ -46,7 +46,7 @@ Side effects of stage transitions are centralized in `verdict-handler::apply_tra
 - **A-003:** `bin/dispatch.sh::allowed_tools_for` (lines 138-162) is the single switch statement for stage allowlists. Tests in `dispatch-test.sh` Group 1 already parse it.
 - **A-004:** `AGENT_PROMPTS.md` has exactly 9 numbered H2 sections, each with exactly one fenced ``` block. `render-prompt.sh::STAGE_TO_SECTION` keys this map. Edits must keep fence count at exactly 2 per section.
 - **A-005:** `linear.sh transition-state` at line 311 reads `state_uuid="$(state_id "$state_name")"` and dies if null. `state_id` reads `$IDS_CACHE` (Linear IDs cache, populated by `bin/linear.sh refresh-cache`).
-- **A-006:** `is_orchestrator_paused` in `common.sh:126-136` correctly reads `STATE_FILE` first (with empty-fallback) then `CONFIG`. Already exported (line 151).
+- **A-006:** `is_orchestrator_paused` in `common.sh:126-136` reads `STATE_FILE` first then `CONFIG`. Already exported (line 151). NB during Task 1 implementation: the original jq expression `.orchestrator.paused // empty` discarded boolean `false` (jq's `//` operator treats `false` as falsy), so the regression test for Gap #6 required also rewriting that expression to `if .orchestrator.paused != null then .orchestrator.paused else empty end`. Task 1's actual commit therefore touches `bin/common.sh` in addition to the planned files.
 - **A-007:** Stage-summary Linear comments use sigs `completion/<stage>/<issue>` (per AGENT_PROMPTS.md line 34). The orchestrator posts these from the agent's stage-summary file, so by the time `apply_transition` runs for `to == reviewing`, `completion/implement/<issue>` and `completion/ui/<issue>` exist as Linear comments.
 - **A-008:** Brainstorm and plan docs live at `$TARGET_REPO/docs/brainstorms/*.md` and `$TARGET_REPO/docs/plans/*.md` with `linear: ENG-N` frontmatter. The `reconcile.sh` doc-resolution pattern is the reference for finding them.
 - **A-009:** GitHub App installation token is minted in `run-local.sh:87` and exported as `GITHUB_TOKEN`. `apply_transition` runs in the same process tree and inherits it.
@@ -124,7 +124,7 @@ test_paused_override_honored
 bash bin/run-local-helpers-adversarial-test.sh 2>&1 | tail -10
 ```
 
-Expected: includes `OK: paused-override state.local wins`. (`is_orchestrator_paused` already does the right thing — the bug is that callers don't use it.)
+Expected: includes `OK: paused-override state.local wins` *after* the Step 1.5/1.6/A-006 jq fix has landed. NB: the test will FAIL against the pristine `is_orchestrator_paused` because `.orchestrator.paused // empty` in jq discards boolean `false`. If you see the test fail at this step, that is the latent bug A-006 documents — apply the jq rewrite from A-006 (also in `bin/common.sh::is_orchestrator_paused`) along with the call-site swaps in Steps 1.5/1.6.
 
 - [ ] **Step 1.3: Add a second case asserting the *call sites* use the helper**
 
@@ -210,17 +210,22 @@ Expected: every line starts with `PASS`.
 
 - [ ] **Step 1.8: Commit**
 
+NB: include `bin/common.sh` in the `git add` because the jq fix from A-006 must land in the same commit as the call-site swaps and regression test. Without it, the regression test fails.
+
 ```
-git add bin/poll.sh bin/run-local.sh bin/run-local-helpers-adversarial-test.sh
+git add bin/poll.sh bin/run-local.sh bin/common.sh bin/run-local-helpers-adversarial-test.sh
 git commit -m "$(cat <<'EOF'
 fix(ENG-49): respect state.local.json paused override in poll and tick
 
 bin/poll.sh:351 and bin/run-local.sh:91 read .orchestrator.paused
 directly via config_get, bypassing the is_orchestrator_paused helper
 that respects STATE_FILE. Switch both call sites to the helper so the
-documented runtime override actually takes effect. Also update the
-run-local.sh reset-hint to point at reset-pipeline.sh (which writes
-state.local.json, the preferred path).
+documented runtime override actually takes effect. Also fix a latent
+jq bug in is_orchestrator_paused: `.orchestrator.paused // empty`
+discards boolean `false` (jq's `//` treats false as falsy), preventing
+state.local.json overrides where paused=false from taking effect.
+Update the run-local.sh reset-hint to point at reset-pipeline.sh
+(which writes state.local.json, the preferred path).
 
 Closes Gap #6 of ENG-49.
 EOF
