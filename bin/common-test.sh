@@ -70,6 +70,64 @@ mkfixture() {
   printf '%s\n%s\n' "$cfg" "$sf"
 }
 
+# ─── ENG-44 six-row table (brainstorm §5) ────────────────────────────
+# | # | STATE_FILE       | config.paused | Result  |
+# | - | ---------------- | ------------- | ------- |
+# | 1 | absent           | true          | true    |  fall to CONFIG (no override)
+# | 2 | {paused:false}   | true          | false   |  state.local wins (regression direction)
+# | 3 | {paused:true}    | false         | true    |  state.local wins (other direction)
+# | 4 | {}               | true          | true    |  empty STATE_FILE falls through
+# | 5 | {orchestrator:{}}| true          | true    |  partial STATE_FILE falls through
+# | 6 | {}               | absent        | false   |  // "false" CONFIG default
+
+row1_state_file_absent_falls_to_config_true() {
+  local cfg sf got
+  read -r cfg sf < <(mkfixture row1 true absent)
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "row1_state_file_absent_falls_to_config_true" "true" "$got"
+}
+row1_state_file_absent_falls_to_config_true
+
+row2_state_file_overrides_config_to_false() {
+  local cfg sf got
+  read -r cfg sf < <(mkfixture row2 true '{"orchestrator":{"paused":false}}')
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "row2_state_file_overrides_config_to_false" "false" "$got"
+}
+row2_state_file_overrides_config_to_false
+
+row3_state_file_overrides_config_to_true() {
+  local cfg sf got
+  read -r cfg sf < <(mkfixture row3 false '{"orchestrator":{"paused":true}}')
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "row3_state_file_overrides_config_to_true" "true" "$got"
+}
+row3_state_file_overrides_config_to_true
+
+row4_state_file_empty_object_falls_to_config() {
+  local cfg sf got
+  read -r cfg sf < <(mkfixture row4 true '{}')
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "row4_state_file_empty_object_falls_to_config" "true" "$got"
+}
+row4_state_file_empty_object_falls_to_config
+
+row5_state_file_orchestrator_empty_falls_to_config() {
+  local cfg sf got
+  read -r cfg sf < <(mkfixture row5 true '{orch:{}}')
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "row5_state_file_orchestrator_empty_falls_to_config" "true" "$got"
+}
+row5_state_file_orchestrator_empty_falls_to_config
+
+row6_both_layers_absent_returns_false() {
+  local cfg sf got
+  read -r cfg sf < <(mkfixture row6 absent '{}')
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "row6_both_layers_absent_returns_false" "false" "$got"
+}
+row6_both_layers_absent_returns_false
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
