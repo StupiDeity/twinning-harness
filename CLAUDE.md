@@ -78,6 +78,11 @@ PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brain
 # Resolve a halted issue (ENG-18 verdict-marker protocol):
 bash bin/halt.sh resolve ENG-XX --decision <scope-approved|scope-rejected|resume>
 
+# Post a verdict marker manually (heredoc-constructed; safe from bash !-expansion):
+bash bin/post-verdict.sh ENG-N stage-summary <stage> [<reason>]
+bash bin/post-verdict.sh ENG-N rejection <target-stage> [<reason>]
+bash bin/post-verdict.sh ENG-N halt <reason-token> [<reason>]
+
 # Refresh the Linear ID cache after adding states/labels:
 LINEAR_API_KEY=… TARGET_REPO=/path/to/target bash bin/linear.sh refresh-cache
 # then commit $TARGET_REPO/.pipeline-config/schemas/linear-ids.json

@@ -475,6 +475,171 @@ else
     "got: $result"
 fi
 
+# ─── ENG-49 Gap #5: defensive guard — null/empty state name does not die ──
+# Repro: config.linear.native_states.in_review missing → state name resolves
+# to "null". apply_transition's |reviewing| hook must skip the
+# transition-state call and emit a single log line, NOT die (no FATAL output;
+# transition still completes the label swap).
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/config.json" <<'JSON'
+{
+  "orchestrator": {"paused": false},
+  "linear": {"native_states": {}}
+}
+JSON
+ORIG_CONFIG="$CONFIG"
+CONFIG="$STUB_DIR/config.json"
+export CONFIG
+
+apply_transition_log="$(apply_transition "ENG-950" "ui" "reviewing" "" 2>&1)"
+CONFIG="$ORIG_CONFIG"
+export CONFIG
+
+if printf '%s\n' "$apply_transition_log" | grep -q 'FATAL: state not in cache'; then
+  fail_at "Gap-5 defensive guard: no FATAL on missing in_review" \
+    "log contained FATAL — defensive guard not in place"
+elif printf '%s\n' "$apply_transition_log" | grep -q 'skipping native-state hook'; then
+  pass_at "Gap-5 defensive guard: missing in_review logs and skips"
+else
+  fail_at "Gap-5 defensive guard: missing in_review logs and skips" \
+    "log neither FATAL nor skip-message: $apply_transition_log"
+fi
+
+# ─── ENG-49 Gap #4: to==released transitions Linear status to Done ─────
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/config.json" <<'JSON'
+{
+  "orchestrator": {"paused": false},
+  "linear": {"native_states": {"in_review": "In Review", "done": "Done"}}
+}
+JSON
+ORIG_CONFIG="$CONFIG"
+CONFIG="$STUB_DIR/config.json"
+export CONFIG
+
+# Capture transition-state calls made by apply_transition.
+TRANSITION_CALLS="$STUB_DIR/transition-state-calls.log"
+: > "$TRANSITION_CALLS"
+# Modify the linear.sh stub to capture transition-state calls.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  transition-state) printf '%s\\t%s\\n' "\$2" "\$3" >> "$TRANSITION_CALLS" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+ORIG_VH_DIR="$_VH_SCRIPT_DIR"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
+apply_transition "ENG-960" "building" "released" "" >/dev/null 2>&1 || true
+
+CONFIG="$ORIG_CONFIG"
+_VH_SCRIPT_DIR="$ORIG_VH_DIR"
+export CONFIG
+
+if grep -qE '^ENG-960\sDone$' "$TRANSITION_CALLS"; then
+  pass_at "Gap-4 to==released transitions to Done"
+else
+  fail_at "Gap-4 to==released transitions to Done" \
+    "captured: $(cat "$TRANSITION_CALLS" 2>/dev/null || echo '<empty>')"
+fi
+
+# ─── ENG-49 Gap #1: to==reviewing opens PR when none exists ───────────
+# Stub gh and capture invocations.
+GH_CALLS="$STUB_DIR/gh-calls.log"
+: > "$GH_CALLS"
+cat > "$STUB_DIR/gh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$GH_CALLS"
+case "\$1 \$2" in
+  "pr list")
+    # Default to "no PR exists"; tests can override via \$GH_PR_LIST_RESULT.
+    printf '%s' "\${GH_PR_LIST_RESULT:-0}" ;;
+  "pr create") printf '%s' "https://example.com/pr/new" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/gh"
+
+# Stub render-pr-body.sh too, to avoid reading fixture docs in this test.
+cat > "$STUB_DIR/render-pr-body.sh" <<'SH'
+render_pr_body() { printf '<stubbed body for %s>\n' "$1"; }
+_rpb_title() { printf '%s\n' "stubbed title"; }
+_rpb_title_type() { printf 'fix\n'; }
+export -f render_pr_body _rpb_title _rpb_title_type
+SH
+
+# Need linear.sh to also stub get-issue (not just the existing ops).
+# Update the existing stub to handle get-issue with a canned response
+# that supplies gitBranchName, title, and labels.
+cat > "$STUB_DIR/linear.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "linear.sh $*" >> "$STUB_LOG"
+case "$1" in
+  get-comments) printf '%s\n' "${VH_FIXTURE_COMMENTS:-[]}" ;;
+  get-issue) printf '%s' '{"data":{"issue":{"identifier":"'"$2"'","title":"Stub title","gitBranchName":"stub/branch-'"$2"'","state":{"name":"In Progress"},"labels":{"nodes":[{"name":"Bug"}]}}}}' ;;
+  has-label)
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      [[ "$lbl" == "$3" ]] && exit 0
+    done
+    exit 1 ;;
+  stage-of) printf '%s\n' "${VH_CURRENT_STAGE_LABEL:-}" ;;
+  all-stage-labels)
+    result=""
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      case "$lbl" in stage:*) result="$result $lbl" ;; esac
+    done
+    printf '%s\n' "${result# }" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+ORIG_PATH="$PATH"
+PATH="$STUB_DIR:$PATH"
+export PATH
+
+ORIG_VH_DIR="$_VH_SCRIPT_DIR"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
+# Disable dry-run for the hook-invocation tests so `gh pr create` actually
+# runs against the stub (the dry-run guard otherwise short-circuits to a log line).
+ORIG_DRY_RUN="${PIPELINE_DRY_RUN:-}"
+PIPELINE_DRY_RUN=0
+export PIPELINE_DRY_RUN
+
+# Case A: no PR exists → gh pr create is invoked.
+GH_PR_LIST_RESULT=0 apply_transition "ENG-970" "ui" "reviewing" "" >/dev/null 2>&1 || true
+if grep -q 'pr create' "$GH_CALLS"; then
+  pass_at "Gap-1 to==reviewing + no PR → gh pr create invoked"
+else
+  fail_at "Gap-1 no PR → create" "no 'pr create' in $(cat "$GH_CALLS")"
+fi
+
+# Case B: PR already exists → gh pr create is NOT invoked.
+: > "$GH_CALLS"
+GH_PR_LIST_RESULT=1 apply_transition "ENG-971" "ui" "reviewing" "" >/dev/null 2>&1 || true
+if grep -q 'pr create' "$GH_CALLS"; then
+  fail_at "Gap-1 idempotent: PR exists → no create" "found 'pr create' in $(cat "$GH_CALLS")"
+else
+  pass_at "Gap-1 idempotent: PR exists → no create"
+fi
+
+# Case C: to != reviewing → no gh pr calls at all.
+: > "$GH_CALLS"
+apply_transition "ENG-972" "implementing" "ui" "" >/dev/null 2>&1 || true
+if grep -q 'pr ' "$GH_CALLS"; then
+  fail_at "Gap-1 hook only fires on to==reviewing" "calls: $(cat "$GH_CALLS")"
+else
+  pass_at "Gap-1 hook only fires on to==reviewing"
+fi
+
+PATH="$ORIG_PATH"
+_VH_SCRIPT_DIR="$ORIG_VH_DIR"
+PIPELINE_DRY_RUN="$ORIG_DRY_RUN"
+export PATH PIPELINE_DRY_RUN
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

@@ -126,8 +126,8 @@ failure_outcome_for_exit() {
 is_orchestrator_paused() {
   if [[ -f "$STATE_FILE" ]]; then
     local override
-    override="$(jq -r '.orchestrator.paused // empty' "$STATE_FILE" 2>/dev/null || true)"
-    if [[ -n "$override" && "$override" != "null" ]]; then
+    override="$(jq -r 'if .orchestrator.paused != null then .orchestrator.paused else empty end' "$STATE_FILE" 2>/dev/null || true)"
+    if [[ -n "$override" ]]; then
       printf '%s' "$override"
       return
     fi

@@ -100,6 +100,14 @@ for stage in brainstorm plan implement ui review qa build release; do
   fi
 done
 
+# ENG-49 Gap #1: UI allowlist no longer contains gh pr create.
+ui_tools="$(allowed_tools_for ui)"
+if [[ "$ui_tools" != *"gh pr create"* ]]; then
+  pass_at "ENG-49: ui allowlist drops gh pr create"
+else
+  fail_at "ENG-49: ui allowlist drops gh pr create" "ui tools: $ui_tools"
+fi
+
 # ─── Group 2: PIPELINE_WRITER env propagation ───────────────────────────
 printf '\n--- PIPELINE_WRITER=agent propagated to claude -p invocation ---\n'
 
@@ -633,6 +641,43 @@ if [[ "$keys_k" == "$expected_keys" ]] \
 else
   fail_at "fixture-K forward-compat" "keys=$keys_k request_id=$has_request_id_k thinking=$has_thinking_k"
 fi
+
+# ─── ENG-49 Gap #7: prompt↔allowlist contract ─────────────────────────
+# For each stage, every `gh pr <verb>` token appearing in
+# AGENT_PROMPTS.md §S must be allowlisted in allowed_tools_for(S).
+# Token regex matches shell-shaped instances: line-start whitespace
+# (or backtick) + `gh pr ` + one verb word.
+HARNESS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+contract_check_stage() {
+  local stage="$1" section="$2"
+  local section_body verbs missing=""
+  section_body="$(awk -v h="$section" '
+    /^## /{ if (in_section) exit; if (index($0, h)) {in_section=1; next} }
+    in_section{print}
+  ' "$HARNESS_ROOT/AGENT_PROMPTS.md")"
+  verbs="$(printf '%s\n' "$section_body" \
+    | grep -oE '(`|^[[:space:]]+)gh pr [a-z]+' \
+    | grep -oE 'gh pr [a-z]+' \
+    | sort -u || true)"
+  local tools; tools="$(allowed_tools_for "$stage")"
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    [[ "$tools" == *"$v"* ]] || missing+="$v "
+  done <<<"$verbs"
+  if [[ -z "$missing" ]]; then
+    pass_at "Gap-7 contract: $stage allowlist covers all gh pr verbs in §$section"
+  else
+    fail_at "Gap-7 contract: $stage allowlist missing: $missing" "tools: $tools"
+  fi
+}
+
+printf '\n--- ENG-49 Gap #7: prompt<->allowlist contract ---\n'
+contract_check_stage implement     "## 3. Implementation Agent (Backend)"
+contract_check_stage ui            "## 4. UI Agent (Frontend)"
+contract_check_stage review        "## 5. Review Agent"
+contract_check_stage qa            "## 6. QA Agent"
+contract_check_stage build         "## 7. Build Agent"
 
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
