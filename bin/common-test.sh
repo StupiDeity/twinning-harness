@@ -46,11 +46,13 @@ assert_eq() {
 }
 
 # Materialize per-row config.json + state.local.json under $_TEST_ROOT
-# and emit "<cfg-path>\n<sf-path>\n" so callers can `read -r cfg sf`.
+# and emit "<cfg-path>\t<sf-path>\n" — single tab-delimited line so that
+# `read -r cfg sf < <(mkfixture …)` binds both vars from one read (bash
+# `read` consumes one line and IFS-splits it; two newline-separated tokens
+# would leave the second var empty and silently break the test).
 # cfg_paused: "true" | "false" | "absent" (omits the .orchestrator.paused key)
 # sf_body:    "absent"            -> no state.local.json file at all
 #             "{}"                -> empty object
-#             "{orch:{}}"         -> {"orchestrator":{}}
 #             other               -> written verbatim as state.local.json body
 mkfixture() {
   local row_name="$1" cfg_paused="$2" sf_body="$3"
@@ -62,12 +64,11 @@ mkfixture() {
     jq -n --argjson p "$cfg_paused" '{orchestrator:{paused:$p}}' > "$cfg"
   fi
   case "$sf_body" in
-    "absent")     ;;                              # no state.local.json file
-    "{}")         printf '{}\n' > "$sf" ;;
-    "{orch:{}}")  printf '{"orchestrator":{}}\n' > "$sf" ;;
-    *)            printf '%s\n' "$sf_body" > "$sf" ;;
+    "absent") ;;                              # no state.local.json file
+    "{}")     printf '{}\n' > "$sf" ;;
+    *)        printf '%s\n' "$sf_body" > "$sf" ;;
   esac
-  printf '%s\n%s\n' "$cfg" "$sf"
+  printf '%s\t%s\n' "$cfg" "$sf"
 }
 
 # ─── ENG-44 six-row table (brainstorm §5) ────────────────────────────
@@ -114,7 +115,7 @@ row4_state_file_empty_object_falls_to_config
 
 row5_state_file_orchestrator_empty_falls_to_config() {
   local cfg sf got
-  read -r cfg sf < <(mkfixture row5 true '{orch:{}}')
+  read -r cfg sf < <(mkfixture row5 true '{"orchestrator":{}}')
   got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
   assert_eq "row5_state_file_orchestrator_empty_falls_to_config" "true" "$got"
 }
