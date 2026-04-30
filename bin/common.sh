@@ -126,6 +126,8 @@ failure_outcome_for_exit() {
 is_orchestrator_paused() {
   if [[ -f "$STATE_FILE" ]]; then
     local override
+    # Don't simplify to '// empty': false is jq-falsy and would silently
+    # eat a paused=false override. See ENG-44 / ENG-49 / bin/common-test.sh.
     override="$(jq -r 'if .orchestrator.paused != null then .orchestrator.paused else empty end' "$STATE_FILE" 2>/dev/null || true)"
     if [[ -n "$override" ]]; then
       printf '%s' "$override"
