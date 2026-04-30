@@ -231,6 +231,24 @@ _poll_classify_labels() {
           class='{"slot":"hold","advanceable":false}' ;;
       esac
     fi
+  elif [[ "$(_has_label stage:reviewing)" == "true" ]]; then
+    # ENG-50: gate review dispatch on observable PR state.
+    # Read branch from Linear; consult review_should_dispatch.
+    local _rp_branch
+    _rp_branch="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" 2>/dev/null \
+      | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
+    if [[ -z "$_rp_branch" ]]; then
+      # No branch resolvable — fail open (dispatch as before).
+      class='{"slot":"hold","advanceable":true}'
+    else
+      # shellcheck source=review-poll.sh
+      source "$SCRIPT_DIR/review-poll.sh"
+      if review_should_dispatch "$ident" "$_rp_branch"; then
+        class='{"slot":"hold","advanceable":true}'
+      else
+        class='{"slot":"hold","advanceable":false}'
+      fi
+    fi
   else
     class='{"slot":"hold","advanceable":true}'
   fi
