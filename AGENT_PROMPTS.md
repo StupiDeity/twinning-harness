@@ -215,7 +215,7 @@ Linear Issue:
 {issue_description}
 
 Your task:
-- Produce a brainstorm document at docs/brainstorms/{date}-{slug}-design.md
+- Produce a brainstorm document at docs/brainstorms/{date}-{issue_id_lower}-{slug}-design.md
 - Follow the format of existing brainstorms (see docs/brainstorms/ for examples)
 - Include: Overview, Decisions (with rationale), Architecture (where code goes),
   Data Flow, Error Handling, Edge Cases, Open Questions
@@ -252,8 +252,11 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
 
 ## Completion checklist (ordered — do every step in order, and do NOT exit before step 5)
 
-1. **Write the brainstorm doc** at `docs/brainstorms/{date}-{slug}-design.md`, including the
-   `linear: {issue_id}` YAML frontmatter.
+1. **Write the brainstorm doc** at `docs/brainstorms/{date}-{issue_id_lower}-{slug}-design.md`, including the
+   `linear: {issue_id}` YAML frontmatter. The `{issue_id_lower}` token in the basename is load-bearing:
+   `partition_dirty_paths::D-004` requires `eng-N` (case-insensitive) in the basename to bucket as in-scope.
+   Without it, the post-stage sweep classifies the doc as leaked-in-scope and increments the consecutive-
+   failures counter.
 2. **Run all 6 personas** via the document-review skill, in this exact order:
    design → security → scope → coherence → product → **feasibility**.
    Feasibility runs LAST because it is the gating persona (codebase-fact errors are always P0).
@@ -421,8 +424,9 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
 
 ## Completion checklist (ordered — do every step in order, and do NOT exit before step 5)
 
-1. **Write the plan doc** at `docs/plans/{date}-{slug}.md` with required YAML frontmatter
-   (`linear`, `date`, `topic`).
+1. **Write the plan doc** at `docs/plans/{date}-{issue_id_lower}-{slug}.md` with required YAML frontmatter
+   (`linear`, `date`, `topic`). The `{issue_id_lower}` token in the basename mirrors the §2 directive
+   above and is required by `partition_dirty_paths::D-004` for in-scope bucketing.
 2. **Run all 5 personas** via the document-review skill. Feasibility includes codebase-fact
    verification: every named method, trait, module path, struct field, SQL column, file, or
    entrypoint must be verified against current code with a `path:line` reference in the

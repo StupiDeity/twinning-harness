@@ -106,6 +106,58 @@ else
   nope "§5 contains '<!-- pipeline-wait: awaiting-approval -->'" "marker missing"
 fi
 
+# ─── ENG-53 #3 + #4: doc-filename templates carry {issue_id_lower} ──────
+# `partition_dirty_paths::D-004` requires `eng-N` (case-insensitive) in
+# the basename to bucket as in-scope. The brainstorm and plan stage
+# prompts must encode this in their filename templates, otherwise agents
+# produce filenames that get leaked-in-scope on every run (observed on
+# ENG-44's dogfood run — soft-fail counter +1, brainstorm doc dangled
+# untracked until a downstream stage's sweep retroactively caught it).
+#
+# Guards against re-introducing `{date}-{slug}-design.md` (the original
+# brainstorm template) or `{date}-{slug}.md` (the inconsistent plan
+# template at line 424 pre-fix).
+s1="$(section_body "## 1. Brainstorm Agent")"
+s2="$(section_body "## 2. Plan Agent")"
+
+# §1 — every `docs/brainstorms/{...}.md` template MUST include {issue_id_lower}.
+b_templates="$(printf '%s\n' "$s1" | grep -oE 'docs/brainstorms/\{[^}]+\}[-{][^[:space:]]*\.md' || true)"
+if [[ -z "$b_templates" ]]; then
+  nope "§1 contains at least one docs/brainstorms/{…}.md template" \
+       "no template found — file may have drifted away from the harness contract"
+else
+  bad_b=""
+  while IFS= read -r tmpl; do
+    [[ -z "$tmpl" ]] && continue
+    [[ "$tmpl" == *"{issue_id_lower}"* ]] || bad_b+="$tmpl "
+  done <<<"$b_templates"
+  if [[ -z "$bad_b" ]]; then
+    ok "§1 every docs/brainstorms/ template contains {issue_id_lower}"
+  else
+    nope "§1 every docs/brainstorms/ template contains {issue_id_lower}" \
+         "missing in: $bad_b"
+  fi
+fi
+
+# §2 — every `docs/plans/{...}.md` template MUST include {issue_id_lower}.
+p_templates="$(printf '%s\n' "$s2" | grep -oE 'docs/plans/\{[^}]+\}[-{][^[:space:]]*\.md' || true)"
+if [[ -z "$p_templates" ]]; then
+  nope "§2 contains at least one docs/plans/{…}.md template" \
+       "no template found — file may have drifted away from the harness contract"
+else
+  bad_p=""
+  while IFS= read -r tmpl; do
+    [[ -z "$tmpl" ]] && continue
+    [[ "$tmpl" == *"{issue_id_lower}"* ]] || bad_p+="$tmpl "
+  done <<<"$p_templates"
+  if [[ -z "$bad_p" ]]; then
+    ok "§2 every docs/plans/ template contains {issue_id_lower}"
+  else
+    nope "§2 every docs/plans/ template contains {issue_id_lower}" \
+         "missing in: $bad_p"
+  fi
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
