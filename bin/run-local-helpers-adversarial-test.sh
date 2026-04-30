@@ -672,6 +672,132 @@ test_trip_breaker_works_when_config_already_paused() {
 }
 test_trip_breaker_works_when_config_already_paused
 
+# ─── ENG-53 #5: frontmatter-based D-004 fallback ────────────────────────
+# Pre-fix: D-004 only checked the basename for the issue-id token. If the
+# brainstorm/plan agent wrote a doc with the correct `linear: ENG-N`
+# frontmatter but a basename slugged-from-title (no eng-N), the doc was
+# leaked-in-scope and never committed. Observed on ENG-44's dogfood run.
+# Post-fix: when basename mismatches, partition_dirty_paths ALSO checks
+# the file's first 20 lines for `^linear:[[:space:]]+ENG-N$`. CLAUDE.md
+# says frontmatter is the canonical mapping; reconcile.sh already greps
+# it. Now partition_dirty_paths agrees.
+test_frontmatter_d004_in_scope() {
+  local tdir; tdir="$(mktemp -d -t twinning-frontmatter.XXXXXX)"
+  local subdir="$tdir/docs/brainstorms"
+  mkdir -p "$subdir"
+  # Filename has NO eng-44 token (the ENG-44 brainstorm scenario).
+  local doc="$subdir/2026-04-30-orchestrator-paused-design.md"
+  cat > "$doc" <<'MD'
+---
+linear: ENG-44
+title: orchestrator paused override fix
+date: 2026-04-30
+---
+
+# Brainstorm
+MD
+  local fixture="$tdir/in" leaked="$tdir/leaked" observed="$tdir/observed"
+  : > "$fixture" "$leaked" "$observed"
+
+  (
+    cd "$tdir"
+    printf '?? docs/brainstorms/2026-04-30-orchestrator-paused-design.md\0' \
+      | partition_dirty_paths brainstorm ENG-44 \
+        3>"$fixture" 4>"$leaked" 5>"$observed"
+  )
+
+  local got_in got_leaked
+  got_in="$(tr -cd '\0' < "$fixture" | wc -c | tr -d ' ')"
+  got_leaked="$(tr -cd '\0' < "$leaked" | wc -c | tr -d ' ')"
+  assert_eq "ENG-53#5 frontmatter-only routes in-scope (basename token absent)" '1' "$got_in"
+  assert_eq "ENG-53#5 frontmatter-only NOT leaked-in-scope" '0' "$got_leaked"
+  rm -rf "$tdir"
+}
+test_frontmatter_d004_in_scope
+
+# Negative: file has frontmatter pointing at a DIFFERENT issue → leaked.
+test_frontmatter_d004_wrong_issue_leaked() {
+  local tdir; tdir="$(mktemp -d -t twinning-frontmatter.XXXXXX)"
+  local subdir="$tdir/docs/brainstorms"
+  mkdir -p "$subdir"
+  local doc="$subdir/2026-04-30-orchestrator-paused-design.md"
+  cat > "$doc" <<'MD'
+---
+linear: ENG-99
+title: a different issue's brainstorm
+---
+
+# Brainstorm
+MD
+  local fixture="$tdir/in" leaked="$tdir/leaked" observed="$tdir/observed"
+  : > "$fixture" "$leaked" "$observed"
+
+  (
+    cd "$tdir"
+    printf '?? docs/brainstorms/2026-04-30-orchestrator-paused-design.md\0' \
+      | partition_dirty_paths brainstorm ENG-44 \
+        3>"$fixture" 4>"$leaked" 5>"$observed"
+  )
+  local got_in got_leaked
+  got_in="$(tr -cd '\0' < "$fixture" | wc -c | tr -d ' ')"
+  got_leaked="$(tr -cd '\0' < "$leaked" | wc -c | tr -d ' ')"
+  assert_eq "ENG-53#5 wrong-issue frontmatter routes leaked-in-scope" '0' "$got_in"
+  assert_eq "ENG-53#5 wrong-issue frontmatter routes leaked-in-scope (leaked count)" '1' "$got_leaked"
+  rm -rf "$tdir"
+}
+test_frontmatter_d004_wrong_issue_leaked
+
+# Negative: file is missing on disk (e.g., deleted record D) → frontmatter
+# check returns 1 (file unreadable), basename mismatch → leaked. Pre-fix
+# behavior preserved.
+test_frontmatter_d004_missing_file_leaked() {
+  local tdir; tdir="$(mktemp -d -t twinning-frontmatter.XXXXXX)"
+  mkdir -p "$tdir/docs/brainstorms"
+  # Note: NOT creating the file. The path exists only in the git-status record.
+  local fixture="$tdir/in" leaked="$tdir/leaked" observed="$tdir/observed"
+  : > "$fixture" "$leaked" "$observed"
+
+  (
+    cd "$tdir"
+    printf 'D  docs/brainstorms/2026-04-30-deleted-design.md\0' \
+      | partition_dirty_paths brainstorm ENG-44 \
+        3>"$fixture" 4>"$leaked" 5>"$observed"
+  )
+  local got_leaked
+  got_leaked="$(tr -cd '\0' < "$leaked" | wc -c | tr -d ' ')"
+  assert_eq "ENG-53#5 missing file (deleted) routes leaked-in-scope" '1' "$got_leaked"
+  rm -rf "$tdir"
+}
+test_frontmatter_d004_missing_file_leaked
+
+# Positive: matching basename token AND matching frontmatter → in-scope
+# (existing behavior preserved; basename takes precedence per the
+# fast-path order in partition_dirty_paths).
+test_frontmatter_d004_basename_match_unchanged() {
+  local tdir; tdir="$(mktemp -d -t twinning-frontmatter.XXXXXX)"
+  mkdir -p "$tdir/docs/brainstorms"
+  local doc="$tdir/docs/brainstorms/2026-04-30-eng-44-orchestrator-paused-design.md"
+  cat > "$doc" <<'MD'
+---
+linear: ENG-44
+---
+MD
+  local fixture="$tdir/in" leaked="$tdir/leaked" observed="$tdir/observed"
+  : > "$fixture" "$leaked" "$observed"
+
+  (
+    cd "$tdir"
+    printf '?? docs/brainstorms/2026-04-30-eng-44-orchestrator-paused-design.md\0' \
+      | partition_dirty_paths brainstorm ENG-44 \
+        3>"$fixture" 4>"$leaked" 5>"$observed"
+  )
+  local got_in
+  got_in="$(tr -cd '\0' < "$fixture" | wc -c | tr -d ' ')"
+  assert_eq "ENG-53#5 basename match still routes in-scope" '1' "$got_in"
+  rm -rf "$tdir"
+}
+test_frontmatter_d004_basename_match_unchanged
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then

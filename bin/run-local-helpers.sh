@@ -109,6 +109,23 @@ assert_stage_allowlist_coverage() {
   done
 }
 
+# ENG-53 #5: frontmatter-based issue-id check, complements D-004's
+# basename token. CLAUDE.md states "Doc-to-issue ownership is YAML
+# frontmatter, not prose" — reconcile.sh already greps `linear: ENG-N`
+# in the first 20 lines as the canonical mapping. partition_dirty_paths
+# was inconsistent: it used basename only. Now it accepts EITHER signal.
+#
+# Returns 0 if file has `linear: ENG-N` in its first ~20 lines.
+# Returns 1 if the file is missing (deleted paths can't have frontmatter),
+# unreadable, or doesn't carry the matching frontmatter line.
+_path_has_linear_frontmatter() {
+  local path="$1" issue="$2"
+  [[ -n "$path" && -n "$issue" ]] || return 1
+  [[ -f "$path" ]] || return 1
+  head -20 "$path" 2>/dev/null \
+    | grep -qE "^linear:[[:space:]]+${issue}[[:space:]]*$"
+}
+
 # Consumes `git status -z --porcelain` on stdin; emits FD3 = in-scope,
 # FD4 = leaked-in-scope, FD5 = out-of-scope. D-004 issue-id token check
 # applied only to brainstorm|plan. Rename/copy records consume two NUL
@@ -163,6 +180,11 @@ partition_dirty_paths() {
         base="${path##*/}"
         base_lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
         if [[ "$base_lower" =~ (^|[^a-z0-9])${issue_lower_re}([^a-z0-9]|$) ]]; then
+          printf '%s\0' "$path" >&3
+        elif _path_has_linear_frontmatter "$path" "$issue_id"; then
+          # ENG-53 #5: basename mismatch but the doc's YAML frontmatter
+          # declares this issue. Honor frontmatter as the canonical
+          # doc-to-issue mapping (per CLAUDE.md), same as reconcile.sh.
           printf '%s\0' "$path" >&3
         else
           printf '%s\0' "$path" >&4
