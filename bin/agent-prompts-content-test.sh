@@ -73,6 +73,39 @@ else
   ok "§8 lacks obsolete 'pipeline-release.yml sweep' phrase"
 fi
 
+# ─── ENG-50: §5 invariants ────────────────────────────────────────────
+s5="$(section_body "## 5. Review Agent")"
+
+if printf '%s\n' "$s5" | grep -qF 'Preflight (MANDATORY'; then
+  ok "§5 contains 'Preflight (MANDATORY'"
+else
+  nope "§5 contains 'Preflight (MANDATORY'" "phrase missing"
+fi
+
+if printf '%s\n' "$s5" | grep -qF 'gh pr review --approve'; then
+  nope "§5 lacks 'gh pr review --approve'" "phrase present"
+else
+  ok "§5 lacks 'gh pr review --approve'"
+fi
+
+if printf '%s\n' "$s5" | grep -qF 'gh pr review --request-changes'; then
+  nope "§5 lacks 'gh pr review --request-changes'" "phrase present"
+else
+  ok "§5 lacks 'gh pr review --request-changes'"
+fi
+
+if printf '%s\n' "$s5" | grep -qF 'gh pr review --comment'; then
+  ok "§5 contains 'gh pr review --comment'"
+else
+  nope "§5 contains 'gh pr review --comment'" "phrase missing"
+fi
+
+if printf '%s\n' "$s5" | grep -qF '<!-- pipeline-wait: awaiting-approval -->'; then
+  ok "§5 contains '<!-- pipeline-wait: awaiting-approval -->'"
+else
+  nope "§5 contains '<!-- pipeline-wait: awaiting-approval -->'" "marker missing"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
