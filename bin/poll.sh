@@ -233,12 +233,25 @@ _poll_classify_labels() {
     fi
   elif [[ "$(_has_label stage:reviewing)" == "true" ]]; then
     # ENG-50: gate review dispatch on observable PR state.
-    # Read branch from Linear; consult review_should_dispatch.
+    # ENG-53 #12: derive the branch via bin/branch-name.sh (same convention
+    # that creates the worktree branch) instead of via Linear's
+    # `gitBranchName` field. Two reasons:
+    # 1. bin/linear.sh::get_issue does not select gitBranchName in its
+    #    GraphQL query (ENG-53 #1), so the prior expression returned empty
+    #    in production. Empty branch hit the "fail open" path → review
+    #    re-dispatched on every 5-min tick during the awaiting-approval
+    #    wait state, accumulating self-leak scratch files (observed on
+    #    ENG-44's dogfood: review-2 through review-5 in a tight loop).
+    # 2. Linear's gitBranchName auto-format
+    #    (`rajatgoyal/eng-N-with_underscores`) does not match the harness's
+    #    actual branch (`feat/eng-N-with-hyphens`), so even with linear.sh
+    #    fixed, `gh pr view --branch <wrong-name>` would fail → review_
+    #    should_dispatch's defensive dispatch path → same loop.
     local _rp_branch
-    _rp_branch="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" 2>/dev/null \
-      | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
+    _rp_branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident" 2>/dev/null || true)"
     if [[ -z "$_rp_branch" ]]; then
-      # No branch resolvable — fail open (dispatch as before).
+      # Branch derivation failed (e.g., Linear API down, title unfetchable).
+      # Fail open — dispatch as before.
       class='{"slot":"hold","advanceable":true}'
     else
       # shellcheck source=review-poll.sh
