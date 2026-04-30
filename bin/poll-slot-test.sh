@@ -633,6 +633,77 @@ else
   fail_at "AC-13 QA — Todo carrying BOTH skip-until-* labels is NOT inbox-picked" "out=$out"
 fi
 
+# ─── ENG-50: stage:reviewing dispatch gating via review_should_dispatch ──
+# Stub review-poll.sh: review_should_dispatch returns based on
+# $REVIEW_SHOULD_DISPATCH env var (0 → truthy/dispatch, 1 → falsy/idle).
+cat > "$STUB_DIR/review-poll.sh" <<'SH'
+review_should_dispatch() { return "${REVIEW_SHOULD_DISPATCH:-0}"; }
+export -f review_should_dispatch
+SH
+
+# Augment the existing linear.sh stub to also handle get-issue with a
+# canned gitBranchName payload.
+# Find the existing stub at $STUB_DIR/linear.sh and check if it handles
+# get-issue. If not, the new poll.sh branch will fail to read the branch.
+# For this test, the simplest path: re-write the stub to add get-issue.
+cat > "$STUB_DIR/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  list-issues-with-label)
+    f="$FIXTURE_DIR/label-$(printf '%s' "$2" | tr ':' '-').json"
+    [[ -f "$f" ]] && cat "$f" || printf '{"data":{"issues":{"nodes":[]}}}'
+    ;;
+  list-issues-in-state)
+    f="$FIXTURE_DIR/state-$2.json"
+    [[ -f "$f" ]] && cat "$f" || printf '{"data":{"issues":{"nodes":[]}}}'
+    ;;
+  get-comments)
+    f="$FIXTURE_DIR/comments-$2.json"
+    [[ -f "$f" ]] && cat "$f" || printf '[]'
+    ;;
+  get-issue)
+    printf '%s' "{\"data\":{\"issue\":{\"identifier\":\"$2\",\"gitBranchName\":\"stub-branch-$2\"}}}"
+    ;;
+  remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
+    [[ -n "${LINEAR_STUB_LOG-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# Case ENG-50-A: stage:reviewing with REVIEW_SHOULD_DISPATCH=0 (dispatch).
+reset_fixtures
+labels_json='["stage:reviewing"]'
+class="$(REVIEW_SHOULD_DISPATCH=0 _poll_classify_labels "ENG-590" "$labels_json")"
+adv="$(jq -r '.advanceable' <<<"$class")"
+slot="$(jq -r '.slot' <<<"$class")"
+if [[ "$adv" == "true" && "$slot" == "hold" ]]; then
+  pass_at "ENG-50: stage:reviewing + dispatch=true → hold/advanceable"
+else
+  fail_at "ENG-50: stage:reviewing + dispatch=true" "got slot=$slot adv=$adv"
+fi
+
+# Case ENG-50-B: stage:reviewing with REVIEW_SHOULD_DISPATCH=1 (idle).
+class="$(REVIEW_SHOULD_DISPATCH=1 _poll_classify_labels "ENG-591" "$labels_json")"
+adv="$(jq -r '.advanceable' <<<"$class")"
+slot="$(jq -r '.slot' <<<"$class")"
+if [[ "$adv" == "false" && "$slot" == "hold" ]]; then
+  pass_at "ENG-50: stage:reviewing + dispatch=false → hold/idle"
+else
+  fail_at "ENG-50: stage:reviewing + dispatch=false" "got slot=$slot adv=$adv"
+fi
+
+# Case ENG-50-C: non-reviewing stage unchanged (sanity).
+labels_json='["stage:implementing"]'
+class="$(_poll_classify_labels "ENG-592" "$labels_json")"
+adv="$(jq -r '.advanceable' <<<"$class")"
+if [[ "$adv" == "true" ]]; then
+  pass_at "ENG-50: stage:implementing unchanged (default branch advanceable)"
+else
+  fail_at "ENG-50: stage:implementing default branch" "got adv=$adv"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

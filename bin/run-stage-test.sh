@@ -922,11 +922,13 @@ else
   fail_at "ENG-45 case A2" "got: $out"
 fi
 
-# ─── ENG-45 case B: stage != build → empty (build-only gate, security F-1) ──
+# ─── ENG-45 case B: stage=implement → empty (build|review gate, security F-1) ──
+# ENG-50: review is now accepted by the wait gate (build|review); use implement
+# instead to pin the rejection path.
 export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"}]'
-out="$(_fresh_wait_reason ENG-45T2 review || printf '')"
+out="$(_fresh_wait_reason ENG-45T2 implement || printf '')"
 if [[ -z "$out" ]]; then
-  pass_at "ENG-45 case B: review stage rejected by build-only gate"
+  pass_at "ENG-45 case B: implement stage rejected by build|review gate"
 else
   fail_at "ENG-45 case B" "got: $out"
 fi
@@ -1914,6 +1916,69 @@ fi
 # Restore CONFIG and clean up.
 CONFIG="$ENG_45_QA_CFG_SAVED"
 rm -f "$ENG_45_QA_TMP_CFG"
+
+# ─── ENG-50 case A: _fresh_wait_reason accepts review stage ───────────
+fresh_comments='[{"id":"c1","createdAt":"2026-04-30T12:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nReviewed commit abc1234."}]'
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  get-comments) printf '%s' '$fresh_comments' ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+SCRIPT_DIR="$STUB_DIR"
+reason="$(_fresh_wait_reason "ENG-580" "review" 2>/dev/null || printf '')"
+[[ "$reason" == "awaiting-approval" ]] \
+  && pass_at "ENG-50 _fresh_wait_reason: review stage accepted" \
+  || fail_at "ENG-50 _fresh_wait_reason review" "got: '$reason'"
+
+# Sanity: build still works.
+reason="$(_fresh_wait_reason "ENG-581" "build" 2>/dev/null || printf '')"
+[[ "$reason" == "awaiting-approval" ]] \
+  && pass_at "ENG-50 _fresh_wait_reason: build still works" \
+  || fail_at "ENG-50 _fresh_wait_reason build" "got: '$reason'"
+
+# Other stages still rejected.
+reason="$(_fresh_wait_reason "ENG-582" "implement" 2>/dev/null || printf '')"
+[[ -z "$reason" ]] \
+  && pass_at "ENG-50 _fresh_wait_reason: implement still rejected" \
+  || fail_at "ENG-50 _fresh_wait_reason implement" "got: '$reason' (expected empty)"
+
+# ─── ENG-50 case B: _post_review_dispatch_update writes current SHA ───
+UPDATE_CALLS="$STUB_DIR/update-state-calls.log"
+: > "$UPDATE_CALLS"
+cat > "$STUB_DIR/review-state.sh" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  update) printf 'update\\t%s\\t%s\\t%s\\t%s\\n' "\$2" "\$3" "\$4" "\$5" >> "$UPDATE_CALLS" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/review-state.sh"
+
+# Stub gh: pretend HEAD SHA = abc1234, no reviews.
+cat > "$STUB_DIR/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view") printf '%s' '{"commits":[{"oid":"abc1234"}],"reviews":[]}' ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/gh"
+
+ORIG_PATH="$PATH"
+PATH="$STUB_DIR:$PATH"
+SCRIPT_DIR="$STUB_DIR"
+_post_review_dispatch_update "ENG-585" "stub-branch" >/dev/null 2>&1 || true
+PATH="$ORIG_PATH"
+
+captured="$(cat "$UPDATE_CALLS")"
+if [[ "$captured" == *"ENG-585"* && "$captured" == *"abc1234"* ]]; then
+  pass_at "ENG-50 _post_review_dispatch_update writes current SHA"
+else
+  fail_at "ENG-50 _post_review_dispatch_update" "captured: $captured"
+fi
 
 
 echo

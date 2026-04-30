@@ -219,6 +219,14 @@ apply_transition() {
     fi
   fi
 
+  # ENG-50: bootstrap last-review-state for poll.sh's review_should_dispatch.
+  # Idempotent — overwrites any previous state to all-null on each entry
+  # to stage:reviewing (loopback re-entries get a fresh state per tick).
+  if [[ "$to" == "reviewing" ]]; then
+    bash "$_VH_SCRIPT_DIR/review-state.sh" bootstrap "$issue" || \
+      log "verdict-handler: review-state bootstrap failed for $issue (continuing)"
+  fi
+
   if [[ -n "$side_labels" ]]; then
     local IFS_SAVE="$IFS"
     IFS=','

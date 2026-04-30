@@ -301,7 +301,10 @@ verify_preconditions() {
 # → return 1 → caller falls through to the agent-contract validator.
 _fresh_wait_reason() {
   local issue="$1" stage="$2"
-  [[ "$stage" == "build" ]] || return 1
+  case "$stage" in
+    build|review) ;;
+    *) return 1 ;;
+  esac
 
   local comments
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue" 2>/dev/null)" || return 1
@@ -424,6 +427,32 @@ _handle_wait() {
     return 1
   fi
   return 0
+}
+
+# ENG-50: write last-review-state to Linear after a successful review-stage
+# dispatch. Captures the just-observed PR state (HEAD SHA + most recent
+# non-bot review's submittedAt per state). Called from the success and
+# wait-success branches in main(). Stage-gated by the caller.
+_post_review_dispatch_update() {
+  local issue="$1" branch="$2"
+  [[ -n "$issue" && -n "$branch" ]] || { log "post-review-update: missing args; skipping"; return 0; }
+
+  local pr_view
+  pr_view="$(gh pr view "$branch" --json commits,reviews 2>/dev/null || printf '{}')"
+
+  local head_sha last_app last_cr
+  head_sha="$(jq -r '.commits[-1].oid // empty' <<<"$pr_view")"
+  last_app="$(jq -r '
+    [.reviews[]? | select(.author.login | test("\\[bot\\]$") | not)
+                 | select(.state == "APPROVED")]
+    | sort_by(.submittedAt) | last | .submittedAt // empty' <<<"$pr_view")"
+  last_cr="$(jq -r '
+    [.reviews[]? | select(.author.login | test("\\[bot\\]$") | not)
+                 | select(.state == "CHANGES_REQUESTED")]
+    | sort_by(.submittedAt) | last | .submittedAt // empty' <<<"$pr_view")"
+
+  bash "$SCRIPT_DIR/review-state.sh" update "$issue" "$head_sha" "$last_app" "$last_cr" \
+    || log "post-review-update: review-state update failed for $issue (continuing)"
 }
 
 main() {
@@ -636,6 +665,13 @@ main() {
         bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "soft-pending" \
           "$(( ($(date +%s) - t0) * 1000 ))" "reason=$_wait_reason" \
           "${_wait_cost_flags[@]+"${_wait_cost_flags[@]}"}" || true
+        # ENG-50: capture last-review-state on review wait-success.
+        if [[ "$stage" == "review" ]]; then
+          local _rp_branch
+          _rp_branch="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" 2>/dev/null \
+            | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
+          [[ -n "$_rp_branch" ]] && _post_review_dispatch_update "$ident" "$_rp_branch" || true
+        fi
         log "stage $stage wait on $ident (reason=$_wait_reason)"
         exit 0
       fi
@@ -765,6 +801,15 @@ main() {
       bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" "verdict=transitioned" \
         "${cost_flags[@]+"${cost_flags[@]}"}"
       log "stage $stage complete for $ident (verdict-handler transitioned)"
+      # ENG-50: capture last-review-state on review-stage transitions
+      # (advance to qa OR loopback to implementing). Both are successful
+      # exits where the agent observed the PR state and acted on it.
+      if [[ "$stage" == "review" ]]; then
+        local _rp_branch
+        _rp_branch="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" 2>/dev/null \
+          | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
+        [[ -n "$_rp_branch" ]] && _post_review_dispatch_update "$ident" "$_rp_branch" || true
+      fi
       # Success path: clear any prior failure state + skip labels.
       rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
       rm -f "$(issue_dir "$ident")/wait-${stage}.json" 2>/dev/null || true

@@ -640,6 +640,73 @@ _VH_SCRIPT_DIR="$ORIG_VH_DIR"
 PIPELINE_DRY_RUN="$ORIG_DRY_RUN"
 export PATH PIPELINE_DRY_RUN
 
+# ─── ENG-50: apply_transition to==reviewing calls bootstrap_review_state ──
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/config.json" <<'JSON'
+{
+  "orchestrator": {"paused": false},
+  "linear": {"native_states": {"in_review": "In Review", "done": "Done"}}
+}
+JSON
+ORIG_CONFIG="$CONFIG"
+CONFIG="$STUB_DIR/config.json"
+export CONFIG
+
+# Stub review-state.sh CLI — capture bootstrap calls.
+BOOTSTRAP_CALLS="$STUB_DIR/bootstrap-calls.log"
+: > "$BOOTSTRAP_CALLS"
+cat > "$STUB_DIR/review-state.sh" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  bootstrap) printf '%s\\n' "\$2" >> "$BOOTSTRAP_CALLS" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/review-state.sh"
+
+# Stub gh (PR-create hook short-circuits on dry-run anyway).
+cat > "$STUB_DIR/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list") printf '0' ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/gh"
+
+ORIG_PATH="$PATH"
+PATH="$STUB_DIR:$PATH"
+ORIG_VH_DIR="$_VH_SCRIPT_DIR"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
+apply_transition "ENG-595" "ui" "reviewing" "" >/dev/null 2>&1 || true
+
+PATH="$ORIG_PATH"
+_VH_SCRIPT_DIR="$ORIG_VH_DIR"
+CONFIG="$ORIG_CONFIG"
+export PATH CONFIG
+
+if grep -qE '^ENG-595$' "$BOOTSTRAP_CALLS"; then
+  pass_at "ENG-50 bootstrap: to==reviewing calls bootstrap_review_state"
+else
+  fail_at "ENG-50 bootstrap" "captured: $(cat "$BOOTSTRAP_CALLS" 2>/dev/null || echo '<empty>')"
+fi
+
+# Sanity: to != reviewing does NOT call bootstrap.
+: > "$BOOTSTRAP_CALLS"
+PATH="$STUB_DIR:$PATH"
+_VH_SCRIPT_DIR="$STUB_DIR"
+apply_transition "ENG-596" "implementing" "ui" "" >/dev/null 2>&1 || true
+PATH="$ORIG_PATH"
+_VH_SCRIPT_DIR="$ORIG_VH_DIR"
+
+if [[ -s "$BOOTSTRAP_CALLS" ]]; then
+  fail_at "ENG-50 bootstrap: to!=reviewing must NOT call bootstrap" \
+    "captured: $(cat "$BOOTSTRAP_CALLS")"
+else
+  pass_at "ENG-50 bootstrap: to!=reviewing does not call bootstrap"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

@@ -723,6 +723,37 @@ Read these files first (in order, where present):
 5. docs/knowledge/conventions.md — verify against established conventions (skip if not present)
 6. {learned_rules_dir}/review.md — learned rules (follow ALL)
 
+Preflight (MANDATORY — determines what kind of dispatch this is):
+
+  1. Read PR HEAD SHA:
+       head_sha=$(gh pr view {branch_name} --json commits --jq '.commits[-1].oid')
+  2. Read most recent non-bot review and its commit_id + submittedAt:
+       gh pr view {branch_name} --json reviews \
+         | jq '[.reviews[] | select(.author.login | test("\\[bot\\]$") | not)] | sort_by(.submittedAt) | last'
+  3. Read last-review-state from Linear:
+       bash .pipeline/bin/linear.sh get-comments {issue_id} \
+         | jq '[.[] | select(.body | contains("<!-- pipeline-state: last-review-state -->"))] | last.body'
+       Parse the JSON payload {sha, last_processed_approval_at, last_processed_cr_at}.
+  4. Branch on comparison:
+     a. APPROVED on current HEAD AND submittedAt > last_processed_approval_at:
+        → Skip multi-persona review.
+        → Write a brief stage-summary file noting: "Human {login} approved
+          on commit {sha[:8]}. Advancing to qa."
+        → Post `<!-- pipeline-stage-summary: reviewing -->` verdict marker.
+        → Apply pipeline:halted, exit.
+     b. CHANGES_REQUESTED on current HEAD AND submittedAt > last_processed_cr_at:
+        → Run multi-persona review with the human's CR comments as additional
+          input (read via gh pr view --json reviews,comments).
+        → Decide: Decision path B (rejection) or Decision path C (wait-marker)
+          per the multi-persona findings.
+     c. Current HEAD ≠ last-review-state.sha (new commits since last review):
+        → Run multi-persona review on the new code.
+        → Decide: Decision path B (rejection) or Decision path C (wait-marker).
+     d. Otherwise (defensive — should not happen under β's gating):
+        → Post `<!-- pipeline-wait: awaiting-approval -->` with the current SHA.
+        → Apply pipeline:halted, exit. Log the unexpected state in the
+          stage-summary's Notes section.
+
 Input:
   Fetch the feature PR with:
     gh pr list --head {branch_name} --state open --json number --jq '.[0].number'
@@ -793,7 +824,11 @@ Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
 
 **Review-comment quality rubric (MANDATORY — applies to every PR comment you post):**
 Every review comment MUST have all four parts:
-  1. `file:line` anchor via `gh pr review` comment mechanism.
+  1. `file:line` anchor as an explicit `path/to/file.ext:LINE` reference at the
+     start of the comment body, after the severity token. Example:
+       `[major] src/handler.ts:42 — Mutating the request body...`
+     The path:line text is the anchor; gh pr review --comment posts the body
+     as a top-level review comment (not inline-anchored on GitHub's UI).
   2. Severity token as the first word: `[critical]`, `[major]`, `[minor]`, or `[nit]`.
   3. Concrete suggestion — what to change, not just what's wrong. If a code change
      is possible, include a GitHub suggestion block.
@@ -817,43 +852,73 @@ Gotcha surfacing (PROPOSE, do not write):
 
 Decision path (apply exactly one):
 
-  A. **Premise failure** (brainstorm was wrong):
+  A. Premise failure (brainstorm was wrong) — UNCHANGED.
      - Apply Linear label `pipeline:premise-failure`.
      - Post the `premise_failure` marker comment.
-     - Exit. Do NOT `approve` or `request-changes`. Orchestrator handles loop-back.
+     - Post `<!-- pipeline-rejection: reviewing -->` AND
+            `<!-- pipeline-rejection-target: brainstorming -->`.
+     - Apply pipeline:halted, exit. Orchestrator handles loop-back.
 
-  B. **Changes requested** (≥1 `critical` OR ≥ `max_issues_before_reject` `major`):
-     - `gh pr review --request-changes` with a consolidated summary comment.
-     - Bump counter: `.pipeline/bin/guards.sh bump {issue_id} review_rejection`.
-     - The orchestrator will swap the label back to `stage:implementing` on next run.
+  B. Changes requested (rewritten for ENG-50 / β).
+     - Post a consolidated COMMENTED-state review with all findings via:
+         gh pr review {pr_number} --comment --body "<full summary>"
+       Body contains severity-prefixed, "path/to/file.ext:LINE"-anchored
+       findings per the comment-quality rubric (item 1 reworded — see below).
+     - Post Linear consolidated review summary via:
+         bash .pipeline/bin/linear.sh add-or-update-comment \
+           "completion/reviewing/{issue_id}" {issue_id} "<body>"
+       Body mirrors the gh pr review summary plus persona verdicts and
+       comment-quality self-lint score.
+     - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} review_rejection`.
+     - Post `<!-- pipeline-rejection: reviewing -->` AND
+            `<!-- pipeline-rejection-target: implementing -->`.
+     - Apply pipeline:halted, exit. Orchestrator transitions reviewing → implementing.
 
-  C. **Approved** (no `critical`, < threshold `major`, ensemble all-pass):
-     - `gh pr review --approve` with a summary comment.
-     - Orchestrator advances to `stage:qa`.
-     - Note: this bot approval does NOT satisfy branch protection on `main`.
-       The PR cannot merge until a human Code Owner also approves (per
-       ENG-13 D-007). The bot's `--auto` from the build stage queues the
-       merge; it fires when the human approval lands.
+  C. Clean review, awaiting human approval (NEW under ENG-50 / β).
+     - Post a consolidated COMMENTED-state review via:
+         gh pr review {pr_number} --comment --body "<summary>"
+       Summary: "Reviewed commit {sha[:8]}. N personas: PASS. 0 critical,
+       0 major. Awaiting human Code Owner approval." Plus any minor/nit
+       observations as severity-prefixed bullets.
+     - Post Linear consolidated review summary via add-or-update-comment
+       with sig `completion/reviewing/{issue_id}`.
+     - Post `<!-- pipeline-wait: awaiting-approval -->` with body that
+       explicitly names the reviewed SHA. NO `tick_at:` line (the
+       orchestrator only re-dispatches review on observable PR state
+       change under ENG-50's β gating, so consecutive wait markers
+       reflect different SHAs and won't dedup-collide).
+     - Do NOT apply pipeline:halted. Do NOT post a verdict marker.
+       Issue idles at stage:reviewing until poll.sh's
+       review_should_dispatch detects a state change (new commits,
+       new approval, or new change-request).
+     - Exit clean.
+
+  D. Approval just landed (NEW under ENG-50 / β — preflight branch (a) outcome).
+     - As described in Preflight step 4(a).
+
+The agent does NOT submit GitHub PR reviews in the APPROVED state or in
+the CHANGES_REQUESTED state under any path. The COMMENTED state
+(`gh pr review --comment`) is the only review API call permitted —
+GitHub allows COMMENTED reviews from the PR author. Submitting an
+approval or a change-request as the PR author is blocked by GitHub
+(reviewer-cannot-equal-author rule); humans do that via the GitHub UI.
 
 Do NOT change the Linear stage label yourself. The orchestrator owns state transitions.
 
 Output:
-- `gh pr review` verdict posted on the PR (approve / request-changes / neither on
-  premise failure).
-- Summary comment on the PR with: ensemble findings by severity, anti-bias results,
-  comment-quality self-lint score, knowledge-update proposals (if any).
-- Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-  comment format contract (preamble). Stage-specific slots:
-  - Artifact link: the PR URL (with the `gh pr review` verdict visible).
-  - TL;DR: 1–2 sentences on the verdict and the single most important finding (or "no
-    blocking issues" when clean).
-  - Status line (clean approve): `Approved · 0 P0 findings · proceeding to qa`.
-  - Notes (only on request-changes / P0 findings / premise-failure): concise paragraph
-    per finding — what's wrong, where, what needs to change. No per-persona table, no
-    per-severity counts; those belong in the PR summary comment.
-  (On premise-failure path A, skip writing the summary — the orchestrator does not advance.)
-  Full per-reviewer-persona verdicts, severity-bucketed findings, and comment-quality
-  self-lint stay in the PR summary comment posted via `gh pr comment`.
+- Per-finding PR review comments via `gh pr review --comment`
+  (severity-prefixed, path:line-anchored in body, with concrete suggestion +
+  "why" rationale).
+- Consolidated Linear review summary as a `completion/reviewing/{issue_id}`
+  add-or-update-comment.
+- Stage-summary file at {stage_summary_path} (per the Stage summary comment
+  format contract — abbreviated on path D when no review work was done).
+- Verdict marker per Decision path (A premise-failure → rejection-to-brainstorm,
+  B changes-requested → rejection-to-implementing, C wait-for-approval →
+  no verdict marker, D approval-detected → stage-summary).
+- Do NOT submit a GitHub PR review in the APPROVED state or in the
+  CHANGES_REQUESTED state. The agent does not approve or request changes
+  via GitHub's review API; humans do.
 
 Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
