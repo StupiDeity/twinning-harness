@@ -505,6 +505,46 @@ else
     "log neither FATAL nor skip-message: $apply_transition_log"
 fi
 
+# ─── ENG-49 Gap #4: to==released transitions Linear status to Done ─────
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/config.json" <<'JSON'
+{
+  "orchestrator": {"paused": false},
+  "linear": {"native_states": {"in_review": "In Review", "done": "Done"}}
+}
+JSON
+ORIG_CONFIG="$CONFIG"
+CONFIG="$STUB_DIR/config.json"
+export CONFIG
+
+# Capture transition-state calls made by apply_transition.
+TRANSITION_CALLS="$STUB_DIR/transition-state-calls.log"
+: > "$TRANSITION_CALLS"
+# Modify the linear.sh stub to capture transition-state calls.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  transition-state) printf '%s\\t%s\\n' "\$2" "\$3" >> "$TRANSITION_CALLS" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+ORIG_VH_DIR="$_VH_SCRIPT_DIR"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
+apply_transition "ENG-960" "building" "released" "" >/dev/null 2>&1 || true
+
+CONFIG="$ORIG_CONFIG"
+_VH_SCRIPT_DIR="$ORIG_VH_DIR"
+export CONFIG
+
+if grep -qE '^ENG-960\sDone$' "$TRANSITION_CALLS"; then
+  pass_at "Gap-4 to==released transitions to Done"
+else
+  fail_at "Gap-4 to==released transitions to Done" \
+    "captured: $(cat "$TRANSITION_CALLS" 2>/dev/null || echo '<empty>')"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

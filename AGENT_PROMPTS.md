@@ -1300,9 +1300,9 @@ Your task (execute in order):
          * commit SHA + one-line summary
          * GitHub Release URL
          * (if breaking) BREAKING CHANGE footer text
-   Do NOT change Linear state here — the `pipeline-release.yml` sweep already swapped
-   `stage:building` → `stage:released` + status → Done. You are adding context, not
-   advancing state.
+   Do NOT change Linear state here — the orchestrator (`verdict-handler::apply_transition`)
+   advances `stage:building` → `stage:released` and Linear native status → Done as
+   transition side-effects. You are adding context, not advancing state.
 
 5. **Release cadence audit** (release-gate, soft signal):
      - Time since previous release: `git log -1 --pretty=%at {prev_tag}` vs

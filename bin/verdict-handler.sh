@@ -156,6 +156,14 @@ apply_transition() {
     else
       log "verdict-handler: skipping native-state hook to In Review (config.linear.native_states.in_review not set)"
     fi
+  elif [[ "$to" == "released" ]]; then
+    local done_state
+    done_state="$(jq -r '.linear.native_states.done // empty' "$CONFIG")"
+    if [[ -n "$done_state" ]]; then
+      bash "$_VH_SCRIPT_DIR/linear.sh" transition-state "$issue" "$done_state" || true
+    else
+      log "verdict-handler: skipping native-state hook to Done (config.linear.native_states.done not set)"
+    fi
   fi
 
   if [[ -n "$side_labels" ]]; then
