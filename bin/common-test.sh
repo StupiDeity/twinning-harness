@@ -129,6 +129,111 @@ row6_both_layers_absent_returns_false() {
 }
 row6_both_layers_absent_returns_false
 
+# ─── QA adversarial coverage (ENG-44 review) ─────────────────────────
+# Beyond the brainstorm's six-row table, these pin behavior on edge
+# cases §7 of the brainstorm flagged as "intentionally NOT bound to
+# tests" plus invariants the five-caller chain silently relies on.
+# Each test is QA-authored under the maker-checker rule in the QA
+# stage prompt; their counterparts do NOT appear in docs/plans/.
+
+# adv1 — malformed STATE_FILE JSON falls through to CONFIG.
+# Guards against: a future refactor dropping `2>/dev/null || true` and
+# turning a mid-write torn read into a fatal pipeline error.
+adv1_malformed_state_file_falls_through() {
+  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/adv1-XXXXXX")"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:true}}' > "$cfg"
+  printf '%s' '{not-json' > "$sf"   # truncated mid-rename
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "adv1_malformed_state_file_falls_through" "true" "$got"
+}
+adv1_malformed_state_file_falls_through
+
+# adv2 — explicit `paused: null` in STATE_FILE falls through. Directly
+# pins the contract the comment at bin/common.sh:129-130 promises (the
+# whole reason `// empty` was rejected). Guards against silent revert
+# to `// empty` or `// false` shapes.
+adv2_explicit_null_state_file_falls_through() {
+  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/adv2-XXXXXX")"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:true}}' > "$cfg"
+  printf '%s\n' '{"orchestrator":{"paused":null}}' > "$sf"
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "adv2_explicit_null_state_file_falls_through" "true" "$got"
+}
+adv2_explicit_null_state_file_falls_through
+
+# adv3 — STATE_FILE has `orchestrator` as a wrong type (schema drift).
+# jq's `.orchestrator.paused` on a non-object errors; the swallow path
+# (`2>/dev/null || true`) must catch it and the function must fall
+# through to CONFIG, not crash mid-tick.
+adv3_orchestrator_wrong_type_falls_through() {
+  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/adv3-XXXXXX")"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:true}}' > "$cfg"
+  printf '%s\n' '{"orchestrator":"yes"}' > "$sf"
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "adv3_orchestrator_wrong_type_falls_through" "true" "$got"
+}
+adv3_orchestrator_wrong_type_falls_through
+
+# adv4 — zero-byte STATE_FILE. Models a partial write or
+# filesystem-truncation failure. jq parse-errors on empty input;
+# swallow + fall through expected.
+adv4_empty_state_file_falls_through() {
+  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/adv4-XXXXXX")"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:false}}' > "$cfg"
+  : > "$sf"   # zero-byte file
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "adv4_empty_state_file_falls_through" "false" "$got"
+}
+adv4_empty_state_file_falls_through
+
+# adv5 — STATE_FILE path exists but as a directory. `[[ -f ]]` returns
+# false on directories; guards against a refactor to `[[ -e ]]` that
+# would crash jq trying to slurp a directory.
+adv5_state_file_is_directory_falls_through() {
+  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/adv5-XXXXXX")"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:true}}' > "$cfg"
+  mkdir -p "$sf"   # path exists but is a directory, not a regular file
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "adv5_state_file_is_directory_falls_through" "true" "$got"
+}
+adv5_state_file_is_directory_falls_through
+
+# adv6 — caller invariant. Five callers (poll.sh, run-local.sh,
+# run-stage.sh, reset-pipeline.sh, dry-run.sh) all do
+# `[[ "$paused" == "true" ]]`; any drift to "True", "yes", " true ",
+# or extra whitespace silently flips paused→not-paused. Pin both
+# branches (state-file branch via `printf '%s'`; config branch via
+# `jq -r` which appends a newline that `$()` strips).
+adv6_output_is_true_or_false_invariant() {
+  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/adv6-XXXXXX")"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:false}}' > "$cfg"
+  jq -n '{orchestrator:{paused:true}}' > "$sf"
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  case "$got" in
+    true|false) report_ok "adv6_output_invariant (state branch)" ;;
+    *) report_fail "adv6_output_invariant (state branch)" "true|false" "$got" ;;
+  esac
+  rm -f "$sf"   # force config-branch path
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  case "$got" in
+    true|false) report_ok "adv6_output_invariant (config branch)" ;;
+    *) report_fail "adv6_output_invariant (config branch)" "true|false" "$got" ;;
+  esac
+}
+adv6_output_is_true_or_false_invariant
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
