@@ -65,7 +65,7 @@ fresh_target() {
 # ── config-defaults: fills missing keys, preserves edits ──────────────
 {
   TGT="$(fresh_target)"
-  printf '{"linear":{"team_id":"t","project_id":"p","stage_label_prefix":"custom:"}}\n' \
+  printf '{"linear":{"team_id":"t","project_id":"p","stage_label_prefix":"custom:","native_states":{"in_review":"In Review"}}}\n' \
     > "$TGT/.pipeline-config/config.json"
   HARNESS_STATE_DIR="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" \
     bash "$HARNESS_DIR/setup.sh" "$TGT" config-defaults >/dev/null 2>&1
@@ -82,7 +82,7 @@ fresh_target() {
   # Bare-verb form (matches workflow_stages typo seen in the wild) — must
   # be replaced, not preserved, because poll.sh queries Linear for
   # `stage:<entry>` labels and only the gerund forms exist in Linear.
-  printf '{"linear":{"team_id":"t","project_id":"p","workflow_stages":["brainstorm","plan","implement","ui","review","qa","build","release"]}}\n' \
+  printf '{"linear":{"team_id":"t","project_id":"p","workflow_stages":["brainstorm","plan","implement","ui","review","qa","build","release"],"native_states":{"in_review":"In Review"}}}\n' \
     > "$TGT/.pipeline-config/config.json"
   HARNESS_STATE_DIR="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" \
     bash "$HARNESS_DIR/setup.sh" "$TGT" config-defaults >/dev/null 2>&1
@@ -102,7 +102,7 @@ fresh_target() {
   "linear": {
     "team_id": "t", "project_id": "p", "stage_label_prefix": "stage:",
     "workflow_stages": ["brainstorm","plan","implement","ui","review","qa","build","release"],
-    "native_states": {"active": "In Progress", "inbox": "Todo", "done": "Done"}
+    "native_states": {"active": "In Progress", "inbox": "Todo", "done": "Done", "in_review": "In Review"}
   }
 }
 JSON
@@ -118,6 +118,35 @@ JSON
     && pass_at "config-defaults rewrites pre-existing wrong workflow_stages" \
     || fail_at "config-defaults rewrites pre-existing wrong workflow_stages" "got=$stages"
 }
+
+# ─── ENG-49 Gap #5: setup requires linear.native_states.{in_review,done} ──
+test_setup_requires_native_states() {
+  local tdir; tdir="$(mktemp -d -t twinning-setup-states.XXXXXX)"
+  local cfg="$tdir/config.json"
+  jq -n '{orchestrator:{paused:false}, linear:{native_states:{in_review:null}}}' > "$cfg"
+  if (set -e; require_native_states "$cfg") 2>/dev/null; then
+    fail_at "require_native_states rejects missing 'done' key" "accepted bad config"
+  else
+    pass_at "require_native_states rejects missing 'done' key"
+  fi
+  rm -rf "$tdir"
+}
+# Source setup.sh to obtain require_native_states (sentinel guard ensures main
+# does not fire when sourced). Provide a valid TARGET_REPO for the top-level
+# guards in setup.sh; restore the unset state afterwards.
+_SAVED_TARGET_REPO="${TARGET_REPO:-}"
+TARGET_REPO="$HARNESS_DIR"
+TWINNING_BOOTSTRAPPING=1
+export TARGET_REPO TWINNING_BOOTSTRAPPING
+# shellcheck source=setup.sh
+source "$HARNESS_DIR/setup.sh"
+if [[ -n "$_SAVED_TARGET_REPO" ]]; then
+  TARGET_REPO="$_SAVED_TARGET_REPO"
+else
+  unset TARGET_REPO
+fi
+unset TWINNING_BOOTSTRAPPING
+test_setup_requires_native_states
 
 printf '\n  passed: %d\n  failed: %d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

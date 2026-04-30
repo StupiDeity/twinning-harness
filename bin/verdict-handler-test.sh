@@ -475,6 +475,36 @@ else
     "got: $result"
 fi
 
+# ─── ENG-49 Gap #5: defensive guard — null/empty state name does not die ──
+# Repro: config.linear.native_states.in_review missing → state name resolves
+# to "null". apply_transition's |reviewing| hook must skip the
+# transition-state call and emit a single log line, NOT die (no FATAL output;
+# transition still completes the label swap).
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/config.json" <<'JSON'
+{
+  "orchestrator": {"paused": false},
+  "linear": {"native_states": {}}
+}
+JSON
+ORIG_CONFIG="$CONFIG"
+CONFIG="$STUB_DIR/config.json"
+export CONFIG
+
+apply_transition_log="$(apply_transition "ENG-950" "ui" "reviewing" "" 2>&1)"
+CONFIG="$ORIG_CONFIG"
+export CONFIG
+
+if printf '%s\n' "$apply_transition_log" | grep -q 'FATAL: state not in cache'; then
+  fail_at "Gap-5 defensive guard: no FATAL on missing in_review" \
+    "log contained FATAL — defensive guard not in place"
+elif printf '%s\n' "$apply_transition_log" | grep -q 'skipping native-state hook'; then
+  pass_at "Gap-5 defensive guard: missing in_review logs and skips"
+else
+  fail_at "Gap-5 defensive guard: missing in_review logs and skips" \
+    "log neither FATAL nor skip-message: $apply_transition_log"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

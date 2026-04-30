@@ -150,8 +150,12 @@ apply_transition() {
 
   if [[ "$to" == "reviewing" ]]; then
     local in_review_state
-    in_review_state="$(config_get '.linear.native_states.in_review')"
-    bash "$_VH_SCRIPT_DIR/linear.sh" transition-state "$issue" "$in_review_state" || true
+    in_review_state="$(jq -r '.linear.native_states.in_review // empty' "$CONFIG")"
+    if [[ -n "$in_review_state" ]]; then
+      bash "$_VH_SCRIPT_DIR/linear.sh" transition-state "$issue" "$in_review_state" || true
+    else
+      log "verdict-handler: skipping native-state hook to In Review (config.linear.native_states.in_review not set)"
+    fi
   fi
 
   if [[ -n "$side_labels" ]]; then

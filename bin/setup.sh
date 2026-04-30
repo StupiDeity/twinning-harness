@@ -486,6 +486,18 @@ is_slack_done() {
 # the canonical list rather than preserving user edits.
 _CANONICAL_WORKFLOW_STAGES='["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]'
 
+# ENG-49 Gap #5: native_states must be populated. Setup dies loudly if
+# either is missing post-bootstrap so verdict-handler's hooks have valid
+# state names to look up.
+require_native_states() {
+  local cfg="$1" key
+  for key in in_review done; do
+    local v
+    v="$(jq -r ".linear.native_states.${key} // empty" "$cfg")"
+    [[ -n "$v" ]] || die "config.linear.native_states.${key} not set in $cfg — populate before re-running setup"
+  done
+}
+
 phase_config_defaults() {
   print_phase_header "config-defaults"
   local tmp; tmp="$(mktemp)"
@@ -518,6 +530,7 @@ phase_config_defaults() {
   ' "$CONFIG" > "$tmp"
   mv "$tmp" "$CONFIG"
   log "config-defaults: $CONFIG normalized"
+  require_native_states "$CONFIG"
 }
 
 is_config_defaults_done() {
@@ -529,6 +542,7 @@ is_config_defaults_done() {
     (.linear.workflow_stages == $stages) and
     (.linear.native_states.active != null) and
     (.linear.native_states.inbox != null) and
+    (.linear.native_states.in_review != null) and
     (.linear.native_states.done != null)
   ' "$CONFIG" >/dev/null 2>&1
 }
