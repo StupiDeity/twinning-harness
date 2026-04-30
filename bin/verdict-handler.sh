@@ -201,11 +201,18 @@ apply_transition() {
         # equals $_VH_SCRIPT_DIR/linear.sh in production; tests override
         # _VH_SCRIPT_DIR and PATH-prepend their stub dir so the stubbed
         # render-pr-body.sh's helpers fire instead.
-        local title type linear_title body
+        # ENG-53 #6: lowercase the issue id in the PR title scope. The
+        # harness's merge-title regex (build-stage preflight P7) requires
+        # `[a-z0-9-]+` for the scope; passing `$issue` verbatim produces
+        # `fix(ENG-44):` which fails the regex. Build agent today auto-
+        # fixes via `gh pr edit --title`, but that is silent drift; emit
+        # the correct form at the source.
+        local title type linear_title body issue_lower
         linear_title="$(_rpb_title "$issue")"
         [[ -z "$linear_title" ]] && linear_title="$issue"
         type="$(_rpb_title_type "$issue")"
-        title="$(printf '%s(%s): %s' "$type" "$issue" "$linear_title")"
+        issue_lower="$(printf '%s' "$issue" | tr '[:upper:]' '[:lower:]')"
+        title="$(printf '%s(%s): %s' "$type" "$issue_lower" "$linear_title")"
         body="$(render_pr_body "$issue" "$branch" 2>/dev/null || printf '%s\n' "Linear: $issue")"
         if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
           log "verdict-handler: [DRY_RUN] would gh pr create --head $branch --title '$title'"

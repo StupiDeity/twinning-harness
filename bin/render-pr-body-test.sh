@@ -143,6 +143,41 @@ else
   nope "case-3 missing UI summary fallback" "no fallback in body: $body3"
 fi
 
+# ─── ENG-53 #7: source-robustness from a no-BASH_SOURCE context ─────────
+# When sourced from `bash -c '... source render-pr-body.sh ...'` (the
+# operator-subshell pattern Claude used during ENG-44's dogfood when
+# manually opening PR #27), `${BASH_SOURCE[0]}` may be unset or empty.
+# Pre-fix, `set -u` panics with "BASH_SOURCE[0]: parameter not set"
+# before _RPB_SCRIPT_DIR is computed. The fallback chain
+# `${BASH_SOURCE[0]:-${0:-}}` plus the PATH search must keep the script
+# source-able. Asserted shape: subshell exits 0 AND `_rpb_title_type`
+# is callable afterward.
+HARNESS_BIN_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+TARGET_REPO="$_TEST_TARGET" \
+PROJECT_SLUG="$PROJECT_SLUG" \
+HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+LINEAR_API_KEY="$LINEAR_API_KEY" \
+HARNESS_BIN_DIR="$HARNESS_BIN_DIR" \
+  bash -c '
+    set -euo pipefail
+    # Worst case: start with no BASH_SOURCE entries. The :-${0:-}
+    # fallback in render-pr-body.sh:10 must not panic under set -u.
+    # PATH-prepend the bin dir so the second branch of the fallback
+    # chain (`command -v render-pr-body.sh`) can also resolve if needed.
+    PATH="$HARNESS_BIN_DIR:$PATH"
+    cd "$HARNESS_BIN_DIR"
+    # Source via absolute path. After the fix, the script copes whether
+    # BASH_SOURCE[0] arrives populated or not.
+    source "$HARNESS_BIN_DIR/render-pr-body.sh"
+    # Function must be defined.
+    declare -F _rpb_title_type >/dev/null
+    declare -F render_pr_body >/dev/null
+  ' >/dev/null 2>&1 \
+  && ok "ENG-53#7: render-pr-body.sh sources cleanly under set -u from bash -c" \
+  || nope "ENG-53#7: source-robustness" \
+    "the \${BASH_SOURCE[0]:-\${0:-}} fallback or PATH rescue is broken"
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

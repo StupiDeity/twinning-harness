@@ -617,6 +617,24 @@ else
   fail_at "Gap-1 no PR → create" "no 'pr create' in $(cat "$GH_CALLS")"
 fi
 
+# Case A.1 (ENG-53 #6): title scope MUST be lowercase. The harness's
+# merge-title regex requires `[a-z0-9-]+`, so `fix(ENG-970):` would be
+# rejected at build's preflight P7 and the build agent would silently
+# auto-fix via `gh pr edit --title`. Pin the lowercase form at the source.
+if grep -qF -- '--title fix(eng-970):' "$GH_CALLS"; then
+  pass_at "Gap-1 ENG-53#6: gh pr create title scope lowercased (fix(eng-970):)"
+else
+  fail_at "Gap-1 ENG-53#6: title scope must be lowercase" \
+    "expected '--title fix(eng-970):' in $(cat "$GH_CALLS")"
+fi
+# And explicitly the uppercase form must NOT appear.
+if grep -qF -- '--title fix(ENG-970):' "$GH_CALLS"; then
+  fail_at "Gap-1 ENG-53#6: title scope is not uppercase" \
+    "found '--title fix(ENG-970):' (uppercase) in $(cat "$GH_CALLS")"
+else
+  pass_at "Gap-1 ENG-53#6: title scope is not uppercase"
+fi
+
 # Case B: PR already exists → gh pr create is NOT invoked.
 : > "$GH_CALLS"
 GH_PR_LIST_RESULT=1 apply_transition "ENG-971" "ui" "reviewing" "" >/dev/null 2>&1 || true
