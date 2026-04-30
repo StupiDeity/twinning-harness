@@ -106,14 +106,24 @@ else
 fi
 
 # ─── A2: halt.sh resolve resume posts resume marker ──────────────────
+# ENG-49 Gap #2: resolve() now calls verdict-handler before clearing halt.
+# Set up a pipeline-halt marker (rc=1 path) so halt.sh proceeds to remove halt.
 reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T10:00:00.000Z")"
+export VH_FIXTURE_COMMENTS
+VH_CURRENT_STAGE_LABEL="stage:ui"
+export VH_CURRENT_STAGE_LABEL
 bash "$STUB_DIR/halt.sh" resolve ENG-802 --decision resume >/dev/null 2>&1
 if calls_contains "linear.sh add-comment ENG-802 <!-- pipeline-decision: resume -->" \
    && calls_contains "linear.sh remove-label ENG-802 pipeline:halted"; then
-  pass_at "A2 halt.sh resolve resume posts decision marker"
+  pass_at "A2 halt.sh resolve resume posts decision marker + removes halt (rc=1 path)"
 else
   fail_at "A2 halt.sh resolve resume" "calls=$(cat "$STUB_LOG")"
 fi
+VH_FIXTURE_COMMENTS="[]"
+VH_CURRENT_STAGE_LABEL=""
+export VH_FIXTURE_COMMENTS VH_CURRENT_STAGE_LABEL
 
 # ─── A3: halt.sh rejects unknown decision value ──────────────────────
 reset_calls
