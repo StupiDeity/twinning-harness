@@ -145,10 +145,10 @@ for stage_section in \
   body="$(section_body "$stage_section")"
   short="${stage_section## }"
 
-  if printf '%s\n' "$body" | grep -qF 'Tool allowlist & probing (ENG-53 #11)'; then
-    ok "$short contains 'Tool allowlist & probing (ENG-53 #11)' header"
+  if printf '%s\n' "$body" | grep -qE 'Tool allowlist & probing \(ENG-53 #11'; then
+    ok "$short contains 'Tool allowlist & probing (ENG-53 #11…)' header"
   else
-    nope "$short contains 'Tool allowlist & probing (ENG-53 #11)' header" "phrase missing"
+    nope "$short contains 'Tool allowlist & probing (ENG-53 #11…)' header" "phrase missing"
   fi
 
   if printf '%s\n' "$body" | grep -qF 'do not probe'; then
@@ -193,6 +193,50 @@ for stage_section in \
          "agent-side command still present"
   else
     ok "$short lacks 'add-label … pipeline:halted' instruction (ENG-56)"
+  fi
+done
+
+# ─── ENG-57: same-sig retry rule (no -v2 / -trial / -retry mutations) ──
+# ENG-44's dogfood produced 6 duplicate Linear comments on a single ticket
+# (`completion/reviewing/ENG-44-trial`, `…-v3`, `…-v9`, `…-v12`, `…-v13`)
+# because the agent retried `add-or-update-comment` with mutated sigs every
+# time a post appeared to fail. `add-or-update-comment` is idempotent —
+# same sig + new body overwrites in place. The fix is a prompt
+# instruction, replicated across all 9 stages via the universal Tool
+# allowlist & probing paragraph (extended in ENG-57 to cover this case).
+#
+# Pin the rule per-stage so a future prompt edit can't silently drop it
+# from one stage.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent" \
+  "## 8. Release Agent" \
+  "## 9. Retrospective Agent (Scheduled)"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  if printf '%s\n' "$body" | grep -qF 'retry with the same sig'; then
+    ok "$short contains 'retry with the same sig' rule (ENG-57)"
+  else
+    nope "$short contains 'retry with the same sig' rule (ENG-57)" "phrase missing"
+  fi
+
+  # Negative: stage body must not encourage sig variants. The forbidden
+  # substrings appear ONLY in the prompt's own warning ("variants like
+  # `-v2`, `-v3`, …"); we assert that they appear inside backticks and
+  # within the same paragraph as the warning, by checking that any
+  # occurrence is anchored to the warning phrase.
+  if printf '%s\n' "$body" | grep -qE '\-(v[0-9]+|trial|retry)' \
+     && ! printf '%s\n' "$body" | grep -qF 'never mutate it'; then
+    nope "$short forbids mutated-sig variants (ENG-57)" \
+         "stage body mentions sig variants but lacks the 'never mutate it' warning"
+  else
+    ok "$short forbids mutated-sig variants (ENG-57)"
   fi
 done
 
