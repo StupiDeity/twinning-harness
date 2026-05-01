@@ -175,8 +175,17 @@ apply_transition() {
   # blocked. Fix needs a separate bot identity; tracked as a follow-up.
   if [[ "$to" == "reviewing" ]]; then
     local branch pr_count
-    branch="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-issue "$issue" 2>/dev/null \
-      | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
+    # ENG-53 #1: derive the branch via the same convention that creates
+    # the worktree (bin/branch-name.sh — `feat/eng-N-<slug>` or
+    # `fix/eng-N-<slug>`) instead of via Linear's auto-generated
+    # gitBranchName. Two reasons: (1) Linear's format
+    # `rajatgoyal/eng-N-with_underscores` does not match the harness's
+    # actual branch `feat/eng-N-with-hyphens`, so a populated value would
+    # still mis-key `gh pr list --head`; (2) bin/linear.sh::get_issue
+    # does not select gitBranchName in its GraphQL query, so the prior
+    # `jq -r '.data.issue.gitBranchName // empty'` was unconditionally
+    # empty and this hook was DOA since de50f63 (ENG-49).
+    branch="$(bash "$_VH_SCRIPT_DIR/branch-name.sh" "$issue" 2>/dev/null || true)"
     if [[ -z "$branch" ]]; then
       log "verdict-handler: skipping PR-create hook (no branch on $issue)"
     else

@@ -596,6 +596,18 @@ esac
 SH
 chmod +x "$STUB_DIR/linear.sh"
 
+# ENG-53 #1: verdict-handler now derives the PR branch via
+# bin/branch-name.sh (not via Linear's gitBranchName field). Stub it so
+# the existing cases A/B/C still find a branch deterministically. Output
+# mirrors production shape: feat/<eng-lower>-<slug>.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+# Stub: emit feat/<eng-lower>-stub-slug regardless of input.
+ident_lower="$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+printf 'feat/%s-stub-slug\n' "$ident_lower"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
 ORIG_PATH="$PATH"
 PATH="$STUB_DIR:$PATH"
 export PATH
@@ -633,6 +645,44 @@ if grep -q 'pr ' "$GH_CALLS"; then
   fail_at "Gap-1 hook only fires on to==reviewing" "calls: $(cat "$GH_CALLS")"
 else
   pass_at "Gap-1 hook only fires on to==reviewing"
+fi
+
+# Case D (ENG-53 #1 regression protection): in production, bin/linear.sh's
+# get_issue GraphQL query does NOT select the gitBranchName field, so the
+# prior `jq -r '.data.issue.gitBranchName // empty'` was unconditionally
+# empty and the hook silently skipped on every reviewing transition. The
+# fix derives the branch via bin/branch-name.sh instead. Mirror production
+# by re-stubbing linear.sh's get-issue WITHOUT gitBranchName, then assert
+# gh pr create still fires.
+: > "$GH_CALLS"
+cat > "$STUB_DIR/linear.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "linear.sh $*" >> "$STUB_LOG"
+case "$1" in
+  get-comments) printf '%s\n' "${VH_FIXTURE_COMMENTS:-[]}" ;;
+  get-issue) printf '%s' '{"data":{"issue":{"identifier":"'"$2"'","title":"Stub title","state":{"name":"In Progress"},"labels":{"nodes":[{"name":"Bug"}]}}}}' ;;
+  has-label)
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      [[ "$lbl" == "$3" ]] && exit 0
+    done
+    exit 1 ;;
+  stage-of) printf '%s\n' "${VH_CURRENT_STAGE_LABEL:-}" ;;
+  all-stage-labels)
+    result=""
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      case "$lbl" in stage:*) result="$result $lbl" ;; esac
+    done
+    printf '%s\n' "${result# }" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+GH_PR_LIST_RESULT=0 apply_transition "ENG-973" "ui" "reviewing" "" >/dev/null 2>&1 || true
+if grep -q 'pr create' "$GH_CALLS"; then
+  pass_at "Gap-1 ENG-53#1: hook independent of linear.sh::gitBranchName (regression protection)"
+else
+  fail_at "Gap-1 ENG-53#1 regression protection" \
+    "branch lookup must use bin/branch-name.sh, not linear.sh's gitBranchName; calls: $(cat "$GH_CALLS")"
 fi
 
 PATH="$ORIG_PATH"
