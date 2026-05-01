@@ -1981,6 +1981,145 @@ else
 fi
 
 
+# ─── ENG-56: _post_dispatch_apply_halt marker-shape gate ──────────────
+# Pre-fix: the post-dispatch hook was an unconditional `if ! has-label
+# pipeline:halted; then add-label`. ENG-44's dogfood showed the orchestrator
+# silently filling in for non-compliant agents on 8/8 dispatches — and on
+# build's wait-shape exits the apply would silently override ENG-45 wait
+# semantics had the early-exit at line ~676 not preceded it. ENG-56 makes
+# the apply marker-shape aware: skip when `_fresh_wait_reason` reports a
+# wait shape, otherwise apply (idempotent on `has-label` short-circuit).
+#
+# Each case stubs linear.sh + MOCK_COMMENTS_JSON, calls the function, and
+# asserts whether `add-label pipeline:halted` was captured.
+
+ENG_56_HOOK_LINEAR_CAPTURE="$STUB_DIR/eng-56-hook.capture"
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments)
+    printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
+    ;;
+  has-label)
+    # Always say label is missing so add-label path fires when reachable.
+    exit 1
+    ;;
+  add-label)
+    printf 'add-label %s %s\n' "\${2:-}" "\${3:-}" >> "$ENG_56_HOOK_LINEAR_CAPTURE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+eng_56_reset() { : > "$ENG_56_HOOK_LINEAR_CAPTURE"; }
+eng_56_halt_applied() { grep -q '^add-label .* pipeline:halted$' "$ENG_56_HOOK_LINEAR_CAPTURE"; }
+
+# Case ENG-56-A: implement stage with no fresh marker → applies halt.
+eng_56_reset
+unset MOCK_COMMENTS_JSON
+_post_dispatch_apply_halt "ENG-56T-A" implement >/dev/null 2>&1
+if eng_56_halt_applied; then
+  pass_at "ENG-56-A: implement + no fresh marker → orchestrator applies pipeline:halted"
+else
+  fail_at "ENG-56-A: implement + no fresh marker" "capture: $(cat "$ENG_56_HOOK_LINEAR_CAPTURE")"
+fi
+
+# Case ENG-56-B: implement stage with stage-summary marker → applies halt.
+eng_56_reset
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-stage-summary: implementing -->\n\nDone."}]'
+_post_dispatch_apply_halt "ENG-56T-B" implement >/dev/null 2>&1
+if eng_56_halt_applied; then
+  pass_at "ENG-56-B: implement + stage-summary → orchestrator applies pipeline:halted"
+else
+  fail_at "ENG-56-B: implement + stage-summary" "capture: $(cat "$ENG_56_HOOK_LINEAR_CAPTURE")"
+fi
+
+# Case ENG-56-C: review stage with rejection marker → applies halt.
+eng_56_reset
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-rejection: reviewing -->\n<!-- pipeline-rejection-target: implementing -->"}]'
+_post_dispatch_apply_halt "ENG-56T-C" review >/dev/null 2>&1
+if eng_56_halt_applied; then
+  pass_at "ENG-56-C: review + rejection → orchestrator applies pipeline:halted"
+else
+  fail_at "ENG-56-C: review + rejection" "capture: $(cat "$ENG_56_HOOK_LINEAR_CAPTURE")"
+fi
+
+# Case ENG-56-D: build stage with halt marker → applies halt.
+eng_56_reset
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-halt: agent-blocked -->"}]'
+_post_dispatch_apply_halt "ENG-56T-D" build >/dev/null 2>&1
+if eng_56_halt_applied; then
+  pass_at "ENG-56-D: build + halt marker → orchestrator applies pipeline:halted"
+else
+  fail_at "ENG-56-D: build + halt marker" "capture: $(cat "$ENG_56_HOOK_LINEAR_CAPTURE")"
+fi
+
+# Case ENG-56-E (regression for ENG-45): build + wait awaiting-approval
+# → orchestrator does NOT apply pipeline:halted.
+eng_56_reset
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
+_post_dispatch_apply_halt "ENG-56T-E" build >/dev/null 2>&1
+if eng_56_halt_applied; then
+  fail_at "ENG-56-E: build + wait awaiting-approval" "halt was applied; should be skipped"
+else
+  pass_at "ENG-56-E: build + wait awaiting-approval → orchestrator does NOT apply pipeline:halted"
+fi
+
+# Case ENG-56-F: build + wait awaiting-ci → orchestrator does NOT apply.
+eng_56_reset
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-ci -->\n\nAwaiting CI."}]'
+_post_dispatch_apply_halt "ENG-56T-F" build >/dev/null 2>&1
+if eng_56_halt_applied; then
+  fail_at "ENG-56-F: build + wait awaiting-ci" "halt was applied; should be skipped"
+else
+  pass_at "ENG-56-F: build + wait awaiting-ci → orchestrator does NOT apply pipeline:halted"
+fi
+
+# Case ENG-56-G: review + wait awaiting-approval (ENG-50: wait shape extends to review)
+# → orchestrator does NOT apply.
+eng_56_reset
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nReviewed commit abc1234."}]'
+_post_dispatch_apply_halt "ENG-56T-G" review >/dev/null 2>&1
+if eng_56_halt_applied; then
+  fail_at "ENG-56-G: review + wait awaiting-approval" "halt was applied; should be skipped"
+else
+  pass_at "ENG-56-G: review + wait awaiting-approval → orchestrator does NOT apply pipeline:halted"
+fi
+
+# Case ENG-56-H: implement stage with stray pipeline-wait marker. Wait shape
+# is allow-listed for build/review only; on other stages a wait comment is a
+# protocol violation and the halt apply is the correct response.
+eng_56_reset
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"}]'
+_post_dispatch_apply_halt "ENG-56T-H" implement >/dev/null 2>&1
+if eng_56_halt_applied; then
+  pass_at "ENG-56-H: implement + stray wait marker (out-of-allow-list stage) → orchestrator applies pipeline:halted"
+else
+  fail_at "ENG-56-H: implement + stray wait" "halt should be applied (wait carve-out is build/review only)"
+fi
+
+# Case ENG-56-I: idempotency. has-label returns 0 → add-label is skipped.
+eng_56_reset
+unset MOCK_COMMENTS_JSON
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  has-label)    exit 0 ;;
+  add-label)    printf 'add-label %s %s\n' "\${2:-}" "\${3:-}" >> "$ENG_56_HOOK_LINEAR_CAPTURE" ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+_post_dispatch_apply_halt "ENG-56T-I" implement >/dev/null 2>&1
+if eng_56_halt_applied; then
+  fail_at "ENG-56-I: idempotency" "add-label fired when has-label already returned 0"
+else
+  pass_at "ENG-56-I: has-label already 0 → add-label NOT called (idempotent)"
+fi
+unset MOCK_COMMENTS_JSON
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

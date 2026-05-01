@@ -331,6 +331,34 @@ _fresh_wait_reason() {
   esac
 }
 
+# ENG-56: orchestrator is the canonical applier of pipeline:halted. Called
+# from main()'s post-dispatch hook after every non-drift, non-wait-early-exit
+# stage run. Idempotent: skips the add-label call if the label is already on
+# the issue.
+#
+# Wait-shape carve-out: if a fresh `<!-- pipeline-wait: <reason> -->` marker
+# (ENG-45) is the latest verdict, the issue is *waiting*, not *halted*, and
+# the label must NOT be applied. In current control flow the wait-shape
+# early-exit at line ~676 prevents this hook from being reached on a real
+# wait — but the carve-out here is defense-in-depth so a future flow change
+# cannot silently mis-label a waiting issue. Stage-restricted to build /
+# review (matching `_fresh_wait_reason`'s allow-list); other stages that
+# stray into wait-shape territory are agent protocol violations and the
+# halt apply is the correct response.
+_post_dispatch_apply_halt() {
+  local ident="$1" stage="$2"
+  local _wait_reason
+  _wait_reason="$(_fresh_wait_reason "$ident" "$stage" 2>/dev/null || printf '')"
+  if [[ -n "$_wait_reason" ]]; then
+    log "post-dispatch: wait-shape verdict ($_wait_reason); not applying pipeline:halted"
+    return 0
+  fi
+  if ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:halted"; then
+    log "post-dispatch: applying pipeline:halted (orchestrator-managed, ENG-56)"
+    bash "$SCRIPT_DIR/linear.sh" add-label "$ident" "pipeline:halted" || true
+  fi
+}
+
 # Idempotent counter mutation + budget check for wait exits. All Linear writes
 # inside this function go through the orchestrator lane (security F-4). State
 # file at $(issue_dir)/wait-${stage}.json is owned by the orchestrator (per
@@ -766,13 +794,10 @@ main() {
     exit 0
   fi
 
-  # Post-dispatch halt check: every stage agent must apply pipeline:halted.
-  # If it did not, apply it on the agent's behalf and let the Verdict Handler
-  # surface a protocol violation on the next tick.
-  if ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "pipeline:halted"; then
-    log "post-dispatch: agent did not apply pipeline:halted; applying on its behalf"
-    bash "$SCRIPT_DIR/linear.sh" add-label "$ident" "pipeline:halted" || true
-  fi
+  # Post-dispatch halt apply (ENG-56): orchestrator is the canonical applier
+  # of pipeline:halted. See `_post_dispatch_apply_halt` for the wait-shape
+  # carve-out and why it's structured as a callable.
+  _post_dispatch_apply_halt "$ident" "$stage"
 
   # Resolve the current stage from the Linear label (long form) rather than
   # the short-form $stage argument, because the Verdict Handler tables are

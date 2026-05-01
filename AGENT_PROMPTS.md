@@ -114,9 +114,11 @@ Every stage agent MUST:
 2. **Before exiting:** post exactly one closing comment carrying the
    verdict marker matching your verdict — see per-stage tables below.
    Use `linear.sh add-comment` (verdict comments are append-only).
-3. **Apply `pipeline:halted`** regardless of verdict:
-   `bash .pipeline/bin/linear.sh add-label ENG-XX pipeline:halted`.
-   The orchestrator removes it on valid forward/loopback transitions.
+
+The `pipeline:halted` label is **orchestrator-managed** (ENG-56). Do NOT
+apply or remove it from agent code; the orchestrator's post-dispatch hook
+applies it after every non-wait-shape exit and `verdict-handler.sh` removes
+it on valid forward/loopback transitions.
 
 ---
 
@@ -289,15 +291,14 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" …` yourself —
    that path is now orchestrator-owned. Exception-path markers (`pipeline-metric: contract_gap`,
    etc.) continue to use `linear.sh add-comment` as before.
-6. **Post the verdict marker + apply pipeline:halted** (ENG-18, MANDATORY).
-   Before exiting, post exactly ONE additional append-only comment carrying the
-   verdict marker for your verdict:
+6. **Post the verdict marker** (ENG-18, MANDATORY). Before exiting, post
+   exactly ONE additional append-only comment carrying the verdict marker
+   for your verdict:
    - pass → `<!-- pipeline-stage-summary: brainstorming -->`
    - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
    Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"` (NOT
-   add-or-update-comment — verdict comments are append-only). Then apply
-   `pipeline:halted`:
-   `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+   add-or-update-comment — verdict comments are append-only). Do NOT touch
+   `pipeline:halted` — orchestrator applies it after dispatch (ENG-56).
    See the Verdict-marker protocol preamble for the full contract.
 ```
 
@@ -464,13 +465,14 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    Full persona verdicts and finding lists stay in the plan doc itself. Do NOT call
    `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …`
    yourself — that path is orchestrator-owned.
-6. **Post the verdict marker + apply pipeline:halted** (ENG-18, MANDATORY).
-   Post exactly ONE additional append-only comment carrying the verdict marker:
+6. **Post the verdict marker** (ENG-18, MANDATORY). Post exactly ONE
+   additional append-only comment carrying the verdict marker:
    - pass → `<!-- pipeline-stage-summary: planning -->`
    - reject-to-brainstorm → `<!-- pipeline-rejection: planning --><!-- pipeline-rejection-target: brainstorming -->`
    - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
-   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`. Then:
-   `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`. Do
+   NOT touch `pipeline:halted` — orchestrator applies it after dispatch
+   (ENG-56).
 ```
 
 ## 3. Implementation Agent (Backend)
@@ -582,13 +584,13 @@ Output:
   comment (separate sig, orchestrator-independent).
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 
-Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+Verdict marker (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
     - pass → `<!-- pipeline-stage-summary: implementing -->`
     - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
-- Apply `pipeline:halted`:
-  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+- Do NOT touch `pipeline:halted` — orchestrator applies it after dispatch
+  (ENG-56).
 ```
 
 ## 4. UI Agent (Frontend)
@@ -711,13 +713,13 @@ Output:
 - Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" …` yourself.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 
-Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+Verdict marker (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
     - pass → `<!-- pipeline-stage-summary: ui -->`
     - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
-- Apply `pipeline:halted`:
-  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+- Do NOT touch `pipeline:halted` — orchestrator applies it after dispatch
+  (ENG-56).
 ```
 
 ## 5. Review Agent
@@ -754,7 +756,7 @@ Preflight (MANDATORY — determines what kind of dispatch this is):
         → Write a brief stage-summary file noting: "Human {login} approved
           on commit {sha[:8]}. Advancing to qa."
         → Post `<!-- pipeline-stage-summary: reviewing -->` verdict marker.
-        → Apply pipeline:halted, exit.
+        → Exit. (Orchestrator applies pipeline:halted; ENG-56.)
      b. CHANGES_REQUESTED on current HEAD AND submittedAt > last_processed_cr_at:
         → Run multi-persona review with the human's CR comments as additional
           input (read via gh pr view --json reviews,comments).
@@ -765,8 +767,9 @@ Preflight (MANDATORY — determines what kind of dispatch this is):
         → Decide: Decision path B (rejection) or Decision path C (wait-marker).
      d. Otherwise (defensive — should not happen under β's gating):
         → Post `<!-- pipeline-wait: awaiting-approval -->` with the current SHA.
-        → Apply pipeline:halted, exit. Log the unexpected state in the
-          stage-summary's Notes section.
+        → Exit. Log the unexpected state in the stage-summary's Notes section.
+          (Wait-shape exit; orchestrator does NOT apply pipeline:halted;
+          ENG-45 / ENG-56.)
 
 Input:
   Fetch the feature PR with:
@@ -871,7 +874,8 @@ Decision path (apply exactly one):
      - Post the `premise_failure` marker comment.
      - Post `<!-- pipeline-rejection: reviewing -->` AND
             `<!-- pipeline-rejection-target: brainstorming -->`.
-     - Apply pipeline:halted, exit. Orchestrator handles loop-back.
+     - Exit. Orchestrator applies pipeline:halted (ENG-56) and handles
+       loop-back.
 
   B. Changes requested (rewritten for ENG-50 / β).
      - Post a consolidated COMMENTED-state review with all findings via:
@@ -886,7 +890,8 @@ Decision path (apply exactly one):
      - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} review_rejection`.
      - Post `<!-- pipeline-rejection: reviewing -->` AND
             `<!-- pipeline-rejection-target: implementing -->`.
-     - Apply pipeline:halted, exit. Orchestrator transitions reviewing → implementing.
+     - Exit. Orchestrator applies pipeline:halted (ENG-56) and transitions
+       reviewing → implementing.
 
   C. Clean review, awaiting human approval (NEW under ENG-50 / β).
      - Post a consolidated COMMENTED-state review via:
@@ -901,10 +906,11 @@ Decision path (apply exactly one):
        orchestrator only re-dispatches review on observable PR state
        change under ENG-50's β gating, so consecutive wait markers
        reflect different SHAs and won't dedup-collide).
-     - Do NOT apply pipeline:halted. Do NOT post a verdict marker.
-       Issue idles at stage:reviewing until poll.sh's
-       review_should_dispatch detects a state change (new commits,
-       new approval, or new change-request).
+     - Do NOT post a verdict marker. The wait-shape exit is detected by
+       the orchestrator's pre-dispatch hook (ENG-45) and pipeline:halted
+       is intentionally NOT applied (ENG-56). Issue idles at
+       stage:reviewing until poll.sh's review_should_dispatch detects a
+       state change (new commits, new approval, or new change-request).
      - Exit clean.
 
   D. Approval just landed (NEW under ENG-50 / β — preflight branch (a) outcome).
@@ -934,7 +940,7 @@ Output:
   CHANGES_REQUESTED state. The agent does not approve or request changes
   via GitHub's review API; humans do.
 
-Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+Verdict marker (ENG-18, MANDATORY at exit, except Decision path C wait):
 - Post exactly ONE additional append-only comment with your verdict marker:
     - approve/pass → `<!-- pipeline-stage-summary: reviewing -->`
     - reject-implementation → `<!-- pipeline-rejection: reviewing --><!-- pipeline-rejection-target: implementing -->`
@@ -944,8 +950,9 @@ Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
   apply `pipeline:premise-failure` — that label is retired; the Verdict Handler's
   loopback table (reviewing → brainstorming) now carries the `pipeline:supersede`
   side-effect automatically.
-- Apply `pipeline:halted`:
-  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+- Do NOT touch `pipeline:halted` — orchestrator applies it after dispatch
+  (ENG-56). Wait-shape exits (Decision path C) intentionally skip the
+  apply.
 ```
 
 ## 6. QA Agent
@@ -1088,14 +1095,14 @@ Output:
 - Any new test commits pushed to `{branch_name}`.
 - No edits to qa-patterns.md (use the candidate marker comment).
 
-Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+Verdict marker (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
     - all green (path C) → `<!-- pipeline-stage-summary: qa -->`
     - qa rejection (path B) → `<!-- pipeline-rejection: qa --><!-- pipeline-rejection-target: implementing -->`
     - halt-for-human → `<!-- pipeline-halt: agent-blocked -->`
   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
-- Apply `pipeline:halted`:
-  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+- Do NOT touch `pipeline:halted` — orchestrator applies it after dispatch
+  (ENG-56).
 ```
 
 ## 7. Build Agent
@@ -1145,11 +1152,13 @@ and the only failure is P2 or P5.
       Owner approval. Will re-check on next tick. If
       `orchestrator.external_signal_budget` is configured, will escalate to
       halt-for-human after the budget exhausts; if not configured, will retry
-      indefinitely until approval lands." Do NOT apply `pipeline:halted`. Do
-      NOT post a verdict marker. Do NOT write a stage-summary file. Exit. The
-      orchestrator increments a per-issue counter and re-dispatches build on
-      the next tick; once the budget is exhausted (if configured) it escalates
-      to `pipeline-halt: external-signal-budget-exhausted` automatically.
+      indefinitely until approval lands." Do NOT post a verdict marker. Do
+      NOT write a stage-summary file. Exit. The orchestrator detects the
+      wait-shape via its pre-dispatch hook (ENG-45), intentionally does NOT
+      apply `pipeline:halted` (ENG-56), increments a per-issue counter, and
+      re-dispatches build on the next tick; once the budget is exhausted
+      (if configured) it escalates to `pipeline-halt:
+      external-signal-budget-exhausted` automatically.
 
   P3. **No outstanding review comments in "CHANGES_REQUESTED" state:**
         gh pr view <N> --json reviews --jq \
@@ -1181,8 +1190,9 @@ and the only failure is P2 or P5.
       to turn green. Will re-check on next tick. If
       `orchestrator.external_signal_budget` is configured, will escalate to
       halt-for-human after the budget exhausts; if not configured, will retry
-      indefinitely until CI lands." Do NOT apply `pipeline:halted`. Do NOT post
-      a verdict marker. Do NOT write a stage-summary file. Exit.
+      indefinitely until CI lands." Do NOT post a verdict marker. Do NOT write
+      a stage-summary file. Exit. (Wait-shape exit; orchestrator does NOT
+      apply `pipeline:halted`; ENG-45 / ENG-56.)
 
       A required check that is RED (failed/cancelled) after the two in-tick
       reruns is a hard fail, not a wait — file a Linear bug and loop back via
@@ -1281,7 +1291,7 @@ Output:
 - Post-merge CI outcome recorded.
 - Slack notification sent.
 
-Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
+Verdict marker (ENG-18, MANDATORY at exit, except wait-shape exits):
 - **Do NOT post `<!-- pipeline-stage-summary: building -->` until you have
   verified the PR's merge state is `MERGED`** (`gh pr view --json state`).
   This is the load-bearing invariant that prevents `stage:released` drift
@@ -1290,10 +1300,10 @@ Verdict marker + sentinel label (ENG-18, MANDATORY at exit):
     - merged and CI green → `<!-- pipeline-stage-summary: building -->`
     - blocked-by-conflict or CI red → `<!-- pipeline-rejection: building --><!-- pipeline-rejection-target: implementing -->`
     - halt-for-human (WIP / blocked label, malformed PR title, etc.) → `<!-- pipeline-halt: agent-blocked -->`
-    - awaiting external signal (P2 OR P5 only, all hard preconditions passed; ENG-45) → `<!-- pipeline-wait: awaiting-approval -->` or `<!-- pipeline-wait: awaiting-ci -->` (NOT a verdict shape — see "Non-verdict markers" in the protocol preamble; do NOT apply `pipeline:halted` for this case)
+    - awaiting external signal (P2 OR P5 only, all hard preconditions passed; ENG-45) → `<!-- pipeline-wait: awaiting-approval -->` or `<!-- pipeline-wait: awaiting-ci -->` (NOT a verdict shape — see "Non-verdict markers" in the protocol preamble)
   Use `bash .pipeline/bin/linear.sh add-comment {issue_id} "<body>"`.
-- Apply `pipeline:halted` (skip for the `pipeline-wait` exit above):
-  `bash .pipeline/bin/linear.sh add-label {issue_id} pipeline:halted`.
+- Do NOT touch `pipeline:halted` — orchestrator applies it after dispatch
+  (ENG-56). Wait-shape exits intentionally skip the apply.
 ```
 
 ## 8. Release Agent
