@@ -208,6 +208,37 @@ diff and partitions changes into three streams via `partition_dirty_paths`:
 Anything writing files outside the per-stage allowlist must update the partition rules in
 `run-local-helpers.sh` or it will trip the breaker.
 
+## Per-target dispatch.tools extras (ENG-51, ENG-53 #8)
+
+`dispatch.sh::allowed_tools_for` ships a Tauri-shaped base allowlist for each stage. To grant
+extra Bash patterns for a non-Tauri target (e.g., `pytest` for Python, `go test` for Go,
+`bash bin/*-test.sh` for harness-self), populate the target's `.pipeline-config/config.json`:
+
+```json
+{
+  "dispatch": {
+    "tools": {
+      "implement": ["Bash(bash bin/*-test.sh:*)"],
+      "qa":        ["Bash(bash bin/*-test.sh:*)"]
+    }
+  }
+}
+```
+
+The entries are appended to the per-stage hardcoded base. `.pipeline-config/` is
+gitignored, so each operator applies this on their own copy. For the harness-self target
+specifically (the one driving this repo), this is required: without it, the implement and
+qa agents have no allowlisted way to invoke `bash bin/<name>-test.sh` and ship without
+running tests (the failure mode that drove ENG-53). Apply with:
+
+```bash
+jq '.dispatch.tools = {"implement":["Bash(bash bin/*-test.sh:*)"],"qa":["Bash(bash bin/*-test.sh:*)"]}' \
+  .pipeline-config/config.json > /tmp/c && mv /tmp/c .pipeline-config/config.json
+```
+
+`bin/dispatch-test.sh` warns if the harness-self config exists locally but is missing
+these entries (skipped silently when the config is absent — CI or non-harness operators).
+
 ## When wiring a new script
 
 - `source "$SCRIPT_DIR/common.sh"` first, before anything else. It enforces `TARGET_REPO`
