@@ -38,18 +38,6 @@ LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 BOT_NAME="twinning-pipeline-bot"
 BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
 
-trip_breaker() {
-  log "CIRCUIT BREAKER: setting orchestrator.paused=true after $FAIL_THRESHOLD consecutive failures"
-  # Surgical edit (not jq-write) so formatting/blank lines in config.json are preserved.
-  # Relies on the single `"paused": false` occurrence under orchestrator.
-  if grep -q '"paused": false' "$CONFIG"; then
-    sed -i.bak 's/"paused": false/"paused": true/' "$CONFIG"
-    rm -f "${CONFIG}.bak"
-  else
-    log "trip_breaker: could not find '\"paused\": false' in $CONFIG; leaving as-is"
-  fi
-}
-
 mkdir -p "$HARNESS_STATE_DIR"
 
 if ! acquire_lock "$LOCK_DIR"; then

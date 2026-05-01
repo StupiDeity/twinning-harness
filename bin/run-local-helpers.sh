@@ -19,6 +19,31 @@ _scope_allowlist_override() {
   ' "$CONFIG" 2>/dev/null || true
 }
 
+# Circuit breaker (ENG-10). Trips after $FAIL_THRESHOLD consecutive
+# failures by writing `paused: true` to STATE_FILE — the same path
+# `is_orchestrator_paused` reads as a runtime override over CONFIG.
+#
+# ENG-53 #2: previously this was a `grep '"paused": false' "$CONFIG"
+# && sed s/false/true/` against config.json. Two failure modes:
+#  - When CONFIG already had `paused: true` (the breaker tripping
+#    a second time, or a setup that ships paused-by-default),
+#    the grep failed and the breaker logged "leaving as-is" — a
+#    silent no-op.
+#  - More importantly: post-ENG-23, is_orchestrator_paused reads
+#    STATE_FILE first. If state.local.json carries `paused: false`
+#    (the operator's "resume" override), the runtime override wins
+#    regardless of CONFIG. So even on a successful CONFIG flip,
+#    the breaker did not actually halt anything. Observed during
+#    ENG-44's dogfood run: 7+ trips, zero halts.
+#
+# set_orchestrator_paused (common.sh) writes to STATE_FILE — the
+# same lane the override reads from — so the breaker now reliably
+# halts the orchestrator on the next tick.
+trip_breaker() {
+  log "CIRCUIT BREAKER: setting orchestrator.paused=true after ${FAIL_THRESHOLD:-3} consecutive failures"
+  set_orchestrator_paused true
+}
+
 stage_output_paths() {
   local stage="$1"
   case "$stage" in

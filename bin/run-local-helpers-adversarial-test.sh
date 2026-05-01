@@ -621,6 +621,57 @@ test_paused_callsites_use_helper() {
 }
 test_paused_callsites_use_helper
 
+# ─── ENG-53 #2: trip_breaker writes to STATE_FILE, not CONFIG ──────────
+# Pre-fix: trip_breaker did `grep '"paused": false' $CONFIG && sed s/.../`,
+# which (a) silently no-op'd when CONFIG already had paused:true, and
+# (b) couldn't override state.local.json's paused:false runtime override
+# even on success. Observed during ENG-44's dogfood run: 7+ trips, zero
+# actual halts. Fix: trip_breaker calls set_orchestrator_paused true,
+# writing to the same STATE_FILE lane is_orchestrator_paused reads.
+test_trip_breaker_overrides_state_local_false() {
+  local tdir; tdir="$(mktemp -d -t twinning-trip-breaker.XXXXXX)"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  # Operator's resume override: state.local.json says paused=false.
+  # CONFIG also says paused=false (the original sed-target). Pre-fix,
+  # the sed would flip CONFIG to paused=true, but is_orchestrator_paused
+  # still reads paused=false from state.local.json — net halt: nothing.
+  jq -n '{orchestrator:{paused:false}}' > "$cfg"
+  jq -n '{orchestrator:{paused:false}}' > "$sf"
+
+  CONFIG="$cfg" STATE_FILE="$sf" trip_breaker >/dev/null 2>&1
+
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "trip_breaker overrides state.local.json paused=false" "true" "$got"
+
+  # Belt-and-suspenders: STATE_FILE itself should now show paused=true.
+  local state_value
+  state_value="$(jq -r '.orchestrator.paused' "$sf")"
+  assert_eq "trip_breaker writes STATE_FILE.orchestrator.paused=true" "true" "$state_value"
+  rm -rf "$tdir"
+}
+test_trip_breaker_overrides_state_local_false
+
+# Bonus: when CONFIG already has paused=true (e.g., harness ships
+# paused-by-default and the operator unpaused via STATE_FILE), the pre-fix
+# grep for `"paused": false` failed and the breaker logged "leaving
+# as-is". Post-fix, trip_breaker writes STATE_FILE regardless of CONFIG's
+# state — so the breaker still halts.
+test_trip_breaker_works_when_config_already_paused() {
+  local tdir; tdir="$(mktemp -d -t twinning-trip-breaker.XXXXXX)"
+  local cfg="$tdir/config.json" sf="$tdir/state.local.json"
+  jq -n '{orchestrator:{paused:true}}' > "$cfg"
+  jq -n '{orchestrator:{paused:false}}' > "$sf"
+
+  CONFIG="$cfg" STATE_FILE="$sf" trip_breaker >/dev/null 2>&1
+
+  local got
+  got="$(CONFIG="$cfg" STATE_FILE="$sf" is_orchestrator_paused)"
+  assert_eq "trip_breaker halts even when CONFIG already paused=true" "true" "$got"
+  rm -rf "$tdir"
+}
+test_trip_breaker_works_when_config_already_paused
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
