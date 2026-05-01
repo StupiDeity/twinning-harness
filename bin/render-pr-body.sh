@@ -7,7 +7,22 @@
 #   render_pr_body <issue> <branch>   # prints body markdown to stdout
 
 set -euo pipefail
-_RPB_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ENG-53 #7: ${BASH_SOURCE[0]:-$0} so this script is robust when sourced
+# from contexts where BASH_SOURCE[0] is unset (e.g., `bash -c '... source
+# render-pr-body.sh ...'` from an operator subshell). Without the
+# fallback, `set -u` panics with `BASH_SOURCE[0]: parameter not set`,
+# `dirname` gets garbage, and the subsequent `source common.sh` fails
+# with "no such file or directory" pointing at HARNESS_ROOT instead of
+# bin/. Fall back to PATH search if both BASH_SOURCE[0] and $0 fail to
+# resolve to the script's actual directory.
+_RPB_SOURCE_PATH="${BASH_SOURCE[0]:-${0:-}}"
+if [[ -n "$_RPB_SOURCE_PATH" && -f "$_RPB_SOURCE_PATH" ]]; then
+  _RPB_SCRIPT_DIR="$(cd "$(dirname "$_RPB_SOURCE_PATH")" && pwd)"
+else
+  _RPB_SCRIPT_DIR="$(dirname "$(command -v render-pr-body.sh 2>/dev/null || true)" 2>/dev/null || true)"
+fi
+[[ -n "$_RPB_SCRIPT_DIR" && -f "$_RPB_SCRIPT_DIR/common.sh" ]] \
+  || { printf 'render-pr-body.sh: cannot resolve own directory (BASH_SOURCE empty, $0=%s)\n' "${0:-}" >&2; return 1 2>/dev/null || exit 1; }
 # shellcheck source=common.sh
 source "$_RPB_SCRIPT_DIR/common.sh"
 
@@ -148,8 +163,11 @@ MD
 
 export -f render_pr_body
 
-# Sentinel — runnable for ad-hoc rendering.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Sentinel — runnable for ad-hoc rendering. ENG-53 #7: guard
+# BASH_SOURCE[0] under set -u; default to empty so a no-BASH_SOURCE
+# context (e.g., `bash -c '... source render-pr-body.sh ...'`) does not
+# fire main when the file is being sourced.
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
   [[ $# -eq 2 ]] || die "usage: render-pr-body.sh <issue> <branch>"
   render_pr_body "$1" "$2"
 fi
