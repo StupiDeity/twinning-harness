@@ -292,17 +292,21 @@ verify_preconditions() {
   return 0
 }
 
-# ─── ENG-45: build-stage wait-marker gate + budget escalation ────────────────
+# ─── ENG-45 / ENG-54: build-stage wait-marker gate + budget escalation ──────
 # Returns the wait reason on stdout (exit 0) iff a fresh, well-formed,
 # build-only `<!-- pipeline-wait: <reason> -->` marker exists newer than the
 # most recent pipeline-transition. Else prints empty + nonzero. Build-only
 # gate (security F-1); closed reason allow-list (security F-2). Fail-closed
 # on Linear read failure: nonzero exit OR empty/null output from get-comments
 # → return 1 → caller falls through to the agent-contract validator.
+#
+# ENG-54: review was previously also allow-listed (review-stage human-approval
+# gate). The human-approval gate now lives at build's P2 — review never waits
+# — so the allow-list narrows back to `build` only.
 _fresh_wait_reason() {
   local issue="$1" stage="$2"
   case "$stage" in
-    build|review) ;;
+    build) ;;
     *) return 1 ;;
   esac
 
@@ -457,29 +461,26 @@ _handle_wait() {
   return 0
 }
 
-# ENG-50: write last-review-state to Linear after a successful review-stage
-# dispatch. Captures the just-observed PR state (HEAD SHA + most recent
-# non-bot review's submittedAt per state). Called from the success and
-# wait-success branches in main(). Stage-gated by the caller.
+# ENG-50 / ENG-54: write last-review-state to Linear after a successful
+# review-stage dispatch. Records the just-reviewed HEAD SHA so the next
+# tick's `review_should_dispatch` only re-fires when new commits land.
+# Called from the success branch in main(). Stage-gated by the caller.
+#
+# ENG-54: this used to also record the most-recent non-bot APPROVED /
+# CHANGES_REQUESTED submittedAt timestamps for review-poll's
+# human-approval gate. The gate moved to build's P2 in ENG-54; review only
+# tracks SHA now.
 _post_review_dispatch_update() {
   local issue="$1" branch="$2"
   [[ -n "$issue" && -n "$branch" ]] || { log "post-review-update: missing args; skipping"; return 0; }
 
   local pr_view
-  pr_view="$(gh pr view "$branch" --json commits,reviews 2>/dev/null || printf '{}')"
+  pr_view="$(gh pr view "$branch" --json commits 2>/dev/null || printf '{}')"
 
-  local head_sha last_app last_cr
+  local head_sha
   head_sha="$(jq -r '.commits[-1].oid // empty' <<<"$pr_view")"
-  last_app="$(jq -r '
-    [.reviews[]? | select(.author.login | test("\\[bot\\]$") | not)
-                 | select(.state == "APPROVED")]
-    | sort_by(.submittedAt) | last | .submittedAt // empty' <<<"$pr_view")"
-  last_cr="$(jq -r '
-    [.reviews[]? | select(.author.login | test("\\[bot\\]$") | not)
-                 | select(.state == "CHANGES_REQUESTED")]
-    | sort_by(.submittedAt) | last | .submittedAt // empty' <<<"$pr_view")"
 
-  bash "$SCRIPT_DIR/review-state.sh" update "$issue" "$head_sha" "$last_app" "$last_cr" \
+  bash "$SCRIPT_DIR/review-state.sh" update "$issue" "$head_sha" \
     || log "post-review-update: review-state update failed for $issue (continuing)"
 }
 
@@ -693,13 +694,8 @@ main() {
         bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "soft-pending" \
           "$(( ($(date +%s) - t0) * 1000 ))" "reason=$_wait_reason" \
           "${_wait_cost_flags[@]+"${_wait_cost_flags[@]}"}" || true
-        # ENG-50: capture last-review-state on review wait-success.
-        if [[ "$stage" == "review" ]]; then
-          local _rp_branch
-          _rp_branch="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" 2>/dev/null \
-            | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
-          [[ -n "$_rp_branch" ]] && _post_review_dispatch_update "$ident" "$_rp_branch" || true
-        fi
+        # ENG-54: review-stage wait-success branch is gone (review never
+        # waits anymore — _fresh_wait_reason narrowed to build only).
         log "stage $stage wait on $ident (reason=$_wait_reason)"
         exit 0
       fi

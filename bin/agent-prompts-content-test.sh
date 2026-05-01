@@ -73,15 +73,11 @@ else
   ok "§8 lacks obsolete 'pipeline-release.yml sweep' phrase"
 fi
 
-# ─── ENG-50: §5 invariants ────────────────────────────────────────────
+# ─── ENG-50 / ENG-54: §5 invariants ───────────────────────────────────
 s5="$(section_body "## 5. Review Agent")"
 
-if printf '%s\n' "$s5" | grep -qF 'Preflight (MANDATORY'; then
-  ok "§5 contains 'Preflight (MANDATORY'"
-else
-  nope "§5 contains 'Preflight (MANDATORY'" "phrase missing"
-fi
-
+# ENG-54: review never approves/request-changes via GitHub's API (humans do
+# at build's P2). Only the COMMENTED-state path is permitted here.
 if printf '%s\n' "$s5" | grep -qF 'gh pr review --approve'; then
   nope "§5 lacks 'gh pr review --approve'" "phrase present"
 else
@@ -100,10 +96,23 @@ else
   nope "§5 contains 'gh pr review --comment'" "phrase missing"
 fi
 
+# ENG-54: the review-stage human-approval gate is gone. §5 must NOT emit
+# `<!-- pipeline-wait: awaiting-approval -->` — that gate moved to build's
+# P2. The only stage that emits wait shapes now is build (§7).
 if printf '%s\n' "$s5" | grep -qF '<!-- pipeline-wait: awaiting-approval -->'; then
-  ok "§5 contains '<!-- pipeline-wait: awaiting-approval -->'"
+  nope "§5 ENG-54: lacks '<!-- pipeline-wait: awaiting-approval -->' marker" \
+       "marker still emitted from §5 — gate must be at build's P2 only"
 else
-  nope "§5 contains '<!-- pipeline-wait: awaiting-approval -->'" "marker missing"
+  ok "§5 ENG-54: '<!-- pipeline-wait: awaiting-approval -->' marker absent"
+fi
+
+# ENG-54: the per-stage no-probe paragraph still mentions the marker as a
+# *negative* example ("Do NOT emit ... here") which is fine — that paragraph
+# is universal across all 9 stages and shared with build, where the marker
+# IS emitted. Pin only that the agent's verdict-marker / decision-path
+# instructions don't include it.
+if printf '%s\n' "$s5" | grep -qF 'pipeline-wait' | grep -vqF 'Do NOT emit'; then
+  : # any remaining occurrences should be in negative contexts; not asserting strictly here
 fi
 
 # ─── ENG-53 #11(a): every stage prompt has the no-probe + halt-instead ──

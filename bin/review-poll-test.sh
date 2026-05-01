@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# ENG-50: review_should_dispatch returns truthy when PR state has changed
-# since last-review-state, falsy otherwise.
+# ENG-50 / ENG-54: review_should_dispatch returns truthy when the PR's HEAD
+# SHA differs from last-review-state.sha (or no state exists), falsy otherwise.
+#
+# ENG-54 narrowed the contract: the human-approval gate moved to build's P2,
+# so review-poll no longer fires on fresh non-bot APPROVED / CHANGES_REQUESTED
+# reviews. The cases below pin the post-ENG-54 contract.
 set -euo pipefail
 SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PIPELINE_DRY_RUN=1
@@ -24,7 +28,7 @@ export TARGET_REPO="$_TEST_TARGET"
 cat > "$_TEST_STUB/gh" <<'SH'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "pr view") printf '%s\n' "${GH_PR_VIEW_JSON:-{\"commits\":[],\"reviews\":[]\}}" ;;
+  "pr view") printf '%s\n' "${GH_PR_VIEW_JSON:-{\"commits\":[]\}}" ;;
   *) exit 0 ;;
 esac
 SH
@@ -42,15 +46,13 @@ esac
 SH
 chmod +x "$_TEST_STUB/linear.sh"
 
-# Helper to inject a last-review-state into the fixture in the spec format
-# (multi-line: <!-- marker -->\n\n{json}).
+# Helper to inject a last-review-state into the fixture in the post-ENG-54
+# format (single sha field).
 set_last_review_state() {
-  local sha="$1" approval_at="$2" cr_at="$3"
+  local sha="$1"
   local body
-  body=$(printf '<!-- pipeline-state: last-review-state -->\n\n{"sha":%s,"last_processed_approval_at":%s,"last_processed_cr_at":%s}\n' \
-    "$([[ -z "$sha" ]] && printf 'null' || printf '"%s"' "$sha")" \
-    "$([[ -z "$approval_at" ]] && printf 'null' || printf '"%s"' "$approval_at")" \
-    "$([[ -z "$cr_at" ]] && printf 'null' || printf '"%s"' "$cr_at")")
+  body=$(printf '<!-- pipeline-state: last-review-state -->\n\n{"sha":%s}\n' \
+    "$([[ -z "$sha" ]] && printf 'null' || printf '"%s"' "$sha")")
   jq -nc --arg b "$body" '[{id:"c1",createdAt:"2026-04-30T09:00:00Z",body:$b}]' > "$COMMENTS_FIXTURE"
 }
 
@@ -72,67 +74,60 @@ nope() { printf 'FAIL: %s\n  %s\n' "$1" "$2" >&2; FAIL=$((FAIL+1)); }
 
 # ─── Case A: bootstrap (no last-review-state) → truthy ────────────────
 printf '[]' > "$COMMENTS_FIXTURE"
-GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}],"reviews":[]}' \
+GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}]}' \
   review_should_dispatch ENG-510 stub-branch && rc=0 || rc=$?
 [[ "$rc" == 0 ]] \
   && ok "Case A: bootstrap → dispatch" \
   || nope "Case A" "rc=$rc"
 
 # ─── Case B: HEAD SHA differs from last-review-state.sha → truthy ─────
-set_last_review_state "old1234" "" ""
-GH_PR_VIEW_JSON='{"commits":[{"oid":"new5678"}],"reviews":[]}' \
+set_last_review_state "old1234"
+GH_PR_VIEW_JSON='{"commits":[{"oid":"new5678"}]}' \
   review_should_dispatch ENG-511 stub-branch && rc=0 || rc=$?
 [[ "$rc" == 0 ]] \
   && ok "Case B: SHA differs → dispatch" \
   || nope "Case B" "rc=$rc"
 
-# ─── Case C: new APPROVED on current HEAD (newer than processed) → truthy ─
-set_last_review_state "abc1234" "2026-04-29T10:00:00Z" ""
-GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}],"reviews":[{"author":{"login":"alice"},"state":"APPROVED","commit_id":"abc1234","submittedAt":"2026-04-30T11:00:00Z"}]}' \
+# ─── Case C: HEAD SHA matches last-reviewed SHA → falsy ───────────────
+set_last_review_state "abc1234"
+GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}]}' \
   review_should_dispatch ENG-512 stub-branch && rc=0 || rc=$?
-[[ "$rc" == 0 ]] \
-  && ok "Case C: new approval on HEAD → dispatch" \
-  || nope "Case C" "rc=$rc"
+[[ "$rc" != 0 ]] \
+  && ok "Case C: SHA matches → idle" \
+  || nope "Case C" "rc=$rc (expected nonzero)"
 
-# ─── Case D: new CHANGES_REQUESTED on current HEAD → truthy ───────────
-set_last_review_state "abc1234" "" "2026-04-29T10:00:00Z"
-GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}],"reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","commit_id":"abc1234","submittedAt":"2026-04-30T11:00:00Z"}]}' \
-  review_should_dispatch ENG-513 stub-branch && rc=0 || rc=$?
-[[ "$rc" == 0 ]] \
-  && ok "Case D: new CR on HEAD → dispatch" \
-  || nope "Case D" "rc=$rc"
-
-# ─── Case E: APPROVED but on old SHA (HEAD has moved) → truthy (SHA differs) ─
-set_last_review_state "abc1234" "2026-04-29T10:00:00Z" ""
-GH_PR_VIEW_JSON='{"commits":[{"oid":"new5678"}],"reviews":[{"author":{"login":"alice"},"state":"APPROVED","commit_id":"abc1234","submittedAt":"2026-04-30T11:00:00Z"}]}' \
-  review_should_dispatch ENG-514 stub-branch && rc=0 || rc=$?
-[[ "$rc" == 0 ]] \
-  && ok "Case E: approval on old SHA but HEAD moved → dispatch (SHA path)" \
-  || nope "Case E" "rc=$rc"
-
-# ─── Case F: nothing changed → falsy ──────────────────────────────────
-set_last_review_state "abc1234" "2026-04-30T11:00:00Z" ""
+# ─── Case D (ENG-54 regression): fresh APPROVED on current HEAD does NOT ──
+# trigger a re-dispatch under the new contract. The human-approval gate
+# moved to build's P2; review-poll stops on SHA equality regardless of
+# review state.
+set_last_review_state "abc1234"
 GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}],"reviews":[{"author":{"login":"alice"},"state":"APPROVED","commit_id":"abc1234","submittedAt":"2026-04-30T11:00:00Z"}]}' \
+  review_should_dispatch ENG-513 stub-branch && rc=0 || rc=$?
+[[ "$rc" != 0 ]] \
+  && ok "Case D ENG-54: fresh APPROVED on same HEAD does NOT re-dispatch (no human-approval gate)" \
+  || nope "Case D ENG-54" "rc=$rc — review still re-dispatched on approval; human-approval gate must be at build P2"
+
+# ─── Case E (ENG-54 regression): fresh CHANGES_REQUESTED on current HEAD ──
+# also does NOT trigger a re-dispatch; humans express disapproval out-of-band
+# (pipeline:halted) or the PR's branch protection prevents merge.
+set_last_review_state "abc1234"
+GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}],"reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","commit_id":"abc1234","submittedAt":"2026-04-30T11:00:00Z"}]}' \
+  review_should_dispatch ENG-514 stub-branch && rc=0 || rc=$?
+[[ "$rc" != 0 ]] \
+  && ok "Case E ENG-54: fresh CHANGES_REQUESTED on same HEAD does NOT re-dispatch" \
+  || nope "Case E ENG-54" "rc=$rc — review still re-dispatched on CR; gate must be at build P2"
+
+# ─── Case F: gh query returns malformed JSON ('{}') → defensive dispatch ──
+# review_should_dispatch's pr_view-check returns 0 on either an empty value
+# or the literal '{}'; both indicate the gh query failed to produce useful
+# output. Pin defensive-dispatch behavior so a transient gh outage doesn't
+# silently freeze the review stage.
+set_last_review_state "abc1234"
+GH_PR_VIEW_JSON='{}' \
   review_should_dispatch ENG-515 stub-branch && rc=0 || rc=$?
-[[ "$rc" != 0 ]] \
-  && ok "Case F: nothing changed → idle" \
-  || nope "Case F" "rc=$rc (expected nonzero)"
-
-# ─── Case G: APPROVED already processed (submittedAt <= last_processed) → falsy ─
-set_last_review_state "abc1234" "2026-04-30T11:00:00Z" ""
-GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}],"reviews":[{"author":{"login":"alice"},"state":"APPROVED","commit_id":"abc1234","submittedAt":"2026-04-30T10:00:00Z"}]}' \
-  review_should_dispatch ENG-516 stub-branch && rc=0 || rc=$?
-[[ "$rc" != 0 ]] \
-  && ok "Case G: approval older than last_processed → idle" \
-  || nope "Case G" "rc=$rc (expected nonzero)"
-
-# ─── Case H: bot-only review on current HEAD → falsy ──────────────────
-set_last_review_state "abc1234" "" ""
-GH_PR_VIEW_JSON='{"commits":[{"oid":"abc1234"}],"reviews":[{"author":{"login":"twinning-pipeline[bot]"},"state":"COMMENTED","commit_id":"abc1234","submittedAt":"2026-04-30T11:00:00Z"}]}' \
-  review_should_dispatch ENG-517 stub-branch && rc=0 || rc=$?
-[[ "$rc" != 0 ]] \
-  && ok "Case H: bot-only review → idle (non-bot filter)" \
-  || nope "Case H" "rc=$rc (expected nonzero)"
+[[ "$rc" == 0 ]] \
+  && ok "Case F: gh PR view '{}' → defensive dispatch" \
+  || nope "Case F" "rc=$rc"
 
 PATH="$ORIG_PATH"
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"

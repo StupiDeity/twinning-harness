@@ -1917,7 +1917,11 @@ fi
 CONFIG="$ENG_45_QA_CFG_SAVED"
 rm -f "$ENG_45_QA_TMP_CFG"
 
-# ─── ENG-50 case A: _fresh_wait_reason accepts review stage ───────────
+# ─── ENG-54 case A: _fresh_wait_reason rejects review stage ───────────
+# ENG-50 originally extended _fresh_wait_reason's allow-list to {build,review}
+# so the review-stage human-approval gate could emit pipeline-wait. ENG-54
+# moved the gate to build's P2 — review never waits anymore — so the
+# allow-list narrows back to build only. Pin the new contract.
 fresh_comments='[{"id":"c1","createdAt":"2026-04-30T12:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nReviewed commit abc1234."}]'
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
@@ -1929,39 +1933,47 @@ SH
 chmod +x "$STUB_DIR/linear.sh"
 SCRIPT_DIR="$STUB_DIR"
 reason="$(_fresh_wait_reason "ENG-580" "review" 2>/dev/null || printf '')"
-[[ "$reason" == "awaiting-approval" ]] \
-  && pass_at "ENG-50 _fresh_wait_reason: review stage accepted" \
-  || fail_at "ENG-50 _fresh_wait_reason review" "got: '$reason'"
+[[ -z "$reason" ]] \
+  && pass_at "ENG-54 _fresh_wait_reason: review stage REJECTED (gate moved to build P2)" \
+  || fail_at "ENG-54 _fresh_wait_reason review" "got: '$reason' (expected empty — review must not emit wait shapes)"
 
 # Sanity: build still works.
 reason="$(_fresh_wait_reason "ENG-581" "build" 2>/dev/null || printf '')"
 [[ "$reason" == "awaiting-approval" ]] \
-  && pass_at "ENG-50 _fresh_wait_reason: build still works" \
-  || fail_at "ENG-50 _fresh_wait_reason build" "got: '$reason'"
+  && pass_at "ENG-54 _fresh_wait_reason: build still accepts wait shape" \
+  || fail_at "ENG-54 _fresh_wait_reason build" "got: '$reason'"
 
 # Other stages still rejected.
 reason="$(_fresh_wait_reason "ENG-582" "implement" 2>/dev/null || printf '')"
 [[ -z "$reason" ]] \
-  && pass_at "ENG-50 _fresh_wait_reason: implement still rejected" \
-  || fail_at "ENG-50 _fresh_wait_reason implement" "got: '$reason' (expected empty)"
+  && pass_at "ENG-54 _fresh_wait_reason: implement still rejected" \
+  || fail_at "ENG-54 _fresh_wait_reason implement" "got: '$reason' (expected empty)"
 
-# ─── ENG-50 case B: _post_review_dispatch_update writes current SHA ───
+# ─── ENG-54 case B: _post_review_dispatch_update writes only SHA ──────
+# Pre-ENG-54 it forwarded sha + last_processed_approval_at + last_processed_cr_at.
+# Post-ENG-54 only the SHA is recorded — the human-approval gate moved to
+# build's P2 and there are no per-state timestamps to track.
 UPDATE_CALLS="$STUB_DIR/update-state-calls.log"
 : > "$UPDATE_CALLS"
 cat > "$STUB_DIR/review-state.sh" <<SH
 #!/usr/bin/env bash
 case "\$1" in
-  update) printf 'update\\t%s\\t%s\\t%s\\t%s\\n' "\$2" "\$3" "\$4" "\$5" >> "$UPDATE_CALLS" ;;
+  update)
+    # \$2=issue \$3=sha; record the full call shape so we can assert on
+    # extra-arg-absence as well as the sha value.
+    printf 'update issue=%s sha=%s extra=%s\\n' "\$2" "\$3" "\${4-MISSING}\${5-}\${6-}" >> "$UPDATE_CALLS"
+    ;;
   *) exit 0 ;;
 esac
 SH
 chmod +x "$STUB_DIR/review-state.sh"
 
-# Stub gh: pretend HEAD SHA = abc1234, no reviews.
+# Stub gh: pretend HEAD SHA = abc1234. ENG-54 dropped the reviews query
+# from _post_review_dispatch_update's gh call (only commits is needed now).
 cat > "$STUB_DIR/gh" <<'SH'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "pr view") printf '%s' '{"commits":[{"oid":"abc1234"}],"reviews":[]}' ;;
+  "pr view") printf '%s' '{"commits":[{"oid":"abc1234"}]}' ;;
   *) exit 0 ;;
 esac
 SH
@@ -1974,10 +1986,15 @@ _post_review_dispatch_update "ENG-585" "stub-branch" >/dev/null 2>&1 || true
 PATH="$ORIG_PATH"
 
 captured="$(cat "$UPDATE_CALLS")"
-if [[ "$captured" == *"ENG-585"* && "$captured" == *"abc1234"* ]]; then
-  pass_at "ENG-50 _post_review_dispatch_update writes current SHA"
+if [[ "$captured" == *"issue=ENG-585"* && "$captured" == *"sha=abc1234"* ]]; then
+  pass_at "ENG-54 _post_review_dispatch_update writes current SHA only"
 else
-  fail_at "ENG-50 _post_review_dispatch_update" "captured: $captured"
+  fail_at "ENG-54 _post_review_dispatch_update" "captured: $captured"
+fi
+if [[ "$captured" == *"extra=MISSING"* ]]; then
+  pass_at "ENG-54 _post_review_dispatch_update: no approval/CR timestamps passed (single-arg update)"
+else
+  fail_at "ENG-54 _post_review_dispatch_update extra args" "captured: $captured (expected extra=MISSING)"
 fi
 
 
@@ -2076,20 +2093,23 @@ else
   pass_at "ENG-56-F: build + wait awaiting-ci → orchestrator does NOT apply pipeline:halted"
 fi
 
-# Case ENG-56-G: review + wait awaiting-approval (ENG-50: wait shape extends to review)
-# → orchestrator does NOT apply.
+# Case ENG-56-G (ENG-54 update): review + stray wait awaiting-approval →
+# orchestrator now APPLIES pipeline:halted. Pre-ENG-54 the review stage was
+# wait-eligible (human-approval gate); ENG-54 narrowed _fresh_wait_reason's
+# allow-list to build only, so a wait marker on review-stage is now a stray
+# comment and the halt-apply is the correct response.
 eng_56_reset
 export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nReviewed commit abc1234."}]'
 _post_dispatch_apply_halt "ENG-56T-G" review >/dev/null 2>&1
 if eng_56_halt_applied; then
-  fail_at "ENG-56-G: review + wait awaiting-approval" "halt was applied; should be skipped"
+  pass_at "ENG-56-G (ENG-54): review + stray wait → orchestrator applies pipeline:halted (no human-approval gate at review)"
 else
-  pass_at "ENG-56-G: review + wait awaiting-approval → orchestrator does NOT apply pipeline:halted"
+  fail_at "ENG-56-G (ENG-54): review + stray wait" "halt should be applied — gate moved to build P2"
 fi
 
 # Case ENG-56-H: implement stage with stray pipeline-wait marker. Wait shape
-# is allow-listed for build/review only; on other stages a wait comment is a
-# protocol violation and the halt apply is the correct response.
+# is allow-listed for build only (ENG-54); on other stages a wait comment
+# is a protocol violation and the halt apply is the correct response.
 eng_56_reset
 export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"}]'
 _post_dispatch_apply_halt "ENG-56T-H" implement >/dev/null 2>&1
