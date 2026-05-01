@@ -155,6 +155,38 @@ for stage_section in \
   fi
 done
 
+# ─── ENG-56: pipeline:halted is orchestrator-managed ────────────────────
+# The label is applied by run-stage.sh's post-dispatch hook (skipping
+# wait-shape exits). Agents must NEVER call add-label pipeline:halted —
+# dual authority routinely drifts (8/8 dispatches in ENG-44 had the
+# orchestrator filling in for non-compliant agents) and the post-dispatch
+# hook silently overrides ENG-45 wait-exit semantics if the label is
+# already there. Test pins the absence of the agent-side add-label call
+# in every stage section.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent" \
+  "## 8. Release Agent" \
+  "## 9. Retrospective Agent (Scheduled)"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  # The instructional pattern is `bash ... add-label <issue> pipeline:halted`.
+  # The descriptive footer "The orchestrator applies `pipeline:halted` ..."
+  # is allowed; only the agent-side command form is forbidden.
+  if printf '%s\n' "$body" | grep -qE 'add-label.*pipeline:halted'; then
+    nope "$short lacks 'add-label … pipeline:halted' instruction (ENG-56)" \
+         "agent-side command still present"
+  else
+    ok "$short lacks 'add-label … pipeline:halted' instruction (ENG-56)"
+  fi
+done
+
 # ─── ENG-53 #3 + #4: doc-filename templates carry {issue_id_lower} ──────
 # `partition_dirty_paths::D-004` requires `eng-N` (case-insensitive) in
 # the basename to bucket as in-scope. The brainstorm and plan stage
