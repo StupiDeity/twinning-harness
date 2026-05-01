@@ -11,6 +11,10 @@
 #   linear.sh swap-stage <ENG-n> <new_stage_name_without_prefix>
 #   linear.sh transition-state <ENG-n> <state_name>
 #   linear.sh add-comment <ENG-n> <body>
+#   linear.sh add-comment <ENG-n> --body <body>
+#   linear.sh add-comment <ENG-n> --body -                   # body from stdin (heredoc-friendly)
+#   linear.sh add-comment <ENG-n> --body-file <path>         # body from file
+#   (same flags accepted by add-or-update-comment, after the <sig> argument)
 #   linear.sh refresh-cache
 #   linear.sh stage-of <ENG-n>   # prints current stage:* label name (or empty)
 #   linear.sh all-stage-labels <ENG-n>   # prints all stage:* labels space-separated (or empty)
@@ -372,8 +376,72 @@ get_comments() {
 # recurring body, embed a token that survives both regexes — e.g. a
 # space-separated date ("2026-04-29 03:14:00Z", no literal T) or a 6-digit
 # HHMMSS (under the 7-char SHA threshold).
+# ENG-55: parse `<body>` from a flexible argv tail. Accepts:
+#   * legacy positional: `<body>`
+#   * `--body <text>` (or `--body -` to read from stdin)
+#   * `--body=<text>`
+#   * `--body-file <path>`
+# Prints the resolved body to stdout. Caller checks for empty.
+#
+# Stdin is read only when `--body -` is explicitly requested. Bare positional
+# bodies stay positional (no implicit stdin) to keep legacy callers stable.
+_resolve_body_arg() {
+  local body=""
+  local got_flag=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --body-file)
+        [[ -n "${2:-}" ]] || die "linear.sh: --body-file requires a path"
+        [[ -f "$2" ]] || die "linear.sh: --body-file path not found: $2"
+        body="$(cat "$2")"
+        got_flag=1
+        shift 2
+        ;;
+      --body-file=*)
+        local p="${1#--body-file=}"
+        [[ -f "$p" ]] || die "linear.sh: --body-file path not found: $p"
+        body="$(cat "$p")"
+        got_flag=1
+        shift
+        ;;
+      --body)
+        [[ $# -ge 2 ]] || die "linear.sh: --body requires a value (use - for stdin)"
+        if [[ "$2" == "-" ]]; then
+          body="$(cat)"
+        else
+          body="$2"
+        fi
+        got_flag=1
+        shift 2
+        ;;
+      --body=*)
+        body="${1#--body=}"
+        got_flag=1
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        # Legacy positional body. Only honored if no flag form was seen and
+        # this is the last remaining arg — we don't try to collapse multiple
+        # positional args into a single body.
+        if (( ! got_flag )) && (( $# == 1 )); then
+          body="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+  printf '%s' "$body"
+}
+
 add_comment() {
-  local ident="$1" body="$2"
+  local ident="$1"; shift
+  local body
+  body="$(_resolve_body_arg "$@")"
+  [[ -n "$body" ]] || die "add-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
   # Lane fence: check before any Linear API call (including dry-run).
   local _comment_class
   _comment_class="$(_classify_comment_body "$body")"
@@ -430,10 +498,15 @@ add_comment() {
 add_or_update_comment() {
   # $1 = sig (e.g., "halt/implement/ENG-14")
   # $2 = ident (e.g., "ENG-14")
-  # $3 = body (Markdown)
-  local sig="$1" ident="$2" body="$3"
-  [[ -n "$sig" && -n "$ident" && -n "$body" ]] \
-    || die "add-or-update-comment: all three of <sig> <ident> <body> required"
+  # $3+ = body, accepted via the same --body / --body-file / --body - / legacy
+  #       positional shapes as add-comment (ENG-55).
+  local sig="$1" ident="$2"; shift 2
+  [[ -n "$sig" && -n "$ident" ]] \
+    || die "add-or-update-comment: <sig> and <ident> required"
+  local body
+  body="$(_resolve_body_arg "$@")"
+  [[ -n "$body" ]] \
+    || die "add-or-update-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
 
   local marker="<!-- pipeline-sig: $sig -->"
   if ! grep -qF "$marker" <<<"$body"; then
