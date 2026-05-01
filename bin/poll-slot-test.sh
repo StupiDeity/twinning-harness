@@ -641,11 +641,19 @@ review_should_dispatch() { return "${REVIEW_SHOULD_DISPATCH:-0}"; }
 export -f review_should_dispatch
 SH
 
-# Augment the existing linear.sh stub to also handle get-issue with a
-# canned gitBranchName payload.
-# Find the existing stub at $STUB_DIR/linear.sh and check if it handles
-# get-issue. If not, the new poll.sh branch will fail to read the branch.
-# For this test, the simplest path: re-write the stub to add get-issue.
+# ENG-53 #12: poll.sh now derives the branch via bin/branch-name.sh
+# (not via linear.sh::gitBranchName). Stub it so the test environment's
+# poll.sh::reviewing path finds a branch deterministically.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+ident_lower="$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+printf 'feat/%s-stub-slug\n' "$ident_lower"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+# linear.sh stub (does NOT need to expose gitBranchName any more, but the
+# ENG-53 #12 fix removes that dependency entirely; keeping the field
+# present is harmless cruft).
 cat > "$STUB_DIR/linear.sh" <<'SH'
 #!/usr/bin/env bash
 case "$1" in
@@ -662,7 +670,9 @@ case "$1" in
     [[ -f "$f" ]] && cat "$f" || printf '[]'
     ;;
   get-issue)
-    printf '%s' "{\"data\":{\"issue\":{\"identifier\":\"$2\",\"gitBranchName\":\"stub-branch-$2\"}}}"
+    # gitBranchName intentionally OMITTED — poll.sh's reviewing path no
+    # longer reads it (ENG-53 #12). Mirrors production reality.
+    printf '%s' "{\"data\":{\"issue\":{\"identifier\":\"$2\"}}}"
     ;;
   remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
     [[ -n "${LINEAR_STUB_LOG-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
