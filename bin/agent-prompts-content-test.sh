@@ -106,6 +106,55 @@ else
   nope "§5 contains '<!-- pipeline-wait: awaiting-approval -->'" "marker missing"
 fi
 
+# ─── ENG-53 #11(a): every stage prompt has the no-probe + halt-instead ──
+# Pre-fix: agents routinely posted throwaway Linear comments (`test`,
+# `test ping`) to probe what Bash patterns are allowlisted, plus
+# sig-mutated retry comments when posts seemed to fail. Linear has no
+# delete-comment mechanism, so the issue thread accumulated permanent
+# litter (ENG-44's dogfood: `test`, `test ping`, plus 6+ trial sigs).
+#
+# (a) addresses the exploratory-probe pattern via prompt instruction:
+# tell the agent that probing leaves permanent litter and the harness
+# has a clean exit ramp (`<!-- pipeline-halt: agent-blocked -->`). The
+# agent should halt instead of probing when uncertain.
+#
+# Pattern (b) — sig-mutated retries (`-trial`, `-v3`, ...) — is tracked
+# separately in ENG-57.
+#
+# Test pins the new instruction in EVERY stage section (1-9) so future
+# prompt edits can't silently drop it from one stage.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent" \
+  "## 8. Release Agent" \
+  "## 9. Retrospective Agent (Scheduled)"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  if printf '%s\n' "$body" | grep -qF 'Tool allowlist & probing (ENG-53 #11)'; then
+    ok "$short contains 'Tool allowlist & probing (ENG-53 #11)' header"
+  else
+    nope "$short contains 'Tool allowlist & probing (ENG-53 #11)' header" "phrase missing"
+  fi
+
+  if printf '%s\n' "$body" | grep -qF 'do not probe'; then
+    ok "$short contains 'do not probe' rule"
+  else
+    nope "$short contains 'do not probe' rule" "phrase missing"
+  fi
+
+  if printf '%s\n' "$body" | grep -qF '<!-- pipeline-halt: agent-blocked -->'; then
+    ok "$short contains 'pipeline-halt: agent-blocked' exit ramp"
+  else
+    nope "$short contains 'pipeline-halt: agent-blocked' exit ramp" "marker missing"
+  fi
+done
+
 # ─── ENG-53 #3 + #4: doc-filename templates carry {issue_id_lower} ──────
 # `partition_dirty_paths::D-004` requires `eng-N` (case-insensitive) in
 # the basename to bucket as in-scope. The brainstorm and plan stage
