@@ -407,6 +407,108 @@ else
   fail_at "all_stage_labels: issue with no stage: labels returns empty string" "got: $got_none"
 fi
 
+# ─── ENG-55: _resolve_body_arg + add-comment / add-or-update-comment ────
+# `add-comment` and `add-or-update-comment` accept body via:
+#   * legacy positional: `add-comment ENG-N "<body>"`
+#   * `--body <text>` / `--body=<text>`
+#   * `--body -` (read from stdin — heredoc-friendly, no scratch files)
+#   * `--body-file <path>` (read from file — back-compat / large-body path)
+# Pre-fix, agents wrote `.scratch.md` files at the worktree root, piped
+# them via the (broken) `--body-file` flag, and then couldn't `rm` them
+# because no stage's allow-list included `Bash(rm:*)`. ENG-44's dogfood
+# accumulated 15 such dotfiles.
+printf '\n--- ENG-55 _resolve_body_arg + body-arg shapes ---\n'
+
+# Legacy positional body: `<body>` last positional arg, no flag form.
+got="$(_resolve_body_arg "literal body")"
+[[ "$got" == "literal body" ]] \
+  && pass_at "ENG-55 _resolve_body_arg: legacy positional body" \
+  || fail_at "ENG-55 _resolve_body_arg: legacy positional body" "got: '$got'"
+
+# --body <text>
+got="$(_resolve_body_arg --body "flag form body")"
+[[ "$got" == "flag form body" ]] \
+  && pass_at "ENG-55 _resolve_body_arg: --body <text>" \
+  || fail_at "ENG-55 _resolve_body_arg: --body <text>" "got: '$got'"
+
+# --body=<text>
+got="$(_resolve_body_arg --body=eq-form)"
+[[ "$got" == "eq-form" ]] \
+  && pass_at "ENG-55 _resolve_body_arg: --body=<text>" \
+  || fail_at "ENG-55 _resolve_body_arg: --body=<text>" "got: '$got'"
+
+# --body - reads from stdin. Verify that newlines are preserved.
+got="$(printf 'line one\nline two\nline three' | _resolve_body_arg --body -)"
+expected=$'line one\nline two\nline three'
+[[ "$got" == "$expected" ]] \
+  && pass_at "ENG-55 _resolve_body_arg: --body - (stdin) preserves newlines" \
+  || fail_at "ENG-55 _resolve_body_arg: --body - (stdin)" "got: '$got'"
+
+# Stdin body containing $VAR-shaped strings is preserved verbatim under a
+# quoted heredoc (the contract documented in the prompt sweep).
+got="$(cat <<'EOF' | _resolve_body_arg --body -
+shell-active: $HOME and `cmd` and $(date)
+EOF
+)"
+[[ "$got" == 'shell-active: $HOME and `cmd` and $(date)' ]] \
+  && pass_at "ENG-55 _resolve_body_arg: stdin under <<'EOF' preserves \$VAR / backticks / \$()" \
+  || fail_at "ENG-55 _resolve_body_arg: stdin literal-shell-syntax" "got: '$got'"
+
+# --body-file <path> reads a file (back-compat path).
+_eng55_body_file="$_TEST_STUB_DIR/body-file.md"
+printf 'file body line A\nfile body line B' > "$_eng55_body_file"
+got="$(_resolve_body_arg --body-file "$_eng55_body_file")"
+expected=$'file body line A\nfile body line B'
+[[ "$got" == "$expected" ]] \
+  && pass_at "ENG-55 _resolve_body_arg: --body-file <path>" \
+  || fail_at "ENG-55 _resolve_body_arg: --body-file <path>" "got: '$got'"
+
+# --body-file with a missing path dies cleanly.
+rc=0
+( _resolve_body_arg --body-file "/nonexistent/path/$$.md" ) >/dev/null 2>&1 || rc=$?
+[[ "$rc" -ne 0 ]] \
+  && pass_at "ENG-55 _resolve_body_arg: missing --body-file dies" \
+  || fail_at "ENG-55 _resolve_body_arg: missing --body-file dies" "got rc=$rc"
+
+# --body without a value dies cleanly.
+rc=0
+( _resolve_body_arg --body ) >/dev/null 2>&1 || rc=$?
+[[ "$rc" -ne 0 ]] \
+  && pass_at "ENG-55 _resolve_body_arg: --body without value dies" \
+  || fail_at "ENG-55 _resolve_body_arg: --body without value dies" "got rc=$rc"
+
+# add_comment with empty body (no flag, no positional) dies cleanly.
+rc=0
+err="$(add_comment ENG-55T 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] && printf '%s' "$err" | grep -qF "body is empty" \
+  && pass_at "ENG-55 add_comment: empty body dies cleanly (no API call)" \
+  || fail_at "ENG-55 add_comment: empty body" "rc=$rc err=$err"
+
+# add_comment with --body - reads stdin and reaches the dry-run path.
+out="$(printf 'stdin-body-marker' | add_comment ENG-55T --body - 2>&1)"
+printf '%s' "$out" | grep -qF "stdin-body-marker" \
+  && pass_at "ENG-55 add_comment: --body - reads stdin in dry-run path" \
+  || fail_at "ENG-55 add_comment: --body - in dry-run" "out=$out"
+
+# add_or_update_comment with --body - reads stdin and reaches dry-run.
+out="$(printf 'aouc-stdin-marker' | add_or_update_comment "test/sig/ENG-55T" ENG-55T --body - 2>&1)"
+printf '%s' "$out" | grep -qF "aouc-stdin-marker" \
+  && pass_at "ENG-55 add_or_update_comment: --body - reads stdin in dry-run path" \
+  || fail_at "ENG-55 add_or_update_comment: --body -" "out=$out"
+
+# add_or_update_comment legacy positional body still works.
+out="$(add_or_update_comment "test/sig/ENG-55T" ENG-55T "legacy-positional-marker" 2>&1)"
+printf '%s' "$out" | grep -qF "legacy-positional-marker" \
+  && pass_at "ENG-55 add_or_update_comment: legacy positional body still works" \
+  || fail_at "ENG-55 add_or_update_comment: legacy positional" "out=$out"
+
+# add_or_update_comment with empty body dies.
+rc=0
+err="$(add_or_update_comment "test/sig/ENG-55T" ENG-55T 2>&1)" || rc=$?
+[[ "$rc" -ne 0 ]] && printf '%s' "$err" | grep -qF "body is empty" \
+  && pass_at "ENG-55 add_or_update_comment: empty body dies cleanly" \
+  || fail_at "ENG-55 add_or_update_comment: empty body" "rc=$rc err=$err"
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

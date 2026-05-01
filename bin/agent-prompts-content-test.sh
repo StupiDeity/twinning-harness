@@ -187,6 +187,34 @@ for stage_section in \
   fi
 done
 
+# ─── ENG-55: stdin heredoc pattern for multi-line bodies ────────────────
+# Pre-fix, agents wrote scratch `.md` files at the worktree root to feed
+# `--body-file <path>` (and then couldn't `rm` them — no stage allow-lists
+# `Bash(rm:*)`). ENG-44's dogfood accumulated 15 such dotfiles. ENG-55 added
+# stdin support to bin/linear.sh's add-comment / add-or-update-comment via
+# `--body -`, and the prompts must now point agents at the heredoc pattern.
+#
+# Each verdict-marker stage (1-7) needs at least one `--body -` heredoc
+# example. Stages that don't post Linear comments at all (8 release / 9
+# retrospective) are exempt.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  if printf '%s\n' "$body" | grep -qF -- '--body -'; then
+    ok "$short contains '--body -' stdin example (ENG-55)"
+  else
+    nope "$short contains '--body -' stdin example (ENG-55)" "no stdin example found"
+  fi
+done
+
 # ─── ENG-53 #3 + #4: doc-filename templates carry {issue_id_lower} ──────
 # `partition_dirty_paths::D-004` requires `eng-N` (case-insensitive) in
 # the basename to bucket as in-scope. The brainstorm and plan stage
