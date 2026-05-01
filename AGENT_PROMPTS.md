@@ -741,37 +741,14 @@ Read these files first (in order, where present):
 5. docs/knowledge/conventions.md — verify against established conventions (skip if not present)
 6. {learned_rules_dir}/review.md — learned rules (follow ALL)
 
-Preflight (MANDATORY — determines what kind of dispatch this is):
-
-  1. Read PR HEAD SHA:
-       head_sha=$(gh pr view {branch_name} --json commits --jq '.commits[-1].oid')
-  2. Read most recent non-bot review and its commit_id + submittedAt:
-       gh pr view {branch_name} --json reviews \
-         | jq '[.reviews[] | select(.author.login | test("\\[bot\\]$") | not)] | sort_by(.submittedAt) | last'
-  3. Read last-review-state from Linear:
-       bash .pipeline/bin/linear.sh get-comments {issue_id} \
-         | jq '[.[] | select(.body | contains("<!-- pipeline-state: last-review-state -->"))] | last.body'
-       Parse the JSON payload {sha, last_processed_approval_at, last_processed_cr_at}.
-  4. Branch on comparison:
-     a. APPROVED on current HEAD AND submittedAt > last_processed_approval_at:
-        → Skip multi-persona review.
-        → Write a brief stage-summary file noting: "Human {login} approved
-          on commit {sha[:8]}. Advancing to qa."
-        → Post `<!-- pipeline-stage-summary: reviewing -->` verdict marker.
-        → Exit. (Orchestrator applies pipeline:halted; ENG-56.)
-     b. CHANGES_REQUESTED on current HEAD AND submittedAt > last_processed_cr_at:
-        → Run multi-persona review with the human's CR comments as additional
-          input (read via gh pr view --json reviews,comments).
-        → Decide: Decision path B (rejection) or Decision path C (wait-marker)
-          per the multi-persona findings.
-     c. Current HEAD ≠ last-review-state.sha (new commits since last review):
-        → Run multi-persona review on the new code.
-        → Decide: Decision path B (rejection) or Decision path C (wait-marker).
-     d. Otherwise (defensive — should not happen under β's gating):
-        → Post `<!-- pipeline-wait: awaiting-approval -->` with the current SHA.
-        → Exit. Log the unexpected state in the stage-summary's Notes section.
-          (Wait-shape exit; orchestrator does NOT apply pipeline:halted;
-          ENG-45 / ENG-56.)
+**No human-approval gate at this stage (ENG-54).** The orchestrator's
+`review-poll.sh::review_should_dispatch` only invokes you when the PR HEAD
+SHA differs from the last-reviewed SHA in the `last-review-state/{issue_id}`
+Linear comment. When you are dispatched, run the review; when there is
+nothing new, the orchestrator idles you. Human approval is collected once,
+at build's P2 preflight, on the post-QA SHA. The pre-ENG-54 review-stage
+wait-for-approval exit is gone — the review stage no longer emits any
+`pipeline-wait` shape.
 
 Input:
   Fetch the feature PR with:
@@ -871,7 +848,7 @@ Gotcha surfacing (PROPOSE, do not write):
 
 Decision path (apply exactly one):
 
-  A. Premise failure (brainstorm was wrong) — UNCHANGED.
+  A. Premise failure (brainstorm was wrong).
      - Apply Linear label `pipeline:premise-failure`.
      - Post the `premise_failure` marker comment.
      - Post `<!-- pipeline-rejection: reviewing -->` AND
@@ -879,7 +856,7 @@ Decision path (apply exactly one):
      - Exit. Orchestrator applies pipeline:halted (ENG-56) and handles
        loop-back.
 
-  B. Changes requested (rewritten for ENG-50 / β).
+  B. Changes requested (any `critical` or `major` findings).
      - Post a consolidated COMMENTED-state review with all findings via:
          gh pr review {pr_number} --comment --body "<full summary>"
        Body contains severity-prefixed, "path/to/file.ext:LINE"-anchored
@@ -898,28 +875,20 @@ Decision path (apply exactly one):
      - Exit. Orchestrator applies pipeline:halted (ENG-56) and transitions
        reviewing → implementing.
 
-  C. Clean review, awaiting human approval (NEW under ENG-50 / β).
+  C. Clean review (no `critical` / `major` findings) — ENG-54 contract.
      - Post a consolidated COMMENTED-state review via:
          gh pr review {pr_number} --comment --body "<summary>"
        Summary: "Reviewed commit {sha[:8]}. N personas: PASS. 0 critical,
-       0 major. Awaiting human Code Owner approval." Plus any minor/nit
-       observations as severity-prefixed bullets.
+       0 major." Plus any minor/nit observations as severity-prefixed
+       bullets.
      - Post Linear consolidated review summary via add-or-update-comment
        with sig `completion/reviewing/{issue_id}`.
-     - Post `<!-- pipeline-wait: awaiting-approval -->` with body that
-       explicitly names the reviewed SHA. NO `tick_at:` line (the
-       orchestrator only re-dispatches review on observable PR state
-       change under ENG-50's β gating, so consecutive wait markers
-       reflect different SHAs and won't dedup-collide).
-     - Do NOT post a verdict marker. The wait-shape exit is detected by
-       the orchestrator's pre-dispatch hook (ENG-45) and pipeline:halted
-       is intentionally NOT applied (ENG-56). Issue idles at
-       stage:reviewing until poll.sh's review_should_dispatch detects a
-       state change (new commits, new approval, or new change-request).
-     - Exit clean.
-
-  D. Approval just landed (NEW under ENG-50 / β — preflight branch (a) outcome).
-     - As described in Preflight step 4(a).
+     - Write the stage summary file at `{stage_summary_path}` per the Stage
+       summary comment format contract.
+     - Post `<!-- pipeline-stage-summary: reviewing -->` verdict marker.
+     - Exit. Orchestrator transitions `reviewing → qa` and applies
+       pipeline:halted (ENG-56). Human approval is collected later, at
+       build's P2 preflight, on the post-QA SHA.
 
 The agent does NOT submit GitHub PR reviews in the APPROVED state or in
 the CHANGES_REQUESTED state under any path. The COMMENTED state
@@ -937,15 +906,15 @@ Output:
 - Consolidated Linear review summary as a `completion/reviewing/{issue_id}`
   add-or-update-comment.
 - Stage-summary file at {stage_summary_path} (per the Stage summary comment
-  format contract — abbreviated on path D when no review work was done).
+  format contract).
 - Verdict marker per Decision path (A premise-failure → rejection-to-brainstorm,
-  B changes-requested → rejection-to-implementing, C wait-for-approval →
-  no verdict marker, D approval-detected → stage-summary).
+  B changes-requested → rejection-to-implementing, C clean → stage-summary
+  advancing to qa).
 - Do NOT submit a GitHub PR review in the APPROVED state or in the
   CHANGES_REQUESTED state. The agent does not approve or request changes
-  via GitHub's review API; humans do.
+  via GitHub's review API; humans do (once, at build's P2).
 
-Verdict marker (ENG-18, MANDATORY at exit, except Decision path C wait):
+Verdict marker (ENG-18, MANDATORY at exit):
 - Post exactly ONE additional append-only comment with your verdict marker:
     - approve/pass → `<!-- pipeline-stage-summary: reviewing -->`
     - reject-implementation → `<!-- pipeline-rejection: reviewing --><!-- pipeline-rejection-target: implementing -->`
@@ -955,9 +924,10 @@ Verdict marker (ENG-18, MANDATORY at exit, except Decision path C wait):
   apply `pipeline:premise-failure` — that label is retired; the Verdict Handler's
   loopback table (reviewing → brainstorming) now carries the `pipeline:supersede`
   side-effect automatically.
+- Do NOT emit any `pipeline-wait` shape (ENG-54). The review stage no
+  longer waits for human approval; the gate moved to build's P2 only.
 - Do NOT touch `pipeline:halted` — orchestrator applies it after dispatch
-  (ENG-56). Wait-shape exits (Decision path C) intentionally skip the
-  apply.
+  (ENG-56).
 ```
 
 ## 6. QA Agent

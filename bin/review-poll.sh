@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# ENG-50: review-poll — orchestrator's gate for whether to dispatch the
-# review agent. Consults `gh pr view` (HEAD SHA + most recent non-bot
-# review) against last-review-state to decide.
+# ENG-50 / ENG-54: review-poll — orchestrator's gate for whether to dispatch
+# the review agent. Consults `gh pr view` for the PR HEAD SHA against
+# last-review-state.sha to decide.
 #
 # Returns 0 (dispatch) when:
-#   - No last-review-state exists yet (bootstrap).
-#   - Current HEAD SHA != last-review-state.sha.
-#   - Most recent non-bot APPROVED review is on current HEAD AND
-#     submittedAt > last_processed_approval_at.
-#   - Most recent non-bot CHANGES_REQUESTED review is on current HEAD AND
-#     submittedAt > last_processed_cr_at.
+#   - No last-review-state exists yet (bootstrap path).
+#   - Current HEAD SHA != last-review-state.sha (new commits since last review).
+#   - PR view query failed (defensive — let run-stage's stage-drift / agent
+#     contract guards trip on the next tick rather than silently idling).
 # Returns 1 (idle) otherwise.
+#
+# ENG-54: pre-fix this also fired on a fresh non-bot APPROVED or
+# CHANGES_REQUESTED review newer than the per-state "last-processed"
+# timestamp. That was load-bearing under ENG-50's review-stage human-approval
+# gate. ENG-54 moved the human-approval gate to build's P2 (the sole gate
+# now), so review never waits for humans. The simpler "new commits → run
+# again" contract is enough.
 
 set -euo pipefail
 _RP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,50 +36,19 @@ review_should_dispatch() {
   state="$(read_review_state "$issue" 2>/dev/null || printf '')"
   [[ -z "$state" ]] && return 0
 
-  # Read PR view: HEAD SHA + most recent non-bot review.
+  # Read PR view: HEAD SHA only (reviews no longer drive the gate).
   local pr_view
-  pr_view="$(gh pr view "$branch" --json commits,reviews 2>/dev/null || printf '{}')"
+  pr_view="$(gh pr view "$branch" --json commits 2>/dev/null || printf '{}')"
   [[ -z "$pr_view" || "$pr_view" == "{}" ]] && return 0  # PR query failed; dispatch defensively.
 
   local head_sha state_sha
   head_sha="$(jq -r '.commits[-1].oid // empty' <<<"$pr_view")"
   state_sha="$(jq -r '.sha // empty' <<<"$state")"
 
-  # Case B: HEAD SHA differs (new commits since last review).
+  # New commits since last review → dispatch. Otherwise idle.
   if [[ -n "$head_sha" && "$head_sha" != "$state_sha" ]]; then
     return 0
   fi
-
-  # Most recent non-bot review (filter out [bot] logins).
-  local nonbot_review
-  nonbot_review="$(jq -c '
-    [.reviews[]? | select(.author.login | test("\\[bot\\]$") | not)]
-    | sort_by(.submittedAt) | last // empty' <<<"$pr_view")"
-  [[ -z "$nonbot_review" || "$nonbot_review" == "null" ]] && return 1  # no non-bot review; idle.
-
-  local nb_state nb_commit nb_at
-  nb_state="$(jq -r '.state // ""'      <<<"$nonbot_review")"
-  nb_commit="$(jq -r '.commit_id // ""' <<<"$nonbot_review")"
-  nb_at="$(jq -r '.submittedAt // ""'   <<<"$nonbot_review")"
-
-  # Approval on current HEAD AND newer than last_processed_approval_at → dispatch.
-  if [[ "$nb_state" == "APPROVED" && "$nb_commit" == "$head_sha" ]]; then
-    local last_app
-    last_app="$(jq -r '.last_processed_approval_at // ""' <<<"$state")"
-    if [[ -z "$last_app" || "$nb_at" > "$last_app" ]]; then
-      return 0
-    fi
-  fi
-
-  # CHANGES_REQUESTED on current HEAD AND newer than last_processed_cr_at → dispatch.
-  if [[ "$nb_state" == "CHANGES_REQUESTED" && "$nb_commit" == "$head_sha" ]]; then
-    local last_cr
-    last_cr="$(jq -r '.last_processed_cr_at // ""' <<<"$state")"
-    if [[ -z "$last_cr" || "$nb_at" > "$last_cr" ]]; then
-      return 0
-    fi
-  fi
-
   return 1
 }
 

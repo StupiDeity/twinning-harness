@@ -258,6 +258,31 @@ these entries (skipped silently when the config is absent — CI or non-harness 
   Cross-project shared state (the claude mutex, the project sentinel
   collision check) is the only legitimate use of `$HARNESS_STATE_DIR/`.
 
+## Single human-approval gate (ENG-54)
+
+The pipeline collects human approval **once**, at the build stage's P2
+preflight, on the post-QA SHA. The review stage is agent-only — it runs
+cold-pass reviewers, comments on the PR, and either advances to QA or
+loops back to implement. It does **not** wait for human approval, and
+`bin/run-stage.sh::_fresh_wait_reason` allow-lists the wait shape for
+`build` only.
+
+**One-time migration when deploying ENG-54:** any issue currently in
+flight at `stage:reviewing` with a `<!-- pipeline-wait: awaiting-approval
+-->` marker as its latest comment will idle indefinitely under the new
+contract (the wait shape no longer drives a re-dispatch from review).
+Flush each such issue past the (now-removed) gate by applying
+`pipeline:halted` and resolving:
+
+```bash
+bash bin/linear.sh add-label ENG-N pipeline:halted
+bash bin/halt.sh resolve ENG-N --decision resume
+```
+
+The next tick resumes from review's clean-review path (Decision C),
+emits `pipeline-stage-summary: reviewing`, and transitions to QA.
+Issues at any other stage are unaffected.
+
 ## Failure-mode quick reference
 
 | Symptom | Where to look |

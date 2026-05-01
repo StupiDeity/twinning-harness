@@ -52,7 +52,10 @@ PASS=0; FAIL=0
 ok()   { printf 'OK: %s\n' "$1"; PASS=$((PASS+1)); }
 nope() { printf 'FAIL: %s\n  %s\n' "$1" "$2" >&2; FAIL=$((FAIL+1)); }
 
-# ─── Case 1: bootstrap_review_state writes initial all-null state ─────
+# ─── Case 1: bootstrap_review_state writes initial null-sha state ─────
+# ENG-54: `last_processed_approval_at` and `last_processed_cr_at` were
+# removed when the human-approval gate moved to build's P2. The struct
+# now carries only `sha`.
 : > "$LINEAR_CALLS"; printf '[]' > "$COMMENTS_FIXTURE"
 bootstrap_review_state ENG-501 >/dev/null 2>&1
 sig="$(awk -F'\t' '$1=="aouc"{print $2; exit}' "$LINEAR_CALLS")"
@@ -66,22 +69,24 @@ posted="$(jq -r '[.[] | select(.body | contains("<!-- pipeline-state: last-revie
 state_json="$(printf '%s\n' "$posted" | grep -E '^\{' | head -1)"
 [[ "$(jq -r '.sha' <<<"$state_json")" == "null" ]] \
   && ok "case-1 sha=null" || nope "case-1 sha" "got: $(jq -r '.sha' <<<"$state_json")"
-[[ "$(jq -r '.last_processed_approval_at' <<<"$state_json")" == "null" ]] \
-  && ok "case-1 last_processed_approval_at=null" || nope "case-1 approval_at" "got: $(jq -r '.last_processed_approval_at' <<<"$state_json")"
-[[ "$(jq -r '.last_processed_cr_at' <<<"$state_json")" == "null" ]] \
-  && ok "case-1 last_processed_cr_at=null" || nope "case-1 cr_at" "got: $(jq -r '.last_processed_cr_at' <<<"$state_json")"
+# ENG-54 negative: the dropped fields must NOT reappear in the payload.
+[[ "$(jq 'has("last_processed_approval_at")' <<<"$state_json")" == "false" ]] \
+  && ok "case-1 ENG-54: last_processed_approval_at field absent" \
+  || nope "case-1 ENG-54 approval_at field" "still present in: $state_json"
+[[ "$(jq 'has("last_processed_cr_at")' <<<"$state_json")" == "false" ]] \
+  && ok "case-1 ENG-54: last_processed_cr_at field absent" \
+  || nope "case-1 ENG-54 cr_at field" "still present in: $state_json"
 
-# ─── Case 2: update_review_state writes the supplied values ───────────
+# ─── Case 2: update_review_state writes the supplied SHA ──────────────
 : > "$LINEAR_CALLS"; printf '[]' > "$COMMENTS_FIXTURE"
-update_review_state ENG-502 "abc1234" "2026-04-30T10:00:00Z" "" >/dev/null 2>&1
+update_review_state ENG-502 "abc1234" >/dev/null 2>&1
 posted="$(jq -r '[.[] | select(.body | contains("<!-- pipeline-state: last-review-state -->"))][0].body' "$COMMENTS_FIXTURE")"
 state_json="$(printf '%s\n' "$posted" | grep -E '^\{' | head -1)"
 [[ "$(jq -r '.sha' <<<"$state_json")" == "abc1234" ]] \
   && ok "case-2 sha=abc1234" || nope "case-2 sha" "got: $(jq -r '.sha' <<<"$state_json")"
-[[ "$(jq -r '.last_processed_approval_at' <<<"$state_json")" == "2026-04-30T10:00:00Z" ]] \
-  && ok "case-2 approval_at" || nope "case-2 approval_at" "got: $(jq -r '.last_processed_approval_at' <<<"$state_json")"
-[[ "$(jq -r '.last_processed_cr_at' <<<"$state_json")" == "null" ]] \
-  && ok "case-2 cr_at=null (empty arg → null)" || nope "case-2 cr_at" "got: $(jq -r '.last_processed_cr_at' <<<"$state_json")"
+[[ "$(jq 'has("last_processed_approval_at")' <<<"$state_json")" == "false" ]] \
+  && ok "case-2 ENG-54: approval_at field absent on update" \
+  || nope "case-2 ENG-54 approval_at" "still present in: $state_json"
 
 # ─── Case 3: read_review_state parses back what update wrote ──────────
 read_back="$(read_review_state ENG-502)"
