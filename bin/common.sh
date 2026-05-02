@@ -119,6 +119,7 @@ failure_outcome_for_exit() {
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
 }
+# ─── Pipeline-marker parser (ENG-60) ──────────────────────────
 # parse_pipeline_marker <body> — translate a Linear comment body containing
 # a pipeline marker (old or new shape) into a uniform JSON event.
 #
@@ -172,10 +173,18 @@ parse_pipeline_marker() {
     local kind value
     kind="$(sed -E 's/<!-- pipeline-([^:]+): .+ -->/\1/' <<<"$marker")"
     value="$(sed -E 's/<!-- pipeline-[^:]+: (.+) -->/\1/' <<<"$marker")"
+    # Note: "pivot" is a new-shape-only verdict_result (see pipeline-events.json
+    # meta_kinds). No legacy `pipeline-pivot:` marker ever existed.
     case "$kind" in
       stage-summary)
         jq -nc --arg s "$value" '{event:"verdict",result:"pass",stage:$s}' ;;
       rejection|rejection-target)
+        # Old shape used two markers (pipeline-rejection: source +
+        # pipeline-rejection-target: target). New shape carries only target;
+        # source is implicit from the issue's current stage:* label.
+        # tail -1 above picks rejection-target when both are present (the
+        # standard order), so $value is the target either way. Source is
+        # re-derived by callers (e.g., find_fresh_verdict consumers).
         jq -nc --arg t "$value" '{event:"verdict",result:"fail",target:$t}' ;;
       halt)
         # Apply legacy aliases (e.g. scope-deviation → scope-violation).
@@ -204,10 +213,9 @@ parse_pipeline_marker() {
     return 0
   fi
 
-  printf ''
+  # No recognizable marker in body — empty stdout (already empty), rc=1.
   return 1
 }
-export -f parse_pipeline_marker
 
 # ─── Orchestrator paused flag (ENG-23) ────────────────────────────────
 # Read priority: STATE_FILE (runtime override) > CONFIG (static default) > "false".
@@ -240,7 +248,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit is_orchestrator_paused set_orchestrator_paused
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

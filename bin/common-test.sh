@@ -244,66 +244,66 @@ printf '\n--- parse_pipeline_marker ---\n'
 # Fixture P1: new-shape verdict pass
 result="$(parse_pipeline_marker '<!-- pipeline: verdict result=pass stage=implementing -->')"
 [[ "$(jq -r '.event' <<<"$result")" == "verdict" ]]   && pass_at "P1: event=verdict"   || fail_at "P1: event mismatch ($result)"
-[[ "$(jq -r '.result' <<<"$result")" == "pass" ]]     && pass_at "P1: result=pass"     || fail_at "P1: result mismatch"
-[[ "$(jq -r '.stage' <<<"$result")" == "implementing" ]] && pass_at "P1: stage=implementing" || fail_at "P1: stage mismatch"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]]     && pass_at "P1: result=pass"     || fail_at "P1: result mismatch ($result)"
+[[ "$(jq -r '.stage' <<<"$result")" == "implementing" ]] && pass_at "P1: stage=implementing" || fail_at "P1: stage mismatch ($result)"
 
 # Fixture P2: new-shape verdict fail
 result="$(parse_pipeline_marker '<!-- pipeline: verdict result=fail target=planning -->')"
 [[ "$(jq -r '.result' <<<"$result")" == "fail" ]]     && pass_at "P2: result=fail"     || fail_at "P2 ($result)"
-[[ "$(jq -r '.target' <<<"$result")" == "planning" ]] && pass_at "P2: target=planning" || fail_at "P2 target"
+[[ "$(jq -r '.target' <<<"$result")" == "planning" ]] && pass_at "P2: target=planning" || fail_at "P2 target ($result)"
 
 # Fixture P3: new-shape verdict halt
 result="$(parse_pipeline_marker '<!-- pipeline: verdict result=halt reason=agent-blocked -->')"
-[[ "$(jq -r '.result' <<<"$result")" == "halt" ]]            && pass_at "P3: result=halt" || fail_at "P3"
-[[ "$(jq -r '.reason' <<<"$result")" == "agent-blocked" ]]   && pass_at "P3: reason"     || fail_at "P3 reason"
+[[ "$(jq -r '.result' <<<"$result")" == "halt" ]]            && pass_at "P3: result=halt" || fail_at "P3 ($result)"
+[[ "$(jq -r '.reason' <<<"$result")" == "agent-blocked" ]]   && pass_at "P3: reason"     || fail_at "P3 reason ($result)"
 
 # Fixture P4: old-shape stage-summary translates to verdict pass
 result="$(parse_pipeline_marker '<!-- pipeline-stage-summary: implementing -->')"
-[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]]      && pass_at "P4: legacy stage-summary→verdict"  || fail_at "P4"
-[[ "$(jq -r '.result' <<<"$result")" == "pass" ]]        && pass_at "P4: result=pass"                    || fail_at "P4 result"
-[[ "$(jq -r '.stage' <<<"$result")" == "implementing" ]] && pass_at "P4: stage carried"                  || fail_at "P4 stage"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]]      && pass_at "P4: legacy stage-summary→verdict"  || fail_at "P4 ($result)"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]]        && pass_at "P4: result=pass"                    || fail_at "P4 result ($result)"
+[[ "$(jq -r '.stage' <<<"$result")" == "implementing" ]] && pass_at "P4: stage carried"                  || fail_at "P4 stage ($result)"
 
 # Fixture P5: old-shape rejection translates to verdict fail
 result="$(parse_pipeline_marker '<!-- pipeline-rejection: planning -->')"
-[[ "$(jq -r '.result' <<<"$result")" == "fail" ]]        && pass_at "P5: legacy rejection→fail" || fail_at "P5"
-[[ "$(jq -r '.target' <<<"$result")" == "planning" ]]    && pass_at "P5: target derived from rejection value" || fail_at "P5 target"
+[[ "$(jq -r '.result' <<<"$result")" == "fail" ]]        && pass_at "P5: legacy rejection→fail" || fail_at "P5 ($result)"
+[[ "$(jq -r '.target' <<<"$result")" == "planning" ]]    && pass_at "P5: target derived from rejection value" || fail_at "P5 target ($result)"
 
 # Fixture P6: old-shape halt translates to verdict halt
 result="$(parse_pipeline_marker '<!-- pipeline-halt: scope-deviation -->')"
-[[ "$(jq -r '.result' <<<"$result")" == "halt" ]]            && pass_at "P6: legacy halt→halt" || fail_at "P6"
+[[ "$(jq -r '.result' <<<"$result")" == "halt" ]]            && pass_at "P6: legacy halt→halt" || fail_at "P6 ($result)"
 [[ "$(jq -r '.reason' <<<"$result")" == "scope-violation" ]] && pass_at "P6: scope-deviation aliased to scope-violation" || fail_at "P6 reason ($result)"
 
 # Fixture P7: old-shape decision (scope-approved) translates
 result="$(parse_pipeline_marker '<!-- pipeline-decision: scope-approved -->')"
-[[ "$(jq -r '.event' <<<"$result")" == "decision" ]] && pass_at "P7: legacy decision→decision" || fail_at "P7"
-[[ "$(jq -r '.action' <<<"$result")" == "approve" ]] && pass_at "P7: scope-approved→approve"   || fail_at "P7 action"
-[[ "$(jq -r '.gate' <<<"$result")" == "scope" ]]     && pass_at "P7: gate=scope"               || fail_at "P7 gate"
+[[ "$(jq -r '.event' <<<"$result")" == "decision" ]] && pass_at "P7: legacy decision→decision" || fail_at "P7 ($result)"
+[[ "$(jq -r '.action' <<<"$result")" == "approve" ]] && pass_at "P7: scope-approved→approve"   || fail_at "P7 action ($result)"
+[[ "$(jq -r '.gate' <<<"$result")" == "scope" ]]     && pass_at "P7: gate=scope"               || fail_at "P7 gate ($result)"
 
 # Fixture P8: old-shape decision (resume) translates
 result="$(parse_pipeline_marker '<!-- pipeline-decision: resume -->')"
-[[ "$(jq -r '.action' <<<"$result")" == "continue" ]] && pass_at "P8: resume→continue" || fail_at "P8"
-[[ "$(jq -r '.gate // ""' <<<"$result")" == "" ]]     && pass_at "P8: no gate on continue" || fail_at "P8 gate-empty"
+[[ "$(jq -r '.action' <<<"$result")" == "continue" ]] && pass_at "P8: resume→continue" || fail_at "P8 ($result)"
+[[ "$(jq -r '.gate // ""' <<<"$result")" == "" ]]     && pass_at "P8: no gate on continue" || fail_at "P8 gate-empty ($result)"
 
 # Fixture P9: old-shape transition translates
 result="$(parse_pipeline_marker '<!-- pipeline-transition: implementing → reviewing -->')"
-[[ "$(jq -r '.event' <<<"$result")" == "transition" ]] && pass_at "P9: transition" || fail_at "P9"
-[[ "$(jq -r '.from' <<<"$result")"  == "implementing" ]] && pass_at "P9: from"     || fail_at "P9 from"
-[[ "$(jq -r '.to' <<<"$result")"    == "reviewing" ]]    && pass_at "P9: to"       || fail_at "P9 to"
+[[ "$(jq -r '.event' <<<"$result")" == "transition" ]] && pass_at "P9: transition" || fail_at "P9 ($result)"
+[[ "$(jq -r '.from' <<<"$result")"  == "implementing" ]] && pass_at "P9: from"     || fail_at "P9 from ($result)"
+[[ "$(jq -r '.to' <<<"$result")"    == "reviewing" ]]    && pass_at "P9: to"       || fail_at "P9 to ($result)"
 
 # Fixture P10: meta-sig translates
 result="$(parse_pipeline_marker '<!-- pipeline-sig: completion/implement/ENG-43 -->')"
-[[ "$(jq -r '.event' <<<"$result")" == "meta" ]]   && pass_at "P10: sig→meta" || fail_at "P10"
-[[ "$(jq -r '.kind' <<<"$result")" == "dedup" ]]   && pass_at "P10: kind=dedup" || fail_at "P10 kind"
-[[ "$(jq -r '.key' <<<"$result")" == "completion/implement/ENG-43" ]] && pass_at "P10: key carried" || fail_at "P10 key"
+[[ "$(jq -r '.event' <<<"$result")" == "meta" ]]   && pass_at "P10: sig→meta" || fail_at "P10 ($result)"
+[[ "$(jq -r '.kind' <<<"$result")" == "dedup" ]]   && pass_at "P10: kind=dedup" || fail_at "P10 kind ($result)"
+[[ "$(jq -r '.key' <<<"$result")" == "completion/implement/ENG-43" ]] && pass_at "P10: key carried" || fail_at "P10 key ($result)"
 
 # Fixture P11: comment body with surrounding prose + marker at the end
 body=$'A multi-line\nbody.\n<!-- pipeline: verdict result=pass stage=implementing -->'
 result="$(parse_pipeline_marker "$body")"
-[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P11: marker found in multi-line body" || fail_at "P11"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P11: marker found in multi-line body" || fail_at "P11 ($result)"
 
 # Fixture P12: body with no recognizable marker returns empty + rc=1
 result="$(parse_pipeline_marker 'just prose, no marker' 2>/dev/null)" && rc=0 || rc=$?
-[[ "$rc" -eq 1 ]] && pass_at "P12: rc=1 on no marker" || fail_at "P12 rc=$rc"
+[[ "$rc" -eq 1 ]] && pass_at "P12: rc=1 on no marker" || fail_at "P12 rc=$rc (result=$result)"
 [[ -z "$result" ]] && pass_at "P12: empty stdout" || fail_at "P12 stdout=$result"
 
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
