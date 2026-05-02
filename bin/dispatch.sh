@@ -327,7 +327,7 @@ main() {
     # nearly unreadable on busy days.
     if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
       "${cmd[@]}" < "$prompt_file" \
-        | _render_and_capture_stream "$usage_file" "$issue_state_dir" \
+        | _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage" \
         > "$log_file"
     else
       "${cmd[@]}" < "$prompt_file" > "$log_file"
@@ -336,7 +336,7 @@ main() {
     log "dispatching stage=$stage"
     if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
       "${cmd[@]}" < "$prompt_file" \
-        | _render_and_capture_stream "$usage_file" "$issue_state_dir"
+        | _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage"
     else
       "${cmd[@]}" < "$prompt_file"
     fi
