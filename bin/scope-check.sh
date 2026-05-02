@@ -109,9 +109,12 @@ has_scope_approval() {
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue")"
   [[ -z "$comments" || "$comments" == "null" ]] && return 1
 
-  # Find latest scope-related halt (any token: scope-deviation, scope-violation
-  # — the latter is the canonical name; the former is the legacy alias normalized
-  # by parse_pipeline_marker via legacy_halt_reason_aliases).
+  # Find latest scope-related halt. Accept both scope-violation (canonical)
+  # and scope-deviation (legacy alias). parse_pipeline_marker normalizes
+  # OLD-shape halts through legacy_halt_reason_aliases, but NOT new-shape
+  # ones (Phase 2 carryover — see plan). The case statement below is
+  # therefore load-bearing, not redundant defense, until that normalization
+  # extends to new shape.
   local last_halt_ts=""
   local ts body ev reason
   while IFS=$'\t' read -r ts body; do

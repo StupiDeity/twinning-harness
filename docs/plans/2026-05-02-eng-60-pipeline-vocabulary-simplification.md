@@ -785,6 +785,24 @@ merges. Sketches:
 > dispatch will silently halt as a protocol violation. Capture this as an
 > explicit acceptance criterion in T2.8 (AGENT_PROMPTS.md verdict-marker
 > rewrite) and T2.10 (legacy-label cleanup, where the loopback table is touched).
+>
+> **Carryover from Phase 1 Task 1.4 (code-quality review):**
+> 1. `parse_pipeline_marker` normalizes OLD-shape halt reasons through
+>    `legacy_halt_reason_aliases` (e.g., `scope-deviation` → `scope-violation`)
+>    but NOT new-shape halts. A new-shape `verdict result=halt
+>    reason=scope-deviation` would carry the legacy token verbatim. Phase 2
+>    must extend the alias normalization to the new-shape branch of
+>    `parse_pipeline_marker`. Until then, `has_scope_approval` accepts both
+>    tokens defensively (load-bearing, not redundant — see comment in code).
+> 2. Add interleaved-marker edge case to `bin/scope-check-test.sh`: a body
+>    sequence containing BOTH old-shape halt and new-shape halt followed by a
+>    new-shape decision approve, to confirm the timestamp ordering still
+>    selects the correct latest events.
+> 3. Test-helper-signature divergence across `bin/*-test.sh` files
+>    (`pass_at`/`fail_at` are 1-arg in `common-test.sh`, 2-arg in
+>    `scope-check-test.sh` and `verdict-handler-test.sh`). Phase 2 should
+>    unify on the 2-arg form (more diagnosable) and update the 1-arg sites
+>    in a mechanical sweep.
 
 - **T2.1** — Create `bin/pipeline.sh` skeleton with `status <issue>` subcommand. Read-only; calls `parse_pipeline_marker` per comment to produce a human-readable event log.
 - **T2.2** — Add `bin/pipeline event <issue> verdict <pass|fail|halt|wait|pivot> [args]` subcommand. Writes `<!-- pipeline: verdict result=... -->` markers via `linear.sh add-comment`. Validates against `bin/pipeline-events.json`.
