@@ -22,11 +22,15 @@ main() {
 
   log "on-new-release: version=$version tag=$tag"
 
-  # ─── Part 1: sweep stage:building → stage:released ───────────────────────
-  # Any issue still sitting at stage:building when the release cuts gets flipped
-  # to stage:released + Done with a "shipped in $tag" comment. In the happy path
-  # the local build stage already advanced issues to stage:released, so this
-  # usually finds nothing.
+  # ─── Part 1: sweep stage:building → stage:released (safety net) ─────
+  # Primary path: when the build agent posts <!-- pipeline-stage-summary:
+  # building -->, verdict-handler.sh::apply_transition advances the issue
+  # to stage:released and flips Linear native-state to Done (see
+  # bin/verdict-handler.sh:159-167). This sweep is the SAFETY NET for
+  # issues that didn't transition that way — for example, a build-agent
+  # crash that left the issue stuck at stage:building, or a manually-
+  # moved issue that bypassed the agent. In the happy path this loop
+  # finds no issues and is a no-op.
   local active_state done_state
   active_state="$(config_get '.linear.native_states.active')"
   done_state="$(config_get '.linear.native_states.done')"

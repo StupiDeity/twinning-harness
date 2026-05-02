@@ -2,7 +2,7 @@
 # Run the Release Agent once per semantic-release cut.
 # Usage:
 #   run-release-observer.sh <version> <tag> [<prev_tag>]
-# Invoked by .github/workflows/pipeline-release.yml AFTER the stage:building→released sweep.
+# Invoked by bin/on-new-release.sh (which itself is invoked by bin/run-local.sh's release watcher) AFTER the stage:building→released sweep.
 # In PIPELINE_DRY_RUN=1, echoes what it would do without calling claude.
 #
 # Unlike run-stage.sh, release is a cross-issue event — it has no single owning Linear
