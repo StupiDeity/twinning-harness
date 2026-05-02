@@ -89,7 +89,7 @@ fi
 
 # ─── ENG-52: §7 release.yml check is profile-conditional ────────────────
 if printf '%s\n' "$s7" | grep -qF 'gh run list --branch main --workflow' \
-   && printf '%s\n' "$s7" | grep -qF 'if the project profile names a release CI workflow'; then
+   && printf '%s\n' "$s7" | grep -qiF 'if the project profile names a release CI workflow'; then
   ok "§7 release.yml check is profile-conditional"
 else
   nope "§7 release.yml check is profile-conditional" \
