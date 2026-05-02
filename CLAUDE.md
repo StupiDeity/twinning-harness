@@ -257,6 +257,14 @@ these entries (skipped silently when the config is absent — CI or non-harness 
   `$PROJECT_STATE_DIR`, never `$HARNESS_STATE_DIR/<issue>` directly.
   Cross-project shared state (the claude mutex, the project sentinel
   collision check) is the only legitimate use of `$HARNESS_STATE_DIR/`.
+- Defense-in-depth on top of tool-lane denials: when a stage's contract says
+  "agent must not invoke tool X," prefer a transcript-based assertion
+  (`assert_no_tool_invocation` in `bin/dispatch.sh`) over a state-of-the-world
+  check after dispatch. State checks false-positive on actions taken by other
+  actors (humans, prior stages, future agents); transcript checks answer the
+  contract question directly. Today only the implement stage uses this
+  pattern (forbidding `gh pr create`); generalising to other stages is a
+  separate refactor.
 
 ## Single human-approval gate (ENG-54)
 
