@@ -792,7 +792,10 @@ EOF
 chmod +x "$STUB_DIR/linear.sh"
 _VH_SCRIPT_DIR="$STUB_DIR"
 result="$(find_fresh_verdict ENG-FV1)"
-[[ "$(jq -r '.marker' <<<"$result")" == "pipeline-stage-summary" || "$(jq -r '.event.event // ""' <<<"$result")" == "verdict" ]] \
+# Tightened: require BOTH the legacy marker label AND the new event.result==pass —
+# otherwise a halt or rejection (also event=verdict) would silently satisfy this.
+[[ "$(jq -r '.marker' <<<"$result")" == "pipeline-stage-summary" \
+   && "$(jq -r '.event.result // ""' <<<"$result")" == "pass" ]] \
   && pass_at "FV1: new-shape stage-summary detected" || fail_at "FV1: new-shape stage-summary detected" "got: $result"
 
 # Fixture FV2: new-shape rejection
@@ -833,6 +836,22 @@ EOF
 result="$(find_fresh_verdict ENG-FV4)"
 src="$(jq -r '.source_stage // .stage // ""' <<<"$result")"
 [[ "$src" == "implementing" ]] && pass_at "FV4: old-shape stage-summary still detected" || fail_at "FV4: old-shape stage-summary still detected" "got: $result"
+
+# Fixture FV5: new-shape WAIT marker is NOT returned as a verdict (ENG-45
+# load-bearing invariant — wait is a soft re-dispatch, not a verdict).
+# Old-shape pipeline-wait was already excluded by the prior find_fresh_verdict;
+# this fixture pins the equivalent guarantee for new shape so a regression
+# can't sneak in via the parse_pipeline_marker path.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → building -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(find_fresh_verdict ENG-FV5)"
+[[ -z "$result" ]] && pass_at "FV5: new-shape wait NOT returned as verdict" || fail_at "FV5: new-shape wait NOT returned as verdict" "got: $result"
 
 # Restore stub to the full-featured version used by earlier cases.
 cat > "$STUB_DIR/linear.sh" <<'SH'

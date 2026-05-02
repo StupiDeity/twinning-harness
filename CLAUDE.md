@@ -269,9 +269,10 @@ these entries (skipped silently when the config is absent — CI or non-harness 
   `parse_pipeline_marker` from `bin/common.sh` rather than hand-rolling
   contains-checks or regex extraction. The helper accepts both legacy
   (`pipeline-X: value`) and current (`pipeline: event k=v`) shapes and
-  returns a uniform JSON event. This is the single source of truth for
-  marker parsing — see `docs/pipeline-vocabulary.md` (post-Phase 2) for
-  the event schema.
+  returns a uniform JSON event. The closed event vocabulary (verdict
+  results, halt reasons, decision actions, etc.) lives in
+  `bin/pipeline-events.json`; the human-readable schema will land in
+  `docs/pipeline-vocabulary.md` after Phase 2 of ENG-60.
 
 ## Single human-approval gate (ENG-54)
 

@@ -803,6 +803,19 @@ merges. Sketches:
 >    `scope-check-test.sh` and `verdict-handler-test.sh`). Phase 2 should
 >    unify on the 2-arg form (more diagnosable) and update the 1-arg sites
 >    in a mechanical sweep.
+>
+> **Carryover from Phase 1 final review:**
+> 4. `bin/run-stage.sh::_fresh_wait_reason` (lines 306–334) uses inline
+>    `contains("<!-- pipeline-transition:")` and `test("<!-- pipeline-wait: ")`
+>    to detect wait markers. It will silently miss new-shape `<!-- pipeline:
+>    verdict result=wait ... -->` comments. T2.8 (AGENT_PROMPTS.md rewrite)
+>    will cause the build agent to emit new-shape wait markers, which would
+>    immediately break the build-stage wait flow — the most user-visible halt
+>    path. **This is a hard prerequisite of T2.8** and must be ordered before
+>    the prompt rewrite ships, OR `_fresh_wait_reason` must be migrated to
+>    `parse_pipeline_marker` in the same PR. Phase 1 ships FV5 to pin the
+>    invariant in `find_fresh_verdict`; an analogous fixture for
+>    `_fresh_wait_reason` belongs in the Phase 2 task that touches it.
 
 - **T2.1** — Create `bin/pipeline.sh` skeleton with `status <issue>` subcommand. Read-only; calls `parse_pipeline_marker` per comment to produce a human-readable event log.
 - **T2.2** — Add `bin/pipeline event <issue> verdict <pass|fail|halt|wait|pivot> [args]` subcommand. Writes `<!-- pipeline: verdict result=... -->` markers via `linear.sh add-comment`. Validates against `bin/pipeline-events.json`.
