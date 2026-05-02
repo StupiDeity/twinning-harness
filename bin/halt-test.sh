@@ -360,6 +360,64 @@ else
 fi
 _eng58_clear_side_state "ENG-996"
 
+# ─── ENG-58 Case S (QA adversarial): bare "stage:" label (empty after
+#     '#stage:' strip) → falls back to "unknown" via D-014 regex.
+#     Distinct from Case P (printf %s injection): this exercises the
+#     empty-string branch of `^[a-z]+$`. Locks the regex against a
+#     `+` → `*` regression that would silently produce a waypoint with
+#     an empty stage body: "<!-- pipeline-transition:  →  -->".
+: > "$LINEAR_CALLS"
+LABELS_ON="pipeline:halted" VH_RC=1 STAGE_OF="stage:" \
+  resolve "ENG-997" "resume" >/dev/null 2>&1 || true
+unknown_waypoint="$(grep -c "<!-- pipeline-transition: unknown → unknown (operator-resume) -->" "$LINEAR_CALLS" || true)"
+empty_waypoint="$(grep -c "<!-- pipeline-transition:  →  (operator-resume) -->" "$LINEAR_CALLS" || true)"
+if [[ "$unknown_waypoint" -ge "1" && "$empty_waypoint" == "0" ]]; then
+  ok "ENG-58 S (QA adv): bare 'stage:' label sanitized to 'unknown' (empty branch of D-014 regex)"
+else
+  nope "ENG-58 S (QA adv): empty-stage fallback" \
+    "unknown_waypoint=$unknown_waypoint empty_waypoint=$empty_waypoint"
+fi
+_eng58_clear_side_state "ENG-997"
+
+# ─── ENG-58 Case T (QA adversarial): multiple wait-*.json files →
+#     wait_files count reflects glob expansion correctly. Locks
+#     compgen|wc behavior against a "first match only" regression.
+: > "$LINEAR_CALLS"; : > "$METRICS_CALLS"
+mkdir -p "$PROJECT_STATE_DIR/ENG-998"
+printf '{}' > "$PROJECT_STATE_DIR/ENG-998/wait-build.json"
+printf '{}' > "$PROJECT_STATE_DIR/ENG-998/wait-qa.json"
+printf '{}' > "$PROJECT_STATE_DIR/ENG-998/wait-implementing.json"
+LABELS_ON="pipeline:halted" VH_RC=1 STAGE_OF="stage:building" \
+  resolve "ENG-998" "resume" >/dev/null 2>&1 || true
+remaining="$(ls "$PROJECT_STATE_DIR/ENG-998"/wait-*.json 2>/dev/null | wc -l | tr -d ' ')"
+metric_line="$(grep "^halt-resume ENG-998 building atomic-reset 0 " "$METRICS_CALLS" | head -1)"
+if [[ "$remaining" == "0" && "$metric_line" == *"wait_files=3"* ]]; then
+  ok "ENG-58 T (QA adv): multiple wait-*.json files cleared and counted (3)"
+else
+  nope "ENG-58 T (QA adv): multi-file glob" \
+    "remaining=$remaining metric_line='$metric_line'"
+fi
+_eng58_clear_side_state "ENG-998"
+
+# ─── ENG-58 Case U (QA adversarial): valid JSON but .policy is null
+#     (not the string "skip-until-human-acts") → file PRESERVED.
+#     Locks the conditional against a "remove on any non-empty policy"
+#     regression that would silently drop policy=skip-until-code-changes
+#     evidence trails.
+: > "$LINEAR_CALLS"
+mkdir -p "$PROJECT_STATE_DIR/ENG-999"
+printf '{"policy":null,"evidence":{"x":1}}' > "$PROJECT_STATE_DIR/ENG-999/issue-state.json"
+LABELS_ON="pipeline:halted" VH_RC=1 STAGE_OF="stage:building" \
+  resolve "ENG-999" "resume" >/dev/null 2>&1 || true
+state_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-999/issue-state.json" ]] && state_present=1
+if [[ "$state_present" == "1" ]]; then
+  ok "ENG-58 U (QA adv): .policy=null preserves issue-state.json (only 'skip-until-human-acts' triggers removal)"
+else
+  nope "ENG-58 U (QA adv): null-policy conditional" \
+    "state file removed despite policy != 'skip-until-human-acts'"
+fi
+_eng58_clear_side_state "ENG-999"
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
