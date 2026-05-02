@@ -385,9 +385,11 @@ Do NOT state a line budget. The concrete function list is the budget; if a task 
 more than ~5 functions it probably wants splitting.
 
 API Contract (MACHINE-READABLE — MANDATORY when the project has an FE↔BE API surface and a new endpoint or type is added or changed):
-Render the contract as a single fenced block tagged `api-contract`. The exact shape depends on the project's stack; consult the Project profile addendum for the canonical handler/type idioms. Below is an illustrative example for a Tauri v2 + TypeScript stack — adapt it to your stack:
+Render the contract as a single fenced block tagged `api-contract`. The exact shape depends on the project's stack; consult the Project profile addendum for the canonical handler/type idioms. Below are two illustrative examples (Tauri v2 + TypeScript for a compiled-IPC stack, Python/Flask + TypeScript for an HTTP-handler stack) — adapt to your project profile:
 
     ```api-contract
+    # === Example 1 — Tauri v2 + TypeScript (compiled-IPC stack) ===
+
     # Backend signatures (path per the profile's File layout)
     #[tauri::command]
     async fn foo(x: i64, y: String) -> Result<FooResponse, String>;
@@ -398,6 +400,24 @@ Render the contract as a single fenced block tagged `api-contract`. The exact sh
 
     # Emitted events (where applicable to your stack)
     event "foo:progress" { step: u32, total: u32 }
+
+    # Frontend types (path per the profile's File layout)
+    export type FooResponse = { id: string; items: FooItem[] };
+    export type FooItem     = { name: string; score: number };
+
+    # ---
+    # === Example 2 — Python/Flask + TypeScript client (HTTP-handler stack) ===
+
+    # Backend handler (path per the profile's File layout)
+    @app.route("/foo", methods=["POST"])
+    def foo() -> tuple[FooResponse, int]:  # 200 on success
+        ...
+
+    # Backend types (module paths)
+    @dataclass
+    class FooResponse: id: str; items: list[FooItem]
+    @dataclass
+    class FooItem:     name: str; score: float
 
     # Frontend types (path per the profile's File layout)
     export type FooResponse = { id: string; items: FooItem[] };
