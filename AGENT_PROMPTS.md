@@ -1218,9 +1218,10 @@ Configuration audit (READ-ONLY — no edits in this stage):
     - Any new bundled binary / sidecar / native dependency not checked into git → flag.
     - Any new capability or permission grant that broadens scope unusually
       (e.g., wildcard execute, root filesystem read, cross-origin `*`) → flag.
-    - Any change to runtime configuration files named in the profile (e.g.
-      `tauri.conf.json`, `next.config.js`, `Caddyfile`, `nginx.conf`): scan for new
-      hosts, new bundle identifiers, changed security policies.
+    - Any change to runtime configuration files named in the profile (examples
+      include `next.config.js`, `Caddyfile`, `nginx.conf`, `tauri.conf.json`,
+      `pyproject.toml`, `go.mod`): scan for new hosts, new bundle identifiers,
+      changed security policies.
   Flagged items are posted as a Linear comment tagged
   `<!-- pipeline-metric: build_config_flag -->` and included in the summary. They do
   NOT automatically block the merge — humans decide via `pipeline:paused` / resume.
@@ -1241,9 +1242,15 @@ Merge strategy (FIXED — no alternative; per ENG-13 D-008):
     for uniformity.
 
 Post-merge verification (MANDATORY):
-  - `gh run list --branch main --workflow release.yml --limit 1` — confirm the release
-    workflow picked up the merge. If not present within 2 minutes, post a Linear
-    comment `<!-- pipeline-metric: release_trigger_missing -->` and escalate.
+  - If the project profile names a release CI workflow (e.g. `release.yml`,
+    `release.yaml`), invoke `gh run list --branch main --workflow <workflow-file>
+    --limit 1` to confirm the release workflow picked up the merge. If not
+    present within 2 minutes, post a Linear comment
+    `<!-- pipeline-metric: release_trigger_missing -->` and escalate.
+    **Skip this step if the profile names no release workflow** — in that case
+    the orchestrator's release watcher (`bin/run-local.sh:379` →
+    `bin/on-new-release.sh`) is the release-detection path and the post-merge
+    CI watch on the next bullet is sufficient.
   - `gh run watch <run-id>` on the main-branch CI run started by the merge. Wait for
     completion. A red post-merge CI triggers an IMMEDIATE escalation — do NOT attempt
     a revert unless explicitly instructed by a human (revert is destructive and may
@@ -1320,10 +1327,10 @@ Read these files first (where present):
 2. docs/knowledge/decisions.md — any ADR about release cadence or versioning
 3. The release-tool config named in the Project profile (e.g. `.releaserc.json`, `goreleaser.yaml`) — read-only; do not edit.
 
-Inputs supplied by `pipeline-release.yml`:
-  - `{version}` — the semantic-release version just cut (e.g. `1.19.4`).
-  - `{tag}`     — the git tag just pushed (e.g. `v1.19.4`).
-  - `{prev_tag}` — the previous tag, resolved via `git describe --tags --abbrev=0 {tag}^`.
+Inputs supplied by `bin/run-release-observer.sh` (env vars; substituted into the placeholders below):
+  - `PIPELINE_RELEASE_VERSION` (`{version}` in this prompt) — semantic-release version (e.g. `1.19.4`).
+  - `PIPELINE_RELEASE_TAG` (`{tag}` in this prompt) — git tag (e.g. `v1.19.4`).
+  - `PIPELINE_RELEASE_PREV_TAG` (`{prev_tag}` in this prompt) — previous tag (auto-resolved via `git describe --tags --abbrev=0 {tag}^` if empty).
 
 Your task (execute in order):
 
