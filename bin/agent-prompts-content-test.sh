@@ -106,6 +106,47 @@ else
        "either 'bin/run-release-observer.sh' missing OR 'PIPELINE_RELEASE_VERSION' missing OR obsolete 'Inputs supplied by \`pipeline-release.yml\`' phrase still present"
 fi
 
+# ─── ENG-52 QA adversarial: §7 reordered config-scan list locks the new
+# multi-stack examples (pyproject.toml, go.mod). The plan-locked
+# assertion above only locks the profile-conditional release.yml prose;
+# nothing locks the list-extension itself. A future retrospective edit
+# could revert §7 to the Tauri-only list (`tauri.conf.json,
+# next.config.js, Caddyfile, nginx.conf`) and the existing assertions
+# would all still pass.
+if printf '%s\n' "$s7" | grep -qF 'pyproject.toml' \
+   && printf '%s\n' "$s7" | grep -qF 'go.mod'; then
+  ok "§7 config-scan list contains non-Tauri examples (pyproject.toml, go.mod)"
+else
+  nope "§7 config-scan list contains non-Tauri examples (pyproject.toml, go.mod)" \
+       "either 'pyproject.toml' missing OR 'go.mod' missing from §7's body"
+fi
+
+# ─── ENG-52 QA adversarial: §8 cites ALL THREE PIPELINE_RELEASE_* env-var
+# names. The plan-locked assertion above only checks PIPELINE_RELEASE_VERSION;
+# review-stage flagged this gap as minor. A future edit could drop _TAG /
+# _PREV_TAG (or rename one) and the existing assertion would still pass.
+if printf '%s\n' "$s8" | grep -qF 'PIPELINE_RELEASE_TAG' \
+   && printf '%s\n' "$s8" | grep -qF 'PIPELINE_RELEASE_PREV_TAG'; then
+  ok "§8 cites PIPELINE_RELEASE_TAG and PIPELINE_RELEASE_PREV_TAG env-var names"
+else
+  nope "§8 cites PIPELINE_RELEASE_TAG and PIPELINE_RELEASE_PREV_TAG env-var names" \
+       "either 'PIPELINE_RELEASE_TAG' missing OR 'PIPELINE_RELEASE_PREV_TAG' missing — env-var attribution incomplete"
+fi
+
+# ─── ENG-52 QA adversarial: §2 column-0 fence count is exactly 2.
+# render-prompt-test.sh is the authoritative cross-section check; this
+# assertion is a localized backstop scoped to §2's section body, since
+# the §2 Python/Flask example sits inside an indented fence pair (lines
+# 390/425) and a future edit could trivially flip the indentation,
+# raising the column-0 count to 4 and crashing render-prompt.sh.
+fence_count_s2="$(printf '%s\n' "$s2" | grep -c '^```' || true)"
+if [[ "$fence_count_s2" == "2" ]]; then
+  ok "§2 column-0 fence count is exactly 2 (api-contract example stays indented)"
+else
+  nope "§2 column-0 fence count is exactly 2 (api-contract example stays indented)" \
+       "got $fence_count_s2 column-0 fences in §2 body — render-prompt.sh::extract_block requires exactly 2"
+fi
+
 # ─── ENG-50 / ENG-54: §5 invariants ───────────────────────────────────
 s5="$(section_body "## 5. Review Agent")"
 
