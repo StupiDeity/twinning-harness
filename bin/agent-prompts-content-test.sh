@@ -26,6 +26,7 @@ section_body() {
 s2="$(section_body "## 2. Plan Agent")"
 s3="$(section_body "## 3. Implementation Agent (Backend)")"
 s4="$(section_body "## 4. UI Agent (Frontend)")"
+s7="$(section_body "## 7. Build Agent")"
 s8="$(section_body "## 8. Release Agent")"
 
 # §3 — implement does not own PR creation.
@@ -84,6 +85,25 @@ if printf '%s\n' "$s2" | grep -qF '@app.route'; then
   ok "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)"
 else
   nope "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)" "phrase missing"
+fi
+
+# ─── ENG-52: §7 release.yml check is profile-conditional ────────────────
+if printf '%s\n' "$s7" | grep -qF 'gh run list --branch main --workflow' \
+   && printf '%s\n' "$s7" | grep -qF 'if the project profile names a release CI workflow'; then
+  ok "§7 release.yml check is profile-conditional"
+else
+  nope "§7 release.yml check is profile-conditional" \
+       "either 'gh run list --branch main --workflow' missing OR 'if the project profile names a release CI workflow' missing"
+fi
+
+# ─── ENG-52: §8 attributes inputs to bin/run-release-observer.sh ────────
+if printf '%s\n' "$s8" | grep -qF 'bin/run-release-observer.sh' \
+   && printf '%s\n' "$s8" | grep -qF 'PIPELINE_RELEASE_VERSION' \
+   && ! printf '%s\n' "$s8" | grep -qE 'Inputs supplied by[[:space:]]+`pipeline-release\.yml`'; then
+  ok "§8 attributes inputs to bin/run-release-observer.sh (env vars)"
+else
+  nope "§8 attributes inputs to bin/run-release-observer.sh (env vars)" \
+       "either 'bin/run-release-observer.sh' missing OR 'PIPELINE_RELEASE_VERSION' missing OR obsolete 'Inputs supplied by \`pipeline-release.yml\`' phrase still present"
 fi
 
 # ─── ENG-50 / ENG-54: §5 invariants ───────────────────────────────────
