@@ -119,6 +119,96 @@ failure_outcome_for_exit() {
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
 }
+# parse_pipeline_marker <body> — translate a Linear comment body containing
+# a pipeline marker (old or new shape) into a uniform JSON event.
+#
+# Output JSON shapes:
+#   {"event":"verdict","result":"pass","stage":"implementing"}
+#   {"event":"verdict","result":"fail","target":"planning"}
+#   {"event":"verdict","result":"halt","reason":"agent-blocked"}
+#   {"event":"verdict","result":"wait","reason":"awaiting-approval"}
+#   {"event":"transition","from":"implementing","to":"reviewing"}
+#   {"event":"decision","action":"approve","gate":"scope"}
+#   {"event":"decision","action":"continue"}            (no gate)
+#   {"event":"meta","kind":"dedup","key":"<ns/stage/issue>"}
+#   {"event":"meta","kind":"metric","name":"<metric>"}
+#
+# Returns 0 with JSON on stdout when a marker is found.
+# Returns 1 with empty stdout when no recognizable marker is in the body.
+#
+# Accepts BOTH old (`pipeline-X: value`) and new (`pipeline: event k=v`)
+# shapes during phases 1-2; phase 3 simplifies to new-shape only.
+parse_pipeline_marker() {
+  local body="$1"
+  local marker
+
+  # New shape: `<!-- pipeline: <event> [k=v ...] -->`
+  marker="$(grep -oE '<!-- pipeline: [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  if [[ -n "$marker" ]]; then
+    local payload
+    payload="$(sed -E 's/<!-- pipeline: (.+) -->/\1/' <<<"$marker")"
+    local event="${payload%% *}"
+    local rest="${payload#$event}"
+    rest="${rest# }"
+    local json
+    json="$(jq -nc --arg e "$event" '{event:$e}')"
+    # Parse remaining `k=v` pairs (whitespace-separated).
+    if [[ -n "$rest" ]]; then
+      local pair k v
+      for pair in $rest; do
+        [[ "$pair" == *=* ]] || continue
+        k="${pair%%=*}"
+        v="${pair#*=}"
+        json="$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$json")"
+      done
+    fi
+    printf '%s' "$json"
+    return 0
+  fi
+
+  # Old shape: `<!-- pipeline-<kind>: <value> -->`
+  marker="$(grep -oE '<!-- pipeline-(stage-summary|rejection|rejection-target|halt|wait|transition|decision|sig|metric): [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  if [[ -n "$marker" ]]; then
+    local kind value
+    kind="$(sed -E 's/<!-- pipeline-([^:]+): .+ -->/\1/' <<<"$marker")"
+    value="$(sed -E 's/<!-- pipeline-[^:]+: (.+) -->/\1/' <<<"$marker")"
+    case "$kind" in
+      stage-summary)
+        jq -nc --arg s "$value" '{event:"verdict",result:"pass",stage:$s}' ;;
+      rejection|rejection-target)
+        jq -nc --arg t "$value" '{event:"verdict",result:"fail",target:$t}' ;;
+      halt)
+        # Apply legacy aliases (e.g. scope-deviation → scope-violation).
+        local canon
+        canon="$(jq -r --arg r "$value" '.legacy_halt_reason_aliases[$r] // $r' "$HARNESS_ROOT/bin/pipeline-events.json" 2>/dev/null || printf '%s' "$value")"
+        jq -nc --arg r "$canon" '{event:"verdict",result:"halt",reason:$r}' ;;
+      wait)
+        jq -nc --arg r "$value" '{event:"verdict",result:"wait",reason:$r}' ;;
+      transition)
+        local from to
+        from="$(sed -E 's/(.+) → .+/\1/' <<<"$value")"
+        to="$(sed -E 's/.+ → (.+)/\1/' <<<"$value")"
+        jq -nc --arg f "$from" --arg t "$to" '{event:"transition",from:$f,to:$t}' ;;
+      decision)
+        case "$value" in
+          scope-approved) jq -nc '{event:"decision",action:"approve",gate:"scope"}' ;;
+          scope-rejected) jq -nc '{event:"decision",action:"abandon",gate:"scope"}' ;;
+          resume)         jq -nc '{event:"decision",action:"continue"}' ;;
+          *)              jq -nc --arg v "$value" '{event:"decision",legacy:$v}' ;;
+        esac ;;
+      sig)
+        jq -nc --arg k "$value" '{event:"meta",kind:"dedup",key:$k}' ;;
+      metric)
+        jq -nc --arg n "$value" '{event:"meta",kind:"metric",name:$n}' ;;
+    esac
+    return 0
+  fi
+
+  printf ''
+  return 1
+}
+export -f parse_pipeline_marker
+
 # ─── Orchestrator paused flag (ENG-23) ────────────────────────────────
 # Read priority: STATE_FILE (runtime override) > CONFIG (static default) > "false".
 # Writes go ONLY to STATE_FILE so the target repo is never asked to
