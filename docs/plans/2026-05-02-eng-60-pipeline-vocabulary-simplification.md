@@ -104,6 +104,7 @@ When Phase 1 lands, append the Phase 2 detailed sub-plan to this document (or sp
   "pivot_targets": ["planning"],
   "decision_actions": ["continue", "approve", "abandon"],
   "decision_gates": ["scope", "build-cap"],
+  "meta_kinds": ["dedup", "metric", "evidence"],
   "stages": [
     "brainstorming", "planning", "implementing", "ui",
     "reviewing", "qa", "building", "released"
