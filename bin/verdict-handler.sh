@@ -72,58 +72,67 @@ find_fresh_verdict() {
   comments="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-comments "$issue")"
   [[ -z "$comments" || "$comments" == "null" ]] && { printf ''; return 0; }
 
-  local last_transition_ts
-  last_transition_ts="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
-    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+  # Find the most recent transition-event timestamp to set freshness floor.
+  # Iterate comments through parse_pipeline_marker; pick max createdAt where
+  # event=transition. Comments without a recognizable marker are skipped.
+  local last_transition_ts=""
+  local row body ts ev
+  while IFS=$'\t' read -r ts body; do
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]]; then
+      [[ "$ts" > "$last_transition_ts" ]] && last_transition_ts="$ts"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  # Pick the most recent verdict-shaped comment newer than the last
-  # transition (or any verdict comment if no transition exists yet).
-  local fresh
-  fresh="$(jq -c --arg t "$last_transition_ts" '
-    [.[]
-     | select(.createdAt > $t)
-     | select(
-         (.body | contains("<!-- pipeline-stage-summary:")) or
-         (.body | contains("<!-- pipeline-rejection:")) or
-         (.body | contains("<!-- pipeline-halt:"))
-       )]
-    | sort_by(.createdAt) | last // empty' <<<"$comments")"
-  [[ -z "$fresh" ]] && { printf ''; return 0; }
+  # Pick the latest actionable verdict event (pass/fail/halt — NOT wait) with
+  # createdAt > last_transition_ts. pipeline-wait is intentionally excluded:
+  # the wait shape signals a soft re-dispatch, not a state transition.
+  local fresh_ts="" fresh_body="" fresh_id=""
+  while IFS=$'\t' read -r ts id body; do
+    [[ -n "$last_transition_ts" && ! "$ts" > "$last_transition_ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+    # Exclude wait — not an actionable transition trigger.
+    [[ "$(jq -r '.result' <<<"$ev")" == "wait" ]] && continue
+    if [[ "$ts" > "$fresh_ts" ]]; then
+      fresh_ts="$ts"; fresh_body="$body"; fresh_id="$id"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.id)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  local body id
-  body="$(jq -r '.body' <<<"$fresh")"
-  id="$(jq -r '.id' <<<"$fresh")"
+  [[ -z "$fresh_body" ]] && { printf ''; return 0; }
 
-  local marker src tgt reason
-  marker=""; src=""; tgt=""; reason=""
-  if grep -qE '<!-- pipeline-stage-summary: [a-z]+ -->' <<<"$body"; then
-    marker="pipeline-stage-summary"
-    src="$(grep -oE '<!-- pipeline-stage-summary: [a-z]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-stage-summary: ([a-z]+) -->/\1/')"
-  elif grep -qE '<!-- pipeline-rejection: [a-z]+ -->' <<<"$body"; then
-    marker="pipeline-rejection"
-    src="$(grep -oE '<!-- pipeline-rejection: [a-z]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-rejection: ([a-z]+) -->/\1/')"
-    tgt="$(grep -oE '<!-- pipeline-rejection-target: [a-z]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-rejection-target: ([a-z]+) -->/\1/')"
-  elif grep -qE '<!-- pipeline-halt: [a-z-]+ -->' <<<"$body"; then
-    marker="pipeline-halt"
-    reason="$(grep -oE '<!-- pipeline-halt: [a-z-]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-halt: ([a-z-]+) -->/\1/')"
-  else
-    # Malformed; treat as no fresh verdict.
-    printf ''
-    return 0
+  # Re-parse the fresh body and project to the legacy output shape that
+  # callers (verdict_handler, run-stage.sh) expect:
+  #   {marker, source_stage, target_stage, reason, comment_id}
+  # For old-shape rejection bodies that carry both `pipeline-rejection: <src>`
+  # and `pipeline-rejection-target: <tgt>`, parse_pipeline_marker returns only
+  # the target (its tail-1 rule). We recover the source separately here so that
+  # verdict_handler's loopback lookup (which needs both src+tgt) still works.
+  local ev_json
+  ev_json="$(parse_pipeline_marker "$fresh_body")"
+  local rejection_src=""
+  if [[ "$(jq -r '.result' <<<"$ev_json")" == "fail" ]]; then
+    rejection_src="$(grep -oE '<!-- pipeline-rejection: [a-z]+ -->' <<<"$fresh_body" \
+      | head -1 | sed -E 's/<!-- pipeline-rejection: ([a-z]+) -->/\1/' || true)"
   fi
-
-  jq -cn \
-    --arg marker "$marker" \
-    --arg src "$src" \
-    --arg tgt "$tgt" \
-    --arg reason "$reason" \
-    --arg id "$id" \
-    '{marker:$marker, source_stage:$src, target_stage:$tgt, reason:$reason, comment_id:$id}'
+  local result
+  result="$(jq -nc \
+    --argjson e "$ev_json" \
+    --arg id "$fresh_id" \
+    --arg rsrc "$rejection_src" '
+      ($e.result) as $r |
+      if $r == "pass" then
+        {marker:"pipeline-stage-summary", source_stage:$e.stage, target_stage:"", reason:"", comment_id:$id, event:$e}
+      elif $r == "fail" then
+        {marker:"pipeline-rejection", source_stage:$rsrc, target_stage:$e.target, reason:"", comment_id:$id, event:$e}
+      elif $r == "halt" then
+        {marker:"pipeline-halt", source_stage:"", target_stage:"", reason:$e.reason, comment_id:$id, event:$e}
+      else
+        {marker:"unknown", source_stage:"", target_stage:"", reason:"", comment_id:$id, event:$e}
+      end')"
+  printf '%s' "$result"
 }
 
 # Atomic transition order (per brainstorm §Atomic transition order):
