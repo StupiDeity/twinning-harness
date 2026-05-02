@@ -23,6 +23,7 @@ section_body() {
   ' "$PROMPTS"
 }
 
+s2="$(section_body "## 2. Plan Agent")"
 s3="$(section_body "## 3. Implementation Agent (Backend)")"
 s4="$(section_body "## 4. UI Agent (Frontend)")"
 s8="$(section_body "## 8. Release Agent")"
@@ -71,6 +72,18 @@ if printf '%s\n' "$s8" | grep -qE 'pipeline-release\.yml sweep already swapped';
   nope "§8 lacks obsolete 'pipeline-release.yml sweep' phrase" "phrase still present"
 else
   ok "§8 lacks obsolete 'pipeline-release.yml sweep' phrase"
+fi
+
+# ─── ENG-52: §2 has BOTH a Tauri AND a non-Tauri api-contract example ───
+if printf '%s\n' "$s2" | grep -qF '#[tauri::command]'; then
+  ok "§2 preserves Tauri api-contract example (#[tauri::command])"
+else
+  nope "§2 preserves Tauri api-contract example (#[tauri::command])" "phrase missing"
+fi
+if printf '%s\n' "$s2" | grep -qF '@app.route'; then
+  ok "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)"
+else
+  nope "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)" "phrase missing"
 fi
 
 # ─── ENG-50 / ENG-54: §5 invariants ───────────────────────────────────
