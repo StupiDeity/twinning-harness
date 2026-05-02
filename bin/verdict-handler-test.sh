@@ -775,6 +775,89 @@ else
   pass_at "ENG-50 bootstrap: to!=reviewing does not call bootstrap"
 fi
 
+# ─── Group: find_fresh_verdict equivalence (ENG-60 Phase 1) ──────────────
+
+printf '\n--- find_fresh_verdict accepts new-shape markers ---\n'
+
+# Fixture FV1: new-shape stage-summary marker should be detected as fresh verdict.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → implementing -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=pass stage=implementing -->"}
+]'
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+chmod +x "$STUB_DIR/linear.sh"
+_VH_SCRIPT_DIR="$STUB_DIR"
+result="$(find_fresh_verdict ENG-FV1)"
+[[ "$(jq -r '.marker' <<<"$result")" == "pipeline-stage-summary" || "$(jq -r '.event.event // ""' <<<"$result")" == "verdict" ]] \
+  && pass_at "FV1: new-shape stage-summary detected" || fail_at "FV1: new-shape stage-summary detected" "got: $result"
+
+# Fixture FV2: new-shape rejection
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: implementing → reviewing -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=fail target=planning -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(find_fresh_verdict ENG-FV2)"
+target="$(jq -r '.target_stage // .target // ""' <<<"$result")"
+[[ "$target" == "planning" ]] && pass_at "FV2: new-shape rejection target=planning" || fail_at "FV2: new-shape rejection target=planning" "got: $result"
+
+# Fixture FV3: mixed bodies — old transition, new halt — halt detected
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → implementing -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=halt reason=agent-blocked -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(find_fresh_verdict ENG-FV3)"
+reason="$(jq -r '.reason // ""' <<<"$result")"
+[[ "$reason" == "agent-blocked" ]] && pass_at "FV3: mixed-shape halt detected" || fail_at "FV3: mixed-shape halt detected" "got: $result"
+
+# Fixture FV4: ALSO assert old-shape still works (equivalence with new)
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → implementing -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline-stage-summary: implementing -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(find_fresh_verdict ENG-FV4)"
+src="$(jq -r '.source_stage // .stage // ""' <<<"$result")"
+[[ "$src" == "implementing" ]] && pass_at "FV4: old-shape stage-summary still detected" || fail_at "FV4: old-shape stage-summary still detected" "got: $result"
+
+# Restore stub to the full-featured version used by earlier cases.
+cat > "$STUB_DIR/linear.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "linear.sh $*" >> "$STUB_LOG"
+case "$1" in
+  get-comments) printf '%s\n' "${VH_FIXTURE_COMMENTS:-[]}" ;;
+  has-label)
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      [[ "$lbl" == "$3" ]] && exit 0
+    done
+    exit 1 ;;
+  stage-of) printf '%s\n' "${VH_CURRENT_STAGE_LABEL:-}" ;;
+  all-stage-labels)
+    result=""
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      [[ "$lbl" == stage:* ]] && result="${result:+$result }$lbl"
+    done
+    printf '%s\n' "$result" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
