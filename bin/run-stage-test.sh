@@ -2140,6 +2140,35 @@ else
 fi
 unset MOCK_COMMENTS_JSON
 
+# ─── Group: marker-emission audit accepts new-shape (ENG-60 Phase 1) ─────
+
+printf '\n--- marker-emission audit detects new-shape verdict ---\n'
+
+# Fixture MEA1: a comment with new-shape verdict pass should NOT trigger
+# the defensive halt-add path (because find_fresh_verdict returns non-empty).
+# Note: find_fresh_verdict was stubbed at line ~1684 for earlier test cases;
+# we must restore it here so the real implementation is called.
+source "$HARNESS_DIR/verdict-handler.sh"
+
+cat > "$STUB_DIR/linear.sh" <<'SH'
+#!/bin/bash
+if [[ "$1" == "get-comments" ]]; then
+  printf '%s' '[{"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → implementing -->"},{"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=pass stage=implementing -->"}]'
+fi
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# Override _VH_SCRIPT_DIR to point to our stub directory
+_VH_SCRIPT_DIR="$STUB_DIR"
+export _VH_SCRIPT_DIR
+
+result="$(find_fresh_verdict ENG-MEA1)"
+[[ -n "$result" ]] && pass_at "MEA1: new-shape pass detected for marker-emission audit" || fail_at "MEA1" "got empty result"
+
+# Extract the result field
+result_field="$(jq -r '.event.result' <<<"$result")"
+[[ "$result_field" == "pass" ]] && pass_at "MEA1: result=pass via event field" || fail_at "MEA1 result" "got: $result_field"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
