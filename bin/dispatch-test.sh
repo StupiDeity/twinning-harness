@@ -642,6 +642,102 @@ else
   fail_at "fixture-K forward-compat" "keys=$keys_k request_id=$has_request_id_k thinking=$has_thinking_k"
 fi
 
+# ─── Group 7: assert_no_tool_invocation fixtures (ENG-43, AS1-AS6) ────
+# AS1-AS6 deliver the issue's fixtures E-J (renamed per brainstorm
+# D-009 to avoid colliding with existing fixtures A-K above). Each
+# fixture writes (or does not write) an NDJSON file under
+# $_TEST_STUB_DIR/, calls assert_no_tool_invocation directly, and
+# asserts the (rc, stdout) tuple. No claude invocation, no real renderer.
+printf '\n--- assert_no_tool_invocation fixtures (AS1-AS6, ENG-43; issue fixtures E-J) ---\n'
+
+if ! declare -f assert_no_tool_invocation >/dev/null 2>&1; then
+  fail_at "precondition: assert_no_tool_invocation defined in dispatch.sh" \
+          "function not found after sourcing — Task 1 implementation missing"
+  printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
+# AS1 — issue fixture E: tool_use invoking gh pr create matches
+TX_AS1="$_TEST_STUB_DIR/tx-as1.ndjson"
+cat > "$TX_AS1" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as1","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title foo --body bar"}}]}}
+NDJSON
+out_as1="$(assert_no_tool_invocation "$TX_AS1" "gh pr create")" && rc_as1=0 || rc_as1=$?
+if [[ "$rc_as1" == "1" && "$out_as1" == "gh pr create --title foo --body bar" ]]; then
+  pass_at "AS1: tool_use match returns 1 + matched command on stdout"
+else
+  fail_at "AS1" "rc=$rc_as1 out=$out_as1"
+fi
+
+# AS2 — issue fixture F: only allowed tools (git, gh pr list, Read, Edit); rc=0
+TX_AS2="$_TEST_STUB_DIR/tx-as2.ndjson"
+cat > "$TX_AS2" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as2","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git log --oneline -5"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr list --state open"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"README.md"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"x"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}
+NDJSON
+out_as2="$(assert_no_tool_invocation "$TX_AS2" "gh pr create")" && rc_as2=0 || rc_as2=$?
+if [[ "$rc_as2" == "0" && -z "$out_as2" ]]; then
+  pass_at "AS2: only allowed tools (git/gh pr list/Read/Edit/empty) → rc=0, empty stdout"
+else
+  fail_at "AS2" "rc=$rc_as2 out=$out_as2"
+fi
+
+# AS3 — issue fixture G: text block with literal `gh pr create` prose ignored
+TX_AS3="$_TEST_STUB_DIR/tx-as3.ndjson"
+cat > "$TX_AS3" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as3","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I considered gh pr create but used git instead."}]}}
+NDJSON
+out_as3="$(assert_no_tool_invocation "$TX_AS3" "gh pr create")" && rc_as3=0 || rc_as3=$?
+if [[ "$rc_as3" == "0" && -z "$out_as3" ]]; then
+  pass_at "AS3: text block prose with literal pattern → rc=0 (text blocks ignored)"
+else
+  fail_at "AS3" "rc=$rc_as3 out=$out_as3"
+fi
+
+# AS4 — issue fixture H: JSON-escaped quoted "gh pr create" inside text block ignored
+TX_AS4="$_TEST_STUB_DIR/tx-as4.ndjson"
+cat > "$TX_AS4" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as4","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The doc says \"gh pr create\" is forbidden here."}]}}
+NDJSON
+out_as4="$(assert_no_tool_invocation "$TX_AS4" "gh pr create")" && rc_as4=0 || rc_as4=$?
+if [[ "$rc_as4" == "0" && -z "$out_as4" ]]; then
+  pass_at "AS4: JSON-escaped quoted pattern in text block → rc=0 (text blocks ignored)"
+else
+  fail_at "AS4" "rc=$rc_as4 out=$out_as4"
+fi
+
+# AS5 — issue fixture I: malformed JSON line skipped via fromjson?, subsequent match returned
+TX_AS5="$_TEST_STUB_DIR/tx-as5.ndjson"
+cat > "$TX_AS5" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as5","model":"claude-opus-4-7"}
+{not json{
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --draft"}}]}}
+NDJSON
+out_as5="$(assert_no_tool_invocation "$TX_AS5" "gh pr create")" && rc_as5=0 || rc_as5=$?
+if [[ "$rc_as5" == "1" && "$out_as5" == "gh pr create --draft" ]]; then
+  pass_at "AS5: malformed line skipped via fromjson?; subsequent match returns 1"
+else
+  fail_at "AS5" "rc=$rc_as5 out=$out_as5"
+fi
+
+# AS6 — issue fixture J: missing transcript file → rc=0 (soft-fail per D-005)
+TX_AS6="$_TEST_STUB_DIR/tx-as6-missing-do-not-create.ndjson"
+rm -f "$TX_AS6"
+out_as6="$(assert_no_tool_invocation "$TX_AS6" "gh pr create")" && rc_as6=0 || rc_as6=$?
+if [[ "$rc_as6" == "0" && -z "$out_as6" ]]; then
+  pass_at "AS6: missing transcript → rc=0 (soft-fail)"
+else
+  fail_at "AS6" "rc=$rc_as6 out=$out_as6"
+fi
+
 # ─── ENG-49 Gap #7: prompt↔allowlist contract ─────────────────────────
 # For each stage, every `gh pr <verb>` token appearing in
 # AGENT_PROMPTS.md §S must be allowlisted in allowed_tools_for(S).
