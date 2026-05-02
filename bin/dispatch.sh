@@ -92,8 +92,10 @@ assert_no_tool_invocation() {
 #   - SEC-010: C0 control chars stripped from agent text before logging
 #     (defends against `\r[FAKE LOG]` log forging).
 _render_and_capture_stream() {
-  local usage_file="$1" issue_dir="$2"
+  local usage_file="$1" issue_dir="$2" stage="${3:-}"
   local raw_capture="${issue_dir}/.raw-stream.ndjson.tmp"
+  local violation_file="${issue_dir}/.transcript-violation-${stage}"
+  rm -f "$violation_file"            # idempotent pre-clean (D-008)
   trap 'rm -f "$raw_capture"' RETURN
   mkdir -p "$issue_dir"
 
@@ -143,6 +145,21 @@ _render_and_capture_stream() {
     fi
   else
     log "[cost] no result event found in stream (soft fail; usage-<stage>.json not written)"
+  fi
+
+  # ENG-43: defense-in-depth assertion. Tool lane should already deny
+  # Bash(gh:*) for implement (allowed_tools_for case above); this is the
+  # second line of defense if the lane is ever misconfigured. Gated on
+  # stage == "implement" only — other stages observe no behavior change.
+  if [[ "$stage" == "implement" ]]; then
+    local _matched_cmd
+    if _matched_cmd="$(assert_no_tool_invocation "$raw_capture" "gh pr create")"; then
+      :   # rc 0: no match, fall through
+    else
+      printf '%s\n' "$_matched_cmd" > "$violation_file"
+      log "[assert] implement-stage transcript invoked forbidden tool: ${_matched_cmd}"
+      return 22
+    fi
   fi
 }
 
