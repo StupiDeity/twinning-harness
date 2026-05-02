@@ -39,6 +39,31 @@ release_claude_mutex() {
   rm -rf "$CLAUDE_MUTEX_DIR"
 }
 
+# ─── Transcript-based assertion (ENG-43) ─────────────────────────────────
+# Single jq fork; reads NDJSON from $transcript line by line, finds tool_use
+# blocks invoking Bash whose .input.command starts with $pattern, and prints
+# the FIRST match on stdout (returning 1). Soft-fail (return 0) on
+# empty/missing transcript so dry-run / planning-only paths never synthesize
+# false positives. Pure: no harness ambient context (D-010).
+assert_no_tool_invocation() {
+  local transcript="$1" pattern="$2"
+  [[ -s "$transcript" ]] || return 0
+  local matched
+  matched="$(jq -Rr --arg p "$pattern" '
+    fromjson? // empty
+    | select(.type == "assistant")
+    | .message.content[]?
+    | select(.type == "tool_use" and .name == "Bash")
+    | (.input.command // "")
+    | select(startswith($p))
+  ' "$transcript" 2>/dev/null | head -1)" || true
+  if [[ -n "$matched" ]]; then
+    printf '%s\n' "$matched"
+    return 1
+  fi
+  return 0
+}
+
 # ─── Stream-json renderer (ENG-26 D-002) ─────────────────────────────────
 # Reads NDJSON on stdin; emits prose-ish progress lines on STDOUT (so the
 # caller's `tee "$log_file"` captures them); mirrors the raw NDJSON to a
@@ -67,8 +92,10 @@ release_claude_mutex() {
 #   - SEC-010: C0 control chars stripped from agent text before logging
 #     (defends against `\r[FAKE LOG]` log forging).
 _render_and_capture_stream() {
-  local usage_file="$1" issue_dir="$2"
+  local usage_file="$1" issue_dir="$2" stage="${3:-}"
   local raw_capture="${issue_dir}/.raw-stream.ndjson.tmp"
+  local violation_file="${issue_dir}/.transcript-violation-${stage}"
+  rm -f "$violation_file"            # idempotent pre-clean (D-008)
   trap 'rm -f "$raw_capture"' RETURN
   mkdir -p "$issue_dir"
 
@@ -118,6 +145,21 @@ _render_and_capture_stream() {
     fi
   else
     log "[cost] no result event found in stream (soft fail; usage-<stage>.json not written)"
+  fi
+
+  # ENG-43: defense-in-depth assertion. Tool lane should already deny
+  # Bash(gh:*) for implement (allowed_tools_for case above); this is the
+  # second line of defense if the lane is ever misconfigured. Gated on
+  # stage == "implement" only — other stages observe no behavior change.
+  if [[ "$stage" == "implement" ]]; then
+    local _matched_cmd
+    if _matched_cmd="$(assert_no_tool_invocation "$raw_capture" "gh pr create")"; then
+      :   # rc 0: no match, fall through
+    else
+      printf '%s\n' "$_matched_cmd" > "$violation_file"
+      log "[assert] implement-stage transcript invoked forbidden tool: ${_matched_cmd}"
+      return 22
+    fi
   fi
 }
 
@@ -285,7 +327,7 @@ main() {
     # nearly unreadable on busy days.
     if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
       "${cmd[@]}" < "$prompt_file" \
-        | _render_and_capture_stream "$usage_file" "$issue_state_dir" \
+        | _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage" \
         > "$log_file"
     else
       "${cmd[@]}" < "$prompt_file" > "$log_file"
@@ -294,7 +336,7 @@ main() {
     log "dispatching stage=$stage"
     if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
       "${cmd[@]}" < "$prompt_file" \
-        | _render_and_capture_stream "$usage_file" "$issue_state_dir"
+        | _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage"
     else
       "${cmd[@]}" < "$prompt_file"
     fi

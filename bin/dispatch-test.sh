@@ -642,6 +642,229 @@ else
   fail_at "fixture-K forward-compat" "keys=$keys_k request_id=$has_request_id_k thinking=$has_thinking_k"
 fi
 
+# ─── Group 7: assert_no_tool_invocation fixtures (ENG-43, AS1-AS6) ────
+# AS1-AS6 deliver the issue's fixtures E-J (renamed per brainstorm
+# D-009 to avoid colliding with existing fixtures A-K above). Each
+# fixture writes (or does not write) an NDJSON file under
+# $_TEST_STUB_DIR/, calls assert_no_tool_invocation directly, and
+# asserts the (rc, stdout) tuple. No claude invocation, no real renderer.
+printf '\n--- assert_no_tool_invocation fixtures (AS1-AS6, ENG-43; issue fixtures E-J) ---\n'
+
+if ! declare -f assert_no_tool_invocation >/dev/null 2>&1; then
+  fail_at "precondition: assert_no_tool_invocation defined in dispatch.sh" \
+          "function not found after sourcing — Task 1 implementation missing"
+  printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
+# AS1 — issue fixture E: tool_use invoking gh pr create matches
+TX_AS1="$_TEST_STUB_DIR/tx-as1.ndjson"
+cat > "$TX_AS1" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as1","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title foo --body bar"}}]}}
+NDJSON
+out_as1="$(assert_no_tool_invocation "$TX_AS1" "gh pr create")" && rc_as1=0 || rc_as1=$?
+if [[ "$rc_as1" == "1" && "$out_as1" == "gh pr create --title foo --body bar" ]]; then
+  pass_at "AS1: tool_use match returns 1 + matched command on stdout"
+else
+  fail_at "AS1" "rc=$rc_as1 out=$out_as1"
+fi
+
+# AS2 — issue fixture F: only allowed tools (git, gh pr list, Read, Edit); rc=0
+TX_AS2="$_TEST_STUB_DIR/tx-as2.ndjson"
+cat > "$TX_AS2" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as2","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git log --oneline -5"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr list --state open"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"README.md"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"x"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}
+NDJSON
+out_as2="$(assert_no_tool_invocation "$TX_AS2" "gh pr create")" && rc_as2=0 || rc_as2=$?
+if [[ "$rc_as2" == "0" && -z "$out_as2" ]]; then
+  pass_at "AS2: only allowed tools (git/gh pr list/Read/Edit/empty) → rc=0, empty stdout"
+else
+  fail_at "AS2" "rc=$rc_as2 out=$out_as2"
+fi
+
+# AS3 — issue fixture G: text block with literal `gh pr create` prose ignored
+TX_AS3="$_TEST_STUB_DIR/tx-as3.ndjson"
+cat > "$TX_AS3" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as3","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I considered gh pr create but used git instead."}]}}
+NDJSON
+out_as3="$(assert_no_tool_invocation "$TX_AS3" "gh pr create")" && rc_as3=0 || rc_as3=$?
+if [[ "$rc_as3" == "0" && -z "$out_as3" ]]; then
+  pass_at "AS3: text block prose with literal pattern → rc=0 (text blocks ignored)"
+else
+  fail_at "AS3" "rc=$rc_as3 out=$out_as3"
+fi
+
+# AS4 — issue fixture H: JSON-escaped quoted "gh pr create" inside text block ignored
+TX_AS4="$_TEST_STUB_DIR/tx-as4.ndjson"
+cat > "$TX_AS4" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as4","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The doc says \"gh pr create\" is forbidden here."}]}}
+NDJSON
+out_as4="$(assert_no_tool_invocation "$TX_AS4" "gh pr create")" && rc_as4=0 || rc_as4=$?
+if [[ "$rc_as4" == "0" && -z "$out_as4" ]]; then
+  pass_at "AS4: JSON-escaped quoted pattern in text block → rc=0 (text blocks ignored)"
+else
+  fail_at "AS4" "rc=$rc_as4 out=$out_as4"
+fi
+
+# AS5 — issue fixture I: malformed JSON line skipped via fromjson?, subsequent match returned
+TX_AS5="$_TEST_STUB_DIR/tx-as5.ndjson"
+cat > "$TX_AS5" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as5","model":"claude-opus-4-7"}
+{not json{
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --draft"}}]}}
+NDJSON
+out_as5="$(assert_no_tool_invocation "$TX_AS5" "gh pr create")" && rc_as5=0 || rc_as5=$?
+if [[ "$rc_as5" == "1" && "$out_as5" == "gh pr create --draft" ]]; then
+  pass_at "AS5: malformed line skipped via fromjson?; subsequent match returns 1"
+else
+  fail_at "AS5" "rc=$rc_as5 out=$out_as5"
+fi
+
+# AS6 — issue fixture J: missing transcript file → rc=0 (soft-fail per D-005)
+TX_AS6="$_TEST_STUB_DIR/tx-as6-missing-do-not-create.ndjson"
+rm -f "$TX_AS6"
+out_as6="$(assert_no_tool_invocation "$TX_AS6" "gh pr create")" && rc_as6=0 || rc_as6=$?
+if [[ "$rc_as6" == "0" && -z "$out_as6" ]]; then
+  pass_at "AS6: missing transcript → rc=0 (soft-fail)"
+else
+  fail_at "AS6" "rc=$rc_as6 out=$out_as6"
+fi
+
+# ─── QA-authored adversarial fixtures (AT1-AT5; ENG-43 not in Failure Mode → Test Map) ─
+# AS1-AS6 cover the helper in isolation. AT1-AT5 cover gaps the plan
+# explicitly accepted as "implicit" or didn't enumerate — most importantly
+# the renderer-wrapper integration (gating, sidecar write, pre-clean) which
+# AS1-AS6 do not exercise at all.
+
+# ─── AT1: renderer integration, stage="implement" + match → rc=22, sidecar, log ─
+# AS1-AS6 exercise the helper directly. None test that
+# _render_and_capture_stream actually fires the assertion when stage is
+# implement, writes the sidecar to $issue_dir/.transcript-violation-implement,
+# logs the matched command, and returns 22. Pin the renderer wrapper end-to-end.
+USAGE_AT1="$ISSUE_DIR/usage-implement-AT1.json"
+RAW_AT1="$ISSUE_DIR/.raw-stream.ndjson.tmp"
+VIOLATION_AT1="$ISSUE_DIR/.transcript-violation-implement"
+rm -f "$USAGE_AT1" "$RAW_AT1" "$VIOLATION_AT1"
+
+at1_rc=0
+RENDER_OUT_AT1="$(
+  _render_and_capture_stream "$USAGE_AT1" "$ISSUE_DIR" "implement" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at1","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title at1 --body forbidden"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || at1_rc=$?
+
+if [[ "$at1_rc" == "22" ]] \
+   && [[ -f "$VIOLATION_AT1" ]] \
+   && [[ "$(cat "$VIOLATION_AT1")" == "gh pr create --title at1 --body forbidden" ]] \
+   && grep -q '\[assert\] implement-stage transcript invoked forbidden tool: gh pr create --title at1 --body forbidden' <<<"$RENDER_OUT_AT1"; then
+  pass_at "AT1 (renderer integration): stage=implement+match → rc=22, sidecar written, log line emitted"
+else
+  fail_at "AT1 renderer integration" "rc=$at1_rc viol_exists=$([[ -f $VIOLATION_AT1 ]] && echo y || echo n) viol_body=$(cat "$VIOLATION_AT1" 2>/dev/null) out=$RENDER_OUT_AT1"
+fi
+rm -f "$VIOLATION_AT1"
+
+# ─── AT2: renderer cross-stage gating: stage="plan" + match in transcript → rc=0 ─
+# Verify the stage gate actually works. A non-implement stage with a
+# transcript that *would* match must not trigger the assertion, must not
+# write any sidecar (neither .transcript-violation-implement nor
+# .transcript-violation-plan), and must return 0.
+USAGE_AT2="$ISSUE_DIR/usage-plan-AT2.json"
+VIOLATION_AT2_IMPL="$ISSUE_DIR/.transcript-violation-implement"
+VIOLATION_AT2_PLAN="$ISSUE_DIR/.transcript-violation-plan"
+rm -f "$USAGE_AT2" "$ISSUE_DIR/.raw-stream.ndjson.tmp" "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN"
+
+at2_rc=0
+_render_and_capture_stream "$USAGE_AT2" "$ISSUE_DIR" "plan" >/dev/null 2>&1 <<'NDJSON' || at2_rc=$?
+{"type":"system","subtype":"init","session_id":"at2","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title at2-should-be-ignored"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+
+if [[ "$at2_rc" == "0" ]] \
+   && [[ ! -f "$VIOLATION_AT2_IMPL" ]] \
+   && [[ ! -f "$VIOLATION_AT2_PLAN" ]]; then
+  pass_at "AT2 (cross-stage gating): stage=plan with matching transcript → rc=0, no sidecar"
+else
+  fail_at "AT2 cross-stage gating" "rc=$at2_rc viol_impl=$([[ -f $VIOLATION_AT2_IMPL ]] && echo y || echo n) viol_plan=$([[ -f $VIOLATION_AT2_PLAN ]] && echo y || echo n)"
+fi
+rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN"
+
+# ─── AT3: renderer pre-cleans stale sidecar from prior crashed dispatch ───
+# Plan §4 row "Sidecar present from a prior crashed dispatch" is marked
+# "implicit (single-line rm -f in Task 2) — covered by code review".
+# Promote that to a real test: pre-seed a stale sidecar, run the renderer
+# with implement stage and a *clean* transcript, and verify the stale
+# sidecar is removed and no new one is written.
+USAGE_AT3="$ISSUE_DIR/usage-implement-AT3.json"
+VIOLATION_AT3="$ISSUE_DIR/.transcript-violation-implement"
+rm -f "$USAGE_AT3" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+printf 'stale gh pr create --title leftover-from-prior-crash\n' > "$VIOLATION_AT3"
+[[ -s "$VIOLATION_AT3" ]] || die "AT3 setup failed: stale sidecar not seeded"
+
+at3_rc=0
+_render_and_capture_stream "$USAGE_AT3" "$ISSUE_DIR" "implement" >/dev/null 2>&1 <<'NDJSON' || at3_rc=$?
+{"type":"system","subtype":"init","session_id":"at3","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+
+if [[ "$at3_rc" == "0" ]] && [[ ! -f "$VIOLATION_AT3" ]]; then
+  pass_at "AT3 (pre-clean stale sidecar): renderer entry rm -f removed prior-crash .transcript-violation-implement"
+else
+  fail_at "AT3 pre-clean stale sidecar" "rc=$at3_rc viol_exists=$([[ -f $VIOLATION_AT3 ]] && echo y || echo n) viol_contents=$(cat "$VIOLATION_AT3" 2>/dev/null)"
+fi
+rm -f "$VIOLATION_AT3"
+
+# ─── AT4: helper multi-match ordering — head -1 returns the FIRST match ───
+# Plan §4 row "Multiple matching tool_use blocks" is marked "implicit
+# (jq stream order; AS1 already exercises a single match)". AS1 has one
+# match, so it cannot pin first-vs-last. Pin "first wins" so a future
+# refactor (e.g. swapping head -1 for tail -1, or moving to a sort-by
+# filter) breaks loudly.
+TX_AT4="$_TEST_STUB_DIR/tx-at4.ndjson"
+cat > "$TX_AT4" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at4","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title FIRST"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title SECOND"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title THIRD"}}]}}
+NDJSON
+out_at4="$(assert_no_tool_invocation "$TX_AT4" "gh pr create")" && rc_at4=0 || rc_at4=$?
+if [[ "$rc_at4" == "1" && "$out_at4" == "gh pr create --title FIRST" ]]; then
+  pass_at "AT4 (multi-match): head -1 returns the FIRST match (not last); rc=1, first command on stdout"
+else
+  fail_at "AT4 multi-match" "rc=$rc_at4 out=$out_at4"
+fi
+
+# ─── AT5: pattern with regex metacharacters → literal startswith, not regex ──
+# Plan §4 row "Pattern contains regex metacharacters" is "implicit (jq
+# semantics)". jq's startswith is a literal-string match. Pin: pattern
+# "gh pr create.*" matches "gh pr create.*foo" (literal `.*` characters)
+# but NOT "gh pr create --title x" (which would match if `.*` were a
+# regex wildcard). A future refactor swapping to `test($p)` or `match($p)`
+# would silently broaden the match surface.
+TX_AT5="$_TEST_STUB_DIR/tx-at5.ndjson"
+cat > "$TX_AT5" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at5","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title would-match-if-regex"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create.*literal-dot-star"}}]}}
+NDJSON
+out_at5="$(assert_no_tool_invocation "$TX_AT5" "gh pr create.*")" && rc_at5=0 || rc_at5=$?
+if [[ "$rc_at5" == "1" && "$out_at5" == "gh pr create.*literal-dot-star" ]]; then
+  pass_at "AT5 (regex literal): pattern \"gh pr create.*\" matched as literal characters; \"gh pr create --title …\" not matched"
+else
+  fail_at "AT5 regex literal" "rc=$rc_at5 out=$out_at5"
+fi
+
 # ─── ENG-49 Gap #7: prompt↔allowlist contract ─────────────────────────
 # For each stage, every `gh pr <verb>` token appearing in
 # AGENT_PROMPTS.md §S must be allowlisted in allowed_tools_for(S).

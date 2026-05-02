@@ -566,6 +566,19 @@ main() {
         "dispatch wall-clock timeout — agent exceeded budget without exiting" 124
       rm -f "$prompt_file"
       exit 124
+    elif (( dispatch_rc == 22 )); then
+      # ENG-43: implement-stage transcript invoked the forbidden
+      # `gh pr create` tool. Read the matched command from the sidecar
+      # written by _render_and_capture_stream and surface the same
+      # operator-facing halt as the deleted state-check guard:
+      # exit 22, skip-until-human-acts, pr-opened-too-early.
+      local _viol_file _viol_cmd
+      _viol_file="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_cmd="$(cat "$_viol_file" 2>/dev/null || printf '<command-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "implement-stage transcript invoked forbidden tool: $_viol_cmd" 22
+      rm -f "$_viol_file" "$prompt_file"
+      exit 22
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20
