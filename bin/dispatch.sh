@@ -39,6 +39,31 @@ release_claude_mutex() {
   rm -rf "$CLAUDE_MUTEX_DIR"
 }
 
+# ─── Transcript-based assertion (ENG-43) ─────────────────────────────────
+# Single jq fork; reads NDJSON from $transcript line by line, finds tool_use
+# blocks invoking Bash whose .input.command starts with $pattern, and prints
+# the FIRST match on stdout (returning 1). Soft-fail (return 0) on
+# empty/missing transcript so dry-run / planning-only paths never synthesize
+# false positives. Pure: no harness ambient context (D-010).
+assert_no_tool_invocation() {
+  local transcript="$1" pattern="$2"
+  [[ -s "$transcript" ]] || return 0
+  local matched
+  matched="$(jq -Rr --arg p "$pattern" '
+    fromjson? // empty
+    | select(.type == "assistant")
+    | .message.content[]?
+    | select(.type == "tool_use" and .name == "Bash")
+    | (.input.command // "")
+    | select(startswith($p))
+  ' "$transcript" 2>/dev/null | head -1)" || true
+  if [[ -n "$matched" ]]; then
+    printf '%s\n' "$matched"
+    return 1
+  fi
+  return 0
+}
+
 # ─── Stream-json renderer (ENG-26 D-002) ─────────────────────────────────
 # Reads NDJSON on stdin; emits prose-ish progress lines on STDOUT (so the
 # caller's `tee "$log_file"` captures them); mirrors the raw NDJSON to a
