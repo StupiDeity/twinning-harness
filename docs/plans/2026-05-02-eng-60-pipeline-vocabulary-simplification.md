@@ -776,6 +776,16 @@ Each task gets a full TDD-disciplined sub-plan in a follow-up document
 (`docs/plans/2026-05-XX-eng-60-phase-2-write-new.md`) written after Phase 1 PR
 merges. Sketches:
 
+> **Carryover from Phase 1 Task 1.3:** new-shape `verdict result=fail target=X`
+> markers do not carry `source_stage`. Old-shape two-marker rejections still
+> work via the `rejection_src` grep added in `find_fresh_verdict`. When Phase 2
+> teaches agents to emit new-shape rejections, `verdict_handler`'s rejection
+> branch must fall back to the issue's current `stage:*` label when
+> `source_stage` is empty — otherwise `_vh_lookup_loopback` will fail and the
+> dispatch will silently halt as a protocol violation. Capture this as an
+> explicit acceptance criterion in T2.8 (AGENT_PROMPTS.md verdict-marker
+> rewrite) and T2.10 (legacy-label cleanup, where the loopback table is touched).
+
 - **T2.1** — Create `bin/pipeline.sh` skeleton with `status <issue>` subcommand. Read-only; calls `parse_pipeline_marker` per comment to produce a human-readable event log.
 - **T2.2** — Add `bin/pipeline event <issue> verdict <pass|fail|halt|wait|pivot> [args]` subcommand. Writes `<!-- pipeline: verdict result=... -->` markers via `linear.sh add-comment`. Validates against `bin/pipeline-events.json`.
 - **T2.3** — Add `bin/pipeline event <issue> transition <from→to>` subcommand. Same pattern; lane-fenced (`PIPELINE_WRITER=orchestrator`).
