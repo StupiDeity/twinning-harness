@@ -1,0 +1,25 @@
+{
+  "_comment": "Closed vocabulary registry for pipeline events. Phase 1 parsers use this for documentation only; Phase 2 writers will validate against it. See docs/brainstorms/2026-05-02-pipeline-vocabulary-simplification-design.md §7.4.",
+  "verdict_results": ["pass", "fail", "halt", "wait", "pivot"],
+  "halt_reasons": [
+    "agent-blocked",
+    "smoke-failed",
+    "iteration-exhausted",
+    "scope-violation",
+    "protocol-violation",
+    "dispatch-timeout",
+    "pr-opened-too-early"
+  ],
+  "wait_reasons": ["awaiting-approval", "awaiting-ci"],
+  "fail_targets": ["brainstorming", "planning", "implementing", "ui"],
+  "pivot_targets": ["planning"],
+  "decision_actions": ["continue", "approve", "abandon"],
+  "decision_gates": ["scope", "build-cap"],
+  "stages": [
+    "brainstorming", "planning", "implementing", "ui",
+    "reviewing", "qa", "building", "released"
+  ],
+  "legacy_halt_reason_aliases": {
+    "scope-deviation": "scope-violation"
+  }
+}
