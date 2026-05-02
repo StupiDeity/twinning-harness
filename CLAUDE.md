@@ -299,4 +299,36 @@ Issues at any other stage are unaffected.
 | Breaker tripped | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
-| Kill switch | `bash bin/halt.sh resolve …` or set `orchestrator.paused=true` (takes effect next tick) |
+| Kill switch | `bash bin/halt.sh resolve <ENG-N> --decision resume` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
+
+**What `--decision resume` clears (atomic, ENG-58):**
+
+1. `pipeline:halted` label
+2. `pipeline:skip-until-code-changes` and `pipeline:skip-until-human-acts` labels
+3. `$PROJECT_STATE_DIR/<ident>/wait-*.json` files
+4. `$PROJECT_STATE_DIR/<ident>/issue-state.json` IFF its `.policy == "skip-until-human-acts"`
+5. Posts a `<!-- pipeline-transition: <stage> → <stage> (operator-resume) -->` waypoint to reset `count_marker_since_last_transition` (rejection counter) and `find_fresh_verdict` freshness.
+
+`--decision scope-approved` / `--decision scope-rejected` are the
+NARROWER paths (they post the decision marker AND remove
+`pipeline:halted` — i.e., they DO clear item 1 — but they do NOT
+clear items (2)-(5) because scope-deviation halts don't accrue
+that side state). If stale state from an unrelated earlier
+failure coexists, halt.sh emits a one-line stderr advisory
+pointing the operator to the resume path.
+
+**Chained flow:** if an issue is halted for both a scope deviation
+AND a separate failure (e.g., budget exhaustion left a `wait-build.json`
+behind), run `--decision scope-approved` first, then run
+`--decision resume` to clear the residual side state. The second
+command is the documented chained step — D-011's `has-label
+pipeline:halted` guard makes this safe even though the halt label
+was already removed by the first command.
+
+**Idempotent — safe to re-run.** If `halt.sh resolve` errors mid-flow
+(network blip on a Linear write), re-running the same command picks
+up from where it left off. Every operation (remove-label, rm -f,
+add-comment) is idempotent; the operator-resume waypoint is posted
+LAST so a partial-failure leaves the issue in a re-runnable state
+(the halt label remains observable in Linear, prompting the operator
+to retry).
