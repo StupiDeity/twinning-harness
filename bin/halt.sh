@@ -13,6 +13,96 @@ source "$SCRIPT_DIR/common.sh"
 # ENG-41 T3: human lane — operator CLI; all Linear writes are unrestricted.
 export PIPELINE_WRITER=human
 
+# ENG-58 D-001/D-005/D-006/D-007: atomic side-state reset. Removes the
+# pipeline:skip-until-* labels, deletes wait-*.json under the per-issue
+# state dir, and conditionally deletes issue-state.json (only when
+# .policy == "skip-until-human-acts" — we preserve the evidence trail
+# for skip-until-code-changes so poll.sh's auto-resume still works).
+# Writes machine-shorthand stats to stdout and human-readable log lines
+# to stderr. Idempotent: every operation no-ops when the target is
+# absent.
+_resolve_reset_side_state() {
+  local issue="$1"
+  local d; d="$(issue_dir "$issue")"
+  [[ -n "$d" ]] || die "halt-resolve: empty issue_dir for $issue"
+
+  local skip_count=0
+  for lbl in "pipeline:skip-until-code-changes" "pipeline:skip-until-human-acts"; do
+    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "$lbl" 2>/dev/null; then
+      bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "$lbl" 2>/dev/null || true
+      skip_count=$((skip_count + 1))
+    fi
+  done
+
+  local wait_count=0
+  if compgen -G "$d/wait-*.json" >/dev/null 2>&1; then
+    wait_count="$(compgen -G "$d/wait-*.json" | wc -l | tr -d ' ')"
+    rm -f "$d"/wait-*.json 2>/dev/null || true
+  fi
+
+  local state_file="$d/issue-state.json"
+  local state_removed=false
+  if [[ -s "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+    local policy
+    policy="$(jq -r '.policy // ""' "$state_file" 2>/dev/null || printf '')"
+    if [[ "$policy" == "skip-until-human-acts" ]]; then
+      rm -f "$state_file"
+      state_removed=true
+      log "halt-resolve: removed $state_file (policy=skip-until-human-acts)"
+    fi
+  fi
+
+  printf 'wait_files=%d skip_labels=%d state_file=%s' \
+    "$wait_count" "$skip_count" "$state_removed"
+}
+
+# ENG-58 D-013: render the machine-shorthand stats string into a
+# human-readable sentence appended to the operator-resume waypoint body.
+# Input shape: "wait_files=N skip_labels=M state_file=true|false".
+_format_reset_audit() {
+  local stats="$1"
+  local wf sl sf
+  wf="$(printf '%s' "$stats" | sed -nE 's/.*wait_files=([0-9]+).*/\1/p')"
+  sl="$(printf '%s' "$stats" | sed -nE 's/.*skip_labels=([0-9]+).*/\1/p')"
+  sf="$(printf '%s' "$stats" | sed -nE 's/.*state_file=(true|false).*/\1/p')"
+  local state_phrase
+  if [[ "$sf" == "true" ]]; then
+    state_phrase=", issue-state.json removed"
+  else
+    state_phrase=""
+  fi
+  printf '_Cleared:_ %s wait file(s), %s skip-until-* label(s)%s.\n' \
+    "${wf:-0}" "${sl:-0}" "$state_phrase"
+}
+
+# ENG-58 D-013: emit a halt-resume metrics event capturing the cleanup
+# stats. Wrapped in `|| true` so an emission failure does not fail the
+# resume operation.
+_emit_halt_resume_metric() {
+  local issue="$1" stage="$2" stats="$3" waypoint_posted="$4"
+  bash "$SCRIPT_DIR/metrics.sh" halt-resume "$issue" "$stage" \
+    "atomic-reset" 0 "$stats waypoint_posted=$waypoint_posted" || true
+}
+
+# ENG-58 D-012: stderr-only advisory printed from the non-resume scope-*
+# branch when stale halt-related side state coexists with a scope
+# decision. Points the operator to the documented chained step.
+_observe_stale_side_state() {
+  local issue="$1"
+  local d; d="$(issue_dir "$issue")"
+  local hits=()
+  bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:skip-until-code-changes" 2>/dev/null \
+    && hits+=("pipeline:skip-until-code-changes")
+  bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:skip-until-human-acts" 2>/dev/null \
+    && hits+=("pipeline:skip-until-human-acts")
+  compgen -G "$d/wait-*.json" >/dev/null 2>&1 && hits+=("$d/wait-*.json")
+  [[ -s "$d/issue-state.json" ]] && hits+=("$d/issue-state.json")
+  if (( ${#hits[@]} > 0 )); then
+    printf 'halt.sh: NOTE — stale side state detected on %s (%s); run `bash "%s/bin/halt.sh" resolve %s --decision resume` to clear.\n' \
+      "$issue" "$(IFS=', '; printf '%s' "${hits[*]}")" "$HARNESS_ROOT" "$issue" >&2
+  fi
+}
+
 resolve() {
   local issue="$1" decision="$2"
   [[ -n "$issue" && -n "$decision" ]] \
