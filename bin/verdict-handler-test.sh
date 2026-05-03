@@ -347,12 +347,13 @@ rc=0; verdict_handler "ENG-911" "implementing" >/dev/null 2>&1 || rc=$?
   && pass_at "case-11 scope-deviation-emits-halt-marker" \
   || fail_at "case-11 scope-deviation-emits-halt-marker" "rc=$rc"
 
-# ─── Case 12: halt-sh-resolve-posts-decision-and-clears-halt ─────────
-# After halt.sh resolve posts a pipeline-decision comment newer than the
-# scope-deviation halt, the verdict handler still sees the halt marker as
-# the most recent halt-or-verdict marker, so rc stays 1. halt.sh itself
-# is the actor that removes pipeline:halted — not verdict_handler. What
-# this case asserts is that find_fresh_verdict IGNORES pipeline-decision
+# ─── Case 12: decide-continue-posts-decision-and-clears-halt ─────────
+# After `bin/pipeline.sh decide --action continue` posts a decision
+# comment newer than the scope-violation halt, the verdict handler still
+# sees the halt marker as the most recent verdict-shape marker, so rc
+# stays 1. decide itself is the actor that removes pipeline:halted —
+# not verdict_handler. What this case asserts is that find_fresh_verdict
+# IGNORES decision-event markers
 # comments (they're not a verdict shape).
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \

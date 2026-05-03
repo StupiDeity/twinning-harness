@@ -19,6 +19,13 @@ STATE_FILE="${TARGET_CONFIG_DIR}/state.local.json"
 
 export HARNESS_ROOT TARGET_REPO HARNESS_STATE_DIR TARGET_CONFIG_DIR CONFIG IDS_CACHE STATE_FILE
 
+# Bot identity used by every git commit the harness creates (run-local.sh's
+# tick-end sweep and pipeline.sh decide --action continue's auto-commit).
+# Override in env to substitute (e.g. test fixtures).
+: "${BOT_NAME:=twinning-pipeline-bot}"
+: "${BOT_EMAIL:=twinning-pipeline-bot@users.noreply.github.com}"
+export BOT_NAME BOT_EMAIL
+
 # log/die defined early so slug resolution (below) can call die.
 log() {
   printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
