@@ -97,10 +97,6 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `building`
 - `released`
 
-### `legacy_halt_reason_aliases`
-
-- `scope-deviation` → `scope-violation`
-
 <!-- /GENERATED:registry -->
 
 ## Migration notes (Phase 2 only)

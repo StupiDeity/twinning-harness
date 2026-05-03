@@ -16,9 +16,11 @@ generated() {
     jq -r --arg f "$field" '.[$f][] | "- `" + . + "`"' "$REG"
     printf '\n'
   done
-  printf '### `legacy_halt_reason_aliases`\n\n'
-  jq -r '.legacy_halt_reason_aliases | to_entries[] | "- `" + .key + "` → `" + .value + "`"' "$REG"
-  printf '\n'
+  if jq -e '.legacy_halt_reason_aliases' "$REG" >/dev/null 2>&1; then
+    printf '### `legacy_halt_reason_aliases`\n\n'
+    jq -r '.legacy_halt_reason_aliases | to_entries[] | "- `" + .key + "` → `" + .value + "`"' "$REG"
+    printf '\n'
+  fi
 }
 
 # Use perl to do the substitution inline
