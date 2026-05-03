@@ -912,6 +912,40 @@ SH
 chmod +x "$STUB_DIR/linear.sh"
 _VH_SCRIPT_DIR="$STUB_DIR"
 
+# ─── Group: legacy-label drain (ENG-60 T2.13) ────────────────────────────
+
+printf '\n--- legacy pipeline-namespace labels are drained on transition ---\n'
+
+# Reuse case-1's setup: forward transition qa → building. Just check the
+# call log for the 5 legacy remove-label invocations.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline-transition: implementing → qa -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline-stage-summary: qa -->|2026-04-23T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:qa"
+VH_CURRENT_LABELS="stage:qa pipeline:halted"
+verdict_handler "ENG-T213" "qa" >/dev/null 2>&1 || true
+
+drained_count=0
+for legacy in pipeline:paused pipeline:scope-approval-needed pipeline:supersede pipeline:skip-until-code-changes pipeline:skip-until-human-acts; do
+  if calls_contains "remove-label ENG-T213 $legacy"; then
+    drained_count=$((drained_count + 1))
+  fi
+done
+[[ "$drained_count" -eq 5 ]] && pass_at "T213: all 5 legacy labels drained on transition" || fail_at "T213: legacy label drain" "drained=$drained_count/5; calls=$(cat "$STUB_LOG")"
+
+# Confirm pipeline:halted and pipeline:abandoned are NOT drained (kept labels).
+if calls_contains "remove-label ENG-T213 pipeline:halted" \
+   && ! calls_contains "remove-label ENG-T213 pipeline:abandoned"; then
+  # pipeline:halted IS removed — that's fine, it's the normal end-of-transition
+  # cleanup at step 5. The important thing is pipeline:abandoned is not drained.
+  pass_at "T213: pipeline:abandoned not in drain list"
+elif calls_contains "remove-label ENG-T213 pipeline:abandoned"; then
+  fail_at "T213: pipeline:abandoned must NOT be drained" "calls=$(cat "$STUB_LOG")"
+else
+  pass_at "T213: pipeline:abandoned not in drain list"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

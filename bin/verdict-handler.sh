@@ -59,6 +59,22 @@ _vh_protocol_violation() {
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
 }
 
+# ENG-60 T2.13: drain legacy pipeline-namespace labels on every transition.
+# These labels are folded into pipeline:halted / pipeline:abandoned per
+# design §7.5; removing them on every transition cleans them out
+# without a big-bang migration. linear.sh remove-label is a no-op when
+# the label isn't present, so this is safe to run unconditionally.
+# NOTE: pipeline:halted and pipeline:abandoned are NOT drained here —
+# those are the two legacy-namespace labels we keep. pipeline:rule-reviewed
+# is also excluded — it's the retrospective approval gate (orthogonal).
+_vh_drain_legacy_labels() {
+  local issue="$1"
+  local legacy
+  for legacy in pipeline:paused pipeline:scope-approval-needed pipeline:supersede pipeline:skip-until-code-changes pipeline:skip-until-human-acts; do
+    bash "$_VH_SCRIPT_DIR/linear.sh" remove-label "$issue" "$legacy" 2>/dev/null || true
+  done
+}
+
 # Extract the most recent verdict marker (pipeline-stage-summary,
 # pipeline-rejection, or pipeline-halt) that is newer than the most
 # recent pipeline-transition comment. pipeline-decision and
@@ -155,6 +171,7 @@ apply_transition() {
   fi
 
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "stage:${to}" || true
+  _vh_drain_legacy_labels "$issue"
   [[ -n "$from" ]] && bash "$_VH_SCRIPT_DIR/linear.sh" remove-label "$issue" "stage:${from}" || true
 
   if [[ "$to" == "reviewing" ]]; then
