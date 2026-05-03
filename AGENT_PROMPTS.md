@@ -306,9 +306,12 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    Do not stop after 5/6 just because the threshold in step 3 has been hit — skipping feasibility
    is a stage failure.
 3. **Iterate until the gate passes**: at least 5/6 personas return PASS AND feasibility
-   returns zero P0 findings. Iterate at most 3 times. If any P0 remains after iteration 3,
-   set status = `escalate` and proceed to step 5 with an escalation comment rather than a
-   success comment. Do NOT silently exit.
+   returns zero P0 findings. **After 2 persona-review iterations, if not all PASS or
+   feasibility still has any P0, run `bash bin/pipeline.sh event {issue_id} verdict halt
+   --reason iteration-exhausted` and exit. Do NOT start iteration 3.** This bounds the
+   worst-case dispatch at ~36–60 min and lets the operator inspect the partial doc plus
+   persona findings in the worktree before deciding `--action continue` (resume) or fixing
+   the underlying P0.
 4. **Commit artifacts**: the brainstorm doc, plus any new ADRs appended to
    `docs/knowledge/decisions.md` with status `proposed`.
 5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
@@ -320,8 +323,6 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
      (N is the count that returned PASS).
    - Notes (only on non-clean paths): concise paragraph per non-passing persona or
      unresolved P0. No 6-row table.
-   - Escalate tag: `<!-- meta: metric name=brainstorm_escalate -->` if any P0 remained
-     after iteration 3.
 
    Internally you still MUST run all 6 personas and record their verdicts in the
    brainstorm doc itself (under an "## Persona review" section) — that's the durable
