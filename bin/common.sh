@@ -120,6 +120,44 @@ failure_outcome_for_exit() {
   esac
 }
 # ─── Pipeline-marker parser (ENG-60) ──────────────────────────
+# _strip_code_blocks_and_spans <body> — pre-strip the body before the
+# parse_pipeline_marker grep so prose-quoted markers (backticked spans,
+# triple-backtick fences, 4-space-indented blocks) do NOT push the
+# freshness floor or trip protocol-violation halts (ENG-61 Bug A).
+#
+# Same-file private; not added to the export -f list (F-3 lane discipline).
+# Markers are written at column 0 by contract (AGENT_PROMPTS.md +
+# bin/pipeline.sh writes raw HTML comments unindented), so over-stripping
+# indented lines is benign.
+#
+# A15 fallback: ${var//pat/repl} treats the pattern as a glob. The
+# matched span (BASH_REMATCH[0]) here is backtick-fenced literal Linear
+# text — alphanumerics, whitespace, and punctuation. If a pathological
+# body surfaces post-deploy, swap step 2/3 for a sed-based substitution:
+#   body="$(printf '%s' "$body" | sed -E 's/`{3}[^`]*`{3}//g; s/`[^`]*`//g')"
+_strip_code_blocks_and_spans() {
+  local body="$1"
+  # Step 1 (multi-line bodies only): strip 4-space-indented blocks.
+  # Production callers (run-stage.sh, verdict-handler.sh, scope-check.sh,
+  # pipeline.sh) pre-collapse newlines via jq gsub("\n"; " ") before
+  # passing the body, so this is a no-op for them. Activates for direct
+  # callers (tests, future call sites that preserve newlines).
+  if [[ "$body" == *$'\n'* ]]; then
+    body="$(awk '!/^( {4,}|\t)/' <<<"$body")"
+  fi
+  # Collapse newlines to spaces so step 2/3 regexes scan in a single pass.
+  body="${body//$'\n'/ }"
+  # Step 2: triple-backtick fenced regions.
+  while [[ "$body" =~ \`\`\`[^\`]*\`\`\` ]]; do
+    body="${body//${BASH_REMATCH[0]}/ }"
+  done
+  # Step 3: single-backtick code spans.
+  while [[ "$body" =~ \`[^\`]*\` ]]; do
+    body="${body//${BASH_REMATCH[0]}/ }"
+  done
+  printf '%s' "$body"
+}
+
 # parse_pipeline_marker <body> — translate a Linear comment body containing
 # a pipeline marker (new shape) into a uniform JSON event.
 #
@@ -141,6 +179,11 @@ failure_outcome_for_exit() {
 parse_pipeline_marker() {
   local body="$1"
   local marker
+
+  # ENG-61 Bug A: pre-strip backtick-quoted spans/fences so prose-quoted
+  # markers in stage summaries, plan bodies, and discussion comments do
+  # NOT register as real state-driving events.
+  body="$(_strip_code_blocks_and_spans "$body")"
 
   # New shape: `<!-- pipeline: <event> [k=v ...] -->`
   marker="$(grep -oE '<!-- pipeline: [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
