@@ -35,8 +35,9 @@ TICK_COUNTER="$PROJECT_STATE_DIR/.tick-counter"
 CLEANUP_EVERY_N_TICKS=10
 LOG_DIR="$PROJECT_STATE_DIR/logs"
 LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
-BOT_NAME="twinning-pipeline-bot"
-BOT_EMAIL="twinning-pipeline-bot@users.noreply.github.com"
+# BOT_NAME / BOT_EMAIL provided by common.sh (shared with pipeline.sh's
+# decide --action continue auto-commit so all bot commits attribute to
+# the same identity).
 
 mkdir -p "$HARNESS_STATE_DIR"
 
