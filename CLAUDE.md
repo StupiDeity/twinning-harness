@@ -64,7 +64,7 @@ All commands need `TARGET_REPO` exported (point it at the target repo on disk).
 TARGET_REPO=/path/to/target bash bin/run-local.sh
 
 # Run one specific stage against one issue, bypassing the poller:
-TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorm
+TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorming
 
 # Manual retrospective:
 TARGET_REPO=/path/to/target bash bin/run-retrospective-local.sh
@@ -73,15 +73,19 @@ TARGET_REPO=/path/to/target bash bin/run-retrospective-local.sh
 TARGET_REPO=/path/to/target bash bin/status.sh
 
 # Dry-run any of the above (no Linear writes, no `claude` call, no Slack):
-PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorm
+PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorming
 
 # Resolve a halted issue (see docs/pipeline-vocabulary.md for decision tokens):
-bash bin/halt.sh resolve ENG-XX --decision <scope-approved|scope-rejected|resume>
+bash bin/pipeline.sh decide ENG-XX --action <continue|approve|abandon> [--gate <gate>]
 
-# Post a verdict marker manually (heredoc-constructed; safe from bash !-expansion):
-bash bin/post-verdict.sh ENG-N stage-summary <stage> [<reason>]
-bash bin/post-verdict.sh ENG-N rejection <target-stage> [<reason>]
-bash bin/post-verdict.sh ENG-N halt <reason-token> [<reason>]
+# Post a verdict marker manually (registry-validated; lane-fenced):
+bash bin/pipeline.sh event ENG-N verdict pass --stage <stage>
+bash bin/pipeline.sh event ENG-N verdict fail --target <stage>
+bash bin/pipeline.sh event ENG-N verdict halt --reason <reason-token>
+bash bin/pipeline.sh event ENG-N verdict wait --reason <reason-token>     # build only
+
+# Read-only event log for an issue:
+bash bin/pipeline.sh status ENG-N
 
 # Refresh the Linear ID cache after adding states/labels:
 LINEAR_API_KEY=… TARGET_REPO=/path/to/target bash bin/linear.sh refresh-cache
@@ -147,9 +151,6 @@ Single source of truth: `docs/pipeline-vocabulary.md` (generated from
 state-driving comments use `<!-- pipeline: <event> ... -->`; bookkeeping
 uses `<!-- meta: <kind> ... -->`. Use `bin/pipeline.sh` to emit markers;
 the helper validates against the registry.
-
-Legacy `bin/halt.sh` and `bin/post-verdict.sh` still work as wrappers
-for one release; both log a `[deprecated]` line on use.
 
 The pipeline-namespace labels the harness applies are `pipeline:halted` and
 `pipeline:abandoned` (per design §7.5; ENG-60 T2.13 drains the legacy set —
@@ -297,12 +298,12 @@ Flush each such issue past the (now-removed) gate by applying
 
 ```bash
 bash bin/linear.sh add-label ENG-N pipeline:halted
-bash bin/halt.sh resolve ENG-N --decision resume
+bash bin/pipeline.sh decide ENG-N --action continue
 ```
 
 The next tick resumes from review's clean-review path (Decision C),
-emits `pipeline-stage-summary: reviewing`, and transitions to QA.
-Issues at any other stage are unaffected.
+emits `<!-- pipeline: verdict result=pass stage=reviewing -->`, and
+transitions to QA. Issues at any other stage are unaffected.
 
 ## Failure-mode quick reference
 
@@ -312,4 +313,4 @@ Issues at any other stage are unaffected.
 | Breaker tripped | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
-| Kill switch | `bash bin/halt.sh resolve …` or set `orchestrator.paused=true` (takes effect next tick) |
+| Kill switch | `bash bin/pipeline.sh decide …` or set `orchestrator.paused=true` (takes effect next tick) |
