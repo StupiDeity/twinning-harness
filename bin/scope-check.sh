@@ -109,12 +109,11 @@ has_scope_approval() {
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue")"
   [[ -z "$comments" || "$comments" == "null" ]] && return 1
 
-  # Find latest scope-related halt. Accept both scope-violation (canonical)
-  # and scope-deviation (legacy alias). parse_pipeline_marker normalizes
-  # OLD-shape halts through legacy_halt_reason_aliases, but NOT new-shape
-  # ones (Phase 2 carryover — see plan). The case statement below is
-  # therefore load-bearing, not redundant defense, until that normalization
-  # extends to new shape.
+  # Find latest scope-related halt. After T3.1 removed the old-shape
+  # parser branch, only canonical scope-violation reaches here (old-shape
+  # no longer parses, and new-shape writers use the registry which
+  # canonicalizes to scope-violation). The defensive scope-deviation
+  # acceptance was a Phase 2 carryover; it is dead code now.
   local last_halt_ts=""
   local ts body ev reason
   while IFS=$'\t' read -r ts body; do
@@ -123,7 +122,7 @@ has_scope_approval() {
     [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
     [[ "$(jq -r '.result' <<<"$ev")" != "halt" ]] && continue
     reason="$(jq -r '.reason' <<<"$ev")"
-    case "$reason" in scope-violation|scope-deviation) ;; *) continue ;; esac
+    [[ "$reason" == "scope-violation" ]] || continue
     [[ "$ts" > "$last_halt_ts" ]] && last_halt_ts="$ts"
   done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
   [[ -z "$last_halt_ts" ]] && return 1
