@@ -203,8 +203,10 @@ fi
 #
 # (a) addresses the exploratory-probe pattern via prompt instruction:
 # tell the agent that probing leaves permanent litter and the harness
-# has a clean exit ramp (`<!-- pipeline-halt: agent-blocked -->`). The
-# agent should halt instead of probing when uncertain.
+# has a clean exit ramp (`bin/pipeline.sh event ... verdict halt
+# --reason agent-blocked` per ENG-60 T2.11; was the legacy hand-crafted
+# `<!-- pipeline-halt: agent-blocked -->` marker pre-T2.11). The agent
+# should halt instead of probing when uncertain.
 #
 # Pattern (b) — sig-mutated retries (`-trial`, `-v3`, ...) — is tracked
 # separately in ENG-57.
@@ -236,10 +238,13 @@ for stage_section in \
     nope "$short contains 'do not probe' rule" "phrase missing"
   fi
 
-  if printf '%s\n' "$body" | grep -qF '<!-- pipeline-halt: agent-blocked -->'; then
-    ok "$short contains 'pipeline-halt: agent-blocked' exit ramp"
+  # ENG-60 T2.11: exit ramp is now `verdict halt --reason agent-blocked`
+  # via bin/pipeline.sh; the old hand-crafted marker form was replaced
+  # to match the per-stage Verdict marker block guidance.
+  if printf '%s\n' "$body" | grep -qF 'verdict halt --reason agent-blocked'; then
+    ok "$short contains 'verdict halt --reason agent-blocked' exit ramp"
   else
-    nope "$short contains 'pipeline-halt: agent-blocked' exit ramp" "marker missing"
+    nope "$short contains 'verdict halt --reason agent-blocked' exit ramp" "instruction missing"
   fi
 done
 
