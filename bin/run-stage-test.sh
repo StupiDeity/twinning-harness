@@ -2188,8 +2188,11 @@ result="$(_fresh_wait_reason ENG-WR1 build 2>/dev/null || printf '')"
 [[ "$result" == "awaiting-approval" ]] && pass_at "WR1: new-shape wait reason returned" "got: '$result'" || fail_at "WR1: new-shape wait reason returned" "got: '$result'"
 
 # Fixture WR2: new-shape wait on non-build stage still returns 1 (build-only gate).
-result="$(_fresh_wait_reason ENG-WR2 implement 2>/dev/null || printf '')"; rc=$?
-[[ "$rc" -eq 0 && -z "$result" ]] && pass_at "WR2: non-build stage rejected (empty result)" "rc=$rc result='$result'" || fail_at "WR2: non-build stage rejected" "rc=$rc result='$result'"
+# Capture rc directly via `cmd; rc=$?` after a `rc=0; cmd || rc=$?` pattern so
+# the assertion actually exercises the early-return guard rather than the
+# `|| printf ''` masking it. Keep stdout/stderr suppressed under set -e.
+rc=0; _fresh_wait_reason ENG-WR2 implement >/dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WR2: non-build stage rejected (rc=1)" "rc=$rc" || fail_at "WR2: non-build stage rejected" "rc=$rc"
 
 # Fixture WR3: old-shape wait still works (regression).
 COMMENTS_JSON='[
