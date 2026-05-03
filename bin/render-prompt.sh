@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Extract a stage's prompt from AGENT_PROMPTS.md and interpolate tokens.
 # Usage: render-prompt.sh <stage> <issue_id>
-#   stage: brainstorm | plan | implement | ui | review | qa | build | release | retrospective
+#   stage: brainstorming | planning | implementing | ui | reviewing | qa | building | released | retrospective
 # Reads Linear issue via linear.sh get-issue.
 # Emits rendered prompt text to stdout.
 
@@ -11,14 +11,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 STAGE_TO_SECTION='
-brainstorm=1. Brainstorm Agent
-plan=2. Plan Agent
-implement=3. Implementation Agent (Backend)
+brainstorming=1. Brainstorm Agent
+planning=2. Plan Agent
+implementing=3. Implementation Agent (Backend)
 ui=4. UI Agent (Frontend)
-review=5. Review Agent
+reviewing=5. Review Agent
 qa=6. QA Agent
-build=7. Build Agent
-release=8. Release Agent
+building=7. Build Agent
+released=8. Release Agent
 retrospective=9. Retrospective Agent (Scheduled)
 '
 
@@ -170,9 +170,9 @@ main() {
   block="$(extract_block "$section")"
   [[ -n "$block" ]] || die "could not extract block for section: $section"
 
-  # Release stage is cross-issue: it has no single owning Linear issue. Render with
+  # Released stage is cross-issue: it has no single owning Linear issue. Render with
   # release metadata (version/tag/prev_tag) supplied via env by run-release-observer.sh.
-  if [[ "$stage" == "release" ]]; then
+  if [[ "$stage" == "released" ]]; then
     local version="${PIPELINE_RELEASE_VERSION:-}"
     local tag="${PIPELINE_RELEASE_TAG:-}"
     local prev_tag="${PIPELINE_RELEASE_PREV_TAG:-}"

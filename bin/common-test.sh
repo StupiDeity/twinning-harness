@@ -234,6 +234,47 @@ adv6_output_is_true_or_false_invariant() {
 }
 adv6_output_is_true_or_false_invariant
 
+pass_at() { PASS=$((PASS+1)); printf '  ✅ %s\n' "$1"; }
+fail_at() {
+  FAIL=$((FAIL+1));
+  if [[ -n "${2:-}" ]]; then
+    printf '  ❌ %s\n      %s\n' "$1" "$2" >&2
+  else
+    printf '  ❌ %s\n' "$1" >&2
+  fi
+  FAILED_CASES+=("$1")
+}
+
+# ─── Group: parse_pipeline_marker (ENG-60 Phase 1) ───────────────────────
+
+printf '\n--- parse_pipeline_marker ---\n'
+
+# Fixture P1: new-shape verdict pass
+result="$(parse_pipeline_marker '<!-- pipeline: verdict result=pass stage=implementing -->')"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]]   && pass_at "P1: event=verdict"   || fail_at "P1: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]]     && pass_at "P1: result=pass"     || fail_at "P1: result mismatch" "got: $result"
+[[ "$(jq -r '.stage' <<<"$result")" == "implementing" ]] && pass_at "P1: stage=implementing" || fail_at "P1: stage mismatch" "got: $result"
+
+# Fixture P2: new-shape verdict fail
+result="$(parse_pipeline_marker '<!-- pipeline: verdict result=fail target=planning -->')"
+[[ "$(jq -r '.result' <<<"$result")" == "fail" ]]     && pass_at "P2: result=fail"     || fail_at "P2: result mismatch" "got: $result"
+[[ "$(jq -r '.target' <<<"$result")" == "planning" ]] && pass_at "P2: target=planning" || fail_at "P2: target mismatch" "got: $result"
+
+# Fixture P3: new-shape verdict halt
+result="$(parse_pipeline_marker '<!-- pipeline: verdict result=halt reason=agent-blocked -->')"
+[[ "$(jq -r '.result' <<<"$result")" == "halt" ]]            && pass_at "P3: result=halt" || fail_at "P3: result mismatch" "got: $result"
+[[ "$(jq -r '.reason' <<<"$result")" == "agent-blocked" ]]   && pass_at "P3: reason"     || fail_at "P3: reason mismatch" "got: $result"
+
+# Fixture P11: comment body with surrounding prose + marker at the end
+body=$'A multi-line\nbody.\n<!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P11: marker found in multi-line body" || fail_at "P11: event mismatch" "got: $result"
+
+# Fixture P12: body with no recognizable marker returns empty + rc=1
+result="$(parse_pipeline_marker 'just prose, no marker' 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P12: rc=1 on no marker" || fail_at "P12: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P12: empty stdout" || fail_at "P12: stdout not empty" "got: $result"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

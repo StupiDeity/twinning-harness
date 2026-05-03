@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check for existing brainstorm/plan docs that cover the same topic as the issue.
 # Usage: reconcile.sh <issue_id> <doc_kind>
-#   doc_kind: brainstorm | plan
+#   doc_kind: brainstorming | planning
 # Outputs one of: proceed | link:<path> | human
 #   proceed  -> no match, agent should generate fresh
 #   link:P   -> canonical match found (Linear ID embedded in P); orchestrator links and advances
@@ -57,9 +57,9 @@ main() {
 
   local dir
   case "$kind" in
-    brainstorm) dir="$TARGET_REPO/docs/brainstorms" ;;
-    plan)       dir="$TARGET_REPO/docs/plans" ;;
-    *)          die "kind must be brainstorm or plan" ;;
+    brainstorming) dir="$TARGET_REPO/docs/brainstorms" ;;
+    planning)      dir="$TARGET_REPO/docs/plans" ;;
+    *)             die "kind must be brainstorming or planning" ;;
   esac
 
   [[ -d "$dir" ]] || { printf 'proceed\n'; return 0; }

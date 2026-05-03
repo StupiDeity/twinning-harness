@@ -64,7 +64,7 @@ All commands need `TARGET_REPO` exported (point it at the target repo on disk).
 TARGET_REPO=/path/to/target bash bin/run-local.sh
 
 # Run one specific stage against one issue, bypassing the poller:
-TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorm
+TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorming
 
 # Manual retrospective:
 TARGET_REPO=/path/to/target bash bin/run-retrospective-local.sh
@@ -73,15 +73,19 @@ TARGET_REPO=/path/to/target bash bin/run-retrospective-local.sh
 TARGET_REPO=/path/to/target bash bin/status.sh
 
 # Dry-run any of the above (no Linear writes, no `claude` call, no Slack):
-PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorm
+PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorming
 
-# Resolve a halted issue (ENG-18 verdict-marker protocol):
-bash bin/halt.sh resolve ENG-XX --decision <scope-approved|scope-rejected|resume>
+# Resolve a halted issue (see docs/pipeline-vocabulary.md for decision tokens):
+bash bin/pipeline.sh decide ENG-XX --action <continue|approve|abandon> [--gate <gate>]
 
-# Post a verdict marker manually (heredoc-constructed; safe from bash !-expansion):
-bash bin/post-verdict.sh ENG-N stage-summary <stage> [<reason>]
-bash bin/post-verdict.sh ENG-N rejection <target-stage> [<reason>]
-bash bin/post-verdict.sh ENG-N halt <reason-token> [<reason>]
+# Post a verdict marker manually (registry-validated; lane-fenced):
+bash bin/pipeline.sh event ENG-N verdict pass --stage <stage>
+bash bin/pipeline.sh event ENG-N verdict fail --target <stage>
+bash bin/pipeline.sh event ENG-N verdict halt --reason <reason-token>
+bash bin/pipeline.sh event ENG-N verdict wait --reason <reason-token>     # build only
+
+# Read-only event log for an issue:
+bash bin/pipeline.sh status ENG-N
 
 # Refresh the Linear ID cache after adding states/labels:
 LINEAR_API_KEY=… TARGET_REPO=/path/to/target bash bin/linear.sh refresh-cache
@@ -140,17 +144,20 @@ inside a stage's body, and do not renumber sections without updating the
 are written by the retrospective agent and gated by human-approval labels
 (`pipeline:rule-reviewed`); only edit them by hand if you are deliberately seeding rules.
 
-## The verdict-marker protocol (ENG-18)
+## Pipeline vocabulary
 
-State transitions are owned by the orchestrator, not by stage agents. Agents communicate
-verdicts by posting HTML-comment markers into Linear comments; `verdict-handler.sh` reads
-the latest marker newer than the most recent `<!-- pipeline-transition: -->` comment.
-Marker schema is documented in full in `AGENT_PROMPTS.md` ("Verdict-marker protocol")
-and is the source of truth — read it before changing any stage's exit/output behavior.
+Single source of truth: `docs/pipeline-vocabulary.md` (generated from
+`bin/pipeline-events.json` via `bin/generate-vocabulary-doc.sh`). All
+state-driving comments use `<!-- pipeline: <event> ... -->`; bookkeeping
+uses `<!-- meta: <kind> ... -->`. Use `bin/pipeline.sh` to emit markers;
+the helper validates against the registry.
 
-The four pipeline-namespace labels the harness applies are:
-`pipeline:halted`, `pipeline:supersede`, `pipeline:skip-until-code-changes`,
-`pipeline:abandoned`. Every other `pipeline:*` label seen in Linear is human-applied.
+The pipeline-namespace labels the harness applies are `pipeline:halted` and
+`pipeline:abandoned` (per design §7.5; ENG-60 T2.13 drains the legacy set —
+`paused`, `scope-approval-needed`, `supersede`, `skip-until-code-changes`,
+`skip-until-human-acts` — on every transition). `pipeline:rule-reviewed` is
+the orthogonal retrospective approval gate. Every other `pipeline:*` label
+seen in Linear is human-applied.
 
 ## Linear conventions the harness depends on
 
@@ -265,6 +272,13 @@ these entries (skipped silently when the config is absent — CI or non-harness 
   contract question directly. Today only the implement stage uses this
   pattern (forbidding `gh pr create`); generalising to other stages is a
   separate refactor.
+- For any new script that reads pipeline markers from Linear comments, use
+  `parse_pipeline_marker` from `bin/common.sh` rather than hand-rolling
+  contains-checks or regex extraction. The helper accepts both legacy
+  (`pipeline-X: value`) and current (`pipeline: event k=v`) shapes and
+  returns a uniform JSON event. The closed event vocabulary lives in
+  `bin/pipeline-events.json`; the human-readable schema is in
+  `docs/pipeline-vocabulary.md`.
 
 ## Single human-approval gate (ENG-54)
 
@@ -284,12 +298,12 @@ Flush each such issue past the (now-removed) gate by applying
 
 ```bash
 bash bin/linear.sh add-label ENG-N pipeline:halted
-bash bin/halt.sh resolve ENG-N --decision resume
+bash bin/pipeline.sh decide ENG-N --action continue
 ```
 
 The next tick resumes from review's clean-review path (Decision C),
-emits `pipeline-stage-summary: reviewing`, and transitions to QA.
-Issues at any other stage are unaffected.
+emits `<!-- pipeline: verdict result=pass stage=reviewing -->`, and
+transitions to QA. Issues at any other stage are unaffected.
 
 ## Failure-mode quick reference
 
@@ -299,36 +313,16 @@ Issues at any other stage are unaffected.
 | Breaker tripped | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
-| Kill switch | `bash bin/halt.sh resolve <ENG-N> --decision resume` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
+| Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
 
-**What `--decision resume` clears (atomic, ENG-58):**
+**What `--action continue` clears (atomic, ENG-58 ported to ENG-60):**
 
 1. `pipeline:halted` label
 2. `pipeline:skip-until-code-changes` and `pipeline:skip-until-human-acts` labels
 3. `$PROJECT_STATE_DIR/<ident>/wait-*.json` files
 4. `$PROJECT_STATE_DIR/<ident>/issue-state.json` IFF its `.policy == "skip-until-human-acts"`
-5. Posts a `<!-- pipeline-transition: <stage> → <stage> (operator-resume) -->` waypoint to reset `count_marker_since_last_transition` (rejection counter) and `find_fresh_verdict` freshness.
+5. Posts a `<!-- pipeline: transition from=<stage> to=<stage> reason=operator-resume -->` waypoint to reset `count_marker_since_last_transition` (rejection counter) and `find_fresh_verdict` freshness.
 
-`--decision scope-approved` / `--decision scope-rejected` are the
-NARROWER paths (they post the decision marker AND remove
-`pipeline:halted` — i.e., they DO clear item 1 — but they do NOT
-clear items (2)-(5) because scope-deviation halts don't accrue
-that side state). If stale state from an unrelated earlier
-failure coexists, halt.sh emits a one-line stderr advisory
-pointing the operator to the resume path.
-
-**Chained flow:** if an issue is halted for both a scope deviation
-AND a separate failure (e.g., budget exhaustion left a `wait-build.json`
-behind), run `--decision scope-approved` first, then run
-`--decision resume` to clear the residual side state. The second
-command is the documented chained step — D-011's `has-label
-pipeline:halted` guard makes this safe even though the halt label
-was already removed by the first command.
-
-**Idempotent — safe to re-run.** If `halt.sh resolve` errors mid-flow
-(network blip on a Linear write), re-running the same command picks
-up from where it left off. Every operation (remove-label, rm -f,
+**Idempotent — safe to re-run.** Every operation (remove-label, rm -f,
 add-comment) is idempotent; the operator-resume waypoint is posted
-LAST so a partial-failure leaves the issue in a re-runnable state
-(the halt label remains observable in Linear, prompting the operator
-to retry).
+LAST so a partial-failure leaves the issue in a re-runnable state.

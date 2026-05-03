@@ -32,14 +32,14 @@ _stage_artifacts_footer() {
   local wt; wt="$(issue_dir "$issue")/worktree"
   [[ -d "$wt" ]] || { printf ''; return 0; }
 
-  # Stage → doc-dir mapping. Only brainstorm and plan have a single canonical
-  # doc surface; post-plan stages span the repo and are best described by
-  # branch-delta which the PR link already covers.
+  # Stage → doc-dir mapping. Only brainstorming and planning have a single
+  # canonical doc surface; post-plan stages span the repo and are best
+  # described by branch-delta which the PR link already covers.
   local doc_dir=""
   case "$stage" in
-    brainstorm) doc_dir="docs/brainstorms" ;;
-    plan)       doc_dir="docs/plans" ;;
-    *)          printf ''; return 0 ;;
+    brainstorming) doc_dir="docs/brainstorms" ;;
+    planning)      doc_dir="docs/plans" ;;
+    *)             printf ''; return 0 ;;
   esac
 
   local paths
@@ -152,7 +152,7 @@ post_completion_comment() {
   # PR tail only on post-UI stages where a PR is guaranteed to exist.
   local pr_tail=""
   case "$stage" in
-    ui|review|qa|build)
+    ui|reviewing|qa|building)
       local branch pr_url
       branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue" 2>/dev/null || printf '')"
       if [[ -n "$branch" ]] && command -v gh >/dev/null 2>&1; then
@@ -260,30 +260,22 @@ verify_preconditions() {
     return 11
   fi
 
-  # Expected stage label present?
+  # Expected stage label present? Derive the canonical gerund label suffix.
   local prefix expected
   prefix="$(config_get '.linear.stage_label_prefix')"
-  expected="${prefix}${stage//brainstorm/brainstorming}"  # handle abbreviation
-  expected="${expected//implement/implementing}"
-  expected="${expected//review/reviewing}"
-  expected="${expected//plan/planning}"
-  expected="${expected//build/building}"
-  expected="${expected//release/released}"
-  expected="${expected//qa/qa}"
-  expected="${expected//ui/ui}"
-  # Simpler: just derive from the canonical ordering.
-  expected="$(bash -c "
-    case '$stage' in
-      brainstorm) echo '${prefix}brainstorming' ;;
-      plan)       echo '${prefix}planning' ;;
-      implement)  echo '${prefix}implementing' ;;
-      ui)         echo '${prefix}ui' ;;
-      review)     echo '${prefix}reviewing' ;;
-      qa)         echo '${prefix}qa' ;;
-      build)      echo '${prefix}building' ;;
-      release)    echo '${prefix}released' ;;
-    esac
-  ")"
+  local label_suffix
+  case "$stage" in
+    brainstorming) label_suffix="brainstorming" ;;
+    planning)      label_suffix="planning"      ;;
+    implementing)  label_suffix="implementing"  ;;
+    ui)            label_suffix="ui"            ;;
+    reviewing)     label_suffix="reviewing"     ;;
+    qa)            label_suffix="qa"            ;;
+    building)      label_suffix="building"      ;;
+    released)      label_suffix="released"      ;;
+    *)             label_suffix=""              ;;
+  esac
+  expected="${prefix}${label_suffix}"
 
   if [[ -n "$expected" ]] && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "$expected"; then
     die "precondition failed: $ident does not carry $expected (must be applied before run-stage)"
@@ -306,7 +298,7 @@ verify_preconditions() {
 _fresh_wait_reason() {
   local issue="$1" stage="$2"
   case "$stage" in
-    build) ;;
+    building) ;;
     *) return 1 ;;
   esac
 
@@ -314,23 +306,36 @@ _fresh_wait_reason() {
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue" 2>/dev/null)" || return 1
   [[ -z "$comments" || "$comments" == "null" ]] && return 1
 
-  local last_t
-  last_t="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
-    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
-  local fresh
-  fresh="$(jq -r --arg t "$last_t" '
-    [.[] | select(.createdAt > $t)
-         | select(.body | test("<!-- pipeline-wait: "))]
-    | sort_by(.createdAt) | last // empty | .body // ""' <<<"$comments")"
-  [[ -z "$fresh" ]] && return 1
+  # Find the most recent transition timestamp to set freshness floor.
+  local last_t=""
+  local ts body ev
+  while IFS=$'\t' read -r ts body; do
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]]; then
+      [[ "$ts" > "$last_t" ]] && last_t="$ts"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  local reason
-  reason="$(grep -oE '<!-- pipeline-wait: [a-z-]+ -->' <<<"$fresh" \
-    | head -1 | sed -E 's/<!-- pipeline-wait: ([a-z-]+) -->/\1/')"
+  # Find the latest wait verdict newer than the transition.
+  local fresh_reason=""
+  local fresh_ts=""
+  while IFS=$'\t' read -r ts body; do
+    [[ -n "$last_t" && ! "$ts" > "$last_t" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+    [[ "$(jq -r '.result' <<<"$ev")" != "wait" ]] && continue
+    if [[ "$ts" > "$fresh_ts" ]]; then
+      fresh_ts="$ts"
+      fresh_reason="$(jq -r '.reason' <<<"$ev")"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  case "$reason" in
-    awaiting-approval|awaiting-ci) printf '%s' "$reason"; return 0 ;;
+  [[ -z "$fresh_reason" ]] && return 1
+
+  case "$fresh_reason" in
+    awaiting-approval|awaiting-ci) printf '%s' "$fresh_reason"; return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -443,7 +448,7 @@ _handle_wait() {
 
   if (( exhausted )); then
     local halt_body
-    halt_body="$(printf '<!-- pipeline-halt: external-signal-budget-exhausted -->\n\nBuild stage halted: %s budget exhausted (%d attempts since %s).\n\n**Resume:** approve the PR as a non-bot Code Owner, then run `bash bin/halt.sh resolve %s --decision resume`. Or raise `orchestrator.external_signal_budget.max_attempts` / `max_minutes` in `.pipeline-config/config.json` to extend the window.' \
+    halt_body="$(printf '<!-- pipeline: verdict result=halt reason=external-signal-budget-exhausted -->\n\nBuild stage halted: %s budget exhausted (%d attempts since %s).\n\n**Resume:** approve the PR as a non-bot Code Owner, then run `bash bin/pipeline.sh decide %s --action continue`. Or raise `orchestrator.external_signal_budget.max_attempts` / `max_minutes` in `.pipeline-config/config.json` to extend the window.' \
                 "$reason" "$attempts" "$first" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
     # Only delete the wait file if the halt label actually applied. A network
@@ -524,7 +529,7 @@ main() {
   # just burn tokens. The post-stage scope-check will observe the same
   # decision marker and treat the notable tier as approved.
   local skip_dispatch=0
-  if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
+  if [[ "$stage" == "implementing" || "$stage" == "ui" ]]; then
     local _approval_state="$(issue_dir "$ident")/scope-approval"
     if [[ -f "$_approval_state" ]] \
        && bash "$SCRIPT_DIR/scope-check.sh" has-scope-approval "$ident" 2>/dev/null; then
@@ -597,7 +602,7 @@ main() {
   # Post-implement / post-ui guards:
   #   (a) scope-check: no files outside plan File Structure were touched.
   #   (b) no-pr-check: implement stage must NOT have opened a PR (UI stage opens the PR).
-  if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
+  if [[ "$stage" == "implementing" || "$stage" == "ui" ]]; then
     local branch
     branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident")"
     [[ -n "$branch" ]] || die "could not resolve branch name for $ident"
@@ -636,7 +641,7 @@ main() {
           # label. The Verdict Handler leaves the halt intact until halt.sh
           # resolve posts a pipeline-decision marker.
           local halt_body
-          halt_body="$(printf '<!-- pipeline-halt: scope-deviation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/halt.sh resolve %s --decision scope-approved\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
+          halt_body="$(printf '<!-- pipeline: verdict result=halt reason=scope-violation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/pipeline.sh decide %s --action approve --gate scope\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
             "$stage" "$branch" "$fs_patch" "$HARNESS_ROOT" "$ident")"
           bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
           bash "$SCRIPT_DIR/linear.sh" add-label   "$ident" "pipeline:halted" || true
@@ -743,7 +748,7 @@ main() {
   # converts repeated same-evidence retries into skip-until-code-changes.
   if (( ! skip_dispatch )); then
     case "$stage" in
-      brainstorm|plan|implement|ui|review|qa|build)
+      brainstorming|planning|implementing|ui|reviewing|qa|building)
         local _summary_path _fresh_marker
         _summary_path="$(issue_dir "$ident")/stage-summary-${stage}.md"
         _fresh_marker="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
@@ -761,7 +766,7 @@ main() {
   # uncommitted dirty paths; an agent that commits its artifacts cleanly otherwise leaves the
   # branch local-only (ENG-6 observed). Non-fatal on failure — next tick will retry.
   case "$stage" in
-    brainstorm|plan|implement|ui|review|qa|build)
+    brainstorming|planning|implementing|ui|reviewing|qa|building)
       push_branch_if_ahead || true
       ;;
   esac
@@ -769,7 +774,7 @@ main() {
   # Post-stage completion comment (ENG-11). Orchestrator-owned narrative post.
   # Runs on both fresh dispatches and scope-approval replays (narrates the advance).
   case "$stage" in
-    brainstorm|plan|implement|ui|review|qa|build)
+    brainstorming|planning|implementing|ui|reviewing|qa|building)
       if ! post_completion_comment "$ident" "$stage"; then
         classify_failure "$ident" "$stage" "retry-immediately" \
           "linear post failed for completion/$stage/$ident after one retry" 24
@@ -784,13 +789,8 @@ main() {
   # compound a state we do not recognise. The next tick re-evaluates from poll.
   local stage_label_long
   case "$stage" in
-    brainstorm) stage_label_long="brainstorming" ;;
-    plan)       stage_label_long="planning" ;;
-    implement)  stage_label_long="implementing" ;;
-    review)     stage_label_long="reviewing" ;;
-    build)      stage_label_long="building" ;;
-    release)    stage_label_long="released" ;;
-    *)          stage_label_long="$stage" ;;  # ui, qa stay as-is
+    brainstorming|planning|implementing|reviewing|building|released) stage_label_long="$stage" ;;
+    *) stage_label_long="$stage" ;;  # ui, qa, retrospective stay as-is
   esac
   local dispatched_stage_label="stage:$stage_label_long"
   local current_stage_label
@@ -838,7 +838,7 @@ main() {
       # ENG-50: capture last-review-state on review-stage transitions
       # (advance to qa OR loopback to implementing). Both are successful
       # exits where the agent observed the PR state and acted on it.
-      if [[ "$stage" == "review" ]]; then
+      if [[ "$stage" == "review" || "$stage" == "reviewing" ]]; then
         local _rp_branch
         _rp_branch="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" 2>/dev/null \
           | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
@@ -854,7 +854,8 @@ main() {
       # and reconcile only runs for brainstorm/plan per run-local.sh).
       # NOTE: pipeline:extend is NOT auto-cleared (ENG-6 D-005 — extend is a
       # carry-forward signal the operator may intend to span multiple stages).
-      if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
+      if [[ "$stage" == "brainstorm" || "$stage" == "brainstorming" \
+         || "$stage" == "plan"       || "$stage" == "planning" ]]; then
         bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:supersede" 2>/dev/null || true
       fi
       ;;

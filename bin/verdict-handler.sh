@@ -52,11 +52,27 @@ _vh_lookup_loopback() {
 _vh_protocol_violation() {
   local issue="$1" case_id="$2" reason="$3"
   local body
-  body="$(printf '<!-- pipeline-halt: protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
+  body="$(printf '<!-- pipeline: verdict result=halt reason=protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
   bash "$_VH_SCRIPT_DIR/linear.sh" add-or-update-comment \
     "protocol-violation/$case_id/$issue" "$issue" "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
+}
+
+# ENG-60 T2.13: drain legacy pipeline-namespace labels on every transition.
+# These labels are folded into pipeline:halted / pipeline:abandoned per
+# design §7.5; removing them on every transition cleans them out
+# without a big-bang migration. linear.sh remove-label is a no-op when
+# the label isn't present, so this is safe to run unconditionally.
+# NOTE: pipeline:halted and pipeline:abandoned are NOT drained here —
+# those are the two legacy-namespace labels we keep. pipeline:rule-reviewed
+# is also excluded — it's the retrospective approval gate (orthogonal).
+_vh_drain_legacy_labels() {
+  local issue="$1"
+  local legacy
+  for legacy in pipeline:paused pipeline:scope-approval-needed pipeline:supersede pipeline:skip-until-code-changes pipeline:skip-until-human-acts; do
+    bash "$_VH_SCRIPT_DIR/linear.sh" remove-label "$issue" "$legacy" 2>/dev/null || true
+  done
 }
 
 # Extract the most recent verdict marker (pipeline-stage-summary,
@@ -72,58 +88,59 @@ find_fresh_verdict() {
   comments="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-comments "$issue")"
   [[ -z "$comments" || "$comments" == "null" ]] && { printf ''; return 0; }
 
-  local last_transition_ts
-  last_transition_ts="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
-    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+  # Find the most recent transition-event timestamp to set freshness floor.
+  # Iterate comments through parse_pipeline_marker; pick max createdAt where
+  # event=transition. Comments without a recognizable marker are skipped.
+  local last_transition_ts=""
+  local row body ts ev
+  while IFS=$'\t' read -r ts body; do
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]]; then
+      [[ "$ts" > "$last_transition_ts" ]] && last_transition_ts="$ts"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  # Pick the most recent verdict-shaped comment newer than the last
-  # transition (or any verdict comment if no transition exists yet).
-  local fresh
-  fresh="$(jq -c --arg t "$last_transition_ts" '
-    [.[]
-     | select(.createdAt > $t)
-     | select(
-         (.body | contains("<!-- pipeline-stage-summary:")) or
-         (.body | contains("<!-- pipeline-rejection:")) or
-         (.body | contains("<!-- pipeline-halt:"))
-       )]
-    | sort_by(.createdAt) | last // empty' <<<"$comments")"
-  [[ -z "$fresh" ]] && { printf ''; return 0; }
+  # Pick the latest actionable verdict event (pass/fail/halt — NOT wait) with
+  # createdAt > last_transition_ts. pipeline-wait is intentionally excluded:
+  # the wait shape signals a soft re-dispatch, not a state transition.
+  local fresh_ts="" fresh_body="" fresh_id=""
+  while IFS=$'\t' read -r ts id body; do
+    [[ -n "$last_transition_ts" && ! "$ts" > "$last_transition_ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+    # Exclude wait — not an actionable transition trigger.
+    [[ "$(jq -r '.result' <<<"$ev")" == "wait" ]] && continue
+    if [[ "$ts" > "$fresh_ts" ]]; then
+      fresh_ts="$ts"; fresh_body="$body"; fresh_id="$id"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.id)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  local body id
-  body="$(jq -r '.body' <<<"$fresh")"
-  id="$(jq -r '.id' <<<"$fresh")"
+  [[ -z "$fresh_body" ]] && { printf ''; return 0; }
 
-  local marker src tgt reason
-  marker=""; src=""; tgt=""; reason=""
-  if grep -qE '<!-- pipeline-stage-summary: [a-z]+ -->' <<<"$body"; then
-    marker="pipeline-stage-summary"
-    src="$(grep -oE '<!-- pipeline-stage-summary: [a-z]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-stage-summary: ([a-z]+) -->/\1/')"
-  elif grep -qE '<!-- pipeline-rejection: [a-z]+ -->' <<<"$body"; then
-    marker="pipeline-rejection"
-    src="$(grep -oE '<!-- pipeline-rejection: [a-z]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-rejection: ([a-z]+) -->/\1/')"
-    tgt="$(grep -oE '<!-- pipeline-rejection-target: [a-z]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-rejection-target: ([a-z]+) -->/\1/')"
-  elif grep -qE '<!-- pipeline-halt: [a-z-]+ -->' <<<"$body"; then
-    marker="pipeline-halt"
-    reason="$(grep -oE '<!-- pipeline-halt: [a-z-]+ -->' <<<"$body" \
-      | head -1 | sed -E 's/<!-- pipeline-halt: ([a-z-]+) -->/\1/')"
-  else
-    # Malformed; treat as no fresh verdict.
-    printf ''
-    return 0
-  fi
-
-  jq -cn \
-    --arg marker "$marker" \
-    --arg src "$src" \
-    --arg tgt "$tgt" \
-    --arg reason "$reason" \
-    --arg id "$id" \
-    '{marker:$marker, source_stage:$src, target_stage:$tgt, reason:$reason, comment_id:$id}'
+  # Re-parse the fresh body and project to the legacy output shape that
+  # callers (verdict_handler, run-stage.sh) expect:
+  #   {marker, source_stage, target_stage, reason, comment_id}
+  # New-shape rejections set source_stage:"" and rely on the T2.2 fallback in
+  # apply_transition to read the issue's current stage:* label as the implicit source.
+  local ev_json
+  ev_json="$(parse_pipeline_marker "$fresh_body")"
+  local result
+  result="$(jq -nc \
+    --argjson e "$ev_json" \
+    --arg id "$fresh_id" '
+      ($e.result) as $r |
+      if $r == "pass" then
+        {marker:"pipeline-stage-summary", source_stage:$e.stage, target_stage:"", reason:"", comment_id:$id, event:$e}
+      elif $r == "fail" then
+        {marker:"pipeline-rejection", source_stage:"", target_stage:$e.target, reason:"", comment_id:$id, event:$e}
+      elif $r == "halt" then
+        {marker:"pipeline-halt", source_stage:"", target_stage:"", reason:$e.reason, comment_id:$id, event:$e}
+      else
+        {marker:"unknown", source_stage:"", target_stage:"", reason:"", comment_id:$id, event:$e}
+      end')"
+  printf '%s' "$result"
 }
 
 # Atomic transition order (per brainstorm §Atomic transition order):
@@ -146,6 +163,7 @@ apply_transition() {
   fi
 
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "stage:${to}" || true
+  _vh_drain_legacy_labels "$issue"
   [[ -n "$from" ]] && bash "$_VH_SCRIPT_DIR/linear.sh" remove-label "$issue" "stage:${from}" || true
 
   if [[ "$to" == "reviewing" ]]; then
@@ -347,6 +365,19 @@ verdict_handler() {
       return 0
       ;;
     pipeline-rejection)
+      # ENG-60 T2.2 & T3.2: new-shape rejections set source_stage:"" and rely
+      # on the issue's current stage:* label as the implicit source.
+      if [[ -z "$src" ]]; then
+        # Reuse linear.sh's stage-of subcommand instead of inlining the jq —
+        # keeps the stage-label extraction logic in one place.
+        src="$(bash "$_VH_SCRIPT_DIR/linear.sh" stage-of "$issue")"
+        src="${src#stage:}"
+        [[ -n "$src" ]] || {
+          _vh_protocol_violation "$issue" "rejection-source-unknown" \
+            "new-shape rejection has no source marker and no stage:* label"
+          return 2
+        }
+      fi
       local row; row="$(_vh_lookup_loopback "$src" "$tgt")"
       if [[ -z "$row" ]]; then
         _vh_protocol_violation "$issue" "unknown-loopback" \

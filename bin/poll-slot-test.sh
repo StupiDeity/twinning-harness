@@ -236,7 +236,7 @@ issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
 stage="$(jq -r '.stage // ""' <<<"$out")"
 entry="$(jq -r '.entry_action // ""' <<<"$out")"
 if { [[ "$issue_id" == "ENG-1001" ]] || [[ "$issue_id" == "ENG-1002" ]]; } \
-   && [[ "$stage" == "plan" ]] \
+   && [[ "$stage" == "planning" ]] \
    && [[ "$entry" == "run" ]]; then
   pass_at "AC-1 advance-held-at-cap dispatches a planning issue"
 else
@@ -251,9 +251,9 @@ write_label_fixture "stage:planning" \
   "ENG-2001|In Progress|3|Bug,stage:planning,pipeline:halted" \
   "ENG-2002|In Progress|3|Bug,stage:planning,pipeline:halted"
 write_comments_fixture "ENG-2001" \
-  "<!-- pipeline-halt: agent-blocked -->|2026-04-24T10:00:00.000Z"
+  "<!-- pipeline: verdict result=halt reason=agent-blocked -->|2026-04-24T10:00:00.000Z"
 write_comments_fixture "ENG-2002" \
-  "<!-- pipeline-halt: agent-blocked -->|2026-04-24T10:00:00.000Z"
+  "<!-- pipeline: verdict result=halt reason=agent-blocked -->|2026-04-24T10:00:00.000Z"
 write_inbox_fixture \
   "ENG-3001|Todo|3|Bug"
 out="$(main 2>/dev/null || true)"
@@ -314,7 +314,7 @@ write_label_fixture "stage:reviewing" \
 out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
 stage="$(jq -r '.stage // ""' <<<"$out")"
-if [[ "$issue_id" == "ENG-5003" ]] && [[ "$stage" == "review" ]]; then
+if [[ "$issue_id" == "ENG-5003" ]] && [[ "$stage" == "reviewing" ]]; then
   pass_at "AC-4 stage sort — reviewing advances before planning"
 else
   fail_at "AC-4 stage sort — reviewing advances before planning" "out=$out"
@@ -366,7 +366,7 @@ chmod +x "$STUB_DIR/metrics.sh"
 
 # ─── AC-6: skip-until-code-changes auto-resume also clears halt label ──
 # Regression: ENG-26 stayed at no-work after evidence-change cleared the
-# skip label because pipeline:halted + a <!-- pipeline-halt: --> marker
+# skip label because pipeline:halted + a <!-- pipeline: verdict result=halt --> marker
 # (both written by classify-failure) kept _poll_classify_labels in
 # vacate/not-advanceable. _poll_evaluate_skip must clear the halt label
 # AND post a pipeline-decision: resume marker so the next tick can
@@ -375,7 +375,7 @@ reset_fixtures
 write_label_fixture "stage:implementing" \
   "ENG-7001|In Progress|3|Bug,stage:implementing,pipeline:halted,pipeline:skip-until-code-changes"
 write_comments_fixture "ENG-7001" \
-  "<!-- pipeline-halt: agent-failure -->|2026-04-27T05:34:40.000Z"
+  "<!-- pipeline: verdict result=halt reason=agent-failure -->|2026-04-27T05:34:40.000Z"
 
 # Plant a stale issue-state.json so the evidence-changed branch fires.
 mkdir -p "$PROJECT_STATE_DIR/ENG-7001"
@@ -403,7 +403,7 @@ unset LINEAR_STUB_LOG
 rm -rf "$PROJECT_STATE_DIR/ENG-7001"
 
 if (( removed_skip == 1 )) && (( removed_halt == 1 )) && (( posted_resume == 1 )) \
-   && [[ "$issue_id" == "ENG-7001" ]] && [[ "$stage" == "implement" ]]; then
+   && [[ "$issue_id" == "ENG-7001" ]] && [[ "$stage" == "implementing" ]]; then
   pass_at "AC-6 auto-resume clears skip+halt, posts resume marker, dispatches stage"
 else
   fail_at "AC-6 auto-resume clears skip+halt, posts resume marker, dispatches stage" \

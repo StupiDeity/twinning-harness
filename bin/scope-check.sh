@@ -98,25 +98,47 @@ is_notable() {
   grep -qE "^${top}/" <<<"$allowed_files$allowed_dirs" 2>/dev/null
 }
 
-# Returns 0 iff a <!-- pipeline-decision: scope-approved --> comment is
-# newer than the most recent <!-- pipeline-halt: scope-deviation -->
-# comment on the issue. If no scope-deviation halt has been posted,
-# return 1 (no pending decision to match — caller re-runs the normal
-# scope check).
+# Returns 0 iff there is a scope-approval decision newer than the most recent
+# scope-related halt on the issue. Recognizes both old and new marker shapes
+# via parse_pipeline_marker. If no scope-related halt exists, returns 1 (no
+# pending decision to match — caller re-runs the normal scope check).
 has_scope_approval() {
   local issue="$1"
   [[ -n "$issue" ]] || die "has-scope-approval: issue id required"
-  local comments last_halt_ts approved_ts
+  local comments
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue")"
   [[ -z "$comments" || "$comments" == "null" ]] && return 1
-  last_halt_ts="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline-halt: scope-deviation -->"))]
-    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+
+  # Find latest scope-related halt. After T3.1 removed the old-shape
+  # parser branch, only canonical scope-violation reaches here (old-shape
+  # no longer parses, and new-shape writers use the registry which
+  # canonicalizes to scope-violation). The defensive scope-deviation
+  # acceptance was a Phase 2 carryover; it is dead code now.
+  local last_halt_ts=""
+  local ts body ev reason
+  while IFS=$'\t' read -r ts body; do
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+    [[ "$(jq -r '.result' <<<"$ev")" != "halt" ]] && continue
+    reason="$(jq -r '.reason' <<<"$ev")"
+    [[ "$reason" == "scope-violation" ]] || continue
+    [[ "$ts" > "$last_halt_ts" ]] && last_halt_ts="$ts"
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
   [[ -z "$last_halt_ts" ]] && return 1
-  approved_ts="$(jq -r --arg t "$last_halt_ts" '
-    [.[] | select(.createdAt > $t)
-         | select(.body | contains("<!-- pipeline-decision: scope-approved -->"))]
-    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
+
+  # Find the latest decision approve gate=scope newer than that halt.
+  local approved_ts=""
+  while IFS=$'\t' read -r ts body; do
+    [[ ! "$ts" > "$last_halt_ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "decision" ]] && continue
+    [[ "$(jq -r '.action' <<<"$ev")" != "approve" ]] && continue
+    [[ "$(jq -r '.gate // ""' <<<"$ev")" != "scope" ]] && continue
+    [[ "$ts" > "$approved_ts" ]] && approved_ts="$ts"
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+
   [[ -n "$approved_ts" ]]
 }
 

@@ -14,11 +14,15 @@ ok()   { printf 'OK: %s\n' "$1"; PASS=$((PASS+1)); }
 nope() { printf 'FAIL: %s\n  reason: %s\n' "$1" "$2" >&2; FAIL=$((FAIL+1)); }
 
 # Helpers — extract a single H2 section's body (between its line and the next H2).
+# Note: `## ` headings inside a column-0 fenced block do NOT end the section —
+# the awk tracks in_fence to skip those (fixes §2 whose Completion checklist
+# is a column-0 ## heading inside the opening ``` block).
 section_body() {
   local heading="$1"
   awk -v h="$heading" '
-    BEGIN{in_section=0}
-    /^## /{ if (in_section) exit; if (index($0, h)) {in_section=1; next} }
+    BEGIN{in_section=0; in_fence=0}
+    /^```/{if (in_section) in_fence = !in_fence}
+    /^## /{ if (in_section && !in_fence) exit; if (!in_section && index($0, h)) {in_section=1; next} }
     in_section{print}
   ' "$PROMPTS"
 }
@@ -53,10 +57,11 @@ else
 fi
 
 # §4 pass-through clause is preserved verbatim (regression — must not tighten).
-if printf '%s\n' "$s4" | grep -qF 'this stage is a pass-through: skip implementation, write a stage summary noting the no-op, post `<!-- pipeline-stage-summary: ui -->`, and exit'; then
-  ok "§4 pass-through clause preserved"
+# Updated in ENG-60-T2.11: old-shape marker replaced with pipeline.sh event invocation.
+if printf '%s\n' "$s4" | grep -qF "this stage is a pass-through: skip implementation, write a stage summary noting the no-op, run \`bash bin/pipeline.sh event {issue_id} verdict pass --stage ui\`, and exit"; then
+  ok "§4 pass-through clause preserved (new-shape verdict)"
 else
-  nope "§4 pass-through clause preserved" "phrase missing or altered"
+  nope "§4 pass-through clause preserved (new-shape verdict)" "phrase missing or altered"
 fi
 
 # §8 — positive companion: contains the new orchestrator attribution.
@@ -198,8 +203,10 @@ fi
 #
 # (a) addresses the exploratory-probe pattern via prompt instruction:
 # tell the agent that probing leaves permanent litter and the harness
-# has a clean exit ramp (`<!-- pipeline-halt: agent-blocked -->`). The
-# agent should halt instead of probing when uncertain.
+# has a clean exit ramp (`bin/pipeline.sh event ... verdict halt
+# --reason agent-blocked` per ENG-60 T2.11; was the legacy hand-crafted
+# `<!-- pipeline-halt: agent-blocked -->` marker pre-T2.11). The agent
+# should halt instead of probing when uncertain.
 #
 # Pattern (b) — sig-mutated retries (`-trial`, `-v3`, ...) — is tracked
 # separately in ENG-57.
@@ -231,10 +238,13 @@ for stage_section in \
     nope "$short contains 'do not probe' rule" "phrase missing"
   fi
 
-  if printf '%s\n' "$body" | grep -qF '<!-- pipeline-halt: agent-blocked -->'; then
-    ok "$short contains 'pipeline-halt: agent-blocked' exit ramp"
+  # ENG-60 T2.11: exit ramp is now `verdict halt --reason agent-blocked`
+  # via bin/pipeline.sh; the old hand-crafted marker form was replaced
+  # to match the per-stage Verdict marker block guidance.
+  if printf '%s\n' "$body" | grep -qF 'verdict halt --reason agent-blocked'; then
+    ok "$short contains 'verdict halt --reason agent-blocked' exit ramp"
   else
-    nope "$short contains 'pipeline-halt: agent-blocked' exit ramp" "marker missing"
+    nope "$short contains 'verdict halt --reason agent-blocked' exit ramp" "instruction missing"
   fi
 done
 

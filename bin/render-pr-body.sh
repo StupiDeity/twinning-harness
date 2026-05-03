@@ -125,7 +125,7 @@ render_pr_body() {
 
   # ── Changes ──
   local impl_summary ui_summary impl_tldr ui_tldr
-  impl_summary="$(_rpb_stage_summary "$issue" "implement")"
+  impl_summary="$(_rpb_stage_summary "$issue" "implementing")"
   ui_summary="$(_rpb_stage_summary "$issue" "ui")"
   impl_tldr="$(_rpb_tldr "$impl_summary")"
   ui_tldr="$(_rpb_tldr "$ui_summary")"

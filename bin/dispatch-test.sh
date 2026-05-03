@@ -77,7 +77,7 @@ pass_at() { printf '  PASS %s\n' "$1"; PASS=$((PASS+1)); }
 # ─── Group 1: allowed-tools exclude Linear MCP ──────────────────────────
 printf '\n--- allowed-tools: no mcp__*linear* in any stage ---\n'
 
-for stage in brainstorm plan implement ui review qa build release; do
+for stage in brainstorming planning implementing ui reviewing qa building released; do
   tools="$(allowed_tools_for "$stage" 2>/dev/null)"
   # Check for any mcp__*linear* substring (case-insensitive match for safety)
   if printf '%s' "$tools" | grep -qi 'mcp__.*linear'; then
@@ -272,7 +272,7 @@ printf '\n--- ENG-48: gtimeout watchdog wraps claude -p ---\n'
 
 DRYRUN_OUT="$_TEST_STUB_DIR/dryrun.out"
 PIPELINE_DRY_RUN=1 \
-  bash "$SCRIPT_DIR/dispatch.sh" brainstorm "$_PROMPT_FILE" 2>"$DRYRUN_OUT" >/dev/null || true
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$DRYRUN_OUT" >/dev/null || true
 
 # Default budget (config has no override): 30 min = 1800s.
 if grep -qE 'gtimeout.*\b1800\b' "$DRYRUN_OUT"; then
@@ -312,7 +312,7 @@ PROJECT_SLUG="custom-slug" \
 HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
 PROJECT_STATE_DIR="$HARNESS_STATE_DIR/custom-slug" \
 LINEAR_API_KEY="$LINEAR_API_KEY" \
-  bash "$SCRIPT_DIR/dispatch.sh" brainstorm "$_PROMPT_FILE" 2>"$DRYRUN_OUT_C" >/dev/null || true
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$DRYRUN_OUT_C" >/dev/null || true
 
 if grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_C"; then
   pass_at "dry-run log honors config orchestrator.dispatch_timeout_minutes=5 (300s)"
@@ -480,7 +480,7 @@ else
 fi
 
 # ─── Fixture E: dry-run stale-file removal (E-04 / D-006) ─────────────────
-USAGE_E="$ISSUE_DIR/usage-plan-E.json"
+USAGE_E="$ISSUE_DIR/usage-planning-E.json"
 printf '{"stale":true}' > "$USAGE_E"
 [[ -s "$USAGE_E" ]] || die "fixture-E setup failed (could not seed stale file)"
 
@@ -490,8 +490,8 @@ printf 'irrelevant\n' > "$PROMPT_FILE"
 # Run dispatch.sh in dry-run mode against a stage that maps onto USAGE_E.
 # dispatch.sh dies on an unknown stage's allowed_tools_for, so use a real
 # stage and rename the seed file to match `usage-${stage}.json`.
-mv "$USAGE_E" "$ISSUE_DIR/usage-plan.json"
-USAGE_E="$ISSUE_DIR/usage-plan.json"
+mv "$USAGE_E" "$ISSUE_DIR/usage-planning.json"
+USAGE_E="$ISSUE_DIR/usage-planning.json"
 [[ -s "$USAGE_E" ]] || die "fixture-E rename failed"
 
 PIPELINE_DRY_RUN=1 \
@@ -501,10 +501,10 @@ PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
 PROJECT_SLUG="$PROJECT_SLUG" \
 TARGET_REPO="$TARGET_REPO" \
 LINEAR_API_KEY="$LINEAR_API_KEY" \
-  bash "$SCRIPT_DIR/dispatch.sh" plan "$PROMPT_FILE" >/dev/null 2>&1 || true
+  bash "$SCRIPT_DIR/dispatch.sh" planning "$PROMPT_FILE" >/dev/null 2>&1 || true
 
 if [[ ! -e "$USAGE_E" ]]; then
-  pass_at "fixture-E dry-run: pre-existing usage-plan.json removed at dispatch entry"
+  pass_at "fixture-E dry-run: pre-existing usage-planning.json removed at dispatch entry"
 else
   fail_at "fixture-E dry-run" "stale file still present: $(cat "$USAGE_E")"
 fi
@@ -744,19 +744,19 @@ fi
 # the renderer-wrapper integration (gating, sidecar write, pre-clean) which
 # AS1-AS6 do not exercise at all.
 
-# ─── AT1: renderer integration, stage="implement" + match → rc=22, sidecar, log ─
+# ─── AT1: renderer integration, stage="implementing" + match → rc=22, sidecar, log ─
 # AS1-AS6 exercise the helper directly. None test that
 # _render_and_capture_stream actually fires the assertion when stage is
-# implement, writes the sidecar to $issue_dir/.transcript-violation-implement,
+# implementing, writes the sidecar to $issue_dir/.transcript-violation-implementing,
 # logs the matched command, and returns 22. Pin the renderer wrapper end-to-end.
-USAGE_AT1="$ISSUE_DIR/usage-implement-AT1.json"
+USAGE_AT1="$ISSUE_DIR/usage-implementing-AT1.json"
 RAW_AT1="$ISSUE_DIR/.raw-stream.ndjson.tmp"
-VIOLATION_AT1="$ISSUE_DIR/.transcript-violation-implement"
+VIOLATION_AT1="$ISSUE_DIR/.transcript-violation-implementing"
 rm -f "$USAGE_AT1" "$RAW_AT1" "$VIOLATION_AT1"
 
 at1_rc=0
 RENDER_OUT_AT1="$(
-  _render_and_capture_stream "$USAGE_AT1" "$ISSUE_DIR" "implement" 2>&1 <<'NDJSON'
+  _render_and_capture_stream "$USAGE_AT1" "$ISSUE_DIR" "implementing" 2>&1 <<'NDJSON'
 {"type":"system","subtype":"init","session_id":"at1","model":"claude-opus-4-7"}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title at1 --body forbidden"}}]}}
 {"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
@@ -767,24 +767,24 @@ if [[ "$at1_rc" == "22" ]] \
    && [[ -f "$VIOLATION_AT1" ]] \
    && [[ "$(cat "$VIOLATION_AT1")" == "gh pr create --title at1 --body forbidden" ]] \
    && grep -q '\[assert\] implement-stage transcript invoked forbidden tool: gh pr create --title at1 --body forbidden' <<<"$RENDER_OUT_AT1"; then
-  pass_at "AT1 (renderer integration): stage=implement+match → rc=22, sidecar written, log line emitted"
+  pass_at "AT1 (renderer integration): stage=implementing+match → rc=22, sidecar written, log line emitted"
 else
   fail_at "AT1 renderer integration" "rc=$at1_rc viol_exists=$([[ -f $VIOLATION_AT1 ]] && echo y || echo n) viol_body=$(cat "$VIOLATION_AT1" 2>/dev/null) out=$RENDER_OUT_AT1"
 fi
 rm -f "$VIOLATION_AT1"
 
-# ─── AT2: renderer cross-stage gating: stage="plan" + match in transcript → rc=0 ─
-# Verify the stage gate actually works. A non-implement stage with a
+# ─── AT2: renderer cross-stage gating: stage="planning" + match in transcript → rc=0 ─
+# Verify the stage gate actually works. A non-implementing stage with a
 # transcript that *would* match must not trigger the assertion, must not
-# write any sidecar (neither .transcript-violation-implement nor
-# .transcript-violation-plan), and must return 0.
-USAGE_AT2="$ISSUE_DIR/usage-plan-AT2.json"
-VIOLATION_AT2_IMPL="$ISSUE_DIR/.transcript-violation-implement"
-VIOLATION_AT2_PLAN="$ISSUE_DIR/.transcript-violation-plan"
+# write any sidecar (neither .transcript-violation-implementing nor
+# .transcript-violation-planning), and must return 0.
+USAGE_AT2="$ISSUE_DIR/usage-planning-AT2.json"
+VIOLATION_AT2_IMPL="$ISSUE_DIR/.transcript-violation-implementing"
+VIOLATION_AT2_PLAN="$ISSUE_DIR/.transcript-violation-planning"
 rm -f "$USAGE_AT2" "$ISSUE_DIR/.raw-stream.ndjson.tmp" "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN"
 
 at2_rc=0
-_render_and_capture_stream "$USAGE_AT2" "$ISSUE_DIR" "plan" >/dev/null 2>&1 <<'NDJSON' || at2_rc=$?
+_render_and_capture_stream "$USAGE_AT2" "$ISSUE_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || at2_rc=$?
 {"type":"system","subtype":"init","session_id":"at2","model":"claude-opus-4-7"}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title at2-should-be-ignored"}}]}}
 {"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
@@ -793,7 +793,7 @@ NDJSON
 if [[ "$at2_rc" == "0" ]] \
    && [[ ! -f "$VIOLATION_AT2_IMPL" ]] \
    && [[ ! -f "$VIOLATION_AT2_PLAN" ]]; then
-  pass_at "AT2 (cross-stage gating): stage=plan with matching transcript → rc=0, no sidecar"
+  pass_at "AT2 (cross-stage gating): stage=planning with matching transcript → rc=0, no sidecar"
 else
   fail_at "AT2 cross-stage gating" "rc=$at2_rc viol_impl=$([[ -f $VIOLATION_AT2_IMPL ]] && echo y || echo n) viol_plan=$([[ -f $VIOLATION_AT2_PLAN ]] && echo y || echo n)"
 fi
@@ -803,23 +803,23 @@ rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN"
 # Plan §4 row "Sidecar present from a prior crashed dispatch" is marked
 # "implicit (single-line rm -f in Task 2) — covered by code review".
 # Promote that to a real test: pre-seed a stale sidecar, run the renderer
-# with implement stage and a *clean* transcript, and verify the stale
+# with implementing stage and a *clean* transcript, and verify the stale
 # sidecar is removed and no new one is written.
-USAGE_AT3="$ISSUE_DIR/usage-implement-AT3.json"
-VIOLATION_AT3="$ISSUE_DIR/.transcript-violation-implement"
+USAGE_AT3="$ISSUE_DIR/usage-implementing-AT3.json"
+VIOLATION_AT3="$ISSUE_DIR/.transcript-violation-implementing"
 rm -f "$USAGE_AT3" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
 printf 'stale gh pr create --title leftover-from-prior-crash\n' > "$VIOLATION_AT3"
 [[ -s "$VIOLATION_AT3" ]] || die "AT3 setup failed: stale sidecar not seeded"
 
 at3_rc=0
-_render_and_capture_stream "$USAGE_AT3" "$ISSUE_DIR" "implement" >/dev/null 2>&1 <<'NDJSON' || at3_rc=$?
+_render_and_capture_stream "$USAGE_AT3" "$ISSUE_DIR" "implementing" >/dev/null 2>&1 <<'NDJSON' || at3_rc=$?
 {"type":"system","subtype":"init","session_id":"at3","model":"claude-opus-4-7"}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}
 {"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
 NDJSON
 
 if [[ "$at3_rc" == "0" ]] && [[ ! -f "$VIOLATION_AT3" ]]; then
-  pass_at "AT3 (pre-clean stale sidecar): renderer entry rm -f removed prior-crash .transcript-violation-implement"
+  pass_at "AT3 (pre-clean stale sidecar): renderer entry rm -f removed prior-crash .transcript-violation-implementing"
 else
   fail_at "AT3 pre-clean stale sidecar" "rc=$at3_rc viol_exists=$([[ -f $VIOLATION_AT3 ]] && echo y || echo n) viol_contents=$(cat "$VIOLATION_AT3" 2>/dev/null)"
 fi
@@ -896,11 +896,11 @@ contract_check_stage() {
 }
 
 printf '\n--- ENG-49 Gap #7: prompt<->allowlist contract ---\n'
-contract_check_stage implement     "## 3. Implementation Agent (Backend)"
+contract_check_stage implementing  "## 3. Implementation Agent (Backend)"
 contract_check_stage ui            "## 4. UI Agent (Frontend)"
-contract_check_stage review        "## 5. Review Agent"
+contract_check_stage reviewing     "## 5. Review Agent"
 contract_check_stage qa            "## 6. QA Agent"
-contract_check_stage build         "## 7. Build Agent"
+contract_check_stage building      "## 7. Build Agent"
 
 # ─── ENG-53 #8: harness target's dispatch.tools populated ──────────────
 # Per the ENG-44 dogfood post-mortem: the implement and qa stages on
@@ -922,7 +922,7 @@ printf '\n--- ENG-53 #8: harness profile populates dispatch.tools test-runner --
 # population. CI / other-target operators (file missing) skip silently.
 HARNESS_CONFIG="$HARNESS_ROOT/.pipeline-config/config.json"
 if [[ -f "$HARNESS_CONFIG" ]]; then
-  for stage in implement qa; do
+  for stage in implementing qa; do
     has_runner="$(jq -r --arg s "$stage" '
       (.dispatch.tools[$s] // []) as $arr
       | if ($arr | type) == "array"

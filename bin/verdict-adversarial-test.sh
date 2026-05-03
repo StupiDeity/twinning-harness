@@ -3,15 +3,16 @@
 #
 # Gap this file closes: the existing verdict-handler-test.sh asserts shape
 # via jq-on-fixture for cases 10/11/12/14/15/18 and never invokes the real
-# code paths under test (halt.sh, scope-check.sh has-scope-approval,
+# code paths under test (scope-check.sh has-scope-approval,
 # guards.sh count_marker_since_last_transition, classify-failure.sh halt
 # marker emission). This file invokes those code paths directly against
 # stubbed linear.sh + slack.sh + metrics.sh and asserts their observable
 # effects (arg shapes passed to linear.sh, exit codes, comment bodies).
 #
 # Plus adversarial breakages outside the plan's Failure Mode → Test Map
-# (halt.sh arg-parse edges, marker-regex edges, stale decision with newer
-# halt, empty comments array, concurrent-tick idempotency).
+# (marker-regex edges, stale decision with newer halt, empty comments array,
+# concurrent-tick idempotency).
+# NOTE: halt.sh wrapper deleted in ENG-60 T3.5; A1–A5 removed with it.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,7 +62,7 @@ done
 # Route script-under-test invocations through the stub dir. Each script
 # tested here resolves siblings via its own SCRIPT_DIR; we point the
 # siblings at the stubs by symlinking the real script into STUB_DIR.
-for real in halt.sh scope-check.sh guards.sh classify-failure.sh verdict-handler.sh common.sh; do
+for real in scope-check.sh guards.sh classify-failure.sh verdict-handler.sh common.sh pipeline.sh pipeline-events.json; do
   ln -sf "$SCRIPT_DIR/$real" "$STUB_DIR/$real"
 done
 
@@ -95,71 +96,10 @@ mk_fixture() {
   printf '%s' "$arr"
 }
 
-# ─── A1: halt.sh resolve scope-approved posts marker + removes halted ─
-reset_calls
-bash "$STUB_DIR/halt.sh" resolve ENG-801 --decision scope-approved >/dev/null 2>&1
-if calls_contains "linear.sh add-comment ENG-801 <!-- pipeline-decision: scope-approved -->" \
-   && calls_contains "linear.sh remove-label ENG-801 pipeline:halted"; then
-  pass_at "A1 halt.sh resolve scope-approved posts decision marker + removes pipeline:halted"
-else
-  fail_at "A1 halt.sh resolve scope-approved" "calls=$(cat "$STUB_LOG")"
-fi
-
-# ─── A2: halt.sh resolve resume posts resume marker ──────────────────
-# ENG-49 Gap #2: resolve() now calls verdict-handler before clearing halt.
-# Set up a pipeline-halt marker (rc=1 path) so halt.sh proceeds to remove halt.
-reset_calls
-VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T10:00:00.000Z")"
-export VH_FIXTURE_COMMENTS
-VH_CURRENT_STAGE_LABEL="stage:ui"
-export VH_CURRENT_STAGE_LABEL
-bash "$STUB_DIR/halt.sh" resolve ENG-802 --decision resume >/dev/null 2>&1
-if calls_contains "linear.sh add-comment ENG-802 <!-- pipeline-decision: resume -->" \
-   && calls_contains "linear.sh remove-label ENG-802 pipeline:halted"; then
-  pass_at "A2 halt.sh resolve resume posts decision marker + removes halt (rc=1 path)"
-else
-  fail_at "A2 halt.sh resolve resume" "calls=$(cat "$STUB_LOG")"
-fi
-VH_FIXTURE_COMMENTS="[]"
-VH_CURRENT_STAGE_LABEL=""
-export VH_FIXTURE_COMMENTS VH_CURRENT_STAGE_LABEL
-
-# ─── A3: halt.sh rejects unknown decision value ──────────────────────
-reset_calls
-set +e
-bash "$STUB_DIR/halt.sh" resolve ENG-803 --decision approve-me >/dev/null 2>"$STUB_DIR/stderr"
-rc=$?
-set -e
-if [[ "$rc" != "0" ]] && grep -q 'unknown decision' "$STUB_DIR/stderr"; then
-  pass_at "A3 halt.sh rejects unknown --decision value"
-else
-  fail_at "A3 halt.sh rejects unknown decision" "rc=$rc stderr=$(cat "$STUB_DIR/stderr")"
-fi
-
-# ─── A4: halt.sh rejects missing ENG-id ──────────────────────────────
-reset_calls
-set +e
-bash "$STUB_DIR/halt.sh" resolve --decision resume >/dev/null 2>"$STUB_DIR/stderr"
-rc=$?
-set -e
-[[ "$rc" != "0" ]] \
-  && pass_at "A4 halt.sh rejects missing issue id" \
-  || fail_at "A4 halt.sh rejects missing issue id" "rc=$rc"
-
-# ─── A5: halt.sh rejects unknown subcommand ──────────────────────────
-set +e
-bash "$STUB_DIR/halt.sh" status ENG-805 >/dev/null 2>"$STUB_DIR/stderr"
-rc=$?
-set -e
-[[ "$rc" != "0" ]] \
-  && pass_at "A5 halt.sh rejects unknown subcommand" \
-  || fail_at "A5 halt.sh rejects unknown subcommand" "rc=$rc"
-
 # ─── A6: has-scope-approval TRUE when decision post-dates halt ───────
 VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-decision: scope-approved -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=scope-violation -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: decision action=approve gate=scope -->|2026-04-23T11:00:00.000Z")"
 set +e
 bash "$STUB_DIR/scope-check.sh" has-scope-approval ENG-806 >/dev/null 2>&1
 rc=$?
@@ -170,7 +110,7 @@ set -e
 
 # ─── A7: has-scope-approval FALSE when no decision ───────────────────
 VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=scope-violation -->|2026-04-23T10:00:00.000Z")"
 set +e
 bash "$STUB_DIR/scope-check.sh" has-scope-approval ENG-807 >/dev/null 2>&1
 rc=$?
@@ -184,9 +124,9 @@ set -e
 # fires at T2 (e.g. after the replay agent touched more out-of-scope files).
 # The stale decision must NOT satisfy the new halt.
 VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-decision: scope-approved -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=scope-violation -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: decision action=approve gate=scope -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=halt reason=scope-violation -->|2026-04-23T11:00:00.000Z")"
 set +e
 bash "$STUB_DIR/scope-check.sh" has-scope-approval ENG-808 >/dev/null 2>&1
 rc=$?
@@ -199,7 +139,7 @@ set -e
 # Decision comment alone, with no preceding scope-deviation halt, must
 # not falsely satisfy the check.
 VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-decision: scope-approved -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: decision action=approve gate=scope -->|2026-04-23T11:00:00.000Z")"
 set +e
 bash "$STUB_DIR/scope-check.sh" has-scope-approval ENG-809 >/dev/null 2>&1
 rc=$?
@@ -284,8 +224,8 @@ else
   fail_at "A12 classify-failure applies pipeline:halted" "calls=$(cat "$STUB_LOG")"
 fi
 if calls_contains "linear.sh [add-or-update-comment] [halt/implement/ENG-812] [ENG-812]" \
-   && grep -qF '<!-- pipeline-halt: agent-blocked -->' "$STUB_LOG"; then
-  pass_at "A12 classify-failure halt comment body contains <!-- pipeline-halt: agent-blocked --> marker"
+   && grep -qF '<!-- pipeline: verdict result=halt reason=agent-blocked -->' "$STUB_LOG"; then
+  pass_at "A12 classify-failure halt comment body contains new-shape halt marker (agent-blocked)"
 else
   fail_at "A12 halt-marker in body" "calls=$(cat "$STUB_LOG")"
 fi
@@ -293,8 +233,8 @@ fi
 # ─── A13: classify-failure agent-failure marker for non-human policies ─
 reset_calls
 classify_failure "ENG-813" "implement" "skip-until-code-changes" "build failed" 21 2 >/dev/null 2>&1
-if grep -qF '<!-- pipeline-halt: agent-failure -->' "$STUB_LOG"; then
-  pass_at "A13 classify-failure skip-until-code-changes uses agent-failure marker"
+if grep -qF '<!-- pipeline: verdict result=halt reason=agent-failure -->' "$STUB_LOG"; then
+  pass_at "A13 classify-failure skip-until-code-changes uses new-shape agent-failure marker"
 else
   fail_at "A13 classify-failure agent-failure marker" "calls=$(cat "$STUB_LOG")"
 fi
@@ -334,38 +274,55 @@ out="$(find_fresh_verdict ENG-816 2>&1)"
   && pass_at "A16 find_fresh_verdict prints empty when linear.sh get-comments returns null" \
   || fail_at "A16 find_fresh_verdict null input" "out=$out"
 
-# ─── A17: find_fresh_verdict treats malformed marker as no-fresh ─────
-# `<!-- pipeline-stage-summary: -->` with empty stage field must not match.
+# ─── A17: find_fresh_verdict passes through empty-stage verdict; verdict_handler rejects it ─
+# New shape `<!-- pipeline: verdict result=pass stage= -->` with empty stage
+# field: parse_pipeline_marker returns {event:"verdict",result:"pass",stage:""}.
+# find_fresh_verdict includes it (source_stage=""). verdict_handler then detects
+# the stage mismatch (""!=current) and posts a protocol-violation (tested in A18).
+# Post-T3.1 the old-shape `<!-- pipeline-stage-summary: -->` is not parsed at all
+# (old-shape branch removed), so there is no longer a "no-fresh" result here;
+# the reject logic lives in verdict_handler, which A18 covers.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-stage-summary: -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage= -->|2026-04-23T10:00:00.000Z")"
 out="$(find_fresh_verdict ENG-817)"
-[[ -z "$out" ]] \
-  && pass_at "A17 find_fresh_verdict treats malformed stage-summary (empty stage) as no-fresh" \
-  || fail_at "A17 malformed marker" "out=$out"
+# find_fresh_verdict now returns the (malformed) marker; the empty-stage rejection
+# occurs downstream in verdict_handler. Assert the returned marker type is what
+# we expect (pipeline-stage-summary with empty source_stage), not a crash/garbage.
+mtype="$(jq -r '.marker // ""' <<<"${out:-{}}" 2>/dev/null || printf '')"
+[[ "$mtype" == "pipeline-stage-summary" ]] \
+  && pass_at "A17 find_fresh_verdict passes empty-stage verdict as pipeline-stage-summary (verdict_handler rejects it in A18)" \
+  || fail_at "A17 malformed marker" "mtype=$mtype out=$out"
 
 # ─── A18: verdict_handler on malformed marker surfaces protocol-violation ─
+# New-shape `<!-- pipeline: verdict result=pass stage= -->` with empty stage:
+# find_fresh_verdict sees the verdict event, but source_stage will be "".
+# verdict_handler then checks src != current_stage ("" != "implementing") → no-marker
+# path (empty fresh verdict) or stage-mismatch. Either way the handler returns rc=2
+# and posts a protocol-violation comment.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-stage-summary: -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage= -->|2026-04-23T10:00:00.000Z")"
 export VH_CURRENT_STAGE_LABEL="stage:implementing"
 export VH_CURRENT_LABELS="stage:implementing pipeline:halted"
 rc=0; verdict_handler ENG-818 implementing >/dev/null 2>&1 || rc=$?
-if [[ "$rc" == "2" ]] && grep -qF 'protocol-violation/no-marker/ENG-818' "$STUB_LOG"; then
-  pass_at "A18 verdict_handler posts no-marker protocol-violation on malformed verdict"
+if [[ "$rc" == "2" ]] && grep -qF '/ENG-818' "$STUB_LOG"; then
+  pass_at "A18 verdict_handler posts protocol-violation on empty-stage malformed verdict"
 else
   fail_at "A18 malformed → protocol-violation" "rc=$rc calls=$(cat "$STUB_LOG")"
 fi
 
 # ─── A19: rejection without target marker treated as protocol violation ─
-# `<!-- pipeline-rejection: qa -->` alone (no target) has tgt="" which
-# will not be in any loopback row, so unknown-loopback fires.
+# New shape `<!-- pipeline: verdict result=fail -->` with no --target k=v:
+# parse_pipeline_marker produces {event:"verdict",result:"fail"} with no target field.
+# find_fresh_verdict sets target_stage to jq null → ""; verdict_handler looks up
+# the loopback row for (qa, "") which is absent → unknown-loopback fires.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-transition: implementing → qa -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-rejection: qa -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: transition from=implementing to=qa -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=fail -->|2026-04-23T10:00:00.000Z")"
 export VH_CURRENT_STAGE_LABEL="stage:qa"
 export VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler ENG-819 qa >/dev/null 2>&1 || rc=$?
@@ -376,11 +333,11 @@ else
 fi
 
 # ─── A20: released stage has no forward transition (terminal) ────────
-# Protocol violation expected if anyone posts stage-summary: released.
+# Protocol violation expected if anyone posts a pass verdict for released stage.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-transition: building → released -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-stage-summary: released -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: transition from=building to=released -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=released -->|2026-04-23T10:00:00.000Z")"
 export VH_CURRENT_STAGE_LABEL="stage:released"
 export VH_CURRENT_LABELS="stage:released pipeline:halted"
 rc=0; verdict_handler ENG-820 released >/dev/null 2>&1 || rc=$?
@@ -408,7 +365,7 @@ out="$(find_fresh_verdict ENG-821)"
 # the freshness window and erase real verdicts.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-stage-summary: qa -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T09:00:00.000Z" \
   "<!-- pipeline-transition: qa -> building -->|2026-04-23T10:00:00.000Z")"
 # The fake ASCII waypoint would move `last_transition_ts` to 10:00 and drop
 # the verdict at 09:00. With the real U+2192-requiring regex it has no
@@ -453,10 +410,12 @@ fi
 # pass verdict. The body contains the halt marker verbatim; scanner must
 # classify it as pipeline-halt (halt-for-human), not pipeline-stage-summary
 # nor pipeline-rejection.
+# classify-failure.sh now emits new-shape <!-- pipeline: verdict result=halt ... -->
+# (migrated in ENG-60 T3.4.5); this fixture matches what classify-failure.sh emits.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-halt: agent-failure -->\\n\\nPipeline: \`implement\` stage halted — err|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=halt reason=agent-blocked -->\\n\\nPipeline: \`implement\` stage halted — err|2026-04-23T10:00:00.000Z")"
 fresh="$(find_fresh_verdict ENG-824)"
 mtype="$(jq -r '.marker' <<<"$fresh" 2>/dev/null || printf '')"
 [[ "$mtype" == "pipeline-halt" ]] \

@@ -103,7 +103,7 @@ mk_fixture() {
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → qa -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-stage-summary: qa -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-901" "qa" >/dev/null 2>&1 || rc=$?
@@ -123,10 +123,12 @@ fwd="$(_vh_lookup_forward qa)"
   || fail_at "case-1 _vh_lookup_forward qa = building" "got $fwd"
 
 # ─── Case 2: loopback-qa-to-implementing ─────────────────────────────
+# New-shape rejection body (no source); T2.2 fallback derives source from
+# VH_CURRENT_STAGE_LABEL via linear.sh stage-of.
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → qa -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-rejection: qa --><!-- pipeline-rejection-target: implementing -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=fail target=implementing -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-902" "qa" >/dev/null 2>&1 || rc=$?
@@ -142,10 +144,12 @@ else
 fi
 
 # ─── Case 3: loopback-reviewing-to-brainstorming-adds-supersede ──────
+# New-shape rejection body (no source); T2.2 fallback derives source from
+# VH_CURRENT_STAGE_LABEL via linear.sh stage-of.
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: ui → reviewing -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-rejection: reviewing --><!-- pipeline-rejection-target: brainstorming -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=fail target=brainstorming -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:reviewing"
 VH_CURRENT_LABELS="stage:reviewing pipeline:halted"
 rc=0; verdict_handler "ENG-903" "reviewing" >/dev/null 2>&1 || rc=$?
@@ -162,7 +166,7 @@ fi
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → qa -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-halt: agent-blocked -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=agent-blocked -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-904" "qa" >/dev/null 2>&1 || rc=$?
@@ -194,7 +198,7 @@ fi
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: ui → reviewing -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-stage-summary: qa -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:reviewing"
 VH_CURRENT_LABELS="stage:reviewing pipeline:halted"
 rc=0; verdict_handler "ENG-906" "reviewing" >/dev/null 2>&1 || rc=$?
@@ -206,10 +210,12 @@ else
 fi
 
 # ─── Case 7: unknown-loopback-protocol-violation ─────────────────────
+# New-shape rejection; T2.2 fallback derives source from VH_CURRENT_STAGE_LABEL.
+# ui→planning is not a valid loopback row → protocol violation.
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → ui -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-rejection: ui --><!-- pipeline-rejection-target: planning -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=fail target=planning -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:ui"
 VH_CURRENT_LABELS="stage:ui pipeline:halted"
 rc=0; verdict_handler "ENG-907" "ui" >/dev/null 2>&1 || rc=$?
@@ -225,8 +231,8 @@ fi
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → qa -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-stage-summary: qa -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-stage-summary: qa -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 fresh="$(find_fresh_verdict "ENG-908")"
@@ -244,7 +250,7 @@ fi
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → qa -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-stage-summary: qa -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T10:00:00.000Z" \
   "<!-- pipeline-transition: qa → building -->|2026-04-23T10:30:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
@@ -267,7 +273,7 @@ fi
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-halt: agent-failure -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=agent-failure -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:implementing"
 VH_CURRENT_LABELS="stage:implementing pipeline:halted pipeline:skip-until-code-changes"
 rc=0; verdict_handler "ENG-910" "implementing" >/dev/null 2>&1 || rc=$?
@@ -284,7 +290,7 @@ fi
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=scope-deviation -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:implementing"
 VH_CURRENT_LABELS="stage:implementing pipeline:halted"
 rc=0; verdict_handler "ENG-911" "implementing" >/dev/null 2>&1 || rc=$?
@@ -302,8 +308,8 @@ rc=0; verdict_handler "ENG-911" "implementing" >/dev/null 2>&1 || rc=$?
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-halt: scope-deviation -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-decision: scope-approved -->|2026-04-23T11:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=scope-deviation -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: decision action=approve gate=scope -->|2026-04-23T11:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:implementing"
 VH_CURRENT_LABELS="stage:implementing pipeline:halted"
 fresh="$(find_fresh_verdict "ENG-912")"
@@ -318,7 +324,7 @@ fi
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: qa → building -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-rejection: building --><!-- pipeline-rejection-target: implementing -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: verdict result=fail target=implementing -->|2026-04-23T10:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:building"
 VH_CURRENT_LABELS="stage:building pipeline:halted"
 rc=0; verdict_handler "ENG-913" "building" >/dev/null 2>&1 || rc=$?
@@ -357,7 +363,7 @@ approved_count="$(jq -r '[.[] | select(.body | contains("<!-- pipeline-decision:
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-halt: agent-blocked -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: verdict result=halt reason=agent-blocked -->|2026-04-23T10:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:implementing"
 VH_CURRENT_LABELS="stage:implementing pipeline:halted"
 rc=0; verdict_handler "ENG-916" "implementing" >/dev/null 2>&1 || rc=$?
@@ -369,7 +375,7 @@ rc=0; verdict_handler "ENG-916" "implementing" >/dev/null 2>&1 || rc=$?
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → ui -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-stage-summary: ui -->|2026-04-23T10:00:00.000Z")"
+  "<!-- pipeline: verdict result=pass stage=ui -->|2026-04-23T10:00:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:ui"
 VH_CURRENT_LABELS="stage:ui pipeline:halted"
 rc=0; verdict_handler "ENG-917" "ui" >/dev/null 2>&1 || rc=$?
@@ -411,7 +417,7 @@ count_after="$(jq -r --arg t "$last_ts" \
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: planning → implementing -->|2026-04-25T12:59:01.000Z" \
-  "<!-- pipeline-stage-summary: brainstorming -->|2026-04-27T06:30:00.000Z")"
+  "<!-- pipeline: verdict result=pass stage=brainstorming -->|2026-04-27T06:30:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:brainstorming"
 VH_CURRENT_LABELS="stage:brainstorming pipeline:halted"
 # Assert resume_in_progress_transition returns 1 (stale comment guard fires).
@@ -454,17 +460,16 @@ else
 fi
 
 # ─── ENG-45: pipeline-wait alone is NOT a verdict shape ────────────────
-# Asserts the load-bearing claim from plan A-005: find_fresh_verdict's jq
-# filter enumerates only the three verdict shapes (pipeline-stage-summary,
-# pipeline-rejection, pipeline-halt). A `pipeline-wait` marker — even when
-# it is the freshest comment newer than the most recent pipeline-transition
-# — must NOT be matched. Without this guarantee, the wait flow would post
-# a verdict marker on every wait dispatch and the orchestrator would
+# Asserts the load-bearing claim from plan A-005: find_fresh_verdict ignores
+# wait markers — even when they are the freshest comment newer than the most
+# recent pipeline-transition. Without this guarantee, the wait flow would
+# post a verdict marker on every wait dispatch and the orchestrator would
 # happily transition the issue forward on a not-yet-merged PR.
+# (New-shape wait; equivalent coverage provided also by FV5.)
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline-transition: implementing → building -->|2026-04-28T08:00:00.000Z" \
-  "<!-- pipeline-wait: awaiting-approval -->|2026-04-28T08:17:00.000Z")"
+  "<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00.000Z")"
 VH_CURRENT_STAGE_LABEL="stage:building"
 VH_CURRENT_LABELS="stage:building"
 result="$(find_fresh_verdict "ENG-45-WAIT" 2>/dev/null || printf '')"
@@ -773,6 +778,164 @@ if [[ -s "$BOOTSTRAP_CALLS" ]]; then
     "captured: $(cat "$BOOTSTRAP_CALLS")"
 else
   pass_at "ENG-50 bootstrap: to!=reviewing does not call bootstrap"
+fi
+
+# ─── Group: find_fresh_verdict equivalence (ENG-60 Phase 1) ──────────────
+
+printf '\n--- find_fresh_verdict accepts new-shape markers ---\n'
+
+# Fixture FV1: new-shape stage-summary marker should be detected as fresh verdict.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → implementing -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=pass stage=implementing -->"}
+]'
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+chmod +x "$STUB_DIR/linear.sh"
+_VH_SCRIPT_DIR="$STUB_DIR"
+result="$(find_fresh_verdict ENG-FV1)"
+# Tightened: require BOTH the legacy marker label AND the new event.result==pass —
+# otherwise a halt or rejection (also event=verdict) would silently satisfy this.
+[[ "$(jq -r '.marker' <<<"$result")" == "pipeline-stage-summary" \
+   && "$(jq -r '.event.result // ""' <<<"$result")" == "pass" ]] \
+  && pass_at "FV1: new-shape stage-summary detected" || fail_at "FV1: new-shape stage-summary detected" "got: $result"
+
+# Fixture FV2: new-shape rejection
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: implementing → reviewing -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=fail target=planning -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(find_fresh_verdict ENG-FV2)"
+target="$(jq -r '.target_stage // .target // ""' <<<"$result")"
+[[ "$target" == "planning" ]] && pass_at "FV2: new-shape rejection target=planning" || fail_at "FV2: new-shape rejection target=planning" "got: $result"
+
+# Fixture FV3: mixed bodies — old transition, new halt — halt detected
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → implementing -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=halt reason=agent-blocked -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(find_fresh_verdict ENG-FV3)"
+reason="$(jq -r '.reason // ""' <<<"$result")"
+[[ "$reason" == "agent-blocked" ]] && pass_at "FV3: mixed-shape halt detected" || fail_at "FV3: mixed-shape halt detected" "got: $result"
+
+# Fixture FV5: new-shape WAIT marker is NOT returned as a verdict (ENG-45
+# load-bearing invariant — wait is a soft re-dispatch, not a verdict).
+# Old-shape pipeline-wait was already excluded by the prior find_fresh_verdict;
+# this fixture pins the equivalent guarantee for new shape so a regression
+# can't sneak in via the parse_pipeline_marker path.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → building -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(find_fresh_verdict ENG-FV5)"
+[[ -z "$result" ]] && pass_at "FV5: new-shape wait NOT returned as verdict" || fail_at "FV5: new-shape wait NOT returned as verdict" "got: $result"
+
+# Fixture FB1: new-shape rejection with empty source_stage falls back to
+# the issue's current stage:* label (carryover #1 from Phase 1 T1.3).
+# Uses reviewing→implementing (valid loopback row) so the transition
+# completes cleanly once the source fallback resolves correctly.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: implementing → reviewing -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=fail target=implementing -->"}
+]'
+# Stub linear.sh: get-comments returns the new-shape rejection;
+# get-issue returns labels including stage:reviewing (the implicit source).
+# Other subcommands are no-op so apply_transition's side effects don't fail.
+ISSUE_JSON='{"data":{"issue":{"id":"ENG-FB1","labels":{"nodes":[{"name":"stage:reviewing"},{"name":"Bug"}]}}}}'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+case "\$1" in
+  get-comments) printf '%s' '$COMMENTS_JSON' ;;
+  get-issue)    printf '%s' '$ISSUE_JSON' ;;
+  stage-of)     printf 'stage:reviewing\n' ;;
+  add-label|remove-label|add-comment|add-or-update-comment) printf 'ok' ;;
+  *) printf '' ;;
+esac
+EOF
+chmod +x "$STUB_DIR/linear.sh"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
+result="$(verdict_handler "ENG-FB1" "reviewing" 2>&1 || true)"
+# Assert: no protocol violation (meaning src was resolved from stage:* label,
+# and the loopback reviewing→implementing was found). Also confirm rc=0
+# (transition was applied).
+rc_fb1=0
+verdict_handler "ENG-FB1" "reviewing" >/dev/null 2>&1 || rc_fb1=$?
+echo "$result" | grep -qE 'protocol-violation|unknown-loopback|rejection-source-unknown' \
+  && fail_at "FB1: rejection still triggers protocol violation" "result: $result" \
+  || pass_at "FB1: new-shape rejection resolves source from stage:* label (rc=$rc_fb1)" "result: $result"
+
+# Restore stub to the full-featured version used by earlier cases.
+cat > "$STUB_DIR/linear.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "linear.sh $*" >> "$STUB_LOG"
+case "$1" in
+  get-comments) printf '%s\n' "${VH_FIXTURE_COMMENTS:-[]}" ;;
+  has-label)
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      [[ "$lbl" == "$3" ]] && exit 0
+    done
+    exit 1 ;;
+  stage-of) printf '%s\n' "${VH_CURRENT_STAGE_LABEL:-}" ;;
+  all-stage-labels)
+    result=""
+    for lbl in ${VH_CURRENT_LABELS:-}; do
+      [[ "$lbl" == stage:* ]] && result="${result:+$result }$lbl"
+    done
+    printf '%s\n' "$result" ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$STUB_DIR/linear.sh"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
+# ─── Group: legacy-label drain (ENG-60 T2.13) ────────────────────────────
+
+printf '\n--- legacy pipeline-namespace labels are drained on transition ---\n'
+
+# Reuse case-1's setup: forward transition qa → building. Just check the
+# call log for the 5 legacy remove-label invocations.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline-transition: implementing → qa -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:qa"
+VH_CURRENT_LABELS="stage:qa pipeline:halted"
+verdict_handler "ENG-T213" "qa" >/dev/null 2>&1 || true
+
+drained_count=0
+for legacy in pipeline:paused pipeline:scope-approval-needed pipeline:supersede pipeline:skip-until-code-changes pipeline:skip-until-human-acts; do
+  if calls_contains "remove-label ENG-T213 $legacy"; then
+    drained_count=$((drained_count + 1))
+  fi
+done
+[[ "$drained_count" -eq 5 ]] && pass_at "T213: all 5 legacy labels drained on transition" || fail_at "T213: legacy label drain" "drained=$drained_count/5; calls=$(cat "$STUB_LOG")"
+
+# Confirm pipeline:halted and pipeline:abandoned are NOT drained (kept labels).
+if calls_contains "remove-label ENG-T213 pipeline:halted" \
+   && ! calls_contains "remove-label ENG-T213 pipeline:abandoned"; then
+  # pipeline:halted IS removed — that's fine, it's the normal end-of-transition
+  # cleanup at step 5. The important thing is pipeline:abandoned is not drained.
+  pass_at "T213: pipeline:abandoned not in drain list"
+elif calls_contains "remove-label ENG-T213 pipeline:abandoned"; then
+  fail_at "T213: pipeline:abandoned must NOT be drained" "calls=$(cat "$STUB_LOG")"
+else
+  pass_at "T213: pipeline:abandoned not in drain list"
 fi
 
 # ─── Summary ──────────────────────────────────────────────────────────

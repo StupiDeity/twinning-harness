@@ -23,13 +23,13 @@ source "$SCRIPT_DIR/common.sh"
 source "$SCRIPT_DIR/verdict-handler.sh"
 
 STAGE_LABEL_TO_STAGE_ARG='
-stage:brainstorming=brainstorm
-stage:planning=plan
-stage:implementing=implement
+stage:brainstorming=brainstorming
+stage:planning=planning
+stage:implementing=implementing
 stage:ui=ui
-stage:reviewing=review
+stage:reviewing=reviewing
 stage:qa=qa
-stage:building=build
+stage:building=building
 '
 # stage:released is terminal — not polled.
 
@@ -480,7 +480,7 @@ main() {
   if [[ -n "$inbox_pick" ]]; then
     jq -nc \
       --arg issue_id "$inbox_pick" \
-      --arg stage "brainstorm" \
+      --arg stage "brainstorming" \
       --arg reason "inbox pickup" \
       '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
     exit 0

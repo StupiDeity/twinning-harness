@@ -185,6 +185,51 @@ else
 fi
 rm -rf "$sandbox5"
 
+# ─── Group: has_scope_approval new-shape detection (ENG-60 Phase 1) ─────
+
+printf '\n--- has_scope_approval accepts new-shape decision ---\n'
+
+HSA_STUB_DIR="$(mktemp -d)"
+trap 'rm -rf "$HSA_STUB_DIR"' EXIT
+
+# Source scope-check.sh to load has_scope_approval (sentinel prevents main from running).
+# common.sh needs TARGET_REPO exported — it is already set by the caller.
+# After source, SCRIPT_DIR points at bin/; we override it per-fixture below.
+PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  source "$SCRIPT_DIR/scope-check.sh" 2>/dev/null || true
+
+# Fixture HSA1: new-shape decision approve gate=scope after new-shape halt
+# Uses canonical scope-violation (only token that reaches has_scope_approval
+# after T3.1 removed old-shape and T3.7 removed alias normalization).
+HSA_COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline: verdict result=halt reason=scope-violation -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: decision action=approve gate=scope -->"}
+]'
+cat > "$HSA_STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$HSA_COMMENTS_JSON'
+EOF
+chmod +x "$HSA_STUB_DIR/linear.sh"
+SCRIPT_DIR="$HSA_STUB_DIR"
+has_scope_approval ENG-HSA1 \
+  && pass_at "HSA1: new-shape halt+approve detected" \
+  || fail_at "HSA1" "new-shape decision approve after new-scope halt not detected"
+
+# Fixture HSA2: new-shape halt + new-shape decision approve
+HSA_COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline: verdict result=halt reason=scope-violation -->"},
+  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: decision action=approve gate=scope -->"}
+]'
+cat > "$HSA_STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$HSA_COMMENTS_JSON'
+EOF
+chmod +x "$HSA_STUB_DIR/linear.sh"
+SCRIPT_DIR="$HSA_STUB_DIR"
+has_scope_approval ENG-HSA2 \
+  && pass_at "HSA2: new-shape halt+approve detected" \
+  || fail_at "HSA2" "new-shape halt + new-shape decision approve not detected"
+
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
