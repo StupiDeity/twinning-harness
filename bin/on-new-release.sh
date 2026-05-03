@@ -23,10 +23,10 @@ main() {
   log "on-new-release: version=$version tag=$tag"
 
   # ─── Part 1: sweep stage:building → stage:released (safety net) ─────
-  # Primary path: when the build agent posts <!-- pipeline-stage-summary:
-  # building -->, verdict-handler.sh::apply_transition advances the issue
-  # to stage:released and flips Linear native-state to Done (see
-  # bin/verdict-handler.sh:159-167). This sweep is the SAFETY NET for
+  # Primary path: when the build agent posts a `<!-- pipeline: verdict
+  # result=pass stage=building -->` marker, verdict-handler.sh::apply_transition
+  # advances the issue to stage:released and flips Linear native-state to
+  # Done (see bin/verdict-handler.sh:159-167). This sweep is the SAFETY NET for
   # issues that didn't transition that way — for example, a build-agent
   # crash that left the issue stuck at stage:building, or a manually-
   # moved issue that bypassed the agent. In the happy path this loop

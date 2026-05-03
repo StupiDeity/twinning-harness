@@ -225,9 +225,10 @@ _pipeline_drain_issue_state() {
 # Posts a <!-- pipeline: transition from=X to=X reason=operator-resume -->
 # waypoint comment. This is the ENG-60 new-shape equivalent of ENG-58's
 # old-shape <!-- pipeline-transition: X → X (operator-resume) --> marker.
-# Both shapes are understood by count_marker_since_last_transition / find_fresh_verdict
-# (parse_pipeline_marker normalises them). We emit the new shape here;
-# tests assert on it explicitly.
+# find_fresh_verdict reads via parse_pipeline_marker (new shape only);
+# count_marker_since_last_transition (guards.sh) accepts both shapes for
+# in-flight back-compat. We emit the new shape here; tests assert on it
+# explicitly.
 _pipeline_post_operator_transition() {
   local issue="$1" stage="$2"
   # Sanitize stage name per D-014: only lowercase alpha passes; anything else

@@ -176,13 +176,13 @@ else
 fi
 
 # ENG-54: the review-stage human-approval gate is gone. §5 must NOT emit
-# `<!-- pipeline-wait: awaiting-approval -->` — that gate moved to build's
+# `<!-- pipeline: verdict result=wait reason=awaiting-approval -->` — that gate moved to build's
 # P2. The only stage that emits wait shapes now is build (§7).
-if printf '%s\n' "$s5" | grep -qF '<!-- pipeline-wait: awaiting-approval -->'; then
-  nope "§5 ENG-54: lacks '<!-- pipeline-wait: awaiting-approval -->' marker" \
+if printf '%s\n' "$s5" | grep -qF '<!-- pipeline: verdict result=wait reason=awaiting-approval -->'; then
+  nope "§5 ENG-54: lacks '<!-- pipeline: verdict result=wait reason=awaiting-approval -->' marker" \
        "marker still emitted from §5 — gate must be at build's P2 only"
 else
-  ok "§5 ENG-54: '<!-- pipeline-wait: awaiting-approval -->' marker absent"
+  ok "§5 ENG-54: '<!-- pipeline: verdict result=wait reason=awaiting-approval -->' marker absent"
 fi
 
 # ENG-54: the per-stage no-probe paragraph still mentions the marker as a
@@ -205,7 +205,7 @@ fi
 # tell the agent that probing leaves permanent litter and the harness
 # has a clean exit ramp (`bin/pipeline.sh event ... verdict halt
 # --reason agent-blocked` per ENG-60 T2.11; was the legacy hand-crafted
-# `<!-- pipeline-halt: agent-blocked -->` marker pre-T2.11). The agent
+# `<!-- pipeline: verdict result=halt reason=agent-blocked -->` marker pre-T2.11). The agent
 # should halt instead of probing when uncertain.
 #
 # Pattern (b) — sig-mutated retries (`-trial`, `-v3`, ...) — is tracked
