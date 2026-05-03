@@ -2,7 +2,7 @@
 linear: ENG-61
 title: Verdict-handler — harden parse_pipeline_marker against prose-quoted markers + fix _fresh_wait_reason wait-shadows-newer-verdict trap
 date: 2026-05-03
-status: draft
+status: accepted
 ---
 
 # ENG-61 — parse_pipeline_marker prose-quote hardening + _fresh_wait_reason wait-shadow fix
@@ -710,19 +710,20 @@ brainstorm-blocking gap.
 - Iteration 0 (initial draft): 5/6 PASS; Scope persona returned 1
   P0 (D-002 dropped four-space-indent acceptance criterion) and 1
   P2 (clarify ENG-58-itself vs ENG-58-class scope of AC #3).
-- Iteration 1 (this draft): D-002 restructured to honour AC #1
-  literally with a best-effort indented-block strip that activates
-  on raw bodies and is pinned by fixture P14b. §9 clarified that
-  ENG-58's specific instance was already manually rescued on
-  2026-05-02; AC #3 is forward-looking. Re-running personas
-  (mentally, against the iteration-1 changes): Design persona's
-  D-002 commentary is unchanged (still central, still pure-bash);
-  Security persona's F-1/F-2 analysis still holds (no changes to
-  the gate or allow-list); Scope P0 cleared (AC #1 literal
-  honoured); Coherence assertions about §3/§8.4 unaffected;
-  Product narrative unaffected; Feasibility — A17/A18 added to the
-  inventory pinning the awk approximation and macOS awk support.
-  Expected outcome: 6/6 PASS, gate P0 = 0.
+- Iteration 1: D-002 restructured to honour AC #1 literally with a
+  best-effort indented-block strip that activates on raw bodies and
+  is pinned by fixture P14b. §9 clarified that ENG-58's specific
+  instance was already manually rescued on 2026-05-02; AC #3 is
+  forward-looking.
+- Iteration 2 (final, 2026-05-03 operator-resumed): re-ran all six
+  personas after re-verifying every §8.4 codebase-fact entry against
+  the live `bin/` tree (parse_pipeline_marker at common.sh:141–171,
+  _fresh_wait_reason at run-stage.sh:298–341, find_fresh_verdict at
+  verdict-handler.sh:85–144, has_scope_approval at scope-check.sh:105–143,
+  common-test.sh group at 248–276, run-stage-test.sh WR group at
+  2175–2210). All six verdicts unchanged: Design PASS, Security PASS,
+  Scope PASS, Coherence PASS, Product PASS, Feasibility PASS. Gate
+  P0 = 0. Status moved from `draft` to `accepted`.
 
 ## 12. Implementation handoff notes
 
