@@ -313,4 +313,16 @@ transitions to QA. Issues at any other stage are unaffected.
 | Breaker tripped | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
-| Kill switch | `bash bin/pipeline.sh decide …` or set `orchestrator.paused=true` (takes effect next tick) |
+| Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
+
+**What `--action continue` clears (atomic, ENG-58 ported to ENG-60):**
+
+1. `pipeline:halted` label
+2. `pipeline:skip-until-code-changes` and `pipeline:skip-until-human-acts` labels
+3. `$PROJECT_STATE_DIR/<ident>/wait-*.json` files
+4. `$PROJECT_STATE_DIR/<ident>/issue-state.json` IFF its `.policy == "skip-until-human-acts"`
+5. Posts a `<!-- pipeline: transition from=<stage> to=<stage> reason=operator-resume -->` waypoint to reset `count_marker_since_last_transition` (rejection counter) and `find_fresh_verdict` freshness.
+
+**Idempotent — safe to re-run.** Every operation (remove-label, rm -f,
+add-comment) is idempotent; the operator-resume waypoint is posted
+LAST so a partial-failure leaves the issue in a re-runnable state.

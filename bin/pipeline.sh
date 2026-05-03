@@ -165,6 +165,98 @@ cmd_event_transition() {
   bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
 }
 
+# ── ENG-58 atomic-reset helpers (ported from halt.sh::resolve, ENG-60 merge) ──
+#
+# These run when an operator issues `bin/pipeline.sh decide <issue> --action continue`
+# (the ENG-60 replacement for `bin/halt.sh resolve --decision resume`).
+# Idempotent: every operation no-ops when the target is absent.
+
+# _pipeline_drain_wait_files <issue>
+# Remove every wait-<stage>.json under the per-issue state dir and return a
+# count (via stdout) for the audit summary.
+_pipeline_drain_wait_files() {
+  local issue="$1"
+  local d; d="$(issue_dir "$issue")"
+  local wait_count=0
+  if compgen -G "$d/wait-*.json" >/dev/null 2>&1; then
+    wait_count="$(compgen -G "$d/wait-*.json" | wc -l | tr -d ' ')"
+    rm -f "$d"/wait-*.json 2>/dev/null || true
+  fi
+  printf '%d' "$wait_count"
+}
+
+# _pipeline_drain_skip_labels <issue>
+# Remove pipeline:skip-until-code-changes and pipeline:skip-until-human-acts
+# labels if present. Returns count removed (via stdout).
+_pipeline_drain_skip_labels() {
+  local issue="$1"
+  local skip_count=0
+  for lbl in "pipeline:skip-until-code-changes" "pipeline:skip-until-human-acts"; do
+    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "$lbl" 2>/dev/null; then
+      bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "$lbl" 2>/dev/null || true
+      skip_count=$((skip_count + 1))
+    fi
+  done
+  printf '%d' "$skip_count"
+}
+
+# _pipeline_drain_issue_state <issue>
+# Remove issue-state.json only when its .policy == "skip-until-human-acts".
+# Preserves the file for skip-until-code-changes (auto-resume evidence trail).
+# Returns "true" or "false" via stdout.
+_pipeline_drain_issue_state() {
+  local issue="$1"
+  local d; d="$(issue_dir "$issue")"
+  local state_file="$d/issue-state.json"
+  local state_removed=false
+  if [[ -s "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+    local policy
+    policy="$(jq -r '.policy // ""' "$state_file" 2>/dev/null || printf '')"
+    if [[ "$policy" == "skip-until-human-acts" ]]; then
+      rm -f "$state_file"
+      state_removed=true
+      log "pipeline-decide: removed $state_file (policy=skip-until-human-acts)"
+    fi
+  fi
+  printf '%s' "$state_removed"
+}
+
+# _pipeline_post_operator_transition <issue> <stage>
+# Posts a <!-- pipeline: transition from=X to=X reason=operator-resume -->
+# waypoint comment. This is the ENG-60 new-shape equivalent of ENG-58's
+# old-shape <!-- pipeline-transition: X → X (operator-resume) --> marker.
+# Both shapes are understood by count_marker_since_last_transition / find_fresh_verdict
+# (parse_pipeline_marker normalises them). We emit the new shape here;
+# tests assert on it explicitly.
+_pipeline_post_operator_transition() {
+  local issue="$1" stage="$2"
+  # Sanitize stage name per D-014: only lowercase alpha passes; anything else
+  # becomes "unknown" to prevent format-string injection.
+  [[ "$stage" =~ ^[a-z]+$ ]] || stage="unknown"
+  local waypoint_body
+  waypoint_body="$(printf '<!-- pipeline: transition from=%s to=%s reason=operator-resume -->\n\nOperator-attributed transition waypoint (pipeline.sh decide --action continue).' \
+    "$stage" "$stage")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$waypoint_body"
+}
+
+# _pipeline_format_reset_audit <wait_count> <skip_count> <state_removed>
+# Renders a human-readable audit sentence from the three scalar counters.
+_pipeline_format_reset_audit() {
+  local wf="$1" sl="$2" sf="$3"
+  local state_phrase=""
+  [[ "$sf" == "true" ]] && state_phrase=", issue-state.json removed"
+  printf '_Cleared:_ %s wait file(s), %s skip-until-* label(s)%s.\n' \
+    "${wf:-0}" "${sl:-0}" "$state_phrase"
+}
+
+# _pipeline_emit_resume_metric <issue> <stage> <wf> <sl> <sf> <waypoint_posted>
+_pipeline_emit_resume_metric() {
+  local issue="$1" stage="$2" wf="$3" sl="$4" sf="$5" wp="$6"
+  local stats="wait_files=$wf skip_labels=$sl state_file=$sf waypoint_posted=$wp"
+  bash "$SCRIPT_DIR/metrics.sh" halt-resume "$issue" "$stage" \
+    "atomic-reset" 0 "$stats" || true
+}
+
 # cmd_decide <issue> --action <continue|approve|abandon> [--gate <gate>]
 cmd_decide() {
   local issue="${1:-}"; shift || true
@@ -190,6 +282,44 @@ cmd_decide() {
       [[ -n "$gate" ]] || die "decide $action: --gate required"
       _validate_registry decision_gates "$gate" ;;
   esac
+
+  # ENG-58 atomic reset (ported from halt.sh::resolve, ENG-60 merge).
+  # On `continue` only: drain wait files, skip-until labels, issue-state
+  # (conditionally), then post an operator-attributed transition waypoint so
+  # count_marker_since_last_transition resets the rejection counters and
+  # find_fresh_verdict freshness. Order follows D-008: cleanup BEFORE
+  # posting the decision comment. The decision comment follows below.
+  if [[ "$action" == "continue" ]]; then
+    if [[ "${PIPELINE_DRY_RUN:-}" != "1" ]]; then
+      # Issue-id validation: guard rm -f path-interpolation (D-014).
+      # Only needed on the live path where we perform filesystem writes;
+      # dry-run skips all FS ops so the guard is not required there.
+      [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+        || die "decide: invalid issue id '$issue' (expected ENG-<digits>)"
+
+      local current_stage
+      current_stage="$(bash "$SCRIPT_DIR/linear.sh" stage-of "$issue" 2>/dev/null || printf 'unknown')"
+      current_stage="${current_stage#stage:}"
+      # Sanitize: only lowercase alpha (D-014). Falls back to 'unknown'.
+      [[ "$current_stage" =~ ^[a-z]+$ ]] || current_stage="unknown"
+
+      local wf sl sf
+      wf="$(_pipeline_drain_wait_files "$issue")"
+      sl="$(_pipeline_drain_skip_labels "$issue")"
+      sf="$(_pipeline_drain_issue_state "$issue")"
+
+      # Remove halt label if present (mirrors halt.sh rc=1 branch behavior).
+      if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then
+        bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted"
+      fi
+
+      _pipeline_post_operator_transition "$issue" "$current_stage"
+      _pipeline_emit_resume_metric "$issue" "$current_stage" "$wf" "$sl" "$sf" "1"
+      log "pipeline-decide: $issue action=continue (side state reset: wait_files=$wf skip_labels=$sl state_file=$sf; operator-transition posted)"
+    else
+      log "pipeline-decide: $issue action=continue (dry-run — atomic reset suppressed)"
+    fi
+  fi
 
   local body="<!-- pipeline: decision action=$action"
   [[ -n "$gate" ]] && body="$body gate=$gate"

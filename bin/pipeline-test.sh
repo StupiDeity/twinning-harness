@@ -128,6 +128,205 @@ printf '\n--- bin/pipeline.sh: lane fences (warn-only) ---\n'
 out="$(PIPELINE_WRITER=human run_pipe event ENG-PL1 verdict pass --stage implementing 2>&1)"
 [[ "$out" == *"lane mismatch"* ]] && pass_at "PL1: verdict-as-human warns" || fail_at "PL1: verdict-as-human warns" "got: $out"
 
+# ─── ENG-58 atomic-reset (ported to pipeline.sh::cmd_decide --action continue) ─────────
+# These tests exercise the live (non-dry-run) path so actual filesystem + Linear stub
+# writes happen. A richer linear.sh stub is needed that handles has-label / stage-of /
+# remove-label in addition to add-comment.
+#
+# Strategy: source pipeline.sh into this process (getting cmd_decide + helpers defined),
+# then override SCRIPT_DIR to point at a full-featured stub dir, exactly like
+# halt-test.sh overrides SCRIPT_DIR after sourcing halt.sh.  Issue IDs must be
+# ENG-<digits> to satisfy the D-014 path-traversal guard on the live path.
+
+printf '\n--- bin/pipeline.sh: decide continue → ENG-58 atomic reset ---\n'
+
+# Isolated state dir for atomic-reset tests.
+_AR_STATE_DIR="$(mktemp -d -t twinning-ar-state.XXXXXX)"
+case "$_AR_STATE_DIR" in
+  /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*) ;;
+  *) printf 'REFUSING: %q is not a temp dir\n' "$_AR_STATE_DIR" >&2; exit 99 ;;
+esac
+trap 'rm -rf "$_TEST_ROOT" "$_AR_STATE_DIR"' EXIT
+
+# Fully-featured linear.sh stub (has-label + stage-of + write verbs).
+# Call log path must be absolute and stable across tests.
+_AR_LINEAR_CALLS="$_AR_STATE_DIR/linear-calls.log"
+_AR_METRICS_CALLS="$_AR_STATE_DIR/metrics-calls.log"
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+
+_AR_STUB_DIR="$_AR_STATE_DIR/stubs"
+mkdir -p "$_AR_STUB_DIR"
+
+cat > "$_AR_STUB_DIR/linear.sh" <<STUBEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$_AR_LINEAR_CALLS"
+case "\$1" in
+  add-comment|remove-label|add-label) exit 0 ;;
+  stage-of) printf '%s' "\${STAGE_OF:-stage:implementing}" ;;
+  has-label)
+    case ",\${LABELS_ON:-}," in *,"\$3",*) exit 0 ;; *) exit 1 ;; esac
+    ;;
+  *) exit 0 ;;
+esac
+STUBEOF
+chmod +x "$_AR_STUB_DIR/linear.sh"
+
+cat > "$_AR_STUB_DIR/metrics.sh" <<STUBEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$_AR_METRICS_CALLS"
+exit 0
+STUBEOF
+chmod +x "$_AR_STUB_DIR/metrics.sh"
+
+# Set up an isolated project state dir and override HARNESS_STATE_DIR so
+# issue_dir() resolves under our temp tree.
+export HARNESS_STATE_DIR="$_AR_STATE_DIR"
+export PROJECT_SLUG="${PROJECT_SLUG:-test-pipe}"
+export PROJECT_STATE_DIR="${_AR_STATE_DIR}/${PROJECT_SLUG}"
+mkdir -p "$PROJECT_STATE_DIR"
+
+# Source pipeline.sh — this also sources common.sh which resets PIPELINE_DRY_RUN
+# to "0" (its default). We re-export it as "" after sourcing so it doesn't
+# accidentally short-circuit the live atomic-reset path.
+# SCRIPT_DIR is overridden AFTER sourcing (same pattern as halt-test.sh).
+# Capture the real bin dir before sourcing (needed for the dry-run subshell test).
+_REAL_SCRIPT_DIR="$SCRIPT_DIR"
+# shellcheck source=pipeline.sh
+source "$SCRIPT_DIR/pipeline.sh"
+# Override SCRIPT_DIR so all bash "$SCRIPT_DIR/linear.sh" / metrics.sh calls
+# inside the already-defined helpers route to the stubs.
+SCRIPT_DIR="$_AR_STUB_DIR"
+# Reset PIPELINE_DRY_RUN: common.sh set it to "0"; we want "" (not-set) so
+# the live path in cmd_decide executes normally.
+PIPELINE_DRY_RUN=""
+export PIPELINE_DRY_RUN
+
+# Helper: call cmd_decide in-process (functions already defined above).
+_ar_decide() {
+  local issue="$1"; shift
+  PIPELINE_WRITER=human cmd_decide "$issue" "$@" 2>/dev/null
+}
+
+# Fixture helpers.
+_ar_seed() {
+  # Args: <issue> [policy=skip-until-human-acts|skip-until-code-changes]
+  local issue="$1" policy="${2:-skip-until-human-acts}"
+  local d="$PROJECT_STATE_DIR/$issue"
+  mkdir -p "$d"
+  printf '{"reason":"awaiting-approval","attempts":3}\n' > "$d/wait-build.json"
+  jq -cn --arg p "$policy" '{policy:$p, evidence:{pipeline_content_hash:"abc",branch_head_sha:"def"}}' \
+    > "$d/issue-state.json"
+}
+_ar_clear() { rm -rf "${PROJECT_STATE_DIR:?}/$1"; }
+
+# ── PR-E: continue + halted + full side state → atomic reset
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5801" "skip-until-human-acts"
+LABELS_ON="pipeline:halted,pipeline:skip-until-human-acts" \
+  STAGE_OF="stage:building" \
+  _ar_decide "ENG-5801" --action continue || true
+wait_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-5801/wait-build.json" ]] && wait_present=1
+state_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-5801/issue-state.json" ]] && state_present=1
+skip_remove="$(grep -c "^remove-label ENG-5801 pipeline:skip-until-human-acts$" "$_AR_LINEAR_CALLS" || true)"
+halt_remove="$(grep -c "^remove-label ENG-5801 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
+waypoint="$(grep -c "operator-resume" "$_AR_LINEAR_CALLS" || true)"
+if [[ "$wait_present" == "0" && "$state_present" == "0" \
+      && "$skip_remove" -ge "1" && "$halt_remove" -ge "1" \
+      && "$waypoint" -ge "1" ]]; then
+  pass_at "PR-E: continue atomic reset (wait+state cleared, labels removed, waypoint posted)"
+else
+  fail_at "PR-E: continue atomic reset" \
+    "wait=$wait_present state=$state_present skip_remove=$skip_remove halt_remove=$halt_remove waypoint=$waypoint"
+fi
+_ar_clear "ENG-5801"
+
+# ── PR-I: continue + policy=skip-until-code-changes → issue-state.json PRESERVED
+: > "$_AR_LINEAR_CALLS"
+_ar_seed "ENG-5802" "skip-until-code-changes"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5802" --action continue || true
+state_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-5802/issue-state.json" ]] && state_present=1
+if [[ "$state_present" == "1" ]]; then
+  pass_at "PR-I: skip-until-code-changes preserves issue-state.json"
+else
+  fail_at "PR-I: code-changes policy preserve" "state file was removed (should be kept for auto-resume evidence)"
+fi
+_ar_clear "ENG-5802"
+
+# ── PR-K: operator-resume waypoint uses new-shape marker
+: > "$_AR_LINEAR_CALLS"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5803" --action continue || true
+contains_transition="$(grep -c "<!-- pipeline: transition from=building to=building reason=operator-resume -->" "$_AR_LINEAR_CALLS" || true)"
+if [[ "$contains_transition" -ge "1" ]]; then
+  pass_at "PR-K: operator-resume waypoint is new-shape transition marker"
+else
+  fail_at "PR-K: waypoint shape" \
+    "no new-shape transition from=building to=building reason=operator-resume found; got: $(cat "$_AR_LINEAR_CALLS")"
+fi
+_ar_clear "ENG-5803"
+
+# ── PR-N: metrics.sh halt-resume captures stats
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5804" "skip-until-human-acts"
+LABELS_ON="pipeline:halted,pipeline:skip-until-human-acts" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5804" --action continue || true
+metric_line="$(grep "^halt-resume ENG-5804 building atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ "$metric_line" == *"wait_files=1"* \
+      && "$metric_line" == *"skip_labels=1"* \
+      && "$metric_line" == *"state_file=true"* \
+      && "$metric_line" == *"waypoint_posted=1"* ]]; then
+  pass_at "PR-N: metrics.sh halt-resume captures full stats"
+else
+  fail_at "PR-N: metrics emission" "line='$metric_line'"
+fi
+_ar_clear "ENG-5804"
+
+# ── PR-Q: corrupt issue-state.json preserved (jq -e . guard)
+: > "$_AR_LINEAR_CALLS"
+mkdir -p "$PROJECT_STATE_DIR/ENG-5805"
+printf 'not valid json\n' > "$PROJECT_STATE_DIR/ENG-5805/issue-state.json"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5805" --action continue || true
+state_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-5805/issue-state.json" ]] && state_present=1
+if [[ "$state_present" == "1" ]]; then
+  pass_at "PR-Q: corrupt JSON issue-state.json preserved"
+else
+  fail_at "PR-Q: corrupt-JSON guard" "state file removed despite invalid JSON"
+fi
+_ar_clear "ENG-5805"
+
+# ── PR-T: multiple wait-*.json files all cleared and counted correctly
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+mkdir -p "$PROJECT_STATE_DIR/ENG-5806"
+printf '{}' > "$PROJECT_STATE_DIR/ENG-5806/wait-build.json"
+printf '{}' > "$PROJECT_STATE_DIR/ENG-5806/wait-qa.json"
+printf '{}' > "$PROJECT_STATE_DIR/ENG-5806/wait-implementing.json"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5806" --action continue || true
+remaining="$(find "$PROJECT_STATE_DIR/ENG-5806" -maxdepth 1 -name 'wait-*.json' 2>/dev/null | wc -l | tr -d ' ')"
+metric_line="$(grep "^halt-resume ENG-5806 building atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ "$remaining" == "0" && "$metric_line" == *"wait_files=3"* ]]; then
+  pass_at "PR-T: multiple wait-*.json files all cleared (3) with correct count in metric"
+else
+  fail_at "PR-T: multi-file glob" "remaining=$remaining metric='$metric_line'"
+fi
+_ar_clear "ENG-5806"
+
+# ── PR-dry-run: PIPELINE_DRY_RUN=1 suppresses atomic reset (FS untouched)
+# Calls cmd_decide in-process with PIPELINE_DRY_RUN=1 then resets it to "".
+: > "$_AR_LINEAR_CALLS"
+_ar_seed "ENG-5807" "skip-until-human-acts"
+PIPELINE_DRY_RUN=1 PIPELINE_WRITER=human cmd_decide "ENG-5807" --action continue >/dev/null 2>&1 || true
+PIPELINE_DRY_RUN=""
+wait_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-5807/wait-build.json" ]] && wait_present=1
+if [[ "$wait_present" == "1" ]]; then
+  pass_at "PR-dry-run: PIPELINE_DRY_RUN=1 suppresses atomic reset (wait file untouched)"
+else
+  fail_at "PR-dry-run: dry-run should not touch FS" "wait file was removed"
+fi
+_ar_clear "ENG-5807"
+
 printf '\npipeline-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'; for c in "${FAILED_CASES[@]}"; do printf '  - %s\n' "$c"; done
