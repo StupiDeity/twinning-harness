@@ -198,9 +198,10 @@ trap 'rm -rf "$HSA_STUB_DIR"' EXIT
 PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   source "$SCRIPT_DIR/scope-check.sh" 2>/dev/null || true
 
-# Fixture HSA1: new-shape decision approve gate=scope after old-shape halt
+# Fixture HSA1: new-shape decision approve gate=scope after new-shape halt
+# (scope-deviation reason — alias-normalized to scope-violation via T2.0 normalization)
 HSA_COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-halt: scope-deviation -->"},
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline: verdict result=halt reason=scope-deviation -->"},
   {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: decision action=approve gate=scope -->"}
 ]'
 cat > "$HSA_STUB_DIR/linear.sh" <<EOF
@@ -210,8 +211,8 @@ EOF
 chmod +x "$HSA_STUB_DIR/linear.sh"
 SCRIPT_DIR="$HSA_STUB_DIR"
 has_scope_approval ENG-HSA1 \
-  && pass_at "HSA1: new-shape approve detected" \
-  || fail_at "HSA1" "new-shape decision approve after old halt not detected"
+  && pass_at "HSA1: new-shape halt+approve detected (scope-deviation aliased)" \
+  || fail_at "HSA1" "new-shape decision approve after new-shape halt not detected"
 
 # Fixture HSA2: new-shape halt + new-shape decision approve
 HSA_COMMENTS_JSON='[
@@ -227,21 +228,6 @@ SCRIPT_DIR="$HSA_STUB_DIR"
 has_scope_approval ENG-HSA2 \
   && pass_at "HSA2: new-shape halt+approve detected" \
   || fail_at "HSA2" "new-shape halt + new-shape decision approve not detected"
-
-# Fixture HSA3: pure-old-shape continues to work (regression)
-HSA_COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-halt: scope-deviation -->"},
-  {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline-decision: scope-approved -->"}
-]'
-cat > "$HSA_STUB_DIR/linear.sh" <<EOF
-#!/bin/bash
-[[ "\$1" == "get-comments" ]] && printf '%s' '$HSA_COMMENTS_JSON'
-EOF
-chmod +x "$HSA_STUB_DIR/linear.sh"
-SCRIPT_DIR="$HSA_STUB_DIR"
-has_scope_approval ENG-HSA3 \
-  && pass_at "HSA3: pure-old shape regression" \
-  || fail_at "HSA3" "pure-old-shape scope-approved not detected (regression)"
 
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"

@@ -121,7 +121,7 @@ failure_outcome_for_exit() {
 }
 # ─── Pipeline-marker parser (ENG-60) ──────────────────────────
 # parse_pipeline_marker <body> — translate a Linear comment body containing
-# a pipeline marker (old or new shape) into a uniform JSON event.
+# a pipeline marker (new shape) into a uniform JSON event.
 #
 # Output JSON shapes:
 #   {"event":"verdict","result":"pass","stage":"implementing"}
@@ -137,8 +137,7 @@ failure_outcome_for_exit() {
 # Returns 0 with JSON on stdout when a marker is found.
 # Returns 1 with empty stdout when no recognizable marker is in the body.
 #
-# Accepts BOTH old (`pipeline-X: value`) and new (`pipeline: event k=v`)
-# shapes during phases 1-2; phase 3 simplifies to new-shape only.
+# New shape only (`pipeline: event k=v`); old-shape branch removed in T3.1.
 parse_pipeline_marker() {
   local body="$1"
   local marker
@@ -176,52 +175,6 @@ parse_pipeline_marker() {
       fi
     fi
     printf '%s' "$json"
-    return 0
-  fi
-
-  # Old shape: `<!-- pipeline-<kind>: <value> -->`
-  marker="$(grep -oE '<!-- pipeline-(stage-summary|rejection|rejection-target|halt|wait|transition|decision|sig|metric): [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
-  if [[ -n "$marker" ]]; then
-    local kind value
-    kind="$(sed -E 's/<!-- pipeline-([^:]+): .+ -->/\1/' <<<"$marker")"
-    value="$(sed -E 's/<!-- pipeline-[^:]+: (.+) -->/\1/' <<<"$marker")"
-    # Note: "pivot" is a new-shape-only verdict_result (see pipeline-events.json
-    # meta_kinds). No legacy `pipeline-pivot:` marker ever existed.
-    case "$kind" in
-      stage-summary)
-        jq -nc --arg s "$value" '{event:"verdict",result:"pass",stage:$s}' ;;
-      rejection|rejection-target)
-        # Old shape used two markers (pipeline-rejection: source +
-        # pipeline-rejection-target: target). New shape carries only target;
-        # source is implicit from the issue's current stage:* label.
-        # tail -1 above picks rejection-target when both are present (the
-        # standard order), so $value is the target either way. Source is
-        # re-derived by callers (e.g., find_fresh_verdict consumers).
-        jq -nc --arg t "$value" '{event:"verdict",result:"fail",target:$t}' ;;
-      halt)
-        # Apply legacy aliases (e.g. scope-deviation → scope-violation).
-        local canon
-        canon="$(jq -r --arg r "$value" '.legacy_halt_reason_aliases[$r] // $r' "$HARNESS_ROOT/bin/pipeline-events.json" 2>/dev/null || printf '%s' "$value")"
-        jq -nc --arg r "$canon" '{event:"verdict",result:"halt",reason:$r}' ;;
-      wait)
-        jq -nc --arg r "$value" '{event:"verdict",result:"wait",reason:$r}' ;;
-      transition)
-        local from to
-        from="$(sed -E 's/(.+) → .+/\1/' <<<"$value")"
-        to="$(sed -E 's/.+ → (.+)/\1/' <<<"$value")"
-        jq -nc --arg f "$from" --arg t "$to" '{event:"transition",from:$f,to:$t}' ;;
-      decision)
-        case "$value" in
-          scope-approved) jq -nc '{event:"decision",action:"approve",gate:"scope"}' ;;
-          scope-rejected) jq -nc '{event:"decision",action:"abandon",gate:"scope"}' ;;
-          resume)         jq -nc '{event:"decision",action:"continue"}' ;;
-          *)              jq -nc --arg v "$value" '{event:"decision",legacy:$v}' ;;
-        esac ;;
-      sig)
-        jq -nc --arg k "$value" '{event:"meta",kind:"dedup",key:$k}' ;;
-      metric)
-        jq -nc --arg n "$value" '{event:"meta",kind:"metric",name:$n}' ;;
-    esac
     return 0
   fi
 

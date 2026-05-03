@@ -905,7 +905,7 @@ SH
 chmod +x "$STUB_DIR/linear.sh"
 
 # ─── ENG-45 case A: fresh wait marker on build → returns reason ──────────────
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
 out="$(_fresh_wait_reason ENG-45T1 build || printf '')"
 if [[ "$out" == "awaiting-approval" ]]; then
   pass_at "ENG-45 case A: fresh wait marker → returns awaiting-approval"
@@ -914,7 +914,7 @@ else
 fi
 
 # ─── ENG-45 case A2: fresh CI wait marker → returns awaiting-ci ──────────────
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-ci -->\n\nAwaiting CI to turn green."}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-ci -->\n\nAwaiting CI to turn green."}]'
 out="$(_fresh_wait_reason ENG-45T1B build || printf '')"
 if [[ "$out" == "awaiting-ci" ]]; then
   pass_at "ENG-45 case A2: fresh CI wait marker → returns awaiting-ci"
@@ -1308,7 +1308,7 @@ CONFIG="$ENG_45_CASE_O_CFG"
 # Comments fixture lives in a file so the stub heredoc doesn't have to escape
 # the embedded JSON quotes.
 ENG_45_CASE_O_COMMENTS_FILE="$STUB_DIR/case-o-comments.json"
-printf '%s' '[{"createdAt":"2026-04-28T18:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]' \
+printf '%s' '[{"createdAt":"2026-04-28T18:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->\n\nAwaiting human Code Owner approval."}]' \
   > "$ENG_45_CASE_O_COMMENTS_FILE"
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
@@ -1926,7 +1926,7 @@ rm -f "$ENG_45_QA_TMP_CFG"
 # so the review-stage human-approval gate could emit pipeline-wait. ENG-54
 # moved the gate to build's P2 — review never waits anymore — so the
 # allow-list narrows back to build only. Pin the new contract.
-fresh_comments='[{"id":"c1","createdAt":"2026-04-30T12:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nReviewed commit abc1234."}]'
+fresh_comments='[{"id":"c1","createdAt":"2026-04-30T12:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->\n\nReviewed commit abc1234."}]'
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
 case "\$1" in
@@ -2079,7 +2079,7 @@ fi
 # Case ENG-56-E (regression for ENG-45): build + wait awaiting-approval
 # → orchestrator does NOT apply pipeline:halted.
 eng_56_reset
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->\n\nAwaiting human Code Owner approval."}]'
 _post_dispatch_apply_halt "ENG-56T-E" build >/dev/null 2>&1
 if eng_56_halt_applied; then
   fail_at "ENG-56-E: build + wait awaiting-approval" "halt was applied; should be skipped"
@@ -2089,7 +2089,7 @@ fi
 
 # Case ENG-56-F: build + wait awaiting-ci → orchestrator does NOT apply.
 eng_56_reset
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-ci -->\n\nAwaiting CI."}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-ci -->\n\nAwaiting CI."}]'
 _post_dispatch_apply_halt "ENG-56T-F" build >/dev/null 2>&1
 if eng_56_halt_applied; then
   fail_at "ENG-56-F: build + wait awaiting-ci" "halt was applied; should be skipped"
@@ -2198,17 +2198,17 @@ result="$(_fresh_wait_reason ENG-WR1 build 2>/dev/null || printf '')"
 rc=0; _fresh_wait_reason ENG-WR2 implement >/dev/null 2>&1 || rc=$?
 [[ "$rc" -eq 1 ]] && pass_at "WR2: non-build stage rejected (rc=1)" "rc=$rc" || fail_at "WR2: non-build stage rejected" "rc=$rc"
 
-# Fixture WR3: old-shape wait still works (regression).
+# Fixture WR3: new-shape wait awaiting-ci on build stage.
 COMMENTS_JSON='[
   {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
-  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline-wait: awaiting-ci -->"}
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-ci -->"}
 ]'
 cat > "$STUB_DIR/linear.sh" <<EOF
 #!/bin/bash
 [[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
 EOF
 result="$(_fresh_wait_reason ENG-WR3 build 2>/dev/null || printf '')"
-[[ "$result" == "awaiting-ci" ]] && pass_at "WR3: old-shape wait still works" "got: '$result'" || fail_at "WR3: old-shape wait still works" "got: '$result'"
+[[ "$result" == "awaiting-ci" ]] && pass_at "WR3: new-shape wait awaiting-ci returned" "got: '$result'" || fail_at "WR3: new-shape wait awaiting-ci returned" "got: '$result'"
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
