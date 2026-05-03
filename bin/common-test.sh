@@ -275,6 +275,44 @@ result="$(parse_pipeline_marker 'just prose, no marker' 2>/dev/null)" && rc=0 ||
 [[ "$rc" -eq 1 ]] && pass_at "P12: rc=1 on no marker" || fail_at "P12: rc mismatch" "expected 1, got $rc"
 [[ -z "$result" ]] && pass_at "P12: empty stdout" || fail_at "P12: stdout not empty" "got: $result"
 
+# ─── ENG-61 Bug A: prose-quoted markers must NOT parse as real markers ───
+
+# Fixture P13: marker enclosed in single backticks must NOT parse.
+body='Discussion: the legacy stripper was triggered by `<!-- pipeline: verdict result=pass stage=implementing -->` in body text.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P13: backticked marker NOT parsed (rc=1)" || fail_at "P13: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P13: backticked marker → empty stdout" || fail_at "P13: stdout not empty" "got: $result"
+
+# Fixture P14: marker inside triple-backtick fenced block must NOT parse
+# (single-line, post-gsub-collapse shape — mirrors production callers' input).
+body='Example: ```<!-- pipeline: verdict result=pass stage=implementing -->``` is what the agent emits.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P14: triple-backtick fenced marker NOT parsed (rc=1)" || fail_at "P14: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P14: triple-backtick fenced marker → empty stdout" || fail_at "P14: stdout not empty" "got: $result"
+
+# Fixture P14b: multi-line raw body with 4-space-indented marker must NOT parse.
+# Pins the indented-block code path (step 1 of strip helper). Bypasses the
+# typical caller's gsub-collapse by passing newlines preserved.
+body=$'Some prose.\n    <!-- pipeline: verdict result=pass stage=implementing -->\nMore prose.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P14b: 4-space-indented marker (raw multi-line body) NOT parsed (rc=1)" || fail_at "P14b: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P14b: 4-space-indented marker → empty stdout" || fail_at "P14b: stdout not empty" "got: $result"
+
+# Fixture P15: real marker on a line with no backticks must still parse
+# (regression check that the strip helper does not over-strip).
+body='Plain prose. <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P15: bare real marker still parses" || fail_at "P15: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P15: bare real marker → result=pass" || fail_at "P15: result mismatch" "got: $result"
+
+# Fixture P16: real marker followed by a backticked example marker; real one
+# must win (tail -1 semantics survive the pre-strip — example removed → only
+# the real marker remains for grep → tail -1 picks it).
+body='Real: <!-- pipeline: verdict result=pass stage=implementing --> See also: `<!-- pipeline: verdict result=fail target=planning -->` for the failure case.'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P16: real marker wins over backticked example" || fail_at "P16: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P16: real marker → result=pass (NOT fail)" || fail_at "P16: result mismatch (example marker was wrongly parsed)" "got: $result"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
