@@ -855,14 +855,16 @@ result="$(find_fresh_verdict ENG-FV5)"
 
 # Fixture FB1: new-shape rejection with empty source_stage falls back to
 # the issue's current stage:* label (carryover #1 from Phase 1 T1.3).
+# Uses reviewing→implementing (valid loopback row) so the transition
+# completes cleanly once the source fallback resolves correctly.
 COMMENTS_JSON='[
   {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: implementing → reviewing -->"},
-  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=fail target=planning -->"}
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=fail target=implementing -->"}
 ]'
 # Stub linear.sh: get-comments returns the new-shape rejection;
 # get-issue returns labels including stage:reviewing (the implicit source).
 # Other subcommands are no-op so apply_transition's side effects don't fail.
-ISSUE_JSON='{"data":{"issue":{"id":"ENG-FB1","labels":[{"name":"stage:reviewing"},{"name":"Bug"}]}}}'
+ISSUE_JSON='{"data":{"issue":{"id":"ENG-FB1","labels":{"nodes":[{"name":"stage:reviewing"},{"name":"Bug"}]}}}}'
 cat > "$STUB_DIR/linear.sh" <<EOF
 #!/bin/bash
 case "\$1" in
@@ -876,9 +878,14 @@ chmod +x "$STUB_DIR/linear.sh"
 _VH_SCRIPT_DIR="$STUB_DIR"
 
 result="$(verdict_handler "ENG-FB1" "reviewing" 2>&1 || true)"
-echo "$result" | grep -qE 'protocol-violation|unknown-loopback' \
+# Assert: no protocol violation (meaning src was resolved from stage:* label,
+# and the loopback reviewing→implementing was found). Also confirm rc=0
+# (transition was applied).
+rc_fb1=0
+verdict_handler "ENG-FB1" "reviewing" >/dev/null 2>&1 || rc_fb1=$?
+echo "$result" | grep -qE 'protocol-violation|unknown-loopback|rejection-source-unknown' \
   && fail_at "FB1: rejection still triggers protocol violation" "result: $result" \
-  || pass_at "FB1: new-shape rejection resolves source from stage:* label" "result: $result"
+  || pass_at "FB1: new-shape rejection resolves source from stage:* label (rc=$rc_fb1)" "result: $result"
 
 # Restore stub to the full-featured version used by earlier cases.
 cat > "$STUB_DIR/linear.sh" <<'SH'

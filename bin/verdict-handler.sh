@@ -356,6 +356,20 @@ verdict_handler() {
       return 0
       ;;
     pipeline-rejection)
+      # ENG-60 T2.2: new-shape rejections omit source per design §7.2. Fall
+      # back to the issue's current stage:* label when source_stage is empty.
+      # Old-shape rejections still carry explicit source via the
+      # rejection_src grep in find_fresh_verdict (Phase 1 Task 1.3 fix).
+      if [[ -z "$src" ]]; then
+        src="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-issue "$issue" \
+          | jq -r '.data.issue.labels.nodes[]?.name | select(startswith("stage:")) | sub("^stage:"; "")' \
+          | head -1)"
+        [[ -n "$src" ]] || {
+          _vh_protocol_violation "$issue" "rejection-source-unknown" \
+            "new-shape rejection has no source marker and no stage:* label"
+          return 2
+        }
+      fi
       local row; row="$(_vh_lookup_loopback "$src" "$tgt")"
       if [[ -z "$row" ]]; then
         _vh_protocol_violation "$issue" "unknown-loopback" \
