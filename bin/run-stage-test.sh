@@ -2215,7 +2215,7 @@ printf '\n--- _fresh_wait_reason: Bug B (wait shadows newer non-wait) ---\n'
 # reason; the fix tracks the latest verdict of any result and returns
 # rc=1 when the latest verdict is no longer a wait.
 COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
   {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
   {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=pass stage=building -->"}
 ]'
@@ -2231,7 +2231,7 @@ rc=0; result="$(_fresh_wait_reason ENG-WS1 building 2>/dev/null)" || rc=$?
 # Regression check that the wait carve-out still works when no later
 # verdict shadows it (AC #2 fixture 2).
 COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
   {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}
 ]'
 cat > "$STUB_DIR/linear.sh" <<EOF
@@ -2245,7 +2245,7 @@ result="$(_fresh_wait_reason ENG-WS2 building 2>/dev/null || printf '')"
 # Confirms the predicate is "any non-wait" — pivot/fail/halt all shadow
 # (AC #2 fixture 3, plus implicit pivot/fail symmetry per design D-004).
 COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
   {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
   {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=halt reason=agent-blocked -->"}
 ]'
