@@ -159,13 +159,55 @@ cmd_event_transition() {
   bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
 }
 
+# cmd_decide <issue> --action <continue|approve|abandon> [--gate <gate>]
+cmd_decide() {
+  local issue="${1:-}"; shift || true
+  [[ -n "$issue" ]] || die "decide: usage: <issue> --action <action> [--gate <gate>]"
+
+  local action="" gate=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --action) action="${2:-}"; shift 2 ;;
+      --gate)   gate="${2:-}"; shift 2 ;;
+      *) die "decide: unknown flag '$1'" ;;
+    esac
+  done
+
+  [[ -n "$action" ]] || die "decide: --action required"
+  _validate_registry decision_actions "$action"
+
+  # `continue` is the only action that may omit --gate; approve and abandon
+  # require it.
+  case "$action" in
+    continue) [[ -z "$gate" ]] || die "decide continue: --gate not allowed (continue is gate-agnostic)" ;;
+    approve|abandon)
+      [[ -n "$gate" ]] || die "decide $action: --gate required"
+      _validate_registry decision_gates "$gate" ;;
+  esac
+
+  local body="<!-- pipeline: decision action=$action"
+  [[ -n "$gate" ]] && body="$body gate=$gate"
+  body="$body -->"
+
+  if [[ "$PIPELINE_WRITER" != "human" ]]; then
+    log "warning: PIPELINE_WRITER=$PIPELINE_WRITER writing a decision (lane mismatch — set PIPELINE_WRITER=human to suppress)"
+  fi
+
+  if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then
+    printf '[DRY_RUN] would post on %s: %s\n' "$issue" "$body" >&2
+    return 0
+  fi
+
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
+}
+
 main() {
   local sub="${1:-}"
   shift || true
   case "$sub" in
     status) cmd_status "$@" ;;
     event)  cmd_event "$@" ;;
-    decide) die "decide subcommand: not yet implemented (T2.7)" ;;
+    decide) cmd_decide "$@" ;;
     -h|--help|"") usage; [[ -z "$sub" ]] && exit 1 || exit 0 ;;
     *) usage; die "unknown subcommand: $sub" ;;
   esac
