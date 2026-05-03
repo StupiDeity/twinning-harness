@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# ENG-49 Gap #3: bin/post-verdict.sh — operator-facing helper for safely
-# posting verdict markers to Linear. Constructs the marker body via
-# heredoc (immune to bash history expansion of `<!--`) and validates the
-# constructed body against verdict-handler.sh::find_fresh_verdict's
-# grep regex before sending.
+# DEPRECATED (ENG-60 T2.10): bin/post-verdict.sh — transitional wrapper.
+# Translates legacy <kind, stage_or_target_or_reason> tuple into the new
+# bin/pipeline event verdict subcommand. Will be removed in Phase 3.
 #
-# Usage:
+# Usage (preserved for backward compatibility):
 #   post-verdict.sh <issue> <kind> <stage> [<reason>]
 #     kind  ∈ stage-summary | rejection | halt
 #     stage ∈ brainstorming|planning|implementing|ui|reviewing|qa|building|released
 #             OR (for kind=halt) any halt-reason word matching [a-z-]+
 #
-# Examples:
-#   bin/post-verdict.sh ENG-45 stage-summary building "release shipped"
-#   bin/post-verdict.sh ENG-46 rejection reviewing "rework needed"
-#   bin/post-verdict.sh ENG-47 halt agent-blocked "operator stop"
+# NOTE: The optional 4th arg [<reason>] (free-text rationale appended to the
+# comment body) is NOT forwarded to bin/pipeline event verdict, which has no
+# equivalent parameter. The text is silently dropped in this wrapper.
+#
+# New callers should use directly:
+#   bin/pipeline.sh event <issue> verdict pass   --stage <stage>
+#   bin/pipeline.sh event <issue> verdict fail   --target <target>
+#   bin/pipeline.sh event <issue> verdict halt   --reason <reason>
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,56 +26,25 @@ source "$SCRIPT_DIR/common.sh"
 # ENG-41 T3: human lane — operator CLI; Linear writes are unrestricted.
 export PIPELINE_WRITER=human
 
-_PV_KNOWN_STAGES='brainstorming planning implementing ui reviewing qa building released'
+main() {
+  local issue="${1:-}" kind="${2:-}" stage_or_target_or_reason="${3:-}"
+  [[ -n "$issue" && -n "$kind" && -n "$stage_or_target_or_reason" ]] \
+    || die "usage: post-verdict.sh <issue> <kind> <stage|target|reason>"
 
-post_verdict() {
-  local issue="$1" kind="$2" stage="$3" reason="${4:-Manual marker post by operator.}"
-  [[ -n "$issue" && -n "$kind" && -n "$stage" ]] \
-    || die "usage: post-verdict.sh <issue> <kind> <stage> [<reason>]"
-  case "$kind" in
-    stage-summary|rejection|halt) ;;
-    *) die "unknown kind: $kind (expected stage-summary|rejection|halt)" ;;
-  esac
-  if [[ "$kind" != "halt" ]]; then
-    grep -qw -- "$stage" <<<"$_PV_KNOWN_STAGES" \
-      || die "unknown stage: $stage (expected one of: $_PV_KNOWN_STAGES)"
-  else
-    [[ "$stage" =~ ^[a-z][a-z-]*$ ]] \
-      || die "halt reason must match [a-z-]+, got: $stage"
-  fi
+  printf '[deprecated] bin/post-verdict.sh will be removed in Phase 3. ' >&2
+  printf 'Use: bin/pipeline.sh event %s verdict <result> [args]\n' "$issue" >&2
 
-  local marker
   case "$kind" in
-    stage-summary) marker="<!-- pipeline-stage-summary: ${stage} -->" ;;
-    rejection)     marker="<!-- pipeline-rejection: ${stage} -->" ;;
-    halt)          marker="<!-- pipeline-halt: ${stage} -->" ;;
+    stage-summary) bash "$SCRIPT_DIR/pipeline.sh" event "$issue" verdict pass --stage "$stage_or_target_or_reason" ;;
+    rejection)     bash "$SCRIPT_DIR/pipeline.sh" event "$issue" verdict fail --target "$stage_or_target_or_reason" ;;
+    halt)          bash "$SCRIPT_DIR/pipeline.sh" event "$issue" verdict halt --reason "$stage_or_target_or_reason" ;;
+    *) die "post-verdict: unknown kind '$kind' (allowed: stage-summary, rejection, halt)" ;;
   esac
 
-  local body
-  body="$(cat <<EOF
-${marker}
-
-${reason}
-EOF
-)"
-
-  # Validate against verdict-handler's regexes (one per kind).
-  local re
-  case "$kind" in
-    stage-summary) re='<!-- pipeline-stage-summary: [a-z]+ -->' ;;
-    rejection)     re='<!-- pipeline-rejection: [a-z]+ -->' ;;
-    halt)          re='<!-- pipeline-halt: [a-z-]+ -->' ;;
-  esac
-  grep -qE -- "$re" <<<"$body" \
-    || die "constructed body did not match verdict-handler regex: $re"
-
-  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
-  log "post-verdict: posted $kind:$stage on $issue"
+  log "post-verdict: posted $kind:$stage_or_target_or_reason on $issue"
 }
-
-export -f post_verdict
 
 # Sentinel — runnable as a CLI.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  post_verdict "$@"
+  main "$@"
 fi
