@@ -15,7 +15,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-REGISTRY="$HARNESS_ROOT/bin/pipeline-events.json"
+# Sibling lookup (not via HARNESS_ROOT) so symlink-based test stubs work:
+# verdict-adversarial-test.sh symlinks bin/* into a tempdir, so SCRIPT_DIR
+# resolves to the symlink dir but HARNESS_ROOT (derived in common.sh from
+# common.sh's location) points at the tempdir's parent, where bin/ doesn't
+# exist. SCRIPT_DIR/pipeline-events.json works in both production layouts
+# and the symlink-based test layout.
+REGISTRY="$SCRIPT_DIR/pipeline-events.json"
 
 usage() {
   cat <<'EOF'
