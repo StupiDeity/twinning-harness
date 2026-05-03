@@ -870,6 +870,7 @@ cat > "$STUB_DIR/linear.sh" <<EOF
 case "\$1" in
   get-comments) printf '%s' '$COMMENTS_JSON' ;;
   get-issue)    printf '%s' '$ISSUE_JSON' ;;
+  stage-of)     printf 'stage:reviewing\n' ;;
   add-label|remove-label|add-comment|add-or-update-comment) printf 'ok' ;;
   *) printf '' ;;
 esac

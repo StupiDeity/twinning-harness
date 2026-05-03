@@ -361,9 +361,10 @@ verdict_handler() {
       # Old-shape rejections still carry explicit source via the
       # rejection_src grep in find_fresh_verdict (Phase 1 Task 1.3 fix).
       if [[ -z "$src" ]]; then
-        src="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-issue "$issue" \
-          | jq -r '.data.issue.labels.nodes[]?.name | select(startswith("stage:")) | sub("^stage:"; "")' \
-          | head -1)"
+        # Reuse linear.sh's stage-of subcommand instead of inlining the jq —
+        # keeps the stage-label extraction logic in one place.
+        src="$(bash "$_VH_SCRIPT_DIR/linear.sh" stage-of "$issue")"
+        src="${src#stage:}"
         [[ -n "$src" ]] || {
           _vh_protocol_violation "$issue" "rejection-source-unknown" \
             "new-shape rejection has no source marker and no stage:* label"
