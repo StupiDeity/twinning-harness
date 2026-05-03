@@ -32,10 +32,3 @@ tokens.
 
 <!-- GENERATED:registry -->
 <!-- /GENERATED:registry -->
-
-## Migration notes (Phase 2 only)
-
-Old-shape markers (`<!-- pipeline-X: value -->`) continue to be parsed by
-`parse_pipeline_marker` for backwards compatibility. Phase 3 will remove the
-legacy parsing branch; until then, in-flight issues with mixed-shape comment
-histories are handled transparently.
