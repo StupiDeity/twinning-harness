@@ -162,24 +162,24 @@ check_classify_comment() {
 }
 
 check_classify_comment \
-  "<!-- pipeline-transition: brainstorming → planning -->" \
+  "<!-- pipeline: transition from=brainstorming to=planning -->" \
   "transition_comment"
 
 check_classify_comment \
-  $'<!-- pipeline-transition: ui → reviewing -->' \
+  $'<!-- pipeline: transition from=ui to=reviewing -->' \
   "transition_comment"
 
 # First non-blank line is the transition marker (with preamble whitespace)
 check_classify_comment \
-  $'\n  <!-- pipeline-transition: planning → implementing -->' \
+  $'\n  <!-- pipeline: transition from=planning to=implementing -->' \
   "transition_comment"
 
 check_classify_comment \
-  "<!-- pipeline-stage-summary: brainstorm -->" \
+  "<!-- pipeline: verdict result=pass stage=brainstorm -->" \
   "other_comment"
 
 check_classify_comment \
-  "<!-- pipeline-halt: agent-failure -->" \
+  "<!-- pipeline: verdict result=halt reason=agent-failure -->" \
   "other_comment"
 
 check_classify_comment \
@@ -187,7 +187,7 @@ check_classify_comment \
   "other_comment"
 
 check_classify_comment \
-  $'Some text\n<!-- pipeline-transition: a → b -->' \
+  $'Some text\n<!-- pipeline: transition from=a to=b -->' \
   "other_comment"
 
 # ─── Section 3: Default lane when PIPELINE_WRITER is unset ──────────────
@@ -327,7 +327,7 @@ else
 fi
 
 # agent tries to add transition_comment — should return 11
-transition_body="<!-- pipeline-transition: planning → implementing -->"
+transition_body="<!-- pipeline: transition from=planning to=implementing -->"
 rc=0
 stderr_out="$(PIPELINE_WRITER=agent add_comment "ENG-99" "$transition_body" 2>&1 >/dev/null)" || rc=$?
 if [[ "$rc" == 13 ]] && printf '%s' "$stderr_out" | grep -qE "lane=agent denied:"; then

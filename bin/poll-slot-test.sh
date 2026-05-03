@@ -275,9 +275,9 @@ write_label_fixture "stage:planning" \
   "ENG-4001|In Progress|3|Bug,stage:planning,pipeline:halted" \
   "ENG-4002|In Progress|3|Bug,stage:planning,pipeline:halted"
 write_comments_fixture "ENG-4001" \
-  "<!-- pipeline-stage-summary: planning -->|2026-04-24T10:00:00.000Z"
+  "<!-- pipeline: verdict result=pass stage=planning -->|2026-04-24T10:00:00.000Z"
 write_comments_fixture "ENG-4002" \
-  "<!-- pipeline-stage-summary: planning -->|2026-04-24T10:00:00.000Z"
+  "<!-- pipeline: verdict result=pass stage=planning -->|2026-04-24T10:00:00.000Z"
 write_inbox_fixture \
   "ENG-3002|Todo|3|Bug"
 out="$(main 2>/dev/null || true)"
@@ -369,7 +369,7 @@ chmod +x "$STUB_DIR/metrics.sh"
 # skip label because pipeline:halted + a <!-- pipeline: verdict result=halt --> marker
 # (both written by classify-failure) kept _poll_classify_labels in
 # vacate/not-advanceable. _poll_evaluate_skip must clear the halt label
-# AND post a pipeline-decision: resume marker so the next tick can
+# AND post a `pipeline: decision action=continue` marker so the next tick can
 # advance the issue.
 reset_fixtures
 write_label_fixture "stage:implementing" \
@@ -397,7 +397,7 @@ stage="$(jq -r '.stage // ""' <<<"$out")"
 removed_skip=0; removed_halt=0; posted_resume=0
 grep -qE '^remove-label ENG-7001 pipeline:skip-until-code-changes$' "$LINEAR_STUB_LOG" && removed_skip=1
 grep -qE '^remove-label ENG-7001 pipeline:halted$'                  "$LINEAR_STUB_LOG" && removed_halt=1
-grep -qE 'pipeline-decision: resume'                                "$LINEAR_STUB_LOG" && posted_resume=1
+grep -qE 'pipeline: decision action=continue'                       "$LINEAR_STUB_LOG" && posted_resume=1
 
 unset LINEAR_STUB_LOG
 rm -rf "$PROJECT_STATE_DIR/ENG-7001"
@@ -434,7 +434,7 @@ _=$(main 2>/dev/null || true)
 
 extra_halt_clear=0; extra_resume_post=0
 grep -qE '^remove-label ENG-7002 pipeline:halted$' "$LINEAR_STUB_LOG" && extra_halt_clear=1
-grep -qE 'pipeline-decision: resume'               "$LINEAR_STUB_LOG" && extra_resume_post=1
+grep -qE 'pipeline: decision action=continue'      "$LINEAR_STUB_LOG" && extra_resume_post=1
 
 unset LINEAR_STUB_LOG
 rm -rf "$PROJECT_STATE_DIR/ENG-7002"
@@ -455,8 +455,8 @@ fi
 # intervention.
 reset_fixtures
 write_comments_fixture "ENG-45-WAIT" \
-  '<!-- pipeline-transition: implementing → building -->|2026-04-28T08:00:00Z' \
-  '<!-- pipeline-wait: awaiting-approval -->|2026-04-28T08:17:00Z'
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
 
 out="$(_poll_classify_labels "ENG-45-WAIT" '["stage:building"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"

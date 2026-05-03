@@ -133,7 +133,7 @@ _replay_scope_approval() {
 # ─── Per-stage success-path completion comment (ENG-11) ──────────────────────
 # Read the agent-authored summary file, wrap with header + PR tail, and
 # upsert under sig completion/<stage>/<issue>. On missing/empty/symlink,
-# post a mechanical fallback with <!-- pipeline-metric: summary_missing -->.
+# post a mechanical fallback with <!-- meta: metric name=summary_missing -->.
 # Returns nonzero if Linear post itself fails after one retry.
 #
 # Caller contract: this helper is only invoked for stages in the set
@@ -164,9 +164,11 @@ post_completion_comment() {
   esac
 
   # Read + safety-filter the summary body, or take fallback.
-  # Order matters: strip sig-marker LINES *before* byte-truncating so a mid-line
-  # byte cut inside a `<!-- pipeline-sig: … -->` line cannot leave a partial
-  # (and therefore unmatched-by-sed) marker in the posted body.
+  # Order matters: strip dedup-marker LINES *before* byte-truncating so a
+  # mid-line byte cut inside a `<!-- meta: dedup key=… -->` line cannot leave
+  # a partial (and therefore unmatched-by-sed) marker in the posted body.
+  # Both new-shape and legacy `<!-- pipeline-sig: … -->` lines are stripped
+  # so an agent that copies a stale fixture can't hijack the dedup key.
   local body fallback_marker=""
   if [[ -L "$summary_path" ]]; then
     fallback_marker="summary_symlink_refused"
@@ -174,10 +176,10 @@ post_completion_comment() {
     fallback_marker="summary_missing"
   else
     local fsize; fsize="$(wc -c < "$summary_path" | tr -d ' ')"
-    body="$(sed -E '/<!-- pipeline-sig: .* -->/d' "$summary_path" | head -c 32768)"
+    body="$(sed -E -e '/<!-- meta: dedup key=.* -->/d' -e '/<!-- pipeline-sig: .* -->/d' "$summary_path" | head -c 32768)"
     if (( fsize > 32768 )); then
       body+=$'\n\n_[truncated at 32 KiB]_'
-      body+=$'\n<!-- pipeline-metric: summary_truncated -->'
+      body+=$'\n<!-- meta: metric name=summary_truncated -->'
     fi
   fi
 
@@ -195,7 +197,7 @@ post_completion_comment() {
     # design (no usage to report on a silent-exit / dispatch-crashed run).
     local artifacts_tail
     artifacts_tail="$(_stage_artifacts_footer "$issue" "$stage")"
-    comment_body="$(printf '%s\n\n_Agent did not write a stage summary; posting mechanical completion._%s%s\n<!-- pipeline-metric: %s -->' \
+    comment_body="$(printf '%s\n\n_Agent did not write a stage summary; posting mechanical completion._%s%s\n<!-- meta: metric name=%s -->' \
       "$header" "$pr_tail" "$artifacts_tail" "$fallback_marker")"
   else
     # Cost footer (ENG-26 D-008): one line of `cost: $X · in Yk · out Zk
@@ -286,8 +288,9 @@ verify_preconditions() {
 
 # ─── ENG-45 / ENG-54: build-stage wait-marker gate + budget escalation ──────
 # Returns the wait reason on stdout (exit 0) iff a fresh, well-formed,
-# build-only `<!-- pipeline-wait: <reason> -->` marker exists newer than the
-# most recent pipeline-transition. Else prints empty + nonzero. Build-only
+# build-only `<!-- pipeline: verdict result=wait reason=... -->` marker
+# exists newer than the most recent transition. Else prints empty + nonzero.
+# Build-only
 # gate (security F-1); closed reason allow-list (security F-2). Fail-closed
 # on Linear read failure: nonzero exit OR empty/null output from get-comments
 # → return 1 → caller falls through to the agent-contract validator.
@@ -345,7 +348,7 @@ _fresh_wait_reason() {
 # stage run. Idempotent: skips the add-label call if the label is already on
 # the issue.
 #
-# Wait-shape carve-out: if a fresh `<!-- pipeline-wait: <reason> -->` marker
+# Wait-shape carve-out: if a fresh `<!-- pipeline: verdict result=wait reason=... -->` marker
 # (ENG-45) is the latest verdict, the issue is *waiting*, not *halted*, and
 # the label must NOT be applied. In current control flow the wait-shape
 # early-exit at line ~676 prevents this hook from being reached on a real
@@ -522,11 +525,11 @@ main() {
   # so that link:/human decisions don't create empty worktrees. See ENG-13 D-009.
 
   # Scope-approval replay: if this is implement/ui and the user has posted
-  # a `<!-- pipeline-decision: scope-approved -->` comment newer than the
-  # most recent `<!-- pipeline-halt: scope-deviation -->` marker, skip the
-  # agent dispatch and fall through to the post-stage guards. The branch
-  # is already green from the prior dispatch; re-running the agent would
-  # just burn tokens. The post-stage scope-check will observe the same
+  # a `<!-- pipeline: decision action=approve gate=scope -->` comment newer
+  # than the most recent `<!-- pipeline: verdict result=halt reason=scope-violation -->`
+  # marker, skip the agent dispatch and fall through to the post-stage guards.
+  # The branch is already green from the prior dispatch; re-running the agent
+  # would just burn tokens. The post-stage scope-check will observe the same
   # decision marker and treat the notable tier as approved.
   local skip_dispatch=0
   if [[ "$stage" == "implementing" || "$stage" == "ui" ]]; then
@@ -618,14 +621,15 @@ main() {
         ;;
       1)
         # NOTABLE tier. If the user has already acknowledged (state file
-        # exists, scope-approved decision marker newer than the most
-        # recent scope-deviation halt), treat as approved and clear
-        # state. Otherwise, emit a pipeline-halt: scope-deviation marker
-        # and the sentinel label; the Verdict Handler leaves the halt
-        # intact until halt.sh resolve posts a decision.
+        # exists, scope-approve decision marker newer than the most
+        # recent scope-violation halt), treat as approved and clear
+        # state. Otherwise, emit a verdict result=halt reason=scope-violation
+        # marker and the sentinel label; the Verdict Handler leaves the halt
+        # intact until pipeline.sh decide --action approve --gate scope posts
+        # a decision marker.
         if [[ -f "$approval_state_file" ]] \
            && bash "$SCRIPT_DIR/scope-check.sh" has-scope-approval "$ident" 2>/dev/null; then
-          log "scope-check: notable approved by pipeline-decision marker; clearing state and proceeding"
+          log "scope-check: notable approved by scope-approve decision; clearing state and proceeding"
           rm -f "$approval_state_file"
         else
           mkdir -p "$(dirname "$approval_state_file")"
@@ -637,9 +641,9 @@ main() {
 
           local fs_patch
           fs_patch="$(printf -- '- `%s`\n' $notable_files)"
-          # ENG-18: append-only halt marker (scope-deviation shape) + sentinel
-          # label. The Verdict Handler leaves the halt intact until halt.sh
-          # resolve posts a pipeline-decision marker.
+          # ENG-18: append-only halt marker (scope-violation reason) + sentinel
+          # label. The Verdict Handler leaves the halt intact until
+          # pipeline.sh decide --action approve --gate scope posts a decision.
           local halt_body
           halt_body="$(printf '<!-- pipeline: verdict result=halt reason=scope-violation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/pipeline.sh decide %s --action approve --gate scope\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
             "$stage" "$branch" "$fs_patch" "$HARNESS_ROOT" "$ident")"
@@ -689,7 +693,7 @@ main() {
     bash "$SCRIPT_DIR/scan-gotcha-trailers.sh" "$ident" "$branch" || true
   fi
 
-  # ENG-45: wait exit. Build agent posts <!-- pipeline-wait: <reason> --> on
+  # ENG-45: wait exit. Build agent posts <!-- pipeline: verdict result=wait reason=... --> on
   # P2/P5 failures so the orchestrator re-dispatches next tick instead of
   # halting. Detect BEFORE the agent-contract validator below — that
   # validator (and the defensive halt-add + verdict_handler downstream)

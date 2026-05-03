@@ -51,15 +51,18 @@ _classify_label() {
 }
 
 # Classify a comment body into transition_comment or other_comment.
-# transition_comment: the first non-blank line of the body is exactly
-# <!-- pipeline-transition: <from> → <to> -->
+# transition_comment: the first non-blank line of the body is the
+# orchestrator transition waypoint marker. Recognized shapes:
+#   <!-- pipeline: transition from=<from> to=<to> -->   (current, ENG-60)
+#   <!-- pipeline-transition: <from> → <to> -->         (legacy; in-flight back-compat)
 _classify_comment_body() {
   local body="$1"
   local first_nonblank
   first_nonblank="$(printf '%s' "$body" | grep -m1 '[^ ]' || true)"
   # Trim leading whitespace from the first non-blank line.
   first_nonblank="$(printf '%s' "$first_nonblank" | sed 's/^[[:space:]]*//')"
-  if [[ "$first_nonblank" =~ ^'<!--'\ pipeline-transition:\ .+\ '-->' ]]; then
+  if [[ "$first_nonblank" =~ ^'<!--'\ pipeline:\ transition\ .+\ '-->' ]] \
+     || [[ "$first_nonblank" =~ ^'<!--'\ pipeline-transition:\ .+\ '-->' ]]; then
     printf 'transition_comment'
   else
     printf 'other_comment'
@@ -508,8 +511,13 @@ add_or_update_comment() {
   [[ -n "$body" ]] \
     || die "add-or-update-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
 
-  local marker="<!-- pipeline-sig: $sig -->"
-  if ! grep -qF "$marker" <<<"$body"; then
+  # ENG-60 vocabulary: write `<!-- meta: dedup key=... -->` (new shape).
+  # Look up matches against the legacy `<!-- pipeline-sig: ... -->` shape too,
+  # so in-flight issues whose comment threads were created under the legacy
+  # writer continue to be updated in place rather than duplicated.
+  local marker="<!-- meta: dedup key=$sig -->"
+  local marker_legacy="<!-- pipeline-sig: $sig -->"
+  if ! grep -qF -e "$marker" -e "$marker_legacy" <<<"$body"; then
     body+=$'\n\n'"$marker"
   fi
 
@@ -521,13 +529,13 @@ add_or_update_comment() {
   local issue_uuid
   issue_uuid="$(_resolve_issue_uuid "$ident")"
 
-  # Look for an existing comment carrying the sig.
+  # Look for an existing comment carrying the sig (new or legacy shape).
   local q='query($id: String!) { issue(id: $id) { comments(first: 50, orderBy: updatedAt) { nodes { id body } } } }'
   local vars resp existing_id
   vars="$(jq -cn --arg id "$ident" '{id:$id}')"
   resp="$(linear_query "$q" "$vars")"
-  existing_id="$(jq -r --arg m "$marker" \
-    '[.data.issue.comments.nodes[]? | select(.body | contains($m)) | .id] | first // ""' <<<"$resp")"
+  existing_id="$(jq -r --arg m "$marker" --arg l "$marker_legacy" \
+    '[.data.issue.comments.nodes[]? | select(.body | contains($m) or contains($l)) | .id] | first // ""' <<<"$resp")"
 
   if [[ -n "$existing_id" ]]; then
     local mu='mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success } }'

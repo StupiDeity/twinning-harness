@@ -75,10 +75,9 @@ _vh_drain_legacy_labels() {
   done
 }
 
-# Extract the most recent verdict marker (pipeline-stage-summary,
-# pipeline-rejection, or pipeline-halt) that is newer than the most
-# recent pipeline-transition comment. pipeline-decision and
-# pipeline-transition are not verdict shapes.
+# Extract the most recent verdict marker (verdict result=pass|fail|halt)
+# that is newer than the most recent transition comment. decision and
+# transition are not verdict shapes.
 #
 # Prints JSON {marker, source_stage, target_stage, reason, comment_id}
 # or empty string when nothing fresh qualifies.
@@ -144,7 +143,7 @@ find_fresh_verdict() {
 }
 
 # Atomic transition order (per brainstorm §Atomic transition order):
-#   1. Post <!-- pipeline-transition: from → to --> comment (freshness waypoint).
+#   1. Post <!-- pipeline: transition from=X to=Y --> comment (freshness waypoint).
 #   2. Add stage:<to> label.
 #   3. Remove stage:<from> label.
 #   3.5. Native-state hook: if to == reviewing, flip Linear status to In Review.
@@ -158,7 +157,7 @@ apply_transition() {
 
   if [[ "$post_waypoint" == "1" ]]; then
     local transition_body
-    transition_body="$(printf '<!-- pipeline-transition: %s → %s -->\n\nOrchestrator transition waypoint.' "$from" "$to")"
+    transition_body="$(printf '<!-- pipeline: transition from=%s to=%s -->\n\nOrchestrator transition waypoint.' "$from" "$to")"
     bash "$_VH_SCRIPT_DIR/linear.sh" add-comment "$issue" "$transition_body" || true
   fi
 
@@ -275,26 +274,32 @@ apply_transition() {
   log "verdict-handler: applied transition $issue: $from → $to (side=${side_labels:-none})"
 }
 
-# Detect a mid-transition crash: a <!-- pipeline-transition: X → Y -->
+# Detect a mid-transition crash: a <!-- pipeline: transition from=X to=Y -->
 # comment exists and is the most recent transition, but current stage
 # is still :X and pipeline:halted is still applied. Complete the
 # remaining label operations (skip the transition-comment post; it was
 # already done before the crash).
 resume_in_progress_transition() {
   local issue="$1"
-  local comments last_transition from to current_stage has_halt
+  local comments from to current_stage has_halt
   comments="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-comments "$issue")"
   [[ -z "$comments" || "$comments" == "null" ]] && return 1
 
-  last_transition="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
-    | sort_by(.createdAt) | last // empty | .body // ""' <<<"$comments")"
-  [[ -z "$last_transition" ]] && return 1
-
-  from="$(grep -oE '<!-- pipeline-transition: [a-z]+ → [a-z]+ -->' <<<"$last_transition" \
-    | head -1 | sed -E 's/<!-- pipeline-transition: ([a-z]+) → ([a-z]+) -->/\1/')"
-  to="$(grep -oE '<!-- pipeline-transition: [a-z]+ → [a-z]+ -->' <<<"$last_transition" \
-    | head -1 | sed -E 's/<!-- pipeline-transition: ([a-z]+) → ([a-z]+) -->/\2/')"
+  # Iterate comments through parse_pipeline_marker; pick the latest event=transition
+  # by createdAt and extract its from/to. Comments without a recognizable marker
+  # are skipped.
+  local last_ts="" ts body ev
+  from=""; to=""
+  while IFS=$'\t' read -r ts body; do
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "transition" ]] && continue
+    if [[ "$ts" > "$last_ts" ]]; then
+      last_ts="$ts"
+      from="$(jq -r '.from // ""' <<<"$ev")"
+      to="$(jq -r '.to // ""' <<<"$ev")"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
   [[ -z "$from" || -z "$to" ]] && return 1
 
   current_stage="$(bash "$_VH_SCRIPT_DIR/linear.sh" stage-of "$issue")"

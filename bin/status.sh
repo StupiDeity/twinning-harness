@@ -278,7 +278,7 @@ show_cost_summary() {
 # ───────────────────────────────────────────────────── Section 4: marker comments
 
 show_markers() {
-  section "pipeline-metric:* markers on active issues (last 60 min)"
+  section "meta:metric markers on active issues (last 60 min)"
 
   if [[ -z "${LINEAR_API_KEY-}" ]]; then
     printf '  %s(LINEAR_API_KEY not set; skip)%s\n' "$C_DIM" "$C_RST"
@@ -320,8 +320,14 @@ show_markers() {
     done < <(jq -r --arg cutoff "$cutoff" '
       .data.issue.comments.nodes[]?
       | select(.createdAt >= $cutoff)
-      | select(.body | test("<!-- pipeline-metric: [a-z_-]+ -->"))
-      | [.createdAt, (.body | capture("<!-- pipeline-metric: (?<m>[a-z_-]+) -->").m // "?"), .body] | @tsv
+      | select(.body | test("<!-- meta: metric name=[a-z_-]+ -->|<!-- pipeline-metric: [a-z_-]+ -->"))
+      | [.createdAt,
+         (if (.body | test("<!-- meta: metric name=[a-z_-]+ -->"))
+            then (.body | capture("<!-- meta: metric name=(?<m>[a-z_-]+) -->").m)
+          elif (.body | test("<!-- pipeline-metric: [a-z_-]+ -->"))
+            then (.body | capture("<!-- pipeline-metric: (?<m>[a-z_-]+) -->").m)
+          else "?" end),
+         .body] | @tsv
     ' <<<"$c")
   done
 
