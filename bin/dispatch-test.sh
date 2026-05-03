@@ -803,6 +803,91 @@ else
   fail_at "fixture-K forward-compat" "keys=$keys_k request_id=$has_request_id_k thinking=$has_thinking_k"
 fi
 
+# ─── Fixture L: ENG-65 partial-usage capture on SIGTERM (no result event) ─
+# A wall-clock SIGTERM mid-stream loses the aggregated `result` event.
+# D-003: sum per-message assistant.message.usage.* across the captured
+# NDJSON, mark the file as `partial: true` with `cost_usd: null`. The
+# downstream `_cost_flags_for // 0` coerces null → 0 — verified separately
+# in run-stage-test (case-23). The `partial` flag on disk is the
+# discriminator that distinguishes "captured under SIGTERM" from "clean
+# zero-cost dispatch" for the retrospective.
+USAGE_L="$ISSUE_DIR/usage-plan-L.json"
+rm -f "$USAGE_L" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_L" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"deadbeef-l","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}
+{"type":"assistant","message":{"id":"msg_02","content":[{"type":"text","text":"more"}],"usage":{"input_tokens":200,"output_tokens":80,"cache_read_input_tokens":30,"cache_creation_input_tokens":15}}}
+{"type":"assistant","message":{"id":"msg_03","content":[{"type":"text","text":"yet more"}],"usage":{"input_tokens":50,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}
+NDJSON
+
+if [[ ! -s "$USAGE_L" ]]; then
+  fail_at "fixture-L partial usage" "usage file missing or empty: $USAGE_L"
+else
+  partial_l="$(jq -r '.partial' "$USAGE_L" 2>/dev/null || printf '')"
+  cost_l_null="$(jq -r '.cost_usd == null' "$USAGE_L" 2>/dev/null || printf 'false')"
+  ti_l="$(jq -r '.tokens_in' "$USAGE_L" 2>/dev/null || printf '')"
+  to_l="$(jq -r '.tokens_out' "$USAGE_L" 2>/dev/null || printf '')"
+  cr_l="$(jq -r '.cache_read' "$USAGE_L" 2>/dev/null || printf '')"
+  cc_l="$(jq -r '.cache_create' "$USAGE_L" 2>/dev/null || printf '')"
+  model_l="$(jq -r '.model' "$USAGE_L" 2>/dev/null || printf '')"
+  if [[ "$partial_l" == "true" ]] \
+     && [[ "$cost_l_null" == "true" ]] \
+     && [[ "$ti_l" == "350"  ]] \
+     && [[ "$to_l" == "150"  ]] \
+     && [[ "$cr_l" == "55"   ]] \
+     && [[ "$cc_l" == "28"   ]] \
+     && [[ "$model_l" == "claude-opus-4-7" ]]; then
+    pass_at "fixture-L partial usage: tokens summed across assistant events; partial=true, cost_usd=null, model from init"
+  else
+    fail_at "fixture-L partial usage" \
+      "partial=$partial_l cost_null=$cost_l_null tokens_in=$ti_l tokens_out=$to_l cache_read=$cr_l cache_create=$cc_l model=$model_l"
+  fi
+fi
+
+# ─── Fixture L extension: malformed/missing usage block on assistant event ─
+# A degraded assistant event lacks the `message.usage` key entirely. The
+# `(.message.usage // {})` guard absorbs the missing event as 0, so the
+# sum equals only the valid events' total. Mirrors the F2/D-002 tolerance:
+# one bad event must not crash the partial-extraction filter.
+USAGE_L2="$ISSUE_DIR/usage-plan-L2.json"
+rm -f "$USAGE_L2" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_L2" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"deadbeef-l2","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}
+{"type":"assistant","message":{"id":"msg_02","content":[{"type":"text","text":"missing usage block"}]}}
+{"type":"assistant","message":{"id":"msg_03","content":[{"type":"text","text":"more"}],"usage":{"input_tokens":50,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}
+NDJSON
+
+if [[ ! -s "$USAGE_L2" ]]; then
+  fail_at "fixture-L2 malformed usage" "usage file missing or empty: $USAGE_L2"
+else
+  partial_l2="$(jq -r '.partial' "$USAGE_L2" 2>/dev/null || printf '')"
+  ti_l2="$(jq -r '.tokens_in' "$USAGE_L2" 2>/dev/null || printf '')"
+  to_l2="$(jq -r '.tokens_out' "$USAGE_L2" 2>/dev/null || printf '')"
+  if [[ "$partial_l2" == "true" ]] \
+     && [[ "$ti_l2" == "150" ]] \
+     && [[ "$to_l2" == "70"  ]]; then
+    pass_at "fixture-L2 malformed usage: missing message.usage absorbed as 0; valid events still summed"
+  else
+    fail_at "fixture-L2 malformed usage" "partial=$partial_l2 tokens_in=$ti_l2 (expected 150) tokens_out=$to_l2 (expected 70)"
+  fi
+fi
+
+# Existing Fixture H regression — empty stdin must still soft-fail under
+# the new partial path because the `_partial_sum > 0` guard rejects a
+# zero-token sum. Verify (a) no usage file is written and (b) the soft-fail
+# log line still fires. This is the same assertion as Fixture H above; we
+# pin it again here so a future refactor of the partial-extraction filter
+# can't accidentally start writing a partial file with all-zeros.
+USAGE_HE="$ISSUE_DIR/usage-plan-HE.json"
+rm -f "$USAGE_HE" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+RENDER_OUT_HE="$(_render_and_capture_stream "$USAGE_HE" "$ISSUE_DIR" </dev/null 2>&1)"
+if [[ ! -e "$USAGE_HE" ]] && grep -q 'no result event found in stream' <<<"$RENDER_OUT_HE"; then
+  pass_at "ENG-65 fixture-H regression pin: empty stdin → no partial file written (zero-token guard)"
+else
+  fail_at "ENG-65 fixture-H regression" "exists=$([[ -e $USAGE_HE ]] && echo y || echo n) out=$RENDER_OUT_HE"
+fi
+
 # ─── Group 7: assert_no_tool_invocation fixtures (ENG-43, AS1-AS6) ────
 # AS1-AS6 deliver the issue's fixtures E-J (renamed per brainstorm
 # D-009 to avoid colliding with existing fixtures A-K above). Each
