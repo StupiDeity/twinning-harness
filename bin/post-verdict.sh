@@ -44,6 +44,15 @@ main() {
   log "post-verdict: posted $kind:$stage_or_target_or_reason on $issue"
 }
 
+# post_verdict <issue> <kind> <stage_or_target_or_reason> [<rationale>]
+# Sourceable shim retained for bin/post-verdict-test.sh and any other
+# in-tree caller that sources this file rather than invoking it as a CLI.
+# The 4th rationale arg is accepted but silently dropped (parity with main()).
+post_verdict() {
+  main "$@"
+}
+export -f post_verdict
+
 # Sentinel — runnable as a CLI.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
