@@ -2,7 +2,6 @@
 # Extract a stage's prompt from AGENT_PROMPTS.md and interpolate tokens.
 # Usage: render-prompt.sh <stage> <issue_id>
 #   stage: brainstorming | planning | implementing | ui | reviewing | qa | building | released | retrospective
-#          (verb-form aliases brainstorm|plan|implement|review|build|release also accepted — deprecated)
 # Reads Linear issue via linear.sh get-issue.
 # Emits rendered prompt text to stdout.
 
@@ -22,29 +21,6 @@ building=7. Build Agent
 released=8. Release Agent
 retrospective=9. Retrospective Agent (Scheduled)
 '
-
-# Normalize a verb-form stage name to its canonical gerund form.
-# Backwards-compat: verb forms (brainstorm, plan, implement, review, build,
-# release) are deprecated — callers should pass gerund tense. Both work for
-# one release cycle. Logs a deprecation warning when a verb-form alias is used.
-# NOTE: uses a case statement rather than declare -A for bash 3.2 compatibility.
-_normalize_stage() {
-  local s="$1" gerund=""
-  case "$s" in
-    brainstorm) gerund="brainstorming" ;;
-    plan)       gerund="planning"      ;;
-    implement)  gerund="implementing"  ;;
-    review)     gerund="reviewing"     ;;
-    build)      gerund="building"      ;;
-    release)    gerund="released"      ;;
-  esac
-  if [[ -n "$gerund" ]]; then
-    log "[deprecated] stage '$s' should be '$gerund' (gerund tense — verb-form retained for one release)"
-    printf '%s' "$gerund"
-  else
-    printf '%s' "$s"
-  fi
-}
 
 lookup_section() {
   local stage="$1"
@@ -185,9 +161,6 @@ append_project_profile() {
 main() {
   local stage="${1:-}" issue_id="${2:-}"
   [[ -n "$stage" ]] || die "usage: render-prompt.sh <stage> <issue_id|release-meta>"
-
-  # Normalize verb-form stage name to canonical gerund (backwards-compat).
-  stage="$(_normalize_stage "$stage")"
 
   local section
   section="$(lookup_section "$stage")"

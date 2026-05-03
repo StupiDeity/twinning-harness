@@ -136,15 +136,8 @@ if [[ "$entry_action" == "apply-stage-label" ]]; then
   # `)` after each pattern closes the command substitution early. Assign
   # directly in the case body instead.
   case "$stage" in
-    brainstorm) label_suffix=brainstorming ;;
-    plan)       label_suffix=planning ;;
-    implement)  label_suffix=implementing ;;
-    ui)         label_suffix=ui ;;
-    review)     label_suffix=reviewing ;;
-    qa)         label_suffix=qa ;;
-    build)      label_suffix=building ;;
-    release)    label_suffix=released ;;
-    *)          label_suffix="$stage" ;;
+    brainstorming|planning|implementing|ui|reviewing|qa|building|released|retrospective) label_suffix="$stage" ;;
+    *) label_suffix="$stage" ;;
   esac
   active_state="$(config_get '.linear.native_states.active')"
   bash "$SCRIPT_DIR/linear.sh" transition-state "$issue_id" "$active_state"
@@ -152,8 +145,7 @@ if [[ "$entry_action" == "apply-stage-label" ]]; then
 fi
 
 reconcile_decision="proceed"
-if [[ "$stage" == "brainstorm" || "$stage" == "brainstorming" \
-   || "$stage" == "plan"       || "$stage" == "planning" ]]; then
+if [[ "$stage" == "brainstorming" || "$stage" == "planning" ]]; then
   reconcile_decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$issue_id" "$stage")"
   log "reconcile decision: $reconcile_decision"
 fi
@@ -167,13 +159,11 @@ case "$reconcile_decision" in
     doc_path="${reconcile_decision#link:}"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
       "Pipeline reconcile: existing $stage doc is canonical: \`$doc_path\`. Advancing without regeneration."
-    # Advance the stage label to the next happy-path stage. Accept both
-    # verb-form and gerund-form (ENG-60 T2.12) — poll.sh now emits gerund
-    # but operator manual invocations may still pass the verb form.
+    # Advance the stage label to the next happy-path stage.
     case "$stage" in
-      brainstorm|brainstorming) nxt_label="planning" ;;
-      plan|planning)            nxt_label="implementing" ;;
-      *)                        nxt_label="" ;;
+      brainstorming) nxt_label="planning" ;;
+      planning)      nxt_label="implementing" ;;
+      *)             nxt_label="" ;;
     esac
     if [[ -n "$nxt_label" ]]; then
       bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$nxt_label"

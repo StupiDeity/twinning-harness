@@ -148,11 +148,10 @@ _render_and_capture_stream() {
   fi
 
   # ENG-43: defense-in-depth assertion. Tool lane should already deny
-  # Bash(gh:*) for implement (allowed_tools_for case above); this is the
+  # Bash(gh:*) for implementing (allowed_tools_for case above); this is the
   # second line of defense if the lane is ever misconfigured. Gated on
-  # stage == "implementing" (or legacy "implement") only — other stages
-  # observe no behavior change.
-  if [[ "$stage" == "implementing" || "$stage" == "implement" ]]; then
+  # stage == "implementing" only — other stages observe no behavior change.
+  if [[ "$stage" == "implementing" ]]; then
     local _matched_cmd
     if _matched_cmd="$(assert_no_tool_invocation "$raw_capture" "gh pr create")"; then
       :   # rc 0: no match, fall through
@@ -186,23 +185,8 @@ disallowed_platform_tools() {
 _dispatch_tools_extras() {
   local stage="$1"
   [[ -f "${CONFIG:-}" ]] || return 0
-  # ENG-60 T2.12 backwards-compat: also try the verb-form key. Operator
-  # configs predating the gerund alignment use "implement" / "plan" /
-  # "review" / "build" / "release" / "brainstorm" as keys; the canonical
-  # gerund key is checked first, with verb-form as fallback. Operators
-  # should rename their keys to gerund; this fallback ships with a
-  # one-release window.
-  local verb_form=""
-  case "$stage" in
-    brainstorming) verb_form="brainstorm" ;;
-    planning)      verb_form="plan" ;;
-    implementing)  verb_form="implement" ;;
-    reviewing)     verb_form="review" ;;
-    building)      verb_form="build" ;;
-    released)      verb_form="release" ;;
-  esac
-  jq -r --arg s "$stage" --arg v "$verb_form" '
-    (.dispatch.tools[$s] // (if $v != "" then .dispatch.tools[$v] else null end) // []) as $arr
+  jq -r --arg s "$stage" '
+    (.dispatch.tools[$s] // []) as $arr
     | if ($arr | type) == "array"
       then $arr | map(select(type == "string")) | join(",")
       else "" end
@@ -238,13 +222,6 @@ allowed_tools_for() {
     building)       base='Read,Write,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*)' ;;
     released)       base='Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(gh release view:*),Bash(gh release list:*),Bash(jq:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
     retrospective)  base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*),Bash(bash .pipeline/bin/metrics.sh:*),Bash(bash bin/metrics.sh:*)' ;;
-    # Backwards-compat verb-form aliases (one release; remove in Phase 3).
-    brainstorm)     allowed_tools_for "brainstorming"; return ;;
-    plan)           allowed_tools_for "planning";      return ;;
-    implement)      allowed_tools_for "implementing";  return ;;
-    review)         allowed_tools_for "reviewing";     return ;;
-    build)          allowed_tools_for "building";      return ;;
-    release)        allowed_tools_for "released";      return ;;
     *)              die "no allowed-tools profile for stage: $1" ;;
   esac
   local extras

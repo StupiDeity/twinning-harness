@@ -126,8 +126,6 @@ render_pr_body() {
   # ── Changes ──
   local impl_summary ui_summary impl_tldr ui_tldr
   impl_summary="$(_rpb_stage_summary "$issue" "implementing")"
-  # Backwards-compat: fall back to verb-form header for pre-T2.12 comments.
-  [[ -z "$impl_summary" ]] && impl_summary="$(_rpb_stage_summary "$issue" "implement")"
   ui_summary="$(_rpb_stage_summary "$issue" "ui")"
   impl_tldr="$(_rpb_tldr "$impl_summary")"
   ui_tldr="$(_rpb_tldr "$ui_summary")"

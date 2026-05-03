@@ -109,7 +109,7 @@ expect_out() {
 # ─── Case (a): canonical fixture + no label → link:<path> ──────────────
 reset_fixtures
 write_canonical_fixture "test-canonical.md"
-out="$(main ENG-TEST brainstorm)"
+out="$(main ENG-TEST brainstorming)"
 expect_out "case-a canonical+no-label → link:docs/brainstorms/test-canonical.md" \
            "link:docs/brainstorms/test-canonical.md" "$out"
 
@@ -119,7 +119,7 @@ expect_out "case-a canonical+no-label → link:docs/brainstorms/test-canonical.m
 reset_fixtures
 write_canonical_fixture "test-canonical.md"
 printf 'pipeline:supersede\n' > "$LABELS_FILE"
-out="$(main ENG-TEST brainstorm)"
+out="$(main ENG-TEST brainstorming)"
 expect_out "case-b canonical+supersede → proceed (ENG-5 bug repro)" \
            "proceed" "$out"
 
@@ -127,7 +127,7 @@ expect_out "case-b canonical+supersede → proceed (ENG-5 bug repro)" \
 reset_fixtures
 write_canonical_fixture "test-canonical.md"
 printf 'pipeline:extend\n' > "$LABELS_FILE"
-out="$(main ENG-TEST brainstorm)"
+out="$(main ENG-TEST brainstorming)"
 expect_out "case-c canonical+extend → proceed" \
            "proceed" "$out"
 
@@ -135,7 +135,7 @@ expect_out "case-c canonical+extend → proceed" \
 reset_fixtures
 write_canonical_fixture "test-canonical.md"
 printf 'pipeline:ignore\n' > "$LABELS_FILE"
-out="$(main ENG-TEST brainstorm)"
+out="$(main ENG-TEST brainstorming)"
 expect_out "case-d canonical+ignore → link:docs/brainstorms/test-canonical.md" \
            "link:docs/brainstorms/test-canonical.md" "$out"
 
@@ -146,7 +146,7 @@ reset_fixtures
 write_fuzzy_only_fixture "reconcile-canonical-match-path-design.md"
 printf 'pipeline:supersede\n' > "$LABELS_FILE"
 printf 'reconcile canonical match path' > "$TITLE_FILE"
-out="$(main ENG-TEST brainstorm)"
+out="$(main ENG-TEST brainstorming)"
 expect_out "case-e fuzzy+supersede → proceed (fuzzy regression probe)" \
            "proceed" "$out"
 

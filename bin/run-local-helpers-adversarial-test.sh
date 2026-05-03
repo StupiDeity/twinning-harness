@@ -160,12 +160,12 @@ fi
 _input_dir="$(mktemp -d -t twinning-adversarial-in.XXXXXX)"
 
 : > "$_input_dir/empty"
-assert_partition_counts 'partition_empty_stdin' brainstorm ENG-14 0 0 0 \
+assert_partition_counts 'partition_empty_stdin' brainstorming ENG-14 0 0 0 \
   "$_input_dir/empty"
 
 printf '?? docs/brainstorms/2026-04-20-ENG-14-ドキュメント-design.md\0' \
   > "$_input_dir/unicode"
-assert_partition_counts 'partition_unicode_filename_in_scope' brainstorm ENG-14 1 0 0 \
+assert_partition_counts 'partition_unicode_filename_in_scope' brainstorming ENG-14 1 0 0 \
   "$_input_dir/unicode"
 
 : > "$_input_dir/bulk"
@@ -173,7 +173,7 @@ for i in $(seq 1 50); do
   printf '?? docs/brainstorms/2026-04-20-ENG-14-bulk-%02d-design.md\0' "$i" \
     >> "$_input_dir/bulk"
 done
-assert_partition_counts 'partition_bulk_50_records' brainstorm ENG-14 50 0 0 \
+assert_partition_counts 'partition_bulk_50_records' brainstorming ENG-14 50 0 0 \
   "$_input_dir/bulk"
 
 {
@@ -184,7 +184,7 @@ assert_partition_counts 'partition_bulk_50_records' brainstorm ENG-14 50 0 0 \
   printf '?? src/lib/components/Bar.svelte\0'
   printf '?? README.md\0'
 } > "$_input_dir/mixed"
-assert_partition_counts 'partition_mixed_streams_single_call' brainstorm ENG-14 1 2 3 \
+assert_partition_counts 'partition_mixed_streams_single_call' brainstorming ENG-14 1 2 3 \
   "$_input_dir/mixed"
 
 # Word-boundary: ENG-140 must NOT match ENG-14 (the right-side substring case;
@@ -192,7 +192,7 @@ assert_partition_counts 'partition_mixed_streams_single_call' brainstorm ENG-14 
 # [^a-z0-9]|$ anchor this would false-match.
 printf '?? docs/plans/2026-04-20-eng-140-design.md\0' > "$_input_dir/eng140"
 assert_partition_counts 'partition_eng140_not_matched_by_eng14' \
-  plan ENG-14 0 1 0 "$_input_dir/eng140"
+  planning ENG-14 0 1 0 "$_input_dir/eng140"
 
 # Copy record (C *) — git -z two-NUL framing identical to rename. Consumes
 # source entry, classifies destination once. Mirror of
@@ -200,7 +200,7 @@ assert_partition_counts 'partition_eng140_not_matched_by_eng14' \
 printf 'C  docs/plans/2026-04-20-eng-14-new.md\0docs/plans/2026-04-20-eng-14-old.md\0' \
   > "$_input_dir/copy"
 assert_partition_counts 'partition_copy_record_consumes_source' \
-  plan ENG-14 1 0 0 "$_input_dir/copy"
+  planning ENG-14 1 0 0 "$_input_dir/copy"
 
 # Empty issue_id: D-004 regex MUST NOT spuriously match every basename. A
 # legitimately-named ENG-14 brainstorm file must still be routed somewhere
@@ -210,7 +210,7 @@ assert_partition_counts 'partition_copy_record_consumes_source' \
 printf '?? docs/brainstorms/2026-04-20-ENG-14-design.md\0' > "$_input_dir/empty_id"
 _tdir_empty="$(mktemp -d -t twinning-empty-id.XXXXXX)"
 : > "$_tdir_empty/in" "$_tdir_empty/leaked" "$_tdir_empty/observed"
-partition_dirty_paths brainstorm '' \
+partition_dirty_paths brainstorming '' \
   3>"$_tdir_empty/in" 4>"$_tdir_empty/leaked" 5>"$_tdir_empty/observed" \
   < "$_input_dir/empty_id"
 _sum_in="$(tr -cd '\0' < "$_tdir_empty/in" | wc -c | tr -d ' ')"
@@ -228,7 +228,7 @@ rm -rf "$_tdir_empty"
 printf '?? docs/brainstorms/2026-04-20-a-b-foo.md\0' \
   > "$_input_dir/regex_metachar"
 assert_partition_counts 'regex_metachar_issue_id_literal_match' \
-  brainstorm 'a.b' 0 1 0 "$_input_dir/regex_metachar"
+  brainstorming 'a.b' 0 1 0 "$_input_dir/regex_metachar"
 
 # ─── QA-authored adversarial coverage for ENG-16 (metachar escape) ──────
 # These cases are NOT in the plan's Failure Mode -> Test Map. Each one
@@ -242,7 +242,7 @@ assert_partition_counts 'regex_metachar_issue_id_literal_match' \
 printf '?? docs/brainstorms/2026-04-20-a.b-foo.md\0' \
   > "$_input_dir/qa_metachar_positive"
 assert_partition_counts 'qa_metachar_dot_positive_literal_match' \
-  brainstorm 'a.b' 1 0 0 "$_input_dir/qa_metachar_positive"
+  brainstorming 'a.b' 1 0 0 "$_input_dir/qa_metachar_positive"
 
 # Alternation metachar `|`. Without escape, ERE `a|b` means "match a OR b"
 # and the top-level `(^|[^a-z0-9])a|b([^a-z0-9]|$)` parses as
@@ -252,7 +252,7 @@ assert_partition_counts 'qa_metachar_dot_positive_literal_match' \
 printf '?? docs/brainstorms/2026-04-20-a-foo.md\0' \
   > "$_input_dir/qa_metachar_pipe"
 assert_partition_counts 'qa_metachar_pipe_no_false_match' \
-  brainstorm 'a|b' 0 1 0 "$_input_dir/qa_metachar_pipe"
+  brainstorming 'a|b' 0 1 0 "$_input_dir/qa_metachar_pipe"
 
 # Kleene star `*`. Without escape, ERE `a*b` means "zero or more a's then b",
 # which matches `b` preceded by any boundary. Basename `2026-04-20-b-foo.md`
@@ -261,7 +261,7 @@ assert_partition_counts 'qa_metachar_pipe_no_false_match' \
 printf '?? docs/brainstorms/2026-04-20-b-foo.md\0' \
   > "$_input_dir/qa_metachar_star"
 assert_partition_counts 'qa_metachar_star_no_false_match' \
-  brainstorm 'a*b' 0 1 0 "$_input_dir/qa_metachar_star"
+  brainstorming 'a*b' 0 1 0 "$_input_dir/qa_metachar_star"
 
 # Parentheses as capture group. Without escape, ERE `feat(x)` makes `(x)`
 # a 1-char capture group, so the pattern matches literal `featx` with
@@ -270,7 +270,7 @@ assert_partition_counts 'qa_metachar_star_no_false_match' \
 printf '?? docs/brainstorms/2026-04-20-xyz-featx-foo.md\0' \
   > "$_input_dir/qa_metachar_parens"
 assert_partition_counts 'qa_metachar_parens_no_false_match' \
-  brainstorm 'feat(x)' 0 1 0 "$_input_dir/qa_metachar_parens"
+  brainstorming 'feat(x)' 0 1 0 "$_input_dir/qa_metachar_parens"
 
 # Leading-metachar boundary composition. issue_id beginning with an
 # escaped metachar must still compose cleanly with the left-boundary
@@ -279,7 +279,7 @@ assert_partition_counts 'qa_metachar_parens_no_false_match' \
 printf '?? docs/brainstorms/.eng-foo.md\0' \
   > "$_input_dir/qa_metachar_leading"
 assert_partition_counts 'qa_metachar_leading_dot_boundary_match' \
-  brainstorm '.eng' 1 0 0 "$_input_dir/qa_metachar_leading"
+  brainstorming '.eng' 1 0 0 "$_input_dir/qa_metachar_leading"
 
 # Backslash in issue_id (plan Open Question 4 — explicit post-merge
 # follow-up, promoted to committed coverage here). issue_id `a\b` is three
@@ -289,7 +289,7 @@ assert_partition_counts 'qa_metachar_leading_dot_boundary_match' \
 printf '?? docs/brainstorms/2026-04-20-a-b-foo.md\0' \
   > "$_input_dir/qa_metachar_backslash"
 assert_partition_counts 'qa_metachar_backslash_no_false_match' \
-  brainstorm 'a\b' 0 1 0 "$_input_dir/qa_metachar_backslash"
+  brainstorming 'a\b' 0 1 0 "$_input_dir/qa_metachar_backslash"
 
 # Sequential-invocation state integrity. `issue_lower_re` must be a
 # function-local, so a metachar-bearing first call does not leak its
@@ -304,10 +304,10 @@ printf '?? docs/brainstorms/2026-04-20-ENG-14-foo.md\0' \
   > "$_qa_state_dir/second_in"
 : > "$_qa_state_dir/first_fd3" "$_qa_state_dir/first_fd4" "$_qa_state_dir/first_fd5"
 : > "$_qa_state_dir/second_fd3" "$_qa_state_dir/second_fd4" "$_qa_state_dir/second_fd5"
-partition_dirty_paths brainstorm 'a.b' \
+partition_dirty_paths brainstorming 'a.b' \
   3>"$_qa_state_dir/first_fd3" 4>"$_qa_state_dir/first_fd4" 5>"$_qa_state_dir/first_fd5" \
   < "$_qa_state_dir/first_in"
-partition_dirty_paths brainstorm 'ENG-14' \
+partition_dirty_paths brainstorming 'ENG-14' \
   3>"$_qa_state_dir/second_fd3" 4>"$_qa_state_dir/second_fd4" 5>"$_qa_state_dir/second_fd5" \
   < "$_qa_state_dir/second_in"
 _state_second_in="$(tr -cd '\0' < "$_qa_state_dir/second_fd3" | wc -c | tr -d ' ')"
@@ -323,7 +323,7 @@ for _ in $(seq 1 100); do _qa_long_id+='x.'; done
 printf '?? docs/brainstorms/2026-04-20-nomatch-foo.md\0' \
   > "$_input_dir/qa_metachar_long_id"
 assert_partition_counts 'qa_metachar_long_id_no_false_match' \
-  brainstorm "$_qa_long_id" 0 1 0 "$_input_dir/qa_metachar_long_id"
+  brainstorming "$_qa_long_id" 0 1 0 "$_input_dir/qa_metachar_long_id"
 
 rm -rf "$_input_dir"
 
@@ -702,7 +702,7 @@ MD
   (
     cd "$tdir"
     printf '?? docs/brainstorms/2026-04-30-orchestrator-paused-design.md\0' \
-      | partition_dirty_paths brainstorm ENG-44 \
+      | partition_dirty_paths brainstorming ENG-44 \
         3>"$fixture" 4>"$leaked" 5>"$observed"
   )
 
@@ -735,7 +735,7 @@ MD
   (
     cd "$tdir"
     printf '?? docs/brainstorms/2026-04-30-orchestrator-paused-design.md\0' \
-      | partition_dirty_paths brainstorm ENG-44 \
+      | partition_dirty_paths brainstorming ENG-44 \
         3>"$fixture" 4>"$leaked" 5>"$observed"
   )
   local got_in got_leaked
@@ -760,7 +760,7 @@ test_frontmatter_d004_missing_file_leaked() {
   (
     cd "$tdir"
     printf 'D  docs/brainstorms/2026-04-30-deleted-design.md\0' \
-      | partition_dirty_paths brainstorm ENG-44 \
+      | partition_dirty_paths brainstorming ENG-44 \
         3>"$fixture" 4>"$leaked" 5>"$observed"
   )
   local got_leaked
@@ -788,7 +788,7 @@ MD
   (
     cd "$tdir"
     printf '?? docs/brainstorms/2026-04-30-eng-44-orchestrator-paused-design.md\0' \
-      | partition_dirty_paths brainstorm ENG-44 \
+      | partition_dirty_paths brainstorming ENG-44 \
         3>"$fixture" 4>"$leaked" 5>"$observed"
   )
   local got_in

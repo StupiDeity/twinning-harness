@@ -47,15 +47,15 @@ trip_breaker() {
 stage_output_paths() {
   local stage="$1"
   case "$stage" in
-    brainstorm|brainstorming)
+    brainstorming)
       printf '%s\n' \
         'docs/brainstorms/' \
         'docs/knowledge/decisions.md'
       ;;
-    plan|planning)
+    planning)
       printf '%s\n' 'docs/plans/'
       ;;
-    implement|implementing|ui|qa)
+    implementing|ui|qa)
       local override
       override="$(_scope_allowlist_override "$stage")"
       if [[ -n "$override" ]]; then
@@ -76,7 +76,7 @@ stage_output_paths() {
         '.pipeline-config/config.json' \
         '.github/workflows/'
       ;;
-    review|reviewing|build|building|release|released)
+    reviewing|building|released)
       : # read-mostly; nothing to sweep
       ;;
     *)
@@ -138,7 +138,7 @@ partition_dirty_paths() {
   done < <(stage_output_paths "$stage")
 
   local apply_d004=0
-  case "$stage" in brainstorm|brainstorming|plan|planning) apply_d004=1 ;; esac
+  case "$stage" in brainstorming|planning) apply_d004=1 ;; esac
 
   local issue_lower="" issue_lower_re=""
   if (( apply_d004 )); then
