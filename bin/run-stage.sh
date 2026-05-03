@@ -314,23 +314,36 @@ _fresh_wait_reason() {
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$issue" 2>/dev/null)" || return 1
   [[ -z "$comments" || "$comments" == "null" ]] && return 1
 
-  local last_t
-  last_t="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
-    | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
-  local fresh
-  fresh="$(jq -r --arg t "$last_t" '
-    [.[] | select(.createdAt > $t)
-         | select(.body | test("<!-- pipeline-wait: "))]
-    | sort_by(.createdAt) | last // empty | .body // ""' <<<"$comments")"
-  [[ -z "$fresh" ]] && return 1
+  # Find the most recent transition timestamp to set freshness floor.
+  local last_t=""
+  local ts body ev
+  while IFS=$'\t' read -r ts body; do
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]]; then
+      [[ "$ts" > "$last_t" ]] && last_t="$ts"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  local reason
-  reason="$(grep -oE '<!-- pipeline-wait: [a-z-]+ -->' <<<"$fresh" \
-    | head -1 | sed -E 's/<!-- pipeline-wait: ([a-z-]+) -->/\1/')"
+  # Find the latest wait verdict newer than the transition.
+  local fresh_reason=""
+  local fresh_ts=""
+  while IFS=$'\t' read -r ts body; do
+    [[ -n "$last_t" && ! "$ts" > "$last_t" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+    [[ "$(jq -r '.result' <<<"$ev")" != "wait" ]] && continue
+    if [[ "$ts" > "$fresh_ts" ]]; then
+      fresh_ts="$ts"
+      fresh_reason="$(jq -r '.reason' <<<"$ev")"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  case "$reason" in
-    awaiting-approval|awaiting-ci) printf '%s' "$reason"; return 0 ;;
+  [[ -z "$fresh_reason" ]] && return 1
+
+  case "$fresh_reason" in
+    awaiting-approval|awaiting-ci) printf '%s' "$fresh_reason"; return 0 ;;
     *) return 1 ;;
   esac
 }
