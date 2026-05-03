@@ -842,13 +842,15 @@ merges. Sketches:
 
 ---
 
-## Phase 3: Drop old (deferred detail)
+## Phase 3: Drop old
 
 **Phase goal:** Remove old-shape readers, delete the wrapper binaries, run the one-time legacy-label cleanup script. After Phase 3 lands, the codebase has exactly one vocabulary.
 
 **Phase exit criteria:** No code in `bin/*.sh` references any of the legacy marker shapes. `bin/halt.sh` and `bin/post-verdict.sh` no longer exist. No issue in Linear has any of the dropped legacy labels. `docs/pipeline-vocabulary.md` no longer mentions migration shims.
 
-### Phase 3 task outline
+**Detailed sub-plan:** see `docs/plans/2026-05-03-eng-60-phase-3-drop-old.md`. The original outline below is preserved for context; the sub-plan supersedes it with TDD-disciplined task decomposition and the additional carryovers surfaced during Phase 2 implementation reviews.
+
+### Phase 3 task outline (superseded by sub-plan — kept for context)
 
 - **T3.1** — Edit `bin/common.sh::parse_pipeline_marker` to remove the legacy-shape branch (the entire second `marker=...|sed...|case` block). The function now only handles `<!-- pipeline: <event> ... -->`.
 - **T3.2** — Update `bin/common-test.sh` — delete fixtures P4-P10 (legacy-shape tests). Verify P1-P3, P11, P12 still pass with the simplified helper.
@@ -857,6 +859,21 @@ merges. Sketches:
 - **T3.5** — Operator runs `bin/migrate-labels.sh`. (Manual step — script is run once.)
 - **T3.6** — Remove deprecation log lines from `bin/pipeline.sh` (the wrappers are gone, so the log lines were Phase 2 cushioning that no longer applies).
 - **T3.7** — Update `docs/pipeline-vocabulary.md` to remove the "Migration notes" section.
+
+### Phase 3 carryovers from Phase 2 reviews (also covered in the sub-plan)
+
+These additional removals were surfaced during Phase 2 implementation and reviews:
+
+- **C-T3.A** — Remove verb-form aliases from `bin/render-prompt.sh::_normalize_stage` and the equivalent `case` block at the top of `bin/run-stage.sh::main` (T2.12 added these as a one-release migration shim).
+- **C-T3.B** — Remove the verb-form case arms from `bin/dispatch.sh::allowed_tools_for` (the `brainstorm)`, `plan)`, `implement)`, `review)`, `build)`, `release)` arms that recurse into the gerund form). Also remove the `_dispatch_tools_extras` verb-form key fallback (`legacy_halt_reason_aliases`-style block added in T2.12's regression fix).
+- **C-T3.C** — Remove the dual-form (`brainstorm|brainstorming`) case arms from `bin/run-local.sh` (reconcile link), `bin/run-local-helpers.sh` (`stage_output_paths`, `assert_stage_allowlist_coverage`, `partition_dirty_paths`), and `bin/reconcile.sh`.
+- **C-T3.D** — Remove `bin/render-pr-body.sh::impl_summary` verb-form fallback (`implement` lookup after `implementing` returned empty).
+- **C-T3.E** — Remove the `rejection_src` grep block in `bin/verdict-handler.sh::find_fresh_verdict` (Phase 1 T1.3 added it for old-shape rejections; new-shape rejections rely on the T2.2 `stage:*` label fallback).
+- **C-T3.F** — Remove the defensive `scope-deviation` acceptance in `bin/scope-check.sh::has_scope_approval`'s `case` statement (T2.0 normalizes new-shape halt reasons through `legacy_halt_reason_aliases` so the canonical `scope-violation` is the only token reaching the consumer).
+- **C-T3.G** — Delete `bin/post-verdict-test.sh` along with the wrapper itself (the test exists only to exercise the wrapper). Or rewrite it as a thin smoke against `bin/pipeline.sh` if regression coverage is wanted for the legacy-translation case.
+- **C-T3.H** — Remove the `post_verdict()` shim function from `bin/post-verdict.sh` (added in Phase 2 to keep the test suite green; goes with the wrapper).
+- **C-T3.I** — Remove the `legacy_halt_reason_aliases` map from `bin/pipeline-events.json` (no longer consulted once the old-shape branch in `parse_pipeline_marker` is removed and `parse_pipeline_marker`'s new-shape alias-normalization step is also removed — see C-T3.J).
+- **C-T3.J** — Remove the new-shape alias-normalization step in `parse_pipeline_marker` that T2.0 added (became unnecessary once the registry stops listing legacy aliases — agents only emit canonical tokens via `bin/pipeline.sh`'s registry validation).
 
 ### Phase 3 acceptance criteria
 
