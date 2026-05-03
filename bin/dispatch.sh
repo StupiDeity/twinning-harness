@@ -186,8 +186,23 @@ disallowed_platform_tools() {
 _dispatch_tools_extras() {
   local stage="$1"
   [[ -f "${CONFIG:-}" ]] || return 0
-  jq -r --arg s "$stage" '
-    (.dispatch.tools[$s] // []) as $arr
+  # ENG-60 T2.12 backwards-compat: also try the verb-form key. Operator
+  # configs predating the gerund alignment use "implement" / "plan" /
+  # "review" / "build" / "release" / "brainstorm" as keys; the canonical
+  # gerund key is checked first, with verb-form as fallback. Operators
+  # should rename their keys to gerund; this fallback ships with a
+  # one-release window.
+  local verb_form=""
+  case "$stage" in
+    brainstorming) verb_form="brainstorm" ;;
+    planning)      verb_form="plan" ;;
+    implementing)  verb_form="implement" ;;
+    reviewing)     verb_form="review" ;;
+    building)      verb_form="build" ;;
+    released)      verb_form="release" ;;
+  esac
+  jq -r --arg s "$stage" --arg v "$verb_form" '
+    (.dispatch.tools[$s] // (if $v != "" then .dispatch.tools[$v] else null end) // []) as $arr
     | if ($arr | type) == "array"
       then $arr | map(select(type == "string")) | join(",")
       else "" end

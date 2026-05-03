@@ -167,11 +167,13 @@ case "$reconcile_decision" in
     doc_path="${reconcile_decision#link:}"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
       "Pipeline reconcile: existing $stage doc is canonical: \`$doc_path\`. Advancing without regeneration."
-    # Advance the stage label to the next happy-path stage.
+    # Advance the stage label to the next happy-path stage. Accept both
+    # verb-form and gerund-form (ENG-60 T2.12) — poll.sh now emits gerund
+    # but operator manual invocations may still pass the verb form.
     case "$stage" in
-      brainstorm) nxt_label="planning" ;;
-      plan)       nxt_label="implementing" ;;
-      *)          nxt_label="" ;;
+      brainstorm|brainstorming) nxt_label="planning" ;;
+      plan|planning)            nxt_label="implementing" ;;
+      *)                        nxt_label="" ;;
     esac
     if [[ -n "$nxt_label" ]]; then
       bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$nxt_label"
