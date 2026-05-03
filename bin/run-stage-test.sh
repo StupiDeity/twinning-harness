@@ -1237,11 +1237,12 @@ CONFIG="$ENG_45_CFG_SAVED"
 
 ENG_45_CASE_N_DIR="$(issue_dir ENG-45T-N)"
 mkdir -p "$ENG_45_CASE_N_DIR"
-printf '{"issue":"ENG-45T-N","stage":"build","reason":"awaiting-approval","attempts":3,"first_attempt_at":"2026-04-28T10:00:00Z","last_attempt_at":"2026-04-28T10:30:00Z"}' \
-  > "$ENG_45_CASE_N_DIR/wait-build.json"
+printf '{"issue":"ENG-45T-N","stage":"building","reason":"awaiting-approval","attempts":3,"first_attempt_at":"2026-04-28T10:00:00Z","last_attempt_at":"2026-04-28T10:30:00Z"}' \
+  > "$ENG_45_CASE_N_DIR/wait-building.json"
 # Pre-write stage-summary file so the agent-contract validator (run-stage.sh
 # line ~626) doesn't exit 25 before reaching the success arm.
-printf 'build summary\n' > "$ENG_45_CASE_N_DIR/stage-summary-build.md"
+# File named with gerund (building) because main() normalizes "build" → "building".
+printf 'build summary\n' > "$ENG_45_CASE_N_DIR/stage-summary-building.md"
 
 # Build-stage linear.sh stub: stage-of returns stage:building (no drift),
 # has-label answers stage:* and pipeline:halted yes / paused no, get-comments
@@ -1273,10 +1274,10 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"; chmod +x "$STU
   main ENG-45T-N build
 ) >/dev/null 2>&1 || true
 
-if [[ ! -e "$ENG_45_CASE_N_DIR/wait-build.json" ]]; then
-  pass_at "ENG-45 case N: vh_rc=0 success arm clears wait-build.json (AC-3)"
+if [[ ! -e "$ENG_45_CASE_N_DIR/wait-building.json" ]]; then
+  pass_at "ENG-45 case N: vh_rc=0 success arm clears wait-building.json (AC-3)"
 else
-  fail_at "ENG-45 case N" "wait file still present: $(cat "$ENG_45_CASE_N_DIR/wait-build.json" 2>/dev/null)"
+  fail_at "ENG-45 case N" "wait file still present: $(cat "$ENG_45_CASE_N_DIR/wait-building.json" 2>/dev/null)"
 fi
 
 # ─── ENG-45 case O (review-major-1): budget-exhausted exits clean halt-for-human

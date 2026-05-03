@@ -152,7 +152,8 @@ if [[ "$entry_action" == "apply-stage-label" ]]; then
 fi
 
 reconcile_decision="proceed"
-if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
+if [[ "$stage" == "brainstorm" || "$stage" == "brainstorming" \
+   || "$stage" == "plan"       || "$stage" == "planning" ]]; then
   reconcile_decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$issue_id" "$stage")"
   log "reconcile decision: $reconcile_decision"
 fi

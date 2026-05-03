@@ -47,15 +47,15 @@ trip_breaker() {
 stage_output_paths() {
   local stage="$1"
   case "$stage" in
-    brainstorm)
+    brainstorm|brainstorming)
       printf '%s\n' \
         'docs/brainstorms/' \
         'docs/knowledge/decisions.md'
       ;;
-    plan)
+    plan|planning)
       printf '%s\n' 'docs/plans/'
       ;;
-    implement|ui|qa)
+    implement|implementing|ui|qa)
       local override
       override="$(_scope_allowlist_override "$stage")"
       if [[ -n "$override" ]]; then
@@ -76,7 +76,7 @@ stage_output_paths() {
         '.pipeline-config/config.json' \
         '.github/workflows/'
       ;;
-    review|build|release)
+    review|reviewing|build|building|release|released)
       : # read-mostly; nothing to sweep
       ;;
     *)
@@ -103,7 +103,7 @@ sha12() {
 # allowlist today.
 assert_stage_allowlist_coverage() {
   local s
-  for s in brainstorm plan implement ui review qa build release retrospective; do
+  for s in brainstorming planning implementing ui reviewing qa building released retrospective; do
     stage_output_paths "$s" >/dev/null \
       || die "stage_output_paths missing entry for stage: $s"
   done
@@ -138,7 +138,7 @@ partition_dirty_paths() {
   done < <(stage_output_paths "$stage")
 
   local apply_d004=0
-  case "$stage" in brainstorm|plan) apply_d004=1 ;; esac
+  case "$stage" in brainstorm|brainstorming|plan|planning) apply_d004=1 ;; esac
 
   local issue_lower="" issue_lower_re=""
   if (( apply_d004 )); then

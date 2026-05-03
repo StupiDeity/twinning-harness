@@ -57,8 +57,8 @@ main() {
 
   local dir
   case "$kind" in
-    brainstorm) dir="$TARGET_REPO/docs/brainstorms" ;;
-    plan)       dir="$TARGET_REPO/docs/plans" ;;
+    brainstorm|brainstorming) dir="$TARGET_REPO/docs/brainstorms" ;;
+    plan|planning)            dir="$TARGET_REPO/docs/plans" ;;
     *)          die "kind must be brainstorm or plan" ;;
   esac
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Extract a stage's prompt from AGENT_PROMPTS.md and interpolate tokens.
 # Usage: render-prompt.sh <stage> <issue_id>
-#   stage: brainstorm | plan | implement | ui | review | qa | build | release | retrospective
+#   stage: brainstorming | planning | implementing | ui | reviewing | qa | building | released | retrospective
+#          (verb-form aliases brainstorm|plan|implement|review|build|release also accepted — deprecated)
 # Reads Linear issue via linear.sh get-issue.
 # Emits rendered prompt text to stdout.
 
@@ -11,16 +12,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 STAGE_TO_SECTION='
-brainstorm=1. Brainstorm Agent
-plan=2. Plan Agent
-implement=3. Implementation Agent (Backend)
+brainstorming=1. Brainstorm Agent
+planning=2. Plan Agent
+implementing=3. Implementation Agent (Backend)
 ui=4. UI Agent (Frontend)
-review=5. Review Agent
+reviewing=5. Review Agent
 qa=6. QA Agent
-build=7. Build Agent
-release=8. Release Agent
+building=7. Build Agent
+released=8. Release Agent
 retrospective=9. Retrospective Agent (Scheduled)
 '
+
+# Normalize a verb-form stage name to its canonical gerund form.
+# Backwards-compat: verb forms (brainstorm, plan, implement, review, build,
+# release) are deprecated — callers should pass gerund tense. Both work for
+# one release cycle. Logs a deprecation warning when a verb-form alias is used.
+# NOTE: uses a case statement rather than declare -A for bash 3.2 compatibility.
+_normalize_stage() {
+  local s="$1" gerund=""
+  case "$s" in
+    brainstorm) gerund="brainstorming" ;;
+    plan)       gerund="planning"      ;;
+    implement)  gerund="implementing"  ;;
+    review)     gerund="reviewing"     ;;
+    build)      gerund="building"      ;;
+    release)    gerund="released"      ;;
+  esac
+  if [[ -n "$gerund" ]]; then
+    log "[deprecated] stage '$s' should be '$gerund' (gerund tense — verb-form retained for one release)"
+    printf '%s' "$gerund"
+  else
+    printf '%s' "$s"
+  fi
+}
 
 lookup_section() {
   local stage="$1"
@@ -162,6 +186,9 @@ main() {
   local stage="${1:-}" issue_id="${2:-}"
   [[ -n "$stage" ]] || die "usage: render-prompt.sh <stage> <issue_id|release-meta>"
 
+  # Normalize verb-form stage name to canonical gerund (backwards-compat).
+  stage="$(_normalize_stage "$stage")"
+
   local section
   section="$(lookup_section "$stage")"
   [[ -n "$section" ]] || die "no prompt section for stage: $stage"
@@ -170,9 +197,9 @@ main() {
   block="$(extract_block "$section")"
   [[ -n "$block" ]] || die "could not extract block for section: $section"
 
-  # Release stage is cross-issue: it has no single owning Linear issue. Render with
+  # Released stage is cross-issue: it has no single owning Linear issue. Render with
   # release metadata (version/tag/prev_tag) supplied via env by run-release-observer.sh.
-  if [[ "$stage" == "release" ]]; then
+  if [[ "$stage" == "released" ]]; then
     local version="${PIPELINE_RELEASE_VERSION:-}"
     local tag="${PIPELINE_RELEASE_TAG:-}"
     local prev_tag="${PIPELINE_RELEASE_PREV_TAG:-}"

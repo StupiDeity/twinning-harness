@@ -77,7 +77,7 @@ pass_at() { printf '  PASS %s\n' "$1"; PASS=$((PASS+1)); }
 # ─── Group 1: allowed-tools exclude Linear MCP ──────────────────────────
 printf '\n--- allowed-tools: no mcp__*linear* in any stage ---\n'
 
-for stage in brainstorm plan implement ui review qa build release; do
+for stage in brainstorming planning implementing ui reviewing qa building released; do
   tools="$(allowed_tools_for "$stage" 2>/dev/null)"
   # Check for any mcp__*linear* substring (case-insensitive match for safety)
   if printf '%s' "$tools" | grep -qi 'mcp__.*linear'; then
@@ -896,11 +896,11 @@ contract_check_stage() {
 }
 
 printf '\n--- ENG-49 Gap #7: prompt<->allowlist contract ---\n'
-contract_check_stage implement     "## 3. Implementation Agent (Backend)"
+contract_check_stage implementing  "## 3. Implementation Agent (Backend)"
 contract_check_stage ui            "## 4. UI Agent (Frontend)"
-contract_check_stage review        "## 5. Review Agent"
+contract_check_stage reviewing     "## 5. Review Agent"
 contract_check_stage qa            "## 6. QA Agent"
-contract_check_stage build         "## 7. Build Agent"
+contract_check_stage building      "## 7. Build Agent"
 
 # ─── ENG-53 #8: harness target's dispatch.tools populated ──────────────
 # Per the ENG-44 dogfood post-mortem: the implement and qa stages on

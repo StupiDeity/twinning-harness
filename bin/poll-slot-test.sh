@@ -236,7 +236,7 @@ issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
 stage="$(jq -r '.stage // ""' <<<"$out")"
 entry="$(jq -r '.entry_action // ""' <<<"$out")"
 if { [[ "$issue_id" == "ENG-1001" ]] || [[ "$issue_id" == "ENG-1002" ]]; } \
-   && [[ "$stage" == "plan" ]] \
+   && [[ "$stage" == "planning" ]] \
    && [[ "$entry" == "run" ]]; then
   pass_at "AC-1 advance-held-at-cap dispatches a planning issue"
 else
@@ -314,7 +314,7 @@ write_label_fixture "stage:reviewing" \
 out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // ""' <<<"$out")"
 stage="$(jq -r '.stage // ""' <<<"$out")"
-if [[ "$issue_id" == "ENG-5003" ]] && [[ "$stage" == "review" ]]; then
+if [[ "$issue_id" == "ENG-5003" ]] && [[ "$stage" == "reviewing" ]]; then
   pass_at "AC-4 stage sort — reviewing advances before planning"
 else
   fail_at "AC-4 stage sort — reviewing advances before planning" "out=$out"
@@ -403,7 +403,7 @@ unset LINEAR_STUB_LOG
 rm -rf "$PROJECT_STATE_DIR/ENG-7001"
 
 if (( removed_skip == 1 )) && (( removed_halt == 1 )) && (( posted_resume == 1 )) \
-   && [[ "$issue_id" == "ENG-7001" ]] && [[ "$stage" == "implement" ]]; then
+   && [[ "$issue_id" == "ENG-7001" ]] && [[ "$stage" == "implementing" ]]; then
   pass_at "AC-6 auto-resume clears skip+halt, posts resume marker, dispatches stage"
 else
   fail_at "AC-6 auto-resume clears skip+halt, posts resume marker, dispatches stage" \

@@ -150,8 +150,9 @@ _render_and_capture_stream() {
   # ENG-43: defense-in-depth assertion. Tool lane should already deny
   # Bash(gh:*) for implement (allowed_tools_for case above); this is the
   # second line of defense if the lane is ever misconfigured. Gated on
-  # stage == "implement" only — other stages observe no behavior change.
-  if [[ "$stage" == "implement" ]]; then
+  # stage == "implementing" (or legacy "implement") only — other stages
+  # observe no behavior change.
+  if [[ "$stage" == "implementing" || "$stage" == "implement" ]]; then
     local _matched_cmd
     if _matched_cmd="$(assert_no_tool_invocation "$raw_capture" "gh pr create")"; then
       :   # rc 0: no match, fall through
@@ -212,15 +213,23 @@ allowed_tools_for() {
   # `go test`, `bash bin/*-test.sh`, etc., without rewriting the base.
   local base
   case "$1" in
-    brainstorm)     base='Read,Write,Edit,Grep,Glob,TaskCreate,WebFetch,Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
-    plan)           base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git log:*),Bash(git diff:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
-    implement)      base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(rustc:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
+    # Canonical gerund-form stage names.
+    brainstorming)  base='Read,Write,Edit,Grep,Glob,TaskCreate,WebFetch,Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
+    planning)       base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git log:*),Bash(git diff:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
+    implementing)   base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(rustc:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
     ui)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
-    review)         base='Read,Write,Grep,Glob,TaskCreate,Agent,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
+    reviewing)      base='Read,Write,Grep,Glob,TaskCreate,Agent,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
     qa)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
-    build)          base='Read,Write,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*)' ;;
-    release)        base='Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(gh release view:*),Bash(gh release list:*),Bash(jq:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
+    building)       base='Read,Write,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*)' ;;
+    released)       base='Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(gh release view:*),Bash(gh release list:*),Bash(jq:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*)' ;;
     retrospective)  base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*),Bash(bash .pipeline/bin/metrics.sh:*),Bash(bash bin/metrics.sh:*)' ;;
+    # Backwards-compat verb-form aliases (one release; remove in Phase 3).
+    brainstorm)     allowed_tools_for "brainstorming"; return ;;
+    plan)           allowed_tools_for "planning";      return ;;
+    implement)      allowed_tools_for "implementing";  return ;;
+    review)         allowed_tools_for "reviewing";     return ;;
+    build)          allowed_tools_for "building";      return ;;
+    release)        allowed_tools_for "released";      return ;;
     *)              die "no allowed-tools profile for stage: $1" ;;
   esac
   local extras

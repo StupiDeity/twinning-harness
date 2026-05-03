@@ -32,14 +32,14 @@ _stage_artifacts_footer() {
   local wt; wt="$(issue_dir "$issue")/worktree"
   [[ -d "$wt" ]] || { printf ''; return 0; }
 
-  # Stage → doc-dir mapping. Only brainstorm and plan have a single canonical
-  # doc surface; post-plan stages span the repo and are best described by
-  # branch-delta which the PR link already covers.
+  # Stage → doc-dir mapping. Only brainstorm/brainstorming and plan/planning
+  # have a single canonical doc surface; post-plan stages span the repo and
+  # are best described by branch-delta which the PR link already covers.
   local doc_dir=""
   case "$stage" in
-    brainstorm) doc_dir="docs/brainstorms" ;;
-    plan)       doc_dir="docs/plans" ;;
-    *)          printf ''; return 0 ;;
+    brainstorm|brainstorming) doc_dir="docs/brainstorms" ;;
+    plan|planning)            doc_dir="docs/plans" ;;
+    *)                        printf ''; return 0 ;;
   esac
 
   local paths
@@ -152,7 +152,7 @@ post_completion_comment() {
   # PR tail only on post-UI stages where a PR is guaranteed to exist.
   local pr_tail=""
   case "$stage" in
-    ui|review|qa|build)
+    ui|review|reviewing|qa|build|building)
       local branch pr_url
       branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue" 2>/dev/null || printf '')"
       if [[ -n "$branch" ]] && command -v gh >/dev/null 2>&1; then
@@ -260,30 +260,23 @@ verify_preconditions() {
     return 11
   fi
 
-  # Expected stage label present?
+  # Expected stage label present? Map the (possibly verb-form) stage arg to
+  # its canonical gerund label suffix, then check for stage:<suffix>.
   local prefix expected
   prefix="$(config_get '.linear.stage_label_prefix')"
-  expected="${prefix}${stage//brainstorm/brainstorming}"  # handle abbreviation
-  expected="${expected//implement/implementing}"
-  expected="${expected//review/reviewing}"
-  expected="${expected//plan/planning}"
-  expected="${expected//build/building}"
-  expected="${expected//release/released}"
-  expected="${expected//qa/qa}"
-  expected="${expected//ui/ui}"
-  # Simpler: just derive from the canonical ordering.
-  expected="$(bash -c "
-    case '$stage' in
-      brainstorm) echo '${prefix}brainstorming' ;;
-      plan)       echo '${prefix}planning' ;;
-      implement)  echo '${prefix}implementing' ;;
-      ui)         echo '${prefix}ui' ;;
-      review)     echo '${prefix}reviewing' ;;
-      qa)         echo '${prefix}qa' ;;
-      build)      echo '${prefix}building' ;;
-      release)    echo '${prefix}released' ;;
-    esac
-  ")"
+  local label_suffix
+  case "$stage" in
+    brainstorm|brainstorming) label_suffix="brainstorming" ;;
+    plan|planning)            label_suffix="planning"      ;;
+    implement|implementing)   label_suffix="implementing"  ;;
+    ui)                       label_suffix="ui"            ;;
+    review|reviewing)         label_suffix="reviewing"     ;;
+    qa)                       label_suffix="qa"            ;;
+    build|building)           label_suffix="building"      ;;
+    release|released)         label_suffix="released"      ;;
+    *)                        label_suffix=""              ;;
+  esac
+  expected="${prefix}${label_suffix}"
 
   if [[ -n "$expected" ]] && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" "$expected"; then
     die "precondition failed: $ident does not carry $expected (must be applied before run-stage)"
@@ -306,7 +299,7 @@ verify_preconditions() {
 _fresh_wait_reason() {
   local issue="$1" stage="$2"
   case "$stage" in
-    build) ;;
+    build|building) ;;
     *) return 1 ;;
   esac
 
@@ -501,6 +494,22 @@ main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
 
+  # Normalize verb-form stage name to canonical gerund (backwards-compat).
+  # Verb forms (brainstorm, plan, implement, review, build, release) are deprecated;
+  # callers should pass gerund (brainstorming, planning, implementing, reviewing,
+  # building, released). Both work for one release cycle.
+  local _verb_to_gerund
+  case "$stage" in
+    brainstorm) _verb_to_gerund="brainstorming"; log "[deprecated] stage 'brainstorm' should be 'brainstorming'" ;;
+    plan)       _verb_to_gerund="planning";      log "[deprecated] stage 'plan' should be 'planning'" ;;
+    implement)  _verb_to_gerund="implementing";  log "[deprecated] stage 'implement' should be 'implementing'" ;;
+    review)     _verb_to_gerund="reviewing";     log "[deprecated] stage 'review' should be 'reviewing'" ;;
+    build)      _verb_to_gerund="building";      log "[deprecated] stage 'build' should be 'building'" ;;
+    release)    _verb_to_gerund="released";      log "[deprecated] stage 'release' should be 'released'" ;;
+    *)          _verb_to_gerund="$stage" ;;
+  esac
+  stage="$_verb_to_gerund"
+
   local t0 t1 duration
   t0="$(date +%s)"
 
@@ -537,7 +546,7 @@ main() {
   # just burn tokens. The post-stage scope-check will observe the same
   # decision marker and treat the notable tier as approved.
   local skip_dispatch=0
-  if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
+  if [[ "$stage" == "implement" || "$stage" == "implementing" || "$stage" == "ui" ]]; then
     local _approval_state="$(issue_dir "$ident")/scope-approval"
     if [[ -f "$_approval_state" ]] \
        && bash "$SCRIPT_DIR/scope-check.sh" has-scope-approval "$ident" 2>/dev/null; then
@@ -610,7 +619,7 @@ main() {
   # Post-implement / post-ui guards:
   #   (a) scope-check: no files outside plan File Structure were touched.
   #   (b) no-pr-check: implement stage must NOT have opened a PR (UI stage opens the PR).
-  if [[ "$stage" == "implement" || "$stage" == "ui" ]]; then
+  if [[ "$stage" == "implement" || "$stage" == "implementing" || "$stage" == "ui" ]]; then
     local branch
     branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident")"
     [[ -n "$branch" ]] || die "could not resolve branch name for $ident"
@@ -756,7 +765,7 @@ main() {
   # converts repeated same-evidence retries into skip-until-code-changes.
   if (( ! skip_dispatch )); then
     case "$stage" in
-      brainstorm|plan|implement|ui|review|qa|build)
+      brainstorm|brainstorming|plan|planning|implement|implementing|ui|review|reviewing|qa|build|building)
         local _summary_path _fresh_marker
         _summary_path="$(issue_dir "$ident")/stage-summary-${stage}.md"
         _fresh_marker="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
@@ -774,7 +783,7 @@ main() {
   # uncommitted dirty paths; an agent that commits its artifacts cleanly otherwise leaves the
   # branch local-only (ENG-6 observed). Non-fatal on failure — next tick will retry.
   case "$stage" in
-    brainstorm|plan|implement|ui|review|qa|build)
+    brainstorm|brainstorming|plan|planning|implement|implementing|ui|review|reviewing|qa|build|building)
       push_branch_if_ahead || true
       ;;
   esac
@@ -782,7 +791,7 @@ main() {
   # Post-stage completion comment (ENG-11). Orchestrator-owned narrative post.
   # Runs on both fresh dispatches and scope-approval replays (narrates the advance).
   case "$stage" in
-    brainstorm|plan|implement|ui|review|qa|build)
+    brainstorm|brainstorming|plan|planning|implement|implementing|ui|review|reviewing|qa|build|building)
       if ! post_completion_comment "$ident" "$stage"; then
         classify_failure "$ident" "$stage" "retry-immediately" \
           "linear post failed for completion/$stage/$ident after one retry" 24
@@ -797,13 +806,13 @@ main() {
   # compound a state we do not recognise. The next tick re-evaluates from poll.
   local stage_label_long
   case "$stage" in
-    brainstorm) stage_label_long="brainstorming" ;;
-    plan)       stage_label_long="planning" ;;
-    implement)  stage_label_long="implementing" ;;
-    review)     stage_label_long="reviewing" ;;
-    build)      stage_label_long="building" ;;
-    release)    stage_label_long="released" ;;
-    *)          stage_label_long="$stage" ;;  # ui, qa stay as-is
+    brainstorm|brainstorming) stage_label_long="brainstorming" ;;
+    plan|planning)            stage_label_long="planning"      ;;
+    implement|implementing)   stage_label_long="implementing"  ;;
+    review|reviewing)         stage_label_long="reviewing"     ;;
+    build|building)           stage_label_long="building"      ;;
+    release|released)         stage_label_long="released"      ;;
+    *)                        stage_label_long="$stage"        ;;  # ui, qa stay as-is
   esac
   local dispatched_stage_label="stage:$stage_label_long"
   local current_stage_label
@@ -851,7 +860,7 @@ main() {
       # ENG-50: capture last-review-state on review-stage transitions
       # (advance to qa OR loopback to implementing). Both are successful
       # exits where the agent observed the PR state and acted on it.
-      if [[ "$stage" == "review" ]]; then
+      if [[ "$stage" == "review" || "$stage" == "reviewing" ]]; then
         local _rp_branch
         _rp_branch="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$ident" 2>/dev/null \
           | jq -r '.data.issue.gitBranchName // empty' 2>/dev/null || true)"
@@ -867,7 +876,8 @@ main() {
       # and reconcile only runs for brainstorm/plan per run-local.sh).
       # NOTE: pipeline:extend is NOT auto-cleared (ENG-6 D-005 — extend is a
       # carry-forward signal the operator may intend to span multiple stages).
-      if [[ "$stage" == "brainstorm" || "$stage" == "plan" ]]; then
+      if [[ "$stage" == "brainstorm" || "$stage" == "brainstorming" \
+         || "$stage" == "plan"       || "$stage" == "planning" ]]; then
         bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:supersede" 2>/dev/null || true
       fi
       ;;
