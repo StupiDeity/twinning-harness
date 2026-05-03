@@ -853,6 +853,33 @@ EOF
 result="$(find_fresh_verdict ENG-FV5)"
 [[ -z "$result" ]] && pass_at "FV5: new-shape wait NOT returned as verdict" || fail_at "FV5: new-shape wait NOT returned as verdict" "got: $result"
 
+# Fixture FB1: new-shape rejection with empty source_stage falls back to
+# the issue's current stage:* label (carryover #1 from Phase 1 T1.3).
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: implementing → reviewing -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=fail target=planning -->"}
+]'
+# Stub linear.sh: get-comments returns the new-shape rejection;
+# get-issue returns labels including stage:reviewing (the implicit source).
+# Other subcommands are no-op so apply_transition's side effects don't fail.
+ISSUE_JSON='{"data":{"issue":{"id":"ENG-FB1","labels":[{"name":"stage:reviewing"},{"name":"Bug"}]}}}'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+case "\$1" in
+  get-comments) printf '%s' '$COMMENTS_JSON' ;;
+  get-issue)    printf '%s' '$ISSUE_JSON' ;;
+  add-label|remove-label|add-comment|add-or-update-comment) printf 'ok' ;;
+  *) printf '' ;;
+esac
+EOF
+chmod +x "$STUB_DIR/linear.sh"
+_VH_SCRIPT_DIR="$STUB_DIR"
+
+result="$(verdict_handler "ENG-FB1" "reviewing" 2>&1 || true)"
+echo "$result" | grep -qE 'protocol-violation|unknown-loopback' \
+  && fail_at "FB1: rejection still triggers protocol violation" "result: $result" \
+  || pass_at "FB1: new-shape rejection resolves source from stage:* label" "result: $result"
+
 # Restore stub to the full-featured version used by earlier cases.
 cat > "$STUB_DIR/linear.sh" <<'SH'
 #!/usr/bin/env bash
