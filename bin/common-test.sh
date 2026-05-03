@@ -306,6 +306,13 @@ result="$(parse_pipeline_marker 'just prose, no marker' 2>/dev/null)" && rc=0 ||
 [[ "$rc" -eq 1 ]] && pass_at "P12: rc=1 on no marker" || fail_at "P12 rc=$rc (result=$result)"
 [[ -z "$result" ]] && pass_at "P12: empty stdout" || fail_at "P12 stdout=$result"
 
+# Fixture P13: new-shape halt with legacy reason should be normalized via
+# legacy_halt_reason_aliases (parity with old-shape behavior P6).
+result="$(parse_pipeline_marker '<!-- pipeline: verdict result=halt reason=scope-deviation -->')"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P13: event=verdict (new-shape halt)" || fail_at "P13: event mismatch ($result)"
+[[ "$(jq -r '.result' <<<"$result")" == "halt" ]] && pass_at "P13: result=halt" || fail_at "P13: result mismatch ($result)"
+[[ "$(jq -r '.reason' <<<"$result")" == "scope-violation" ]] && pass_at "P13: reason aliased to scope-violation" || fail_at "P13: reason mismatch ($result)"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
