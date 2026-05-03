@@ -128,6 +128,37 @@ cmd_event_verdict() {
   bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
 }
 
+# cmd_event_transition <issue> <from→to>
+# The CLI argument uses the spaceful arrow form ("implementing → reviewing") for
+# readability; the written marker uses two k=v pairs (from=X to=Y) so that
+# parse_pipeline_marker produces {event:"transition",from:X,to:Y} — field-for-field
+# consistent with the old-shape pipeline-transition: branch (Unicode U+2192).
+cmd_event_transition() {
+  local issue="$1"; shift
+  local arrow="${1:-}"
+  [[ -n "$issue" && -n "$arrow" ]] || die "event transition: usage: <issue> <from→to>"
+  [[ "$arrow" == *"→"* ]] || die "event transition: argument must contain → (Unicode U+2192)"
+
+  local from to
+  from="${arrow%% → *}"
+  to="${arrow##* → }"
+  _validate_registry stages "$from"
+  _validate_registry stages "$to"
+
+  local body="<!-- pipeline: transition from=$from to=$to -->"
+
+  if [[ "$PIPELINE_WRITER" != "orchestrator" ]]; then
+    log "warning: PIPELINE_WRITER=$PIPELINE_WRITER writing a transition (lane mismatch — set PIPELINE_WRITER=orchestrator to suppress)"
+  fi
+
+  if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then
+    printf '[DRY_RUN] would post on %s: %s\n' "$issue" "$body" >&2
+    return 0
+  fi
+
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
+}
+
 main() {
   local sub="${1:-}"
   shift || true
