@@ -151,9 +151,12 @@ the helper validates against the registry.
 Legacy `bin/halt.sh` and `bin/post-verdict.sh` still work as wrappers
 for one release; both log a `[deprecated]` line on use.
 
-The four pipeline-namespace labels the harness applies are:
-`pipeline:halted`, `pipeline:supersede`, `pipeline:skip-until-code-changes`,
-`pipeline:abandoned`. Every other `pipeline:*` label seen in Linear is human-applied.
+The pipeline-namespace labels the harness applies are `pipeline:halted` and
+`pipeline:abandoned` (per design §7.5; ENG-60 T2.13 drains the legacy set —
+`paused`, `scope-approval-needed`, `supersede`, `skip-until-code-changes`,
+`skip-until-human-acts` — on every transition). `pipeline:rule-reviewed` is
+the orthogonal retrospective approval gate. Every other `pipeline:*` label
+seen in Linear is human-applied.
 
 ## Linear conventions the harness depends on
 
