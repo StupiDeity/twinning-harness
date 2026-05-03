@@ -54,8 +54,10 @@ cmd_status() {
 
 # cmd_event <issue> <event> [args] — dispatch to event-specific writer.
 cmd_event() {
-  local issue="$1"; shift
-  local event="$1"; shift
+  local issue="${1:-}"; shift || true
+  [[ -n "$issue" ]] || die "event: issue id required (e.g., bin/pipeline event ENG-1 verdict pass --stage X)"
+  local event="${1:-}"; shift || true
+  [[ -n "$event" ]] || die "event: event type required (verdict, transition)"
   case "$event" in
     verdict)    cmd_event_verdict "$issue" "$@" ;;
     transition) cmd_event_transition "$issue" "$@" ;;
@@ -109,10 +111,13 @@ cmd_event_verdict() {
   [[ -n "$reason" ]] && body="$body reason=$reason"
   body="$body -->"
 
-  # Lane fence: agents emit verdicts.
-  : "${PIPELINE_WRITER:=agent}"
+  # Lane fence: agents emit verdicts. dispatch.sh sets PIPELINE_WRITER=agent
+  # for the agent path; common.sh defaults it to orchestrator for everything
+  # else (operator manual runs, tests). The default-assignment idiom would be
+  # a no-op here because common.sh has already exported the var, so we just
+  # warn instead and tell the caller how to suppress.
   if [[ "$PIPELINE_WRITER" != "agent" ]]; then
-    log "warning: PIPELINE_WRITER=$PIPELINE_WRITER writing a verdict (lane mismatch)"
+    log "warning: PIPELINE_WRITER=$PIPELINE_WRITER writing a verdict (lane mismatch — set PIPELINE_WRITER=agent to suppress)"
   fi
 
   if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then
