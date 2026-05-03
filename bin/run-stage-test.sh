@@ -2169,6 +2169,40 @@ result="$(find_fresh_verdict ENG-MEA1)"
 result_field="$(jq -r '.event.result' <<<"$result")"
 [[ "$result_field" == "pass" ]] && pass_at "MEA1: result=pass via event field" || fail_at "MEA1 result" "got: $result_field"
 
+# ─── Group: _fresh_wait_reason new-shape detection (ENG-60 T2.1) ─────────
+
+printf '\n--- _fresh_wait_reason accepts new-shape wait marker ---\n'
+
+# Fixture WR1: new-shape wait marker on build stage should return reason.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}
+]'
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+SCRIPT_DIR="$STUB_DIR"
+result="$(_fresh_wait_reason ENG-WR1 build 2>/dev/null || printf '')"
+[[ "$result" == "awaiting-approval" ]] && pass_at "WR1: new-shape wait reason returned" "got: '$result'" || fail_at "WR1: new-shape wait reason returned" "got: '$result'"
+
+# Fixture WR2: new-shape wait on non-build stage still returns 1 (build-only gate).
+result="$(_fresh_wait_reason ENG-WR2 implement 2>/dev/null || printf '')"; rc=$?
+[[ "$rc" -eq 0 && -z "$result" ]] && pass_at "WR2: non-build stage rejected (empty result)" "rc=$rc result='$result'" || fail_at "WR2: non-build stage rejected" "rc=$rc result='$result'"
+
+# Fixture WR3: old-shape wait still works (regression).
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline-wait: awaiting-ci -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(_fresh_wait_reason ENG-WR3 build 2>/dev/null || printf '')"
+[[ "$result" == "awaiting-ci" ]] && pass_at "WR3: old-shape wait still works" "got: '$result'" || fail_at "WR3: old-shape wait still works" "got: '$result'"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
