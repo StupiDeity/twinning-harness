@@ -118,6 +118,21 @@ bash bin/poll-slot-test.sh
 bash bin/verdict-adversarial-test.sh
 ```
 
+### Pre-commit hook
+
+The repo ships a pre-commit hook at `.githooks/pre-commit` that runs the
+entire `bin/*-test.sh` suite (~30 s) and blocks the commit on any failure.
+Install once per clone (sets `core.hooksPath`):
+
+```bash
+bash bin/install-git-hooks.sh
+```
+
+Bypass a single commit with `git commit --no-verify`. A short
+`KNOWN_BROKEN` allowlist inside the hook exempts a few pre-existing
+failures from the gate (still run, surfaced as `SKIP`); fix those and
+remove the entry rather than letting the list rot.
+
 How tests work — important when adding new ones:
 
 1. Each `bin/foo.sh` ends with the **sentinel**
