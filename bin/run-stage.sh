@@ -448,7 +448,7 @@ _handle_wait() {
 
   if (( exhausted )); then
     local halt_body
-    halt_body="$(printf '<!-- pipeline-halt: external-signal-budget-exhausted -->\n\nBuild stage halted: %s budget exhausted (%d attempts since %s).\n\n**Resume:** approve the PR as a non-bot Code Owner, then run `bash bin/halt.sh resolve %s --decision resume`. Or raise `orchestrator.external_signal_budget.max_attempts` / `max_minutes` in `.pipeline-config/config.json` to extend the window.' \
+    halt_body="$(printf '<!-- pipeline: verdict result=halt reason=external-signal-budget-exhausted -->\n\nBuild stage halted: %s budget exhausted (%d attempts since %s).\n\n**Resume:** approve the PR as a non-bot Code Owner, then run `bash bin/pipeline.sh decide %s --action continue`. Or raise `orchestrator.external_signal_budget.max_attempts` / `max_minutes` in `.pipeline-config/config.json` to extend the window.' \
                 "$reason" "$attempts" "$first" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
     # Only delete the wait file if the halt label actually applied. A network
@@ -641,7 +641,7 @@ main() {
           # label. The Verdict Handler leaves the halt intact until halt.sh
           # resolve posts a pipeline-decision marker.
           local halt_body
-          halt_body="$(printf '<!-- pipeline-halt: scope-deviation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/halt.sh resolve %s --decision scope-approved\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
+          halt_body="$(printf '<!-- pipeline: verdict result=halt reason=scope-violation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/pipeline.sh decide %s --action approve --gate scope\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
             "$stage" "$branch" "$fs_patch" "$HARNESS_ROOT" "$ident")"
           bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
           bash "$SCRIPT_DIR/linear.sh" add-label   "$ident" "pipeline:halted" || true

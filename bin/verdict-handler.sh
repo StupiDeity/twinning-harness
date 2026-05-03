@@ -52,7 +52,7 @@ _vh_lookup_loopback() {
 _vh_protocol_violation() {
   local issue="$1" case_id="$2" reason="$3"
   local body
-  body="$(printf '<!-- pipeline-halt: protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
+  body="$(printf '<!-- pipeline: verdict result=halt reason=protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
   bash "$_VH_SCRIPT_DIR/linear.sh" add-or-update-comment \
     "protocol-violation/$case_id/$issue" "$issue" "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
