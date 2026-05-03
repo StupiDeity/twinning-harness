@@ -122,27 +122,19 @@ find_fresh_verdict() {
   # Re-parse the fresh body and project to the legacy output shape that
   # callers (verdict_handler, run-stage.sh) expect:
   #   {marker, source_stage, target_stage, reason, comment_id}
-  # For old-shape rejection bodies that carry both `pipeline-rejection: <src>`
-  # and `pipeline-rejection-target: <tgt>`, parse_pipeline_marker returns only
-  # the target (its tail-1 rule). We recover the source separately here so that
-  # verdict_handler's loopback lookup (which needs both src+tgt) still works.
+  # New-shape rejections set source_stage:"" and rely on the T2.2 fallback in
+  # apply_transition to read the issue's current stage:* label as the implicit source.
   local ev_json
   ev_json="$(parse_pipeline_marker "$fresh_body")"
-  local rejection_src=""
-  if [[ "$(jq -r '.result' <<<"$ev_json")" == "fail" ]]; then
-    rejection_src="$(grep -oE '<!-- pipeline-rejection: [a-z]+ -->' <<<"$fresh_body" \
-      | head -1 | sed -E 's/<!-- pipeline-rejection: ([a-z]+) -->/\1/' || true)"
-  fi
   local result
   result="$(jq -nc \
     --argjson e "$ev_json" \
-    --arg id "$fresh_id" \
-    --arg rsrc "$rejection_src" '
+    --arg id "$fresh_id" '
       ($e.result) as $r |
       if $r == "pass" then
         {marker:"pipeline-stage-summary", source_stage:$e.stage, target_stage:"", reason:"", comment_id:$id, event:$e}
       elif $r == "fail" then
-        {marker:"pipeline-rejection", source_stage:$rsrc, target_stage:$e.target, reason:"", comment_id:$id, event:$e}
+        {marker:"pipeline-rejection", source_stage:"", target_stage:$e.target, reason:"", comment_id:$id, event:$e}
       elif $r == "halt" then
         {marker:"pipeline-halt", source_stage:"", target_stage:"", reason:$e.reason, comment_id:$id, event:$e}
       else
@@ -373,10 +365,8 @@ verdict_handler() {
       return 0
       ;;
     pipeline-rejection)
-      # ENG-60 T2.2: new-shape rejections omit source per design §7.2. Fall
-      # back to the issue's current stage:* label when source_stage is empty.
-      # Old-shape rejections still carry explicit source via the
-      # rejection_src grep in find_fresh_verdict (Phase 1 Task 1.3 fix).
+      # ENG-60 T2.2 & T3.2: new-shape rejections set source_stage:"" and rely
+      # on the issue's current stage:* label as the implicit source.
       if [[ -z "$src" ]]; then
         # Reuse linear.sh's stage-of subcommand instead of inlining the jq —
         # keeps the stage-label extraction logic in one place.
