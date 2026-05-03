@@ -3,15 +3,16 @@
 #
 # Gap this file closes: the existing verdict-handler-test.sh asserts shape
 # via jq-on-fixture for cases 10/11/12/14/15/18 and never invokes the real
-# code paths under test (halt.sh, scope-check.sh has-scope-approval,
+# code paths under test (scope-check.sh has-scope-approval,
 # guards.sh count_marker_since_last_transition, classify-failure.sh halt
 # marker emission). This file invokes those code paths directly against
 # stubbed linear.sh + slack.sh + metrics.sh and asserts their observable
 # effects (arg shapes passed to linear.sh, exit codes, comment bodies).
 #
 # Plus adversarial breakages outside the plan's Failure Mode → Test Map
-# (halt.sh arg-parse edges, marker-regex edges, stale decision with newer
-# halt, empty comments array, concurrent-tick idempotency).
+# (marker-regex edges, stale decision with newer halt, empty comments array,
+# concurrent-tick idempotency).
+# NOTE: halt.sh wrapper deleted in ENG-60 T3.5; A1–A5 removed with it.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,7 +62,7 @@ done
 # Route script-under-test invocations through the stub dir. Each script
 # tested here resolves siblings via its own SCRIPT_DIR; we point the
 # siblings at the stubs by symlinking the real script into STUB_DIR.
-for real in halt.sh scope-check.sh guards.sh classify-failure.sh verdict-handler.sh common.sh pipeline.sh pipeline-events.json; do
+for real in scope-check.sh guards.sh classify-failure.sh verdict-handler.sh common.sh pipeline.sh pipeline-events.json; do
   ln -sf "$SCRIPT_DIR/$real" "$STUB_DIR/$real"
 done
 
@@ -94,74 +95,6 @@ mk_fixture() {
   done
   printf '%s' "$arr"
 }
-
-# ─── A1: halt.sh resolve scope-approved posts marker + removes halted ─
-# PIPELINE_DRY_RUN=1 is set globally, so pipeline.sh decide skips the
-# linear.sh add-comment call and emits "[DRY_RUN] would post on ... <body>"
-# to stderr instead. Assert on that dry-run stderr output + the remove-label
-# call that halt.sh makes afterwards (remove-label is NOT gated by dry-run).
-reset_calls
-dry_out="$(bash "$STUB_DIR/halt.sh" resolve ENG-801 --decision scope-approved 2>&1 >/dev/null)"
-if printf '%s' "$dry_out" | grep -qF '<!-- pipeline: decision action=approve gate=scope -->' \
-   && calls_contains "linear.sh remove-label ENG-801 pipeline:halted"; then
-  pass_at "A1 halt.sh resolve scope-approved posts decision marker + removes pipeline:halted"
-else
-  fail_at "A1 halt.sh resolve scope-approved" "dry_out=$dry_out calls=$(cat "$STUB_LOG")"
-fi
-
-# ─── A2: halt.sh resolve resume posts resume marker ──────────────────
-# ENG-49 Gap #2: resolve() now calls verdict-handler before clearing halt.
-# Set up a pipeline-halt marker (rc=1 path) so halt.sh proceeds to remove halt.
-# PIPELINE_DRY_RUN=1 is set globally; pipeline.sh decide emits the marker body
-# to stderr instead of calling linear.sh add-comment. Assert on that dry-run
-# output + the remove-label call that halt.sh makes afterwards.
-reset_calls
-VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline: verdict result=halt reason=scope-violation -->|2026-04-23T10:00:00.000Z")"
-export VH_FIXTURE_COMMENTS
-VH_CURRENT_STAGE_LABEL="stage:ui"
-export VH_CURRENT_STAGE_LABEL
-dry_out="$(bash "$STUB_DIR/halt.sh" resolve ENG-802 --decision resume 2>&1 >/dev/null)"
-if printf '%s' "$dry_out" | grep -qF '<!-- pipeline: decision action=continue -->' \
-   && calls_contains "linear.sh remove-label ENG-802 pipeline:halted"; then
-  pass_at "A2 halt.sh resolve resume posts decision marker + removes halt (rc=1 path)"
-else
-  fail_at "A2 halt.sh resolve resume" "dry_out=$dry_out calls=$(cat "$STUB_LOG")"
-fi
-VH_FIXTURE_COMMENTS="[]"
-VH_CURRENT_STAGE_LABEL=""
-export VH_FIXTURE_COMMENTS VH_CURRENT_STAGE_LABEL
-
-# ─── A3: halt.sh rejects unknown decision value ──────────────────────
-reset_calls
-set +e
-bash "$STUB_DIR/halt.sh" resolve ENG-803 --decision approve-me >/dev/null 2>"$STUB_DIR/stderr"
-rc=$?
-set -e
-if [[ "$rc" != "0" ]] && grep -q 'unknown decision' "$STUB_DIR/stderr"; then
-  pass_at "A3 halt.sh rejects unknown --decision value"
-else
-  fail_at "A3 halt.sh rejects unknown decision" "rc=$rc stderr=$(cat "$STUB_DIR/stderr")"
-fi
-
-# ─── A4: halt.sh rejects missing ENG-id ──────────────────────────────
-reset_calls
-set +e
-bash "$STUB_DIR/halt.sh" resolve --decision resume >/dev/null 2>"$STUB_DIR/stderr"
-rc=$?
-set -e
-[[ "$rc" != "0" ]] \
-  && pass_at "A4 halt.sh rejects missing issue id" \
-  || fail_at "A4 halt.sh rejects missing issue id" "rc=$rc"
-
-# ─── A5: halt.sh rejects unknown subcommand ──────────────────────────
-set +e
-bash "$STUB_DIR/halt.sh" status ENG-805 >/dev/null 2>"$STUB_DIR/stderr"
-rc=$?
-set -e
-[[ "$rc" != "0" ]] \
-  && pass_at "A5 halt.sh rejects unknown subcommand" \
-  || fail_at "A5 halt.sh rejects unknown subcommand" "rc=$rc"
 
 # ─── A6: has-scope-approval TRUE when decision post-dates halt ───────
 VH_FIXTURE_COMMENTS="$(mk_fixture \
