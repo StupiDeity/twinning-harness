@@ -75,7 +75,7 @@ TARGET_REPO=/path/to/target bash bin/status.sh
 # Dry-run any of the above (no Linear writes, no `claude` call, no Slack):
 PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/run-stage.sh ENG-5 brainstorm
 
-# Resolve a halted issue (ENG-18 verdict-marker protocol):
+# Resolve a halted issue (see docs/pipeline-vocabulary.md for decision tokens):
 bash bin/halt.sh resolve ENG-XX --decision <scope-approved|scope-rejected|resume>
 
 # Post a verdict marker manually (heredoc-constructed; safe from bash !-expansion):
@@ -140,13 +140,16 @@ inside a stage's body, and do not renumber sections without updating the
 are written by the retrospective agent and gated by human-approval labels
 (`pipeline:rule-reviewed`); only edit them by hand if you are deliberately seeding rules.
 
-## The verdict-marker protocol (ENG-18)
+## Pipeline vocabulary
 
-State transitions are owned by the orchestrator, not by stage agents. Agents communicate
-verdicts by posting HTML-comment markers into Linear comments; `verdict-handler.sh` reads
-the latest marker newer than the most recent `<!-- pipeline-transition: -->` comment.
-Marker schema is documented in full in `AGENT_PROMPTS.md` ("Verdict-marker protocol")
-and is the source of truth — read it before changing any stage's exit/output behavior.
+Single source of truth: `docs/pipeline-vocabulary.md` (generated from
+`bin/pipeline-events.json` via `bin/generate-vocabulary-doc.sh`). All
+state-driving comments use `<!-- pipeline: <event> ... -->`; bookkeeping
+uses `<!-- meta: <kind> ... -->`. Use `bin/pipeline.sh` to emit markers;
+the helper validates against the registry.
+
+Legacy `bin/halt.sh` and `bin/post-verdict.sh` still work as wrappers
+for one release; both log a `[deprecated]` line on use.
 
 The four pipeline-namespace labels the harness applies are:
 `pipeline:halted`, `pipeline:supersede`, `pipeline:skip-until-code-changes`,
@@ -269,10 +272,9 @@ these entries (skipped silently when the config is absent — CI or non-harness 
   `parse_pipeline_marker` from `bin/common.sh` rather than hand-rolling
   contains-checks or regex extraction. The helper accepts both legacy
   (`pipeline-X: value`) and current (`pipeline: event k=v`) shapes and
-  returns a uniform JSON event. The closed event vocabulary (verdict
-  results, halt reasons, decision actions, etc.) lives in
-  `bin/pipeline-events.json`; the human-readable schema will land in
-  `docs/pipeline-vocabulary.md` after Phase 2 of ENG-60.
+  returns a uniform JSON event. The closed event vocabulary lives in
+  `bin/pipeline-events.json`; the human-readable schema is in
+  `docs/pipeline-vocabulary.md`.
 
 ## Single human-approval gate (ENG-54)
 
