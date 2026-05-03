@@ -199,9 +199,10 @@ PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   source "$SCRIPT_DIR/scope-check.sh" 2>/dev/null || true
 
 # Fixture HSA1: new-shape decision approve gate=scope after new-shape halt
-# (scope-deviation reason — alias-normalized to scope-violation via T2.0 normalization)
+# Uses canonical scope-violation (only token that reaches has_scope_approval
+# after T3.1 removed old-shape and T3.7 removed alias normalization).
 HSA_COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline: verdict result=halt reason=scope-deviation -->"},
+  {"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline: verdict result=halt reason=scope-violation -->"},
   {"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: decision action=approve gate=scope -->"}
 ]'
 cat > "$HSA_STUB_DIR/linear.sh" <<EOF
@@ -211,8 +212,8 @@ EOF
 chmod +x "$HSA_STUB_DIR/linear.sh"
 SCRIPT_DIR="$HSA_STUB_DIR"
 has_scope_approval ENG-HSA1 \
-  && pass_at "HSA1: new-shape halt+approve detected (scope-deviation aliased)" \
-  || fail_at "HSA1" "new-shape decision approve after new-shape halt not detected"
+  && pass_at "HSA1: new-shape halt+approve detected" \
+  || fail_at "HSA1" "new-shape decision approve after new-scope halt not detected"
 
 # Fixture HSA2: new-shape halt + new-shape decision approve
 HSA_COMMENTS_JSON='[
