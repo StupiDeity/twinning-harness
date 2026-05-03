@@ -317,20 +317,31 @@ _fresh_wait_reason() {
     fi
   done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
 
-  # Find the latest wait verdict newer than the transition.
-  local fresh_reason=""
+  # Find the latest verdict (of any result) newer than the transition.
+  # ENG-61 Bug B fix: tracking only wait verdicts here meant any later
+  # pass/fail/halt/pivot was invisible — _fresh_wait_reason kept returning
+  # a stale wait reason and the orchestrator looped on _handle_wait until
+  # an operator manually flipped labels. Track the latest verdict
+  # regardless of result; decide post-loop whether it is still a wait.
+  local fresh_reason="" fresh_result=""
   local fresh_ts=""
   while IFS=$'\t' read -r ts body; do
     [[ -n "$last_t" && ! "$ts" > "$last_t" ]] && continue
     ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
     [[ -z "$ev" ]] && continue
     [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
-    [[ "$(jq -r '.result' <<<"$ev")" != "wait" ]] && continue
     if [[ "$ts" > "$fresh_ts" ]]; then
       fresh_ts="$ts"
-      fresh_reason="$(jq -r '.reason' <<<"$ev")"
+      fresh_result="$(jq -r '.result' <<<"$ev")"
+      # `// ""` keeps the post-loop empty-reason guard semantically correct
+      # for the wait branch (pass/fail/halt verdicts have no .reason field).
+      fresh_reason="$(jq -r '.reason // ""' <<<"$ev")"
     fi
   done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+
+  # If the latest verdict in the freshness window is not a wait, the wait
+  # has been superseded — return rc=1 and let the caller fall through.
+  [[ "$fresh_result" != "wait" ]] && return 1
 
   [[ -z "$fresh_reason" ]] && return 1
 
