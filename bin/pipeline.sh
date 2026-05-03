@@ -14,6 +14,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=run-local-helpers.sh
+# Pulled in for issue_dir helpers and the auto_commit_in_scope function used by
+# `decide --action continue`. run-local-helpers.sh has no top-level side effects.
+source "$SCRIPT_DIR/run-local-helpers.sh"
 
 # Sibling lookup (not via HARNESS_ROOT) so symlink-based test stubs work:
 # verdict-adversarial-test.sh symlinks bin/* into a tempdir, so SCRIPT_DIR
@@ -225,9 +229,10 @@ _pipeline_drain_issue_state() {
 # Posts a <!-- pipeline: transition from=X to=X reason=operator-resume -->
 # waypoint comment. This is the ENG-60 new-shape equivalent of ENG-58's
 # old-shape <!-- pipeline-transition: X → X (operator-resume) --> marker.
-# Both shapes are understood by count_marker_since_last_transition / find_fresh_verdict
-# (parse_pipeline_marker normalises them). We emit the new shape here;
-# tests assert on it explicitly.
+# find_fresh_verdict reads via parse_pipeline_marker (new shape only);
+# count_marker_since_last_transition (guards.sh) accepts both shapes for
+# in-flight back-compat. We emit the new shape here; tests assert on it
+# explicitly.
 _pipeline_post_operator_transition() {
   local issue="$1" stage="$2"
   # Sanitize stage name per D-014: only lowercase alpha passes; anything else
@@ -249,10 +254,32 @@ _pipeline_format_reset_audit() {
     "${wf:-0}" "${sl:-0}" "$state_phrase"
 }
 
-# _pipeline_emit_resume_metric <issue> <stage> <wf> <sl> <sf> <waypoint_posted>
+# _pipeline_clear_breaker
+# Always clear the global circuit breaker on `decide --action continue`.
+# No-op when the breaker isn't tripped: set_orchestrator_paused false
+# always writes "false" (idempotent), and rm -f shrugs at missing files.
+# Returns "true|false" via stdout to indicate whether the breaker WAS
+# tripped before the clear (for the audit metric).
+#
+# Why this lives in decide: ENG-58 promised "atomic reset" on continue,
+# but only cleared per-issue side state. Self-leak halts trip the
+# breaker on the same tick, so resume needed two operator commands. The
+# breaker clear here completes the promise — see ENG-60-followup PR.
+_pipeline_clear_breaker() {
+  local was_paused="false"
+  if [[ "$(is_orchestrator_paused 2>/dev/null)" == "true" ]]; then
+    was_paused="true"
+  fi
+  set_orchestrator_paused false
+  rm -f "$PROJECT_STATE_DIR/.consecutive-failures" 2>/dev/null || true
+  printf '%s' "$was_paused"
+}
+
+# _pipeline_emit_resume_metric <issue> <stage> <wf> <sl> <sf> <waypoint_posted> [<breaker_was_paused>] [<auto_commit_count>]
 _pipeline_emit_resume_metric() {
   local issue="$1" stage="$2" wf="$3" sl="$4" sf="$5" wp="$6"
-  local stats="wait_files=$wf skip_labels=$sl state_file=$sf waypoint_posted=$wp"
+  local breaker_was="${7:-false}" autocommit_n="${8:-0}"
+  local stats="wait_files=$wf skip_labels=$sl state_file=$sf waypoint_posted=$wp breaker_was_paused=$breaker_was auto_commit_paths=$autocommit_n"
   bash "$SCRIPT_DIR/metrics.sh" halt-resume "$issue" "$stage" \
     "atomic-reset" 0 "$stats" || true
 }
@@ -303,7 +330,7 @@ cmd_decide() {
       # Sanitize: only lowercase alpha (D-014). Falls back to 'unknown'.
       [[ "$current_stage" =~ ^[a-z]+$ ]] || current_stage="unknown"
 
-      local wf sl sf
+      local wf sl sf breaker_was autocommit_n
       wf="$(_pipeline_drain_wait_files "$issue")"
       sl="$(_pipeline_drain_skip_labels "$issue")"
       sf="$(_pipeline_drain_issue_state "$issue")"
@@ -313,9 +340,22 @@ cmd_decide() {
         bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted"
       fi
 
+      # Option B (ENG-60-followup): clear the global circuit breaker. A
+      # self-leak halt trips the breaker on the same tick the issue halts,
+      # so per-issue state reset alone leaves the orchestrator paused. Always
+      # clearing here completes the atomic-resume promise; no-op when the
+      # breaker isn't tripped.
+      breaker_was="$(_pipeline_clear_breaker)"
+
+      # Auto-commit any in-scope dirty paths in the worktree that the
+      # tick-end sweep suppressed (typical: brainstorm doc / plan doc the
+      # agent wrote but the breaker prevented from landing on origin).
+      # Failures here log and return 0 — they must not block the resume.
+      autocommit_n="$(auto_commit_in_scope "$issue" "$current_stage" || printf '0')"
+
       _pipeline_post_operator_transition "$issue" "$current_stage"
-      _pipeline_emit_resume_metric "$issue" "$current_stage" "$wf" "$sl" "$sf" "1"
-      log "pipeline-decide: $issue action=continue (side state reset: wait_files=$wf skip_labels=$sl state_file=$sf; operator-transition posted)"
+      _pipeline_emit_resume_metric "$issue" "$current_stage" "$wf" "$sl" "$sf" "1" "$breaker_was" "$autocommit_n"
+      log "pipeline-decide: $issue action=continue (side state reset: wait_files=$wf skip_labels=$sl state_file=$sf breaker_was_paused=$breaker_was auto_commit_paths=$autocommit_n; operator-transition posted)"
     else
       log "pipeline-decide: $issue action=continue (dry-run — atomic reset suppressed)"
     fi

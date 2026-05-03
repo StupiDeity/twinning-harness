@@ -51,15 +51,18 @@ _classify_label() {
 }
 
 # Classify a comment body into transition_comment or other_comment.
-# transition_comment: the first non-blank line of the body is exactly
-# <!-- pipeline-transition: <from> → <to> -->
+# transition_comment: the first non-blank line of the body is the
+# orchestrator transition waypoint marker. Recognized shapes:
+#   <!-- pipeline: transition from=<from> to=<to> -->   (current, ENG-60)
+#   <!-- pipeline-transition: <from> → <to> -->         (legacy; in-flight back-compat)
 _classify_comment_body() {
   local body="$1"
   local first_nonblank
   first_nonblank="$(printf '%s' "$body" | grep -m1 '[^ ]' || true)"
   # Trim leading whitespace from the first non-blank line.
   first_nonblank="$(printf '%s' "$first_nonblank" | sed 's/^[[:space:]]*//')"
-  if [[ "$first_nonblank" =~ ^'<!--'\ pipeline-transition:\ .+\ '-->' ]]; then
+  if [[ "$first_nonblank" =~ ^'<!--'\ pipeline:\ transition\ .+\ '-->' ]] \
+     || [[ "$first_nonblank" =~ ^'<!--'\ pipeline-transition:\ .+\ '-->' ]]; then
     printf 'transition_comment'
   else
     printf 'other_comment'
@@ -385,6 +388,33 @@ get_comments() {
 #
 # Stdin is read only when `--body -` is explicitly requested. Bare positional
 # bodies stay positional (no implicit stdin) to keep legacy callers stable.
+# ENG-60-followup write-time guard. Rejects bodies that contain a legacy-shape
+# pipeline marker (`<!-- pipeline-(stage-summary|rejection|halt|wait|decision|
+# sig|metric|transition): ... -->`). Hand-rolled writers were the failure mode
+# that Phase 3 missed: validators in bin/pipeline.sh only fire when callers go
+# through `pipeline.sh event/decide`, so any direct add-comment that printf'd
+# a marker body bypassed the closed registry. This guard closes that hole.
+#
+# Returns 0 (allow) on any non-legacy body. On a legacy match, prints a
+# structured error to stderr and returns 14 (a fresh exit code added to
+# common.sh::failure_outcome_for_exit as `legacy-marker-write`).
+#
+# `_reject_legacy_marker_body <caller> <body>`
+_reject_legacy_marker_body() {
+  local caller="$1" body="$2"
+  local match
+  match="$(grep -oE '<!-- pipeline-(stage-summary|rejection|rejection-target|halt|wait|decision|sig|metric|transition): [^>]+ -->' <<<"$body" 2>/dev/null | head -1 || true)"
+  if [[ -n "$match" ]]; then
+    printf 'linear.sh %s: body contains legacy-shape pipeline marker — rejected.\n' "$caller" >&2
+    printf '            offending substring: %s\n' "$match" >&2
+    printf '            use bin/pipeline.sh event/decide to emit verdicts/decisions/transitions,\n' >&2
+    printf '            or the new `<!-- meta: <kind> ... -->` family for dedup/metrics.\n' >&2
+    printf '            registry: bin/pipeline-events.json · vocab: docs/pipeline-vocabulary.md\n' >&2
+    return 14
+  fi
+  return 0
+}
+
 _resolve_body_arg() {
   local body=""
   local got_flag=0
@@ -442,6 +472,7 @@ add_comment() {
   local body
   body="$(_resolve_body_arg "$@")"
   [[ -n "$body" ]] || die "add-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
+  _reject_legacy_marker_body "add-comment" "$body" || return $?
   # Lane fence: check before any Linear API call (including dry-run).
   local _comment_class
   _comment_class="$(_classify_comment_body "$body")"
@@ -507,9 +538,15 @@ add_or_update_comment() {
   body="$(_resolve_body_arg "$@")"
   [[ -n "$body" ]] \
     || die "add-or-update-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
+  _reject_legacy_marker_body "add-or-update-comment" "$body" || return $?
 
-  local marker="<!-- pipeline-sig: $sig -->"
-  if ! grep -qF "$marker" <<<"$body"; then
+  # ENG-60 vocabulary: write `<!-- meta: dedup key=... -->` (new shape).
+  # Look up matches against the legacy `<!-- pipeline-sig: ... -->` shape too,
+  # so in-flight issues whose comment threads were created under the legacy
+  # writer continue to be updated in place rather than duplicated.
+  local marker="<!-- meta: dedup key=$sig -->"
+  local marker_legacy="<!-- pipeline-sig: $sig -->"
+  if ! grep -qF -e "$marker" -e "$marker_legacy" <<<"$body"; then
     body+=$'\n\n'"$marker"
   fi
 
@@ -521,13 +558,13 @@ add_or_update_comment() {
   local issue_uuid
   issue_uuid="$(_resolve_issue_uuid "$ident")"
 
-  # Look for an existing comment carrying the sig.
+  # Look for an existing comment carrying the sig (new or legacy shape).
   local q='query($id: String!) { issue(id: $id) { comments(first: 50, orderBy: updatedAt) { nodes { id body } } } }'
   local vars resp existing_id
   vars="$(jq -cn --arg id "$ident" '{id:$id}')"
   resp="$(linear_query "$q" "$vars")"
-  existing_id="$(jq -r --arg m "$marker" \
-    '[.data.issue.comments.nodes[]? | select(.body | contains($m)) | .id] | first // ""' <<<"$resp")"
+  existing_id="$(jq -r --arg m "$marker" --arg l "$marker_legacy" \
+    '[.data.issue.comments.nodes[]? | select(.body | contains($m) or contains($l)) | .id] | first // ""' <<<"$resp")"
 
   if [[ -n "$existing_id" ]]; then
     local mu='mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success } }'

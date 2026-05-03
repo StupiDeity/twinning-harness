@@ -118,6 +118,21 @@ bash bin/poll-slot-test.sh
 bash bin/verdict-adversarial-test.sh
 ```
 
+### Pre-commit hook
+
+The repo ships a pre-commit hook at `.githooks/pre-commit` that runs the
+entire `bin/*-test.sh` suite (~30 s) and blocks the commit on any failure.
+Install once per clone (sets `core.hooksPath`):
+
+```bash
+bash bin/install-git-hooks.sh
+```
+
+Bypass a single commit with `git commit --no-verify`. A short
+`KNOWN_BROKEN` allowlist inside the hook exempts a few pre-existing
+failures from the gate (still run, surfaced as `SKIP`); fix those and
+remove the entry rather than letting the list rot.
+
 How tests work — important when adding new ones:
 
 1. Each `bin/foo.sh` ends with the **sentinel**
@@ -251,8 +266,12 @@ these entries (skipped silently when the config is absent — CI or non-harness 
 - `source "$SCRIPT_DIR/common.sh"` first, before anything else. It enforces `TARGET_REPO`
   exists and exports the canonical paths.
 - Use `log` / `die` / `require_env` / `require_bin` from common.sh — don't roll your own.
-- Linear writes go through `bin/linear.sh` so dry-run and the `pipeline-sig` dedup
-  (`add-or-update-comment <sig> <ident> <body>`) work uniformly.
+- Linear writes go through `bin/linear.sh` so dry-run and the `meta: dedup`
+  (`add-or-update-comment <sig> <ident> <body>`) work uniformly. The function
+  emits the new-shape `<!-- meta: dedup key=... -->` marker and looks up
+  in-flight comments by both new and legacy shapes, so existing threads
+  posted under the legacy `<!-- pipeline-sig: ... -->` writer are still
+  updated in place rather than duplicated.
 - Metric writes go through `bin/metrics.sh` so they end up in `events.jsonl` and on the
   retrospective's input.
 - Per-stage allowed tool lists are centralized in `dispatch.sh::allowed_tools_for`. New
@@ -290,11 +309,12 @@ loops back to implement. It does **not** wait for human approval, and
 `build` only.
 
 **One-time migration when deploying ENG-54:** any issue currently in
-flight at `stage:reviewing` with a `<!-- pipeline-wait: awaiting-approval
--->` marker as its latest comment will idle indefinitely under the new
-contract (the wait shape no longer drives a re-dispatch from review).
-Flush each such issue past the (now-removed) gate by applying
-`pipeline:halted` and resolving:
+flight at `stage:reviewing` with a `<!-- pipeline: verdict result=wait
+reason=awaiting-approval -->` marker (or its legacy `<!-- pipeline-wait:
+awaiting-approval -->` predecessor) as its latest comment will idle
+indefinitely under the new contract (the wait shape no longer drives a
+re-dispatch from review). Flush each such issue past the (now-removed)
+gate by applying `pipeline:halted` and resolving:
 
 ```bash
 bash bin/linear.sh add-label ENG-N pipeline:halted

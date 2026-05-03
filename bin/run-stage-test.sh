@@ -148,7 +148,7 @@ fi
 # ─── Case 4: sig-hijack marker stripped from body ───────────────────────
 reset_capture
 mkdir -p "$(issue_dir ENG-T4)"
-printf '## Real body\n<!-- pipeline-sig: completion/plan/ENG-OTHER -->\nMore text.\n' \
+printf '## Real body\n<!-- meta: dedup key=completion/plan/ENG-OTHER -->\nMore text.\n' \
   > "$(issue_dir ENG-T4)/stage-summary-plan.md"
 post_completion_comment ENG-T4 plan
 body="$(captured_body)"
@@ -925,7 +925,7 @@ fi
 # ─── ENG-45 case B: stage=implement → empty (build|review gate, security F-1) ──
 # ENG-50: review is now accepted by the wait gate (build|review); use implement
 # instead to pin the rejection path.
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}]'
 out="$(_fresh_wait_reason ENG-45T2 implementing || printf '')"
 if [[ -z "$out" ]]; then
   pass_at "ENG-45 case B: implementing stage rejected by building gate"
@@ -934,7 +934,7 @@ else
 fi
 
 # ─── ENG-45 case C: invented reason rejected by allow-list (security F-2) ───
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: never-escalate -->"}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=never-escalate -->"}]'
 out="$(_fresh_wait_reason ENG-45T3 building || printf '')"
 if [[ -z "$out" ]]; then
   pass_at "ENG-45 case C: invented reason rejected by allow-list"
@@ -944,8 +944,8 @@ fi
 
 # ─── ENG-45 case D: wait marker older than last pipeline-transition → empty ──
 export MOCK_COMMENTS_JSON='[
-  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"},
-  {"createdAt":"2026-04-28T08:05:00Z","body":"<!-- pipeline-transition: implementing → building -->"}
+  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"createdAt":"2026-04-28T08:05:00Z","body":"<!-- pipeline: transition from=implementing to=building -->"}
 ]'
 out="$(_fresh_wait_reason ENG-45T4 building || printf '')"
 if [[ -z "$out" ]]; then
@@ -977,8 +977,8 @@ fi
 # marker-only fixture — the existing rejection loopback flow must remain
 # reachable.
 export MOCK_COMMENTS_JSON='[
-  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline-transition: implementing → building -->"},
-  {"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-rejection: building -->\n<!-- pipeline-rejection-target: implementing -->\nMerge conflict on rebase."}
+  {"createdAt":"2026-04-28T08:00:00Z","body":"<!-- pipeline: transition from=implementing to=building -->"},
+  {"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=fail target=implementing -->\nMerge conflict on rebase."}
 ]'
 out="$(_fresh_wait_reason ENG-45T-P6 building || printf '')"
 if [[ -z "$out" ]]; then
@@ -1372,7 +1372,7 @@ ENG_45_CASE_O_RC=0
   # above appends posted comments into the get-comments fixture, so if any
   # future refactor moves the agent-contract validator back onto the
   # budget-exhausted path, the real find_fresh_verdict's jq filter (and its
-  # `<!-- pipeline-halt: [a-z-]+ -->` regex) runs against actual production
+  # `<!-- pipeline: verdict result=halt reason=[a-z-]+ -->` regex) runs against actual production
   # data — a tightening to `[a-z]+` would break a test, where the previous
   # static stub would have hidden the regression.
   main ENG-45T-O building
@@ -1419,8 +1419,8 @@ case "${1:-}" in
   get-comments)
     cat <<'JSON'
 [
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"}
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"}
 ]
 JSON
     ;;
@@ -1446,9 +1446,9 @@ case "${1:-}" in
   get-comments)
     cat <<'JSON'
 [
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
-  {"body":"<!-- pipeline-metric: implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"},
-  {"body":"<!-- pipeline-transition: implementing → ui -->","createdAt":"2026-04-23T10:00:00.000Z"}
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"},
+  {"body":"<!-- pipeline: transition from=implementing to=ui -->","createdAt":"2026-04-23T10:00:00.000Z"}
 ]
 JSON
     ;;
@@ -1477,7 +1477,7 @@ fi
 # ─── Case 16 (QA adversarial): bump's marker text matches count_marker's grep ──
 # Guards against a future refactor that changes the marker string in bump() but
 # forgets count_marker() (or vice versa), silently disabling the counter. The
-# test asserts the literal text `<!-- pipeline-metric: implement_rejection -->`
+# test asserts the literal text `<!-- meta: metric name=implement_rejection -->`
 # is the prefix of what bump writes — which is the exact grep target in
 # count_marker (guards.sh:30).
 reset_capture
@@ -1497,7 +1497,7 @@ SH
 chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
 bash "$FAKE_REPO/.pipeline/bin/guards.sh" bump ENG-T16 implement_rejection >/dev/null 2>&1
 bump_body="$(cat "$BUMP_CAPTURE")"
-if grep -q '<!-- pipeline-metric: implement_rejection -->' "$BUMP_CAPTURE"; then
+if grep -q '<!-- meta: metric name=implement_rejection -->' "$BUMP_CAPTURE"; then
   pass_at "case-16 QA: bump emits the exact marker that count_marker greps for"
 else
   fail_at "case-16 QA marker contract" "body=$bump_body"
@@ -1803,48 +1803,44 @@ else
 fi
 unset MOCK_COMMENTS_JSON
 
-# ─── Case QA-A2: pipeline-transition substring inside wait body breaks gate ─
-# Latent regression risk: `_fresh_wait_reason`'s `last_t` jq filter uses
-# `contains("<!-- pipeline-transition:")` (run-stage.sh:312) which matches
-# the substring ANYWHERE in a comment body — including inside a wait
-# comment that quotes the literal text (e.g., as documentation, an error
-# message, or a transcript paste). When that happens, `last_t` advances to
-# the wait comment's own createdAt; the freshness filter `createdAt > $t`
-# is strictly-greater, so the wait comment cannot match itself → gate
-# returns empty → falls through to the agent-contract validator → exit 25.
+# ─── Case QA-A2: prose-quoted pipeline-marker inside wait body breaks gate ─
+# Latent regression risk: `_fresh_wait_reason` iterates comments through
+# parse_pipeline_marker, whose grep is unanchored (`<!-- pipeline: [^>]+ -->`)
+# and matches the substring ANYWHERE in a comment body — including inside a
+# wait body that quotes the marker as documentation. When that happens,
+# `last_t` advances to the wait comment's own createdAt; the freshness
+# filter `createdAt > $t` is strictly-greater, so the wait comment cannot
+# match itself → gate returns empty → falls through to the agent-contract
+# validator → exit 25.
 #
 # Net effect: the wait window FAILS to start on the very tick the agent
 # posted the marker. The orchestrator falls back to halt-for-human (a
 # graceful degradation, not a security hole, since the wait gate's
-# job is to avoid premature halts — failing closed is correct). But pin
-# the current behavior: a future fix that anchors the contains-check (e.g.,
-# `startswith("<!-- pipeline-transition:")` after a leading-whitespace strip)
-# would change this test's outcome to "wait fires correctly", and that fix
-# should be explicit and reviewed.
+# job is to avoid premature halts — failing closed is correct). Pin
+# the current behavior: ENG-61 will fix this by stripping markdown code
+# spans and fenced blocks before the grep; that work is out of scope here.
 #
 # Build agent's authored wait body does NOT contain this substring (verified
 # AGENT_PROMPTS.md §7), so this is a defensive pin against future prompt
 # rewrites or operator-pasted comments.
 export MOCK_COMMENTS_JSON='[
-  {"createdAt":"2026-04-29T08:00:00Z","body":"<!-- pipeline-transition: implementing → building -->"},
-  {"createdAt":"2026-04-29T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nAwaiting approval. (See doc: <!-- pipeline-transition: ... --> markers are orchestrator-only.)"}
+  {"createdAt":"2026-04-29T08:00:00Z","body":"<!-- pipeline: transition from=implementing to=building -->"},
+  {"createdAt":"2026-04-29T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->\n\nAwaiting approval. (See doc: <!-- pipeline: transition from=X to=Y --> markers are orchestrator-only.)"}
 ]'
 qa_a2_out="$(_fresh_wait_reason ENG-45T-QA2 building || printf '')"
 if [[ -z "$qa_a2_out" ]]; then
-  pass_at "ENG-45 case QA-A2: wait body containing 'pipeline-transition:' substring fails closed (current contains() behavior pinned)"
+  pass_at "ENG-45 case QA-A2: wait body containing prose-quoted pipeline marker fails closed (parser is shape-but-not-context-aware)"
 else
-  fail_at "ENG-45 case QA-A2" "wait gate spuriously matched a body that quotes pipeline-transition: got=$qa_a2_out"
+  fail_at "ENG-45 case QA-A2" "wait gate spuriously matched a body that quotes a pipeline marker: got=$qa_a2_out"
 fi
 unset MOCK_COMMENTS_JSON
 
-# ─── Case QA-A3: marker without trailing space silently fails (closed) ──────
-# `_fresh_wait_reason`'s jq freshness filter uses `test("<!-- pipeline-wait: ")`
-# (note trailing space). A typoed marker like `<!-- pipeline-wait:awaiting-ci -->`
-# (no space after colon) won't match, so the gate returns empty. The grep
-# regex on the freshness branch enforces the same trailing-space requirement.
-# Fail-closed semantic: a malformed marker degrades to halt-for-human rather
-# than silently allowing the wait. Pin so a future relaxation (e.g., dropping
-# the trailing space from the test() argument) is a deliberate, reviewed change.
+# ─── Case QA-A3: malformed legacy marker silently fails (closed) ──────
+# parse_pipeline_marker's grep `<!-- pipeline: [^>]+ -->` requires the
+# `pipeline: ` (colon-space) prefix of the new shape. A legacy/typoed
+# marker like `<!-- pipeline-wait:awaiting-approval -->` doesn't match,
+# so the gate returns empty. Fail-closed semantic: a malformed marker
+# degrades to halt-for-human rather than silently allowing the wait.
 export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-29T08:17:00Z","body":"<!-- pipeline-wait:awaiting-approval -->"}]'
 qa_a3_out="$(_fresh_wait_reason ENG-45T-QA3 building || printf '')"
 if [[ -z "$qa_a3_out" ]]; then
@@ -2047,7 +2043,7 @@ fi
 
 # Case ENG-56-B: implement stage with stage-summary marker → applies halt.
 eng_56_reset
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-stage-summary: implementing -->\n\nDone."}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=pass stage=implementing -->\n\nDone."}]'
 _post_dispatch_apply_halt "ENG-56T-B" implement >/dev/null 2>&1
 if eng_56_halt_applied; then
   pass_at "ENG-56-B: implement + stage-summary → orchestrator applies pipeline:halted"
@@ -2057,7 +2053,7 @@ fi
 
 # Case ENG-56-C: review stage with rejection marker → applies halt.
 eng_56_reset
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-rejection: reviewing -->\n<!-- pipeline-rejection-target: implementing -->"}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=fail target=implementing -->"}]'
 _post_dispatch_apply_halt "ENG-56T-C" review >/dev/null 2>&1
 if eng_56_halt_applied; then
   pass_at "ENG-56-C: review + rejection → orchestrator applies pipeline:halted"
@@ -2067,7 +2063,7 @@ fi
 
 # Case ENG-56-D: building stage with halt marker → applies halt.
 eng_56_reset
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-halt: agent-blocked -->"}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=halt reason=agent-blocked -->"}]'
 _post_dispatch_apply_halt "ENG-56T-D" building >/dev/null 2>&1
 if eng_56_halt_applied; then
   pass_at "ENG-56-D: build + halt marker → orchestrator applies pipeline:halted"
@@ -2102,7 +2098,7 @@ fi
 # allow-list to build only, so a wait marker on review-stage is now a stray
 # comment and the halt-apply is the correct response.
 eng_56_reset
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->\n\nReviewed commit abc1234."}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->\n\nReviewed commit abc1234."}]'
 _post_dispatch_apply_halt "ENG-56T-G" reviewing >/dev/null 2>&1
 if eng_56_halt_applied; then
   pass_at "ENG-56-G (ENG-54): review + stray wait → orchestrator applies pipeline:halted (no human-approval gate at review)"
@@ -2114,7 +2110,7 @@ fi
 # is allow-listed for build only (ENG-54); on other stages a wait comment
 # is a protocol violation and the halt apply is the correct response.
 eng_56_reset
-export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline-wait: awaiting-approval -->"}]'
+export MOCK_COMMENTS_JSON='[{"createdAt":"2026-04-28T08:17:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}]'
 _post_dispatch_apply_halt "ENG-56T-H" implementing >/dev/null 2>&1
 if eng_56_halt_applied; then
   pass_at "ENG-56-H: implement + stray wait marker (out-of-allow-list stage) → orchestrator applies pipeline:halted"
@@ -2156,7 +2152,7 @@ source "$HARNESS_DIR/verdict-handler.sh"
 cat > "$STUB_DIR/linear.sh" <<'SH'
 #!/bin/bash
 if [[ "$1" == "get-comments" ]]; then
-  printf '%s' '[{"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline-transition: planning → implementing -->"},{"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=pass stage=implementing -->"}]'
+  printf '%s' '[{"id":"c1","createdAt":"2026-05-02T10:00:00Z","body":"<!-- pipeline: transition from=planning to=implementing -->"},{"id":"c2","createdAt":"2026-05-02T11:00:00Z","body":"<!-- pipeline: verdict result=pass stage=implementing -->"}]'
 fi
 SH
 chmod +x "$STUB_DIR/linear.sh"
@@ -2178,7 +2174,7 @@ printf '\n--- _fresh_wait_reason accepts new-shape wait marker ---\n'
 
 # Fixture WR1: new-shape wait marker on build stage should return reason.
 COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
   {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}
 ]'
 mkdir -p "$STUB_DIR"
@@ -2199,7 +2195,7 @@ rc=0; _fresh_wait_reason ENG-WR2 implementing >/dev/null 2>&1 || rc=$?
 
 # Fixture WR3: new-shape wait awaiting-ci on building stage.
 COMMENTS_JSON='[
-  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline-transition: qa → building -->"},
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
   {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-ci -->"}
 ]'
 cat > "$STUB_DIR/linear.sh" <<EOF

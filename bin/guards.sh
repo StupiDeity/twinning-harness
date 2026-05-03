@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 # Enforce human_checkpoints.require_human_on_threshold from .pipeline/config.json.
 # Counters are maintained as marker comments on the Linear issue:
-#   <!-- pipeline-metric: review_rejection -->
-#   <!-- pipeline-metric: qa_rejection -->
-#   <!-- pipeline-metric: implement_rejection -->
-#   <!-- pipeline-metric: gotcha_triggered -->
-#   <!-- pipeline-metric: learned_rule_renewal -->
+#   <!-- meta: metric name=review_rejection -->
+#   <!-- meta: metric name=qa_rejection -->
+#   <!-- meta: metric name=implement_rejection -->
+#   <!-- meta: metric name=gotcha_triggered -->
+#   <!-- meta: metric name=learned_rule_renewal -->
 # Each occurrence = 1 tick. The rejection counters (review_rejection,
 # qa_rejection, implement_rejection) reset on every forward
-# `<!-- pipeline-transition: -->` marker so that distinct loopback cycles
-# don't accumulate into a false circuit-breaker trip (brainstorm §Counter
-# unification). gotcha_triggered and learned_rule_renewal count across the
-# whole issue lifetime by design, cleared only by their explicit ack labels:
+# `<!-- pipeline: transition ... -->` marker so that distinct loopback
+# cycles don't accumulate into a false circuit-breaker trip (brainstorm
+# §Counter unification). gotcha_triggered and learned_rule_renewal count
+# across the whole issue lifetime by design, cleared only by their explicit
+# ack labels:
 #   pipeline:knowledge-reviewed -> clears gotcha_triggered threshold
 #   pipeline:rule-reviewed      -> clears learned_rule_renewal threshold
+#
+# Reads tolerate the legacy `<!-- pipeline-metric: ... -->` /
+# `<!-- pipeline-transition: ... -->` shapes for in-flight issues whose
+# history predates the ENG-60 vocabulary cutover.
 #
 # Usage:
 #   guards.sh check <issue_id>
@@ -32,26 +37,35 @@ count_marker() {
   local vars resp
   vars="$(jq -cn --arg id "$ident" '{id:$id}')"
   resp="$(bash "$SCRIPT_DIR/linear.sh" query "$q" "$vars")"
-  jq -r --arg m "<!-- pipeline-metric: $marker -->" '[.data.issue.comments.nodes[]? | .body | select(contains($m))] | length' <<<"$resp"
+  jq -r \
+    --arg m  "<!-- meta: metric name=$marker -->" \
+    --arg m_legacy "<!-- pipeline-metric: $marker -->" \
+    '[.data.issue.comments.nodes[]? | .body | select(contains($m) or contains($m_legacy))] | length' <<<"$resp"
 }
 
 # Count comment bodies containing $marker whose createdAt is newer than
-# the most recent <!-- pipeline-transition: --> comment. Used by the
-# rejection-counter gates so that distinct loopback cycles don't
-# accumulate into a false circuit-breaker trip.
+# the most recent transition comment. Used by the rejection-counter
+# gates so that distinct loopback cycles don't accumulate into a false
+# circuit-breaker trip. Recognizes both new (`<!-- pipeline: transition`)
+# and legacy (`<!-- pipeline-transition:`) transition shapes.
 count_marker_since_last_transition() {
   local ident="$1" marker="$2"
   local comments last_ts
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident")"
   last_ts="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline-transition:"))]
+    [.[] | select(.body | contains("<!-- pipeline: transition") or contains("<!-- pipeline-transition:"))]
     | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
   if [[ -z "$last_ts" ]]; then
-    jq -r --arg m "<!-- pipeline-metric: $marker -->" \
-      '[.[] | select(.body | contains($m))] | length' <<<"$comments"
+    jq -r \
+      --arg m  "<!-- meta: metric name=$marker -->" \
+      --arg m_legacy "<!-- pipeline-metric: $marker -->" \
+      '[.[] | select(.body | contains($m) or contains($m_legacy))] | length' <<<"$comments"
   else
-    jq -r --arg m "<!-- pipeline-metric: $marker -->" --arg t "$last_ts" \
-      '[.[] | select(.createdAt > $t) | select(.body | contains($m))] | length' <<<"$comments"
+    jq -r \
+      --arg m  "<!-- meta: metric name=$marker -->" \
+      --arg m_legacy "<!-- pipeline-metric: $marker -->" \
+      --arg t "$last_ts" \
+      '[.[] | select(.createdAt > $t) | select(.body | contains($m) or contains($m_legacy))] | length' <<<"$comments"
   fi
 }
 
@@ -109,7 +123,7 @@ bump() {
     review_rejection|gotcha_triggered|learned_rule_renewal|qa_rejection|implement_rejection) ;;
     *) die "unknown counter: $counter" ;;
   esac
-  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "<!-- pipeline-metric: $counter --> Counter bumped by guards.sh."
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "<!-- meta: metric name=$counter --> Counter bumped by guards.sh."
 }
 
 main() {

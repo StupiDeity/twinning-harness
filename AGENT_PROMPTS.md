@@ -68,7 +68,7 @@ NOT hand-craft marker bodies in scripts. The legacy `bin/post-verdict.sh`
 wrapper still works for one release but logs a deprecation line on use.
 
 **Freshness rule:** the Verdict Handler considers only markers newer than the
-most recent `<!-- pipeline-transition: -->` comment, and picks the latest
+most recent `<!-- pipeline: transition ... -->` comment, and picks the latest
 verdict-shaped marker among those. Verdict comments are append-only — use
 `linear.sh add-comment`, NOT `add-or-update-comment`.
 
@@ -88,14 +88,14 @@ See `bin/linear.sh`'s lane fence for the source of truth and the structured deny
 | remove `pipeline:supersede`  | allow | allow | deny  | deny  | allow |
 | add `pipeline:skip-until-*`  | deny  | deny  | allow | deny  | allow |
 | remove `pipeline:skip-until-*` | allow | deny | allow | deny  | allow |
-| add `<!-- pipeline-transition: -->` comment | allow | deny | deny | deny | allow |
+| add `<!-- pipeline: transition ... -->` comment | allow | deny | deny | deny | allow |
 | add any other comment        | allow | allow | allow | allow | allow |
 | add any other label          | allow | deny  | deny  | deny  | allow |
 | remove any other label       | allow | deny  | deny  | deny  | allow |
 
 Object classes: `stage_label` (`^stage:.+$`), `pipeline_halted` (exact), `pipeline_supersede` (exact),
 `pipeline_skip_until` (`^pipeline:skip-until-.+$`), `any_other_label` (everything else),
-`transition_comment` (first non-blank line matches `<!-- pipeline-transition: ... -->`),
+`transition_comment` (first non-blank line matches `<!-- pipeline: transition ... -->`),
 `other_comment` (any other comment body).
 
 Denial emits to stderr with exit code 13 and `failure_outcome_for_exit 13 ""` returns `lane-violation`. The error format is two lines:
@@ -107,11 +107,18 @@ linear.sh: lane=<W> denied: <action> <object>
 
 ### Operator workflow (how a human resolves a halted issue)
 
+The single recovery command for every halt class is `bash .pipeline/bin/pipeline.sh decide ENG-XX --action <action>` (or `bash bin/pipeline.sh decide ...` in the harness-self layout). It is an atomic resume: clears the `pipeline:halted` label, drains any per-issue skip state and wait files, posts an operator-attributed transition waypoint that resets the rejection-counter freshness floor, clears the global circuit breaker if it was tripped on the same tick, and auto-commits any in-scope dirty paths (e.g. a brainstorm or plan doc) the breaker suppressed from landing on origin.
+
 1. Read the fresh `<!-- pipeline: verdict result=halt reason=<token> -->` comment on Linear to identify the cause.
-2. For `scope-violation` halts:
-   `bash .pipeline/bin/halt.sh resolve ENG-XX --decision scope-approved` (or `scope-rejected`).
-3. For `agent-blocked` halts: post a reply comment answering the agent's question (no marker required), then either `bash .pipeline/bin/halt.sh resolve ENG-XX --decision resume` OR manually remove the `pipeline:halted` label in Linear UI. Either path is safe — halts are marker-driven, not state-file-driven.
-4. For `smoke-failed` / `protocol-violation` halts: investigate via the `log_file` referenced in the halt comment, fix the underlying issue, then remove the `pipeline:halted` label. The classify-failure state file under `$PROJECT_STATE_DIR/ENG-N/issue-state.json` is cleared automatically on the next successful transition.
+2. For `scope-violation` halts (the implement/ui agent touched files outside the plan's File Structure):
+   ```
+   bash bin/pipeline.sh decide ENG-XX --action approve --gate scope     # accept the diff and resume
+   bash bin/pipeline.sh decide ENG-XX --action abandon --gate scope     # reject; revert and re-dispatch
+   ```
+3. For `agent-blocked` halts (the agent surfaces a question or hits a sandbox limit it cannot work around): the agent's halt comment usually contains a two-line operator one-shot — copy and paste it. The general shape is `rm <leaked-file>` (incident-specific path the agent supplies) followed by `bash bin/pipeline.sh decide ENG-XX --action continue`.
+4. For `smoke-failed` / `protocol-violation` / `iteration-exhausted` / `dispatch-timeout` halts: investigate via the `log_file` referenced in the halt comment, fix the underlying issue, then `bash bin/pipeline.sh decide ENG-XX --action continue`. The classify-failure state file under `$PROJECT_STATE_DIR/ENG-N/issue-state.json` is cleared automatically on the next successful transition.
+
+`bin/reset-pipeline.sh` is the orthogonal-recovery command for the *no-issue-to-resume* case (a network glitch or external-API outage that tripped the breaker without an associated halted issue). When there IS a halted issue, use `decide --action continue` — it covers both the per-issue and the breaker recovery in one call.
 
 ### Agent-side contract (applies to §§1-7)
 
@@ -168,7 +175,7 @@ for a teammate skimming Linear on their phone, not a protocol log.
    "addressed-in-iteration" asides.
 5. **Escalation path.** If the stage exhausted its iteration budget with an
    unresolved blocker, replace the status line with an escalation line, apply
-   the stage-specific `<!-- pipeline-metric: <stage>_escalate -->` or `_reject`
+   the stage-specific `<!-- meta: metric name=<stage>_escalate -->` or `_reject`
    marker, and put the reason in Notes.
 6. **Full audit record stays in the artifact, not the comment.** Persona
    tables, full finding lists, per-command drift checks, coverage-audit
@@ -216,7 +223,7 @@ You are brainstorming a solution for the project described in the **Project prof
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (in order, where present):
 1. CLAUDE.md — coding standards and project structure
@@ -293,7 +300,7 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
      (N is the count that returned PASS).
    - Notes (only on non-clean paths): concise paragraph per non-passing persona or
      unresolved P0. No 6-row table.
-   - Escalate tag: `<!-- pipeline-metric: brainstorm_escalate -->` if any P0 remained
+   - Escalate tag: `<!-- meta: metric name=brainstorm_escalate -->` if any P0 remained
      after iteration 3.
 
    Internally you still MUST run all 6 personas and record their verdicts in the
@@ -301,7 +308,7 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    record. The Linear comment is the headline, not the audit trail.
 
    Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" …` yourself —
-   that path is now orchestrator-owned. Exception-path markers (`pipeline-metric: contract_gap`,
+   that path is now orchestrator-owned. Exception-path markers (`meta: metric name=contract_gap`,
    etc.) continue to use `linear.sh add-comment` as before.
 6. **Post the verdict marker** (MANDATORY). Before exiting, post exactly ONE
    additional append-only comment carrying the verdict for your outcome:
@@ -330,7 +337,7 @@ You are creating an implementation plan for the project described in the **Proje
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (in order, where present):
 1. CLAUDE.md — coding standards and project structure
@@ -501,7 +508,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    - Status line (clean gate): `Personas: N/5 PASS · gate P0: 0 · proceeding to implementing`.
    - Notes (only on non-clean paths): concise paragraph per non-passing persona or
      unresolved P0. No persona table.
-   - Escalate tag: `<!-- pipeline-metric: plan_escalate -->` if step 3 hit iteration 3.
+   - Escalate tag: `<!-- meta: metric name=plan_escalate -->` if step 3 hit iteration 3.
 
    Full persona verdicts and finding lists stay in the plan doc itself. Do NOT call
    `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …`
@@ -536,7 +543,7 @@ You are implementing the BACKEND portion of a feature for the project described 
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (in order, where present):
 1. CLAUDE.md — coding standards and project structure
@@ -559,7 +566,7 @@ Parse the plan's `api-contract` fenced block (if applicable to the project's sta
   - A referenced backend type is undefined in the block.
   - A backend field name/type disagrees with the frontend declaration for the same type.
   - A task's `touches` list names a file that File Structure does not list.
-Action on stop: post a Linear comment on {issue_id} tagged `<!-- pipeline-metric: plan_gap -->`
+Action on stop: post a Linear comment on {issue_id} tagged `<!-- meta: metric name=plan_gap -->`
 with the specific defect, and exit cleanly. The orchestrator will pause the issue until
 the plan is patched. Do NOT invent the contract.
 
@@ -579,14 +586,14 @@ Your task:
 Scope discipline (MANDATORY — enforced post-exit by `.pipeline/bin/scope-check.sh`):
   - Modify ONLY files listed in the plan's File Structure (Backend-side entries).
   - If you discover a strictly-necessary out-of-scope edit, STOP, post a Linear comment
-    tagged `<!-- pipeline-metric: scope_escape -->` with the file and the justification,
+    tagged `<!-- meta: metric name=scope_escape -->` with the file and the justification,
     and exit. Do not silently fix adjacent code.
   - After you exit, the orchestrator diffs `{branch_name}` against main. Any file outside
     plan scope fails the stage; the branch is preserved for inspection.
 
 Dependency changes:
   - Do not add new dependencies (e.g. `Cargo.toml`, `package.json`, `Gemfile`, `go.mod`) that aren't mentioned in the plan.
-  - If a new dep is unavoidable: post a Linear comment tagged `<!-- pipeline-metric: dep_added -->`
+  - If a new dep is unavoidable: post a Linear comment tagged `<!-- meta: metric name=dep_added -->`
     with name, version, and one-line rationale. Commit the manifest edit separately
     as `chore(deps): <name> for {issue_id}`. Retrospective audits this.
 
@@ -596,7 +603,7 @@ Gotcha telemetry (MANDATORY — do not skip):
   - If you AVOIDED a documented gotcha (read the entry, wrote code to bypass), add
     `Gotcha-avoided: G-<id>` to the commit.
   - If you discovered a NEW gotcha worth documenting, post a Linear comment tagged
-    `<!-- pipeline-metric: gotcha_new -->` with the pattern. Do NOT edit gotchas.md
+    `<!-- meta: metric name=gotcha_new -->` with the pattern. Do NOT edit gotchas.md
     directly — it is CODEOWNERS-protected; the review agent PRs those updates.
 
 Self-review before exit (MANDATORY — drive P0 findings to zero):
@@ -607,7 +614,7 @@ Self-review before exit (MANDATORY — drive P0 findings to zero):
   - **Test-map match:** count rows in the Failure Mode → Test Map on the Backend side;
     each row must have a named test present in the diff. Missing row → P0.
   - **Gate commands:** every gate listed in the profile's "Build & test gates" section passes.
-  - Iterate until zero P0. If you cannot, STOP, comment `<!-- pipeline-metric: impl_escalate -->`
+  - Iterate until zero P0. If you cannot, STOP, comment `<!-- meta: metric name=impl_escalate -->`
     with what is failing, and exit without advancing.
 
 TDD evidence comment (MANDATORY at exit):
@@ -670,7 +677,7 @@ If the project has no frontend (the profile's Stack section says so, or the plan
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (in order, where present):
 1. CLAUDE.md — coding standards and project structure
@@ -692,11 +699,11 @@ Check out `{branch_name}` and verify:
   2. `git merge-base --is-ancestor main HEAD` succeeds (no conflict with main).
   3. Every backend gate listed in the Project profile addendum's "Build & test gates" section passes.
 If any check fails, STOP. Post a Linear comment on {issue_id} tagged
-`<!-- pipeline-metric: impl_handoff_broken -->` with the failing check's output. Exit
+`<!-- meta: metric name=impl_handoff_broken -->` with the failing check's output. Exit
 cleanly; do not build UI on top of a broken base.
 
 Precondition — Contract resolution (MANDATORY when the profile describes an FE↔BE API surface):
-Parse the plan's `api-contract` fenced block. For every frontend call (e.g. `invoke("cmd_x", …)` on Tauri stacks, `fetch("/api/foo")` on REST stacks) you are about to write, the corresponding backend handler MUST exist on this branch with matching arg names/types and return type. At code-write time, grep the backend source on the current branch and confirm each handler is actually present. If a contract entry is declared but no backend impl exists, STOP and comment `<!-- pipeline-metric: contract_gap -->`; do NOT invent a call shape the backend didn't implement.
+Parse the plan's `api-contract` fenced block. For every frontend call (e.g. `invoke("cmd_x", …)` on Tauri stacks, `fetch("/api/foo")` on REST stacks) you are about to write, the corresponding backend handler MUST exist on this branch with matching arg names/types and return type. At code-write time, grep the backend source on the current branch and confirm each handler is actually present. If a contract entry is declared but no backend impl exists, STOP and comment `<!-- meta: metric name=contract_gap -->`; do NOT invent a call shape the backend didn't implement.
 
 Your task:
 - Follow the plan's Frontend Tasks in `depends_on` order. Tasks with `depends_on: []`
@@ -712,7 +719,7 @@ Your task:
 Scope discipline (enforced post-exit by `.pipeline/bin/scope-check.sh`):
   - Modify ONLY files in the plan's Frontend-side File Structure.
   - If you discover the API contract is wrong or incomplete, STOP and comment
-    `<!-- pipeline-metric: contract_gap -->` — do not work around it by editing
+    `<!-- meta: metric name=contract_gap -->` — do not work around it by editing
     backend code or reshaping data in the frontend.
 
 Per-component UX checklist (MANDATORY — score each NEW or meaningfully-changed component):
@@ -749,7 +756,7 @@ Iteration budget:
   - Up to 3 iterations per component.
   - Up to 8 total iterations across all components in this stage. Exceeding the
     global cap is a P0 signal that the plan's Frontend Tasks are under-specified —
-    STOP and comment `<!-- pipeline-metric: ui_iteration_exhausted -->`, listing
+    STOP and comment `<!-- meta: metric name=ui_iteration_exhausted -->`, listing
     which components failed and why.
 
 Gate commands (MANDATORY at exit — all must pass):
@@ -759,7 +766,7 @@ Gate commands (MANDATORY at exit — all must pass):
 Gotcha telemetry (same contract as Implementation):
   - `Gotcha-hit: G-<id>` commit trailer when you hit a documented gotcha.
   - `Gotcha-avoided: G-<id>` commit trailer when you bypassed one.
-  - New gotchas → Linear comment tagged `<!-- pipeline-metric: gotcha_new -->`.
+  - New gotchas → Linear comment tagged `<!-- meta: metric name=gotcha_new -->`.
     Do NOT edit gotchas.md directly (CODEOWNERS-protected).
 
 Do NOT create or edit the pull request. The orchestrator opens it on transition to `reviewing` (verdict-handler::apply_transition).
@@ -811,7 +818,7 @@ You are reviewing a pull request for the project described in the **Project prof
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (in order, where present):
 1. docs/brainstorms/{brainstorm_file} — original requirements
@@ -828,7 +835,7 @@ Linear comment. When you are dispatched, run the review; when there is
 nothing new, the orchestrator idles you. Human approval is collected once,
 at build's P2 preflight, on the post-QA SHA. The pre-ENG-54 review-stage
 wait-for-approval exit is gone — the review stage no longer emits any
-`pipeline-wait` shape.
+`verdict result=wait` shape.
 
 Input:
   Fetch the feature PR with:
@@ -872,7 +879,7 @@ Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
   Is there unnecessary complexity the brainstorm introduced and the plan carried forward?
   → **Escape hatch:** if the brainstorm itself was wrong, this is a premise failure —
     do NOT reject the PR. Apply the Linear label `pipeline:premise-failure`, post a
-    Linear comment tagged `<!-- pipeline-metric: premise_failure -->` with a concrete
+    Linear comment tagged `<!-- meta: metric name=premise_failure -->` with a concrete
     rationale (what the brainstorm assumed, what the implementation revealed, what the
     right brainstorm would conclude). Exit without an `approve` or `request-changes`
     verdict. The orchestrator loops the issue back to `stage:brainstorming` with
@@ -894,7 +901,7 @@ Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
     allowed or excluded it.
   - **Safety valve:** if the plan is *silent* on a file (neither explicitly allowed
     nor forbidden), declare the plan incomplete — do NOT reject the PR on that file.
-    Post a Linear comment tagged `<!-- pipeline-metric: plan_scope_silent -->` with
+    Post a Linear comment tagged `<!-- meta: metric name=plan_scope_silent -->` with
     the file and a one-line proposed File Structure patch, and request plan
     supplementation (label: `pipeline:extend`).
 
@@ -916,13 +923,13 @@ require ≥95 %. Rewrite any comment that fails. Generic comments ("consider ext
 
 Convention check (PROPOSE, do not promote):
   Reviews do NOT author conventions. If you notice an implicit pattern in the code,
-  propose it via a Linear comment tagged `<!-- pipeline-metric: convention_candidate -->`
+  propose it via a Linear comment tagged `<!-- meta: metric name=convention_candidate -->`
   with `path:line` citations. Retrospective independently verifies the 5+ file count
   and, if satisfied, opens a CODEOWNERS-gated PR against conventions.md.
 
 Gotcha surfacing (PROPOSE, do not write):
   If you find a pattern that could bite future code, post a Linear comment tagged
-  `<!-- pipeline-metric: gotcha_new -->` with pattern description, `path:line` where
+  `<!-- meta: metric name=gotcha_new -->` with pattern description, `path:line` where
   it was nearly repeated, proposed tags, and proposed severity. Do NOT edit
   gotchas.md directly — it is CODEOWNERS-protected. Retrospective opens the PR.
 
@@ -1024,7 +1031,7 @@ You are the QA agent for the project described in the **Project profile** addend
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (in order, where present):
 1. The Linear issue {issue_id} — acceptance criteria
@@ -1108,7 +1115,7 @@ Your task:
 
 7. **qa-patterns updates (PROPOSE, do not write):**
    qa-patterns.md is CODEOWNERS-protected. Propose via Linear comment tagged
-   `<!-- pipeline-metric: qa_pattern_candidate -->` with pattern, evidence, and
+   `<!-- meta: metric name=qa_pattern_candidate -->` with pattern, evidence, and
    proposed expiry. Retrospective opens the CODEOWNERS-gated PR.
    Never append to qa-patterns.md directly.
 
@@ -1129,7 +1136,7 @@ Decision path (apply exactly one):
   B. **Genuine failures** (any P0 or non-flake fail):
      - File deduped Linear bugs per §6.
      - Bump counter: `.pipeline/bin/guards.sh bump {issue_id} qa_rejection`.
-     - Post a Linear comment tagged `<!-- pipeline-metric: qa_reject -->` with the
+     - Post a Linear comment tagged `<!-- meta: metric name=qa_reject -->` with the
        summary and bug-issue links.
      - Run: `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`
      - Exit. The orchestrator will loop the issue back to `stage:implementing`.
@@ -1188,7 +1195,7 @@ You are the build agent for the project described in the **Project profile** add
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (where present):
 1. {learned_rules_dir}/build.md — learned rules (follow ALL)
@@ -1283,7 +1290,7 @@ precondition has passed and the only failure is P2 or P5.
         git fetch origin main && git -C $(mktemp -d) clone --quiet --branch {branch_name} \
           <origin> && cd <clone> && git rebase --quiet origin/main
       If the rebase errors, conflict exists. Do NOT attempt to resolve — post a
-      Linear comment tagged `<!-- pipeline-metric: merge_conflict -->`, run
+      Linear comment tagged `<!-- meta: metric name=merge_conflict -->`, run
       `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`,
       and exit.
 
@@ -1305,7 +1312,7 @@ Configuration audit (READ-ONLY — no edits in this stage):
       `pyproject.toml`, `go.mod`): scan for new hosts, new bundle identifiers,
       changed security policies.
   Flagged items are posted as a Linear comment tagged
-  `<!-- pipeline-metric: build_config_flag -->` and included in the summary. They do
+  `<!-- meta: metric name=build_config_flag -->` and included in the summary. They do
   NOT automatically block the merge — humans decide via `pipeline:paused` / resume.
 
 Merge strategy (FIXED — no alternative; per ENG-13 D-008):
@@ -1328,7 +1335,7 @@ Post-merge verification (MANDATORY):
     `release.yaml`), invoke `gh run list --branch main --workflow <workflow-file>
     --limit 1` to confirm the release workflow picked up the merge. If not
     present within 2 minutes, post a Linear comment
-    `<!-- pipeline-metric: release_trigger_missing -->` and escalate.
+    `<!-- meta: metric name=release_trigger_missing -->` and escalate.
     **Skip this step if the profile names no release workflow** — in that case
     the orchestrator's release watcher (`bin/run-local.sh:379` →
     `bin/on-new-release.sh`) is the release-detection path and the post-merge
@@ -1417,7 +1424,7 @@ You are the release agent for the project described in the **Project profile** a
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Read these files first (where present):
 1. {learned_rules_dir}/release.md — learned rules (follow ALL)
@@ -1457,7 +1464,7 @@ Your task (execute in order):
 
 4. **Per-issue Linear enrichment** (MANDATORY — add VALUE on top of the sweep):
    For every Linear issue in the map:
-     - Post a comment tagged `<!-- pipeline-metric: released -->` with:
+     - Post a comment tagged `<!-- meta: metric name=released -->` with:
          * version: {version}
          * category (from step 2)
          * commit SHA + one-line summary
@@ -1475,7 +1482,7 @@ Your task (execute in order):
          * too_fast: <60 minutes AND <3 non-chore commits
          * too_slow: >14 days with ≥5 non-chore commits (batching getting large)
      - If either threshold trips, post a Linear comment on the MOST RECENT issue in
-       the map tagged `<!-- pipeline-metric: release_cadence_flag -->` with the
+       the map tagged `<!-- meta: metric name=release_cadence_flag -->` with the
        numbers and retrospective action. Do NOT block — semantic-release already
        shipped; this is a signal to retrospective.
 
@@ -1486,7 +1493,7 @@ Your task (execute in order):
      - Often they do NOT (semantic-release typically only updates one canonical file).
        If the profile flags this drift as expected, note "secondary manifest version
        unchanged (expected per profile)" in the Slack summary; otherwise flag it
-       via `<!-- pipeline-metric: version_drift -->`.
+       via `<!-- meta: metric name=version_drift -->`.
 
 7. **Slack summary** (MANDATORY):
    Post via `.pipeline/bin/slack.sh info` with the following template:
@@ -1529,7 +1536,7 @@ institutional knowledge.
 
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/halt.sh resolve`. This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 Schedule & invocation:
   - Trigger: `.github/workflows/pipeline-retrospective.yml` — cron "0 9 * * 1"
@@ -1587,7 +1594,7 @@ is a P0 meta-finding against the retrospective itself):
 
 3. **Convention drift:**
    - Scan review-stage Linear comments tagged
-     `<!-- pipeline-metric: convention_candidate -->` since last retrospective.
+     `<!-- meta: metric name=convention_candidate -->` since last retrospective.
    - For each candidate, independently verify the "5+ files exhibit the pattern"
      claim via grep. Record the exact 5+ path:line citations.
    - If verified: open a PR appending to docs/knowledge/conventions.md with the
@@ -1596,7 +1603,7 @@ is a P0 meta-finding against the retrospective itself):
      the count you found.
 
 4. **Gotcha promotion from review proposals:**
-   - Scan for `<!-- pipeline-metric: gotcha_new -->` Linear comments.
+   - Scan for `<!-- meta: metric name=gotcha_new -->` Linear comments.
    - For each, verify the pattern exists in the code (grep `path:line`).
    - Verified → PR adding to gotchas.md with tags + 90-day expiry.
    - Unverifiable → reject with a comment.

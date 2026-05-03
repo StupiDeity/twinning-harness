@@ -152,10 +152,10 @@ set -e
 # Stub SCRIPT_DIR inside guards.sh to point at STUB_DIR so its calls to
 # "$SCRIPT_DIR/linear.sh" hit the stub and read VH_FIXTURE_COMMENTS.
 VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-metric: qa_rejection -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-metric: qa_rejection -->|2026-04-23T09:30:00.000Z" \
-  "<!-- pipeline-transition: qa → building -->|2026-04-23T10:00:00.000Z" \
-  "<!-- pipeline-metric: qa_rejection -->|2026-04-23T11:00:00.000Z")"
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:00:00.000Z" \
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:30:00.000Z" \
+  "<!-- pipeline: transition from=qa to=building -->|2026-04-23T10:00:00.000Z" \
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T11:00:00.000Z")"
 # guards.sh sets SCRIPT_DIR from BASH_SOURCE, so source the symlink in STUB_DIR.
 # Clear set -u temporarily because guards.sh expects check()'s args.
 set +u
@@ -169,8 +169,8 @@ got="$(count_marker_since_last_transition ENG-810 qa_rejection)"
 
 # ─── A11: guards.sh helper counts ALL markers when no transition ever ─
 VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-metric: qa_rejection -->|2026-04-23T09:00:00.000Z" \
-  "<!-- pipeline-metric: qa_rejection -->|2026-04-23T09:30:00.000Z")"
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:00:00.000Z" \
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:30:00.000Z")"
 got="$(count_marker_since_last_transition ENG-811 qa_rejection)"
 [[ "$got" == "2" ]] \
   && pass_at "A11 guards.sh helper falls back to full count when no transition exists" \
@@ -251,7 +251,21 @@ set -u
 _VH_SCRIPT_DIR="$STUB_DIR"
 apply_transition ENG-814 qa building ""
 apply_transition ENG-814 qa building "" 0   # explicit no-waypoint (resume path)
-posts="$(calls_grep_count "linear.sh [add-comment] [ENG-814] [<!-- pipeline-transition: qa → building -->")"
+# Spec-shape: count add-comment calls whose body parses as event=transition
+# from=qa to=building, regardless of literal byte sequence. The bracket-
+# stub above records `linear.sh [add-comment] [ENG-814] [<body>]`; extract
+# the body by stripping the first three bracketed args.
+posts=0
+while IFS= read -r body; do
+  ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+  [[ -z "$ev" ]] && continue
+  if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]] \
+     && [[ "$(jq -r '.from' <<<"$ev")" == "qa" ]] \
+     && [[ "$(jq -r '.to'   <<<"$ev")" == "building" ]]; then
+    posts=$((posts + 1))
+  fi
+done < <(grep -E '^linear\.sh \[add-comment\] \[ENG-814\] \[' "$STUB_LOG" 2>/dev/null \
+         | sed -E 's|^linear\.sh \[add-comment\] \[ENG-814\] \[(.*)\]$|\1|')
 if [[ "$posts" == "1" ]]; then
   pass_at "A14 apply_transition resume-path (post_waypoint=0) skips the transition-comment repost"
 else
@@ -279,7 +293,7 @@ out="$(find_fresh_verdict ENG-816 2>&1)"
 # field: parse_pipeline_marker returns {event:"verdict",result:"pass",stage:""}.
 # find_fresh_verdict includes it (source_stage=""). verdict_handler then detects
 # the stage mismatch (""!=current) and posts a protocol-violation (tested in A18).
-# Post-T3.1 the old-shape `<!-- pipeline-stage-summary: -->` is not parsed at all
+# Post-ENG-60 T3.1 the old-shape `<!-- pipeline-stage-summary: -->` is not parsed at all
 # (old-shape branch removed), so there is no longer a "no-fresh" result here;
 # the reject logic lives in verdict_handler, which A18 covers.
 reset_calls
@@ -350,37 +364,30 @@ fi
 # ─── A21: uppercase / casing edge — parser must not match STAGE-SUMMARY ─
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
-  "<!-- pipeline-transition: planning → implementing -->|2026-04-23T09:00:00.000Z" \
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-04-23T09:00:00.000Z" \
   "<!-- pipeline-STAGE-summary: qa -->|2026-04-23T10:00:00.000Z")"
 out="$(find_fresh_verdict ENG-821)"
 [[ -z "$out" ]] \
   && pass_at "A21 find_fresh_verdict is case-sensitive: upper-case marker key does not match" \
   || fail_at "A21 case-sensitive" "out=$out"
 
-# ─── A22: ASCII arrow `->` does NOT act as transition boundary ──────
-# A human-authored comment containing `pipeline-transition: a -> b` (ASCII
-# hyphen+gt) must NOT be treated as the freshness boundary, because the
-# canonical orchestrator waypoint uses U+2192 `→`. Otherwise any plain
-# English discussion of "transition: implement -> ui" would silently move
-# the freshness window and erase real verdicts.
+# ─── A22: legacy `pipeline-transition:` shape is invisible to parser ──────
+# Post-ENG-60 vocabulary cutover, the parser only recognizes the new shape
+# `<!-- pipeline: transition from=X to=Y -->`. A legacy `<!-- pipeline-transition:
+# X → Y -->` (or any close-but-not-quite variant including the ASCII-arrow
+# `->` form) is invisible to parse_pipeline_marker, so it cannot move the
+# freshness floor. The verdict at 09:00 remains the latest event the parser
+# sees, and find_fresh_verdict returns it.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline: verdict result=pass stage=qa -->|2026-04-23T09:00:00.000Z" \
   "<!-- pipeline-transition: qa -> building -->|2026-04-23T10:00:00.000Z")"
-# The fake ASCII waypoint would move `last_transition_ts` to 10:00 and drop
-# the verdict at 09:00. With the real U+2192-requiring regex it has no
-# effect, and the 09:00 verdict is still fresh.
 fresh="$(find_fresh_verdict ENG-822)"
-# We expect the real implementation to MATCH the ASCII waypoint too, because
-# find_fresh_verdict only greps for `<!-- pipeline-transition:` prefix and
-# trusts the waypoint marker. This is a known limitation — document it.
 mtype="$(jq -r '.marker // ""' <<<"${fresh:-\"\"}" 2>/dev/null || printf '')"
-if [[ -z "$fresh" ]]; then
-  pass_at "A22 ASCII-arrow waypoint detected as freshness boundary (documents limitation: find_fresh_verdict does not validate arrow glyph)"
-elif [[ "$mtype" == "pipeline-stage-summary" ]]; then
-  pass_at "A22 ASCII-arrow waypoint NOT treated as boundary; verdict still fresh"
+if [[ "$mtype" == "pipeline-stage-summary" ]]; then
+  pass_at 'A22 legacy `pipeline-transition:` is parser-invisible; the new-shape verdict remains fresh'
 else
-  fail_at "A22 ascii-arrow-freshness" "unexpected fresh marker=$mtype"
+  fail_at "A22 legacy-transition-invisibility" "unexpected fresh marker=$mtype (expected pipeline-stage-summary)"
 fi
 
 # ─── A23: classify-failure double-apply idempotency ─────────────────

@@ -41,7 +41,7 @@ stage_arg_for_label() {
 # resolved-but-cleared skip state). Side effects: if the skip state's
 # evidence has changed, deletes the state file, removes the
 # skip-until-code-changes label, and (if pipeline:halted is also present)
-# clears the halt label and posts a pipeline-decision: resume marker.
+# clears the halt label and posts a `pipeline: decision action=continue` marker.
 # For orphan state files (label absent), deletes the state file. For a
 # skip label without a state file, skips and performs no Linear writes
 # — see ENG-24.
@@ -97,18 +97,18 @@ _poll_evaluate_skip() {
     rm -f "$state_file"
     bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" || true
     # classify-failure pairs every skip-until-code-changes halt with a
-    # pipeline:halted label and a <!-- pipeline-halt: --> marker comment.
-    # Without also clearing the halt label here, _poll_classify_labels'
-    # halted branch keeps the slot vacated and auto-resume can never
-    # actually advance the issue. Mirror halt.sh resolve: post an
-    # informational pipeline-decision marker (not a verdict shape — does
-    # not affect find_fresh_verdict freshness) and remove the label.
+    # pipeline:halted label and a `<!-- pipeline: verdict result=halt -->`
+    # marker comment. Without also clearing the halt label here,
+    # _poll_classify_labels' halted branch keeps the slot vacated and
+    # auto-resume can never actually advance the issue. Post an
+    # informational decision marker (not a verdict shape — does not
+    # affect find_fresh_verdict freshness) and remove the label.
     local has_halt
     has_halt="$(jq -r --arg n "pipeline:halted" \
       '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
     if [[ "$has_halt" == "true" ]]; then
       local resume_body
-      resume_body="$(printf '<!-- pipeline-decision: resume -->\n\nHalt auto-resolved by orchestrator: pipeline_content_hash or branch HEAD changed.')"
+      resume_body="$(printf '<!-- pipeline: decision action=continue -->\n\nHalt auto-resolved by orchestrator: pipeline_content_hash or branch HEAD changed.')"
       bash "$SCRIPT_DIR/linear.sh" add-comment  "$ident" "$resume_body"   || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:halted" || true
     fi

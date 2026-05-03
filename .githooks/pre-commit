@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Pre-commit hook: runs the entire bin/*-test.sh suite. Blocks commit on any
+# failure outside the KNOWN_BROKEN list.
+#
+# Install via: bash bin/install-git-hooks.sh   (sets core.hooksPath=.githooks)
+# Bypass once: git commit --no-verify          (use sparingly)
+#
+# Why this exists: ENG-60 shipped a parser that diverged from its writers
+# because Phase 3's verification grep was a markdown checkbox, not an
+# automated gate. This hook is the gate. See PR #45 for context.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+[[ -n "$REPO_ROOT" ]] || { printf 'pre-commit: not inside a git repo\n' >&2; exit 1; }
+cd "$REPO_ROOT"
+
+# ─── Known-broken-on-main tests ──────────────────────────────────────
+# Tests in this list are RUN but excluded from the pass/fail gate. Each
+# entry MUST be paired with a one-line comment explaining what's broken
+# and pointing at follow-up work. When you fix the underlying bug, remove
+# the entry — leaving stale skips here is the failure mode this list
+# itself is designed to prevent.
+KNOWN_BROKEN=(
+  # tempdir-cleanup race: rmdir runs on a path the prior step already
+  # removed. Reproducible on darwin; needs investigation in the test
+  # harness, not the mutex code under test.
+  "bin/mutex-test.sh"
+  # case-1 "Backend bullet" missing — substantive logic bug in
+  # render-pr-body's plan-frontmatter parsing. Pre-dates ENG-60.
+  "bin/render-pr-body-test.sh"
+  # silent rc=1 with no output — broken setup or an early `set -e` exit.
+  # Pre-dates ENG-60.
+  "bin/render-prompt-slug-test.sh"
+)
+
+is_known_broken() {
+  local needle="$1" entry
+  for entry in "${KNOWN_BROKEN[@]}"; do
+    [[ "$entry" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+# ─── TARGET_REPO setup ───────────────────────────────────────────────
+# Tests source bin/common.sh which require_env TARGET_REPO. Most tests
+# allocate their own throwaway target, but we provide a default so any
+# test that relies on the env var being set inherits a sane value.
+HOOK_TMP_TARGET="$(mktemp -d -t pre-commit-hook.XXXXXX)"
+trap 'rm -rf "$HOOK_TMP_TARGET"' EXIT
+mkdir -p "$HOOK_TMP_TARGET/target/.pipeline-config"
+cat > "$HOOK_TMP_TARGET/target/.pipeline-config/config.json" <<'JSON'
+{
+  "linear": {
+    "team_id": "x",
+    "project_id": "x",
+    "native_states": {"in_review": "x", "done": "x", "active": "x"},
+    "workflow_stages": ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"],
+    "stage_label_prefix": "stage:"
+  },
+  "orchestrator": {},
+  "human_checkpoints": {"require_human_on_threshold": {}},
+  "project": {"slug": "test"}
+}
+JSON
+export TARGET_REPO="$HOOK_TMP_TARGET/target"
+export PROJECT_SLUG="${PROJECT_SLUG:-test}"
+
+# ─── Run the suite ───────────────────────────────────────────────────
+START=$(date +%s)
+total_pass=0 total_fail=0 total_skip=0
+gating_failures=()
+skipped_list=()
+
+# Strict failure detection: rc != 0, OR a real failed-count pattern in
+# stdout. The boundary `[^=0-9]` before the digit prevents matching
+# `passed=3 failed=0` (the trailing `0` doesn't match `[1-9]` but the
+# preceding `passed=3` would match `3 failed` without the boundary).
+detect_failure() {
+  local rc="$1" out="$2"
+  (( rc != 0 )) && return 0
+  grep -qE '❌|^FAIL:|^FAIL |failed=[1-9]|[^=0-9][1-9][0-9]* failed' <<<"$out" \
+    && return 0
+  return 1
+}
+
+printf '\n[pre-commit] running bin/*-test.sh (%s tests)\n' \
+  "$(ls bin/*-test.sh 2>/dev/null | wc -l | tr -d ' ')"
+
+for t in bin/*-test.sh; do
+  out="$(bash "$t" 2>&1)"
+  rc=$?
+
+  if is_known_broken "$t"; then
+    total_skip=$((total_skip + 1))
+    skipped_list+=("$t")
+    if detect_failure "$rc" "$out"; then
+      printf '  SKIP %s (known-broken; failed as expected)\n' "$t"
+    else
+      printf '  SKIP %s (known-broken; PASSED unexpectedly — remove from KNOWN_BROKEN)\n' "$t"
+    fi
+    continue
+  fi
+
+  if detect_failure "$rc" "$out"; then
+    total_fail=$((total_fail + 1))
+    gating_failures+=("$t")
+    printf '  FAIL %s (rc=%s)\n' "$t" "$rc"
+  else
+    total_pass=$((total_pass + 1))
+    printf '  PASS %s\n' "$t"
+  fi
+done
+
+ELAPSED=$(( $(date +%s) - START ))
+
+# ─── Summary + gate decision ─────────────────────────────────────────
+printf '\n[pre-commit] %s passed, %s failed, %s skipped (known-broken) in %ss\n' \
+  "$total_pass" "$total_fail" "$total_skip" "$ELAPSED"
+
+if (( total_fail > 0 )); then
+  printf '\n[pre-commit] BLOCKED — gating failures:\n'
+  for t in "${gating_failures[@]}"; do
+    printf '  - %s\n' "$t"
+  done
+  printf '\nRe-run a single failing test with:\n'
+  printf '  bash %s\n' "${gating_failures[0]}"
+  printf '\nBypass once (use sparingly — the hook exists because ENG-60'\''s\n'
+  printf 'verification was a markdown checkbox and look how that went):\n'
+  printf '  git commit --no-verify\n\n'
+  exit 1
+fi
+
+# Surface known-broken status loudly so the list does not silently rot.
+if (( total_skip > 0 )); then
+  printf '\n[pre-commit] reminder: %s test(s) on KNOWN_BROKEN list\n' "$total_skip"
+  for t in "${skipped_list[@]}"; do
+    printf '  - %s\n' "$t"
+  done
+  printf '  (fix and remove from .githooks/pre-commit when you can)\n'
+fi
+
+exit 0

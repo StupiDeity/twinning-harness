@@ -3,8 +3,9 @@
 # Usage:
 #   scope-check.sh <issue_id> <branch>              — run the scope check
 #   scope-check.sh has-scope-approval <issue_id>    — exit 0 iff the issue has a
-#       <!-- pipeline-decision: scope-approved --> comment newer than its most
-#       recent <!-- pipeline-halt: scope-deviation --> comment (ENG-18).
+#       <!-- pipeline: decision action=approve gate=scope --> comment newer than
+#       its most recent <!-- pipeline: verdict result=halt reason=scope-violation -->
+#       comment (ENG-18 / ENG-60).
 # Exit 0: all changed files are in plan scope (or only benign escapes).
 # Exit 1: one or more files out of plan scope at the NOTABLE tier (list printed to stdout).
 # Exit 2: plan not found, or File Structure unparseable.

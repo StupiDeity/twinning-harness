@@ -3,7 +3,7 @@
 #
 # Two surfaces:
 #   1. run-local-helpers.sh::stage_output_paths reads
-#      config.json::scope.allowlist.<stage>[] for implement|ui|qa,
+#      config.json::scope.allowlist.<stage>[] for implementing|ui|qa,
 #      falling back to the hardcoded Tauri-shaped list when the key is
 #      missing or the value is empty/non-array.
 #   2. dispatch.sh::allowed_tools_for reads
@@ -113,7 +113,7 @@ printf '\n--- stage_output_paths: profile-driven scope allowlist ---\n'
 TAURI_EXPECTED='Cargo.lock,Cargo.toml,bun.lock,bun.lockb,crates/,docs/,package-lock.json,package.json,src-tauri/,src/,tests/'
 
 cfg="$(mkconfig "$_TEST_ROOT/cfg-empty" '')"
-got="$(CONFIG="$cfg" stage_output_paths implement | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
 eq 'fallback_implement_matches_legacy_tauri_list' "$TAURI_EXPECTED" "$got"
 
 got="$(CONFIG="$cfg" stage_output_paths ui | LC_ALL=C sort | paste -sd, -)"
@@ -123,18 +123,18 @@ got="$(CONFIG="$cfg" stage_output_paths qa | LC_ALL=C sort | paste -sd, -)"
 eq 'fallback_qa_matches_legacy_tauri_list' "$TAURI_EXPECTED" "$got"
 
 # (b) Fallback: completely missing CONFIG file → hardcoded list.
-got="$(CONFIG="/nonexistent/path/config.json" stage_output_paths implement | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="/nonexistent/path/config.json" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
 eq 'fallback_when_config_file_missing' "$TAURI_EXPECTED" "$got"
 
-# (a) Override: scope.allowlist.implement REPLACES the hardcoded list.
+# (a) Override: scope.allowlist.implementing REPLACES the hardcoded list.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-impl" '{
-  "scope": { "allowlist": { "implement": ["bin/", "AGENT_PROMPTS.md", "docs/"] } }
+  "scope": { "allowlist": { "implementing": ["bin/", "AGENT_PROMPTS.md", "docs/"] } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implement | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
 eq 'override_implement_replaces_fallback' \
   'AGENT_PROMPTS.md,bin/,docs/' "$got"
 
-# (c) Per-stage isolation: implement override does NOT leak to ui/qa.
+# (c) Per-stage isolation: implementing override does NOT leak to ui/qa.
 got="$(CONFIG="$cfg" stage_output_paths ui | LC_ALL=C sort | paste -sd, -)"
 eq 'override_does_not_leak_to_ui' "$TAURI_EXPECTED" "$got"
 
@@ -144,13 +144,13 @@ eq 'override_does_not_leak_to_qa' "$TAURI_EXPECTED" "$got"
 # Per-stage divergence: each stage carries its own list.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-three" '{
   "scope": { "allowlist": {
-    "implement": ["bin/"],
+    "implementing": ["bin/"],
     "ui":        ["src/", "static/"],
     "qa":        ["tests/", "e2e/"]
   } }
 }')"
 eq 'override_implement_divergent' 'bin/' \
-  "$(CONFIG="$cfg" stage_output_paths implement | LC_ALL=C sort | paste -sd, -)"
+  "$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
 eq 'override_ui_divergent'        'src/,static/' \
   "$(CONFIG="$cfg" stage_output_paths ui | LC_ALL=C sort | paste -sd, -)"
 eq 'override_qa_divergent'        'e2e/,tests/' \
@@ -160,39 +160,39 @@ eq 'override_qa_divergent'        'e2e/,tests/' \
 # configured allowlist would route every dirty path to self-leak,
 # which is almost certainly a misconfiguration.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-empty-arr" '{
-  "scope": { "allowlist": { "implement": [] } }
+  "scope": { "allowlist": { "implementing": [] } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implement | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
 eq 'empty_array_override_falls_back_to_hardcoded' "$TAURI_EXPECTED" "$got"
 
 # Defensive: non-array value (string instead of list) → fallback.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-bad-type" '{
-  "scope": { "allowlist": { "implement": "bin/" } }
+  "scope": { "allowlist": { "implementing": "bin/" } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implement | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
 eq 'non_array_override_falls_back_to_hardcoded' "$TAURI_EXPECTED" "$got"
 
 # Defensive: non-string entries silently dropped.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-mixed" '{
-  "scope": { "allowlist": { "implement": ["bin/", 42, null, "AGENT_PROMPTS.md"] } }
+  "scope": { "allowlist": { "implementing": ["bin/", 42, null, "AGENT_PROMPTS.md"] } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implement | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
 eq 'non_string_entries_silently_dropped' 'AGENT_PROMPTS.md,bin/' "$got"
 
-# scope.allowlist must NOT affect brainstorm/plan/retrospective stages.
+# scope.allowlist must NOT affect brainstorming/planning/retrospective stages.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-brain-attempt" '{
   "scope": { "allowlist": {
-    "brainstorm":    ["should/not/win/"],
-    "plan":          ["also/not/"],
+    "brainstorming":    ["should/not/win/"],
+    "planning":          ["also/not/"],
     "retrospective": ["nope/"]
   } }
 }')"
 eq 'scope_allowlist_does_not_alter_brainstorm' \
   'docs/brainstorms/,docs/knowledge/decisions.md' \
-  "$(CONFIG="$cfg" stage_output_paths brainstorm | LC_ALL=C sort | paste -sd, -)"
+  "$(CONFIG="$cfg" stage_output_paths brainstorming | LC_ALL=C sort | paste -sd, -)"
 eq 'scope_allowlist_does_not_alter_plan' \
   'docs/plans/' \
-  "$(CONFIG="$cfg" stage_output_paths plan | LC_ALL=C sort | paste -sd, -)"
+  "$(CONFIG="$cfg" stage_output_paths planning | LC_ALL=C sort | paste -sd, -)"
 RETRO_EXPECTED='.github/workflows/,.pipeline-config/config.json,docs/knowledge/conventions.md,docs/knowledge/decisions.md,docs/knowledge/gotchas.md,docs/knowledge/qa-patterns.md'
 eq 'scope_allowlist_does_not_alter_retrospective' \
   "$RETRO_EXPECTED" \
@@ -207,7 +207,7 @@ printf '\n--- allowed_tools_for: dispatch.tools.<stage>[] extras ---\n'
 
 # (b) Fallback: no dispatch.tools key → base only, no trailing comma.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-tools-empty" '')"
-base_implement="$(CONFIG="$cfg" allowed_tools_for implement)"
+base_implement="$(CONFIG="$cfg" allowed_tools_for implementing)"
 contains 'fallback_base_includes_cargo' 'Bash(cargo:*)' "$base_implement"
 contains 'fallback_base_includes_bun'   'Bash(bun:*)'   "$base_implement"
 notcontains 'fallback_base_no_trailing_comma' ',,'      "$base_implement"
@@ -218,12 +218,12 @@ esac
 
 # (a) Override: extras appended after the base, joined with comma.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-tools-impl" '{
-  "dispatch": { "tools": { "implement": [
+  "dispatch": { "tools": { "implementing": [
     "Bash(bash bin/run-local-helpers-adversarial-test.sh:*)",
     "Bash(shellcheck:*)"
   ] } }
 }')"
-got="$(CONFIG="$cfg" allowed_tools_for implement)"
+got="$(CONFIG="$cfg" allowed_tools_for implementing)"
 contains 'extras_present_test_runner' \
   'Bash(bash bin/run-local-helpers-adversarial-test.sh:*)' "$got"
 contains 'extras_present_shellcheck' 'Bash(shellcheck:*)' "$got"
@@ -234,7 +234,7 @@ case "$got" in
   *) ng 'extras_ordered_after_base' 'shellcheck after cargo' "$got" ;;
 esac
 
-# (c) Per-stage isolation: implement extras don't leak to ui/qa/build.
+# (c) Per-stage isolation: implementing extras don't leak to ui/qa/build.
 ui_tools="$(CONFIG="$cfg" allowed_tools_for ui)"
 notcontains 'extras_do_not_leak_to_ui' 'Bash(shellcheck:*)' "$ui_tools"
 qa_tools="$(CONFIG="$cfg" allowed_tools_for qa)"
@@ -245,30 +245,30 @@ notcontains 'extras_do_not_leak_to_build' 'Bash(shellcheck:*)' "$build_tools"
 # Each stage can carry its own extras independently.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-tools-multi" '{
   "dispatch": { "tools": {
-    "implement": ["Bash(pytest:*)"],
+    "implementing": ["Bash(pytest:*)"],
     "qa":        ["Bash(go test:*)"],
     "ui":        ["Bash(rspec:*)"]
   } }
 }')"
-contains 'multi_implement'   'Bash(pytest:*)'   "$(CONFIG="$cfg" allowed_tools_for implement)"
+contains 'multi_implement'   'Bash(pytest:*)'   "$(CONFIG="$cfg" allowed_tools_for implementing)"
 contains 'multi_qa'          'Bash(go test:*)'  "$(CONFIG="$cfg" allowed_tools_for qa)"
 contains 'multi_ui'          'Bash(rspec:*)'    "$(CONFIG="$cfg" allowed_tools_for ui)"
-notcontains 'multi_iso_impl_no_go'    'Bash(go test:*)'  "$(CONFIG="$cfg" allowed_tools_for implement)"
+notcontains 'multi_iso_impl_no_go'    'Bash(go test:*)'  "$(CONFIG="$cfg" allowed_tools_for implementing)"
 notcontains 'multi_iso_qa_no_pytest'  'Bash(pytest:*)'   "$(CONFIG="$cfg" allowed_tools_for qa)"
 notcontains 'multi_iso_ui_no_pytest'  'Bash(pytest:*)'   "$(CONFIG="$cfg" allowed_tools_for ui)"
 
 # Defensive: non-array value → no extras.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-tools-bad" '{
-  "dispatch": { "tools": { "implement": "Bash(pytest:*)" } }
+  "dispatch": { "tools": { "implementing": "Bash(pytest:*)" } }
 }')"
-got="$(CONFIG="$cfg" allowed_tools_for implement)"
+got="$(CONFIG="$cfg" allowed_tools_for implementing)"
 notcontains 'non_array_dispatch_tools_silently_ignored' 'Bash(pytest:*)' "$got"
 
 # Defensive: non-string entries silently dropped.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-tools-mixed" '{
-  "dispatch": { "tools": { "implement": ["Bash(pytest:*)", 99, null, "Bash(ruff:*)"] } }
+  "dispatch": { "tools": { "implementing": ["Bash(pytest:*)", 99, null, "Bash(ruff:*)"] } }
 }')"
-got="$(CONFIG="$cfg" allowed_tools_for implement)"
+got="$(CONFIG="$cfg" allowed_tools_for implementing)"
 contains    'mixed_string_pytest_kept' 'Bash(pytest:*)' "$got"
 contains    'mixed_string_ruff_kept'   'Bash(ruff:*)'   "$got"
 notcontains 'mixed_no_literal_99'      ',99,'           "$got"
@@ -276,9 +276,9 @@ notcontains 'mixed_no_literal_null'    'null'           "$got"
 
 # Empty array → no extras, no trailing comma.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-tools-empty-arr" '{
-  "dispatch": { "tools": { "implement": [] } }
+  "dispatch": { "tools": { "implementing": [] } }
 }')"
-got="$(CONFIG="$cfg" allowed_tools_for implement)"
+got="$(CONFIG="$cfg" allowed_tools_for implementing)"
 case "$got" in
   *,) ng 'empty_extras_no_trailing_comma' 'no trailing comma' "$got" ;;
   *)  ok 'empty_extras_no_trailing_comma' ;;
@@ -286,7 +286,7 @@ esac
 
 # Regression: missing CONFIG file path → no extras (defensive, matches
 # the dispatch_timeout_minutes pattern in main()).
-got="$(CONFIG="/nonexistent/path/config.json" allowed_tools_for implement)"
+got="$(CONFIG="/nonexistent/path/config.json" allowed_tools_for implementing)"
 contains 'missing_config_file_returns_base_implement' 'Bash(cargo:*)' "$got"
 case "$got" in
   *,) ng 'missing_config_file_no_trailing_comma' 'no trailing comma' "$got" ;;

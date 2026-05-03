@@ -253,16 +253,32 @@ else
 fi
 _ar_clear "ENG-5802"
 
-# ── PR-K: operator-resume waypoint uses new-shape marker
+# ── PR-K: operator-resume waypoint passes spec-shape assertion
+# Prior version pinned a literal marker substring; that locks the writer's
+# byte sequence and would silently keep passing if the parser's expectations
+# diverged from the writer's output (the ENG-60 failure mode). Round-trip
+# the captured body through parse_pipeline_marker and assert event payload.
 : > "$_AR_LINEAR_CALLS"
 LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
   _ar_decide "ENG-5803" --action continue || true
-contains_transition="$(grep -c "<!-- pipeline: transition from=building to=building reason=operator-resume -->" "$_AR_LINEAR_CALLS" || true)"
-if [[ "$contains_transition" -ge "1" ]]; then
-  pass_at "PR-K: operator-resume waypoint is new-shape transition marker"
+posts_matching=0
+while IFS= read -r line; do
+  body="${line#add-comment ENG-5803 }"
+  [[ "$body" == "$line" ]] && continue   # not an add-comment line
+  ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+  [[ -z "$ev" ]] && continue
+  if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]] \
+     && [[ "$(jq -r '.from' <<<"$ev")" == "building" ]] \
+     && [[ "$(jq -r '.to'   <<<"$ev")" == "building" ]] \
+     && [[ "$(jq -r '.reason // ""' <<<"$ev")" == "operator-resume" ]]; then
+    posts_matching=$((posts_matching + 1))
+  fi
+done < "$_AR_LINEAR_CALLS"
+if [[ "$posts_matching" -ge "1" ]]; then
+  pass_at "PR-K: operator-resume waypoint parses as transition from=building to=building reason=operator-resume"
 else
-  fail_at "PR-K: waypoint shape" \
-    "no new-shape transition from=building to=building reason=operator-resume found; got: $(cat "$_AR_LINEAR_CALLS")"
+  fail_at "PR-K: waypoint spec-shape" \
+    "no recorded body parses as the expected transition; got: $(cat "$_AR_LINEAR_CALLS")"
 fi
 _ar_clear "ENG-5803"
 
@@ -312,6 +328,141 @@ else
   fail_at "PR-T: multi-file glob" "remaining=$remaining metric='$metric_line'"
 fi
 _ar_clear "ENG-5806"
+
+# ── PR-X1 (ENG-60-followup): continue clears the breaker when paused
+# Set orchestrator.paused=true via STATE_FILE + plant a .consecutive-failures
+# counter, then run decide --action continue. Both should be cleared and the
+# metric should record breaker_was_paused=true.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5811" "skip-until-human-acts"
+mkdir -p "$(dirname "$STATE_FILE")"
+printf '{"orchestrator":{"paused":true}}\n' > "$STATE_FILE"
+printf '5\n' > "$PROJECT_STATE_DIR/.consecutive-failures"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5811" --action continue || true
+paused_after="$(jq -r 'if .orchestrator.paused != null then (.orchestrator.paused | tostring) else "missing" end' "$STATE_FILE" 2>/dev/null || printf 'missing')"
+counter_present=0; [[ -e "$PROJECT_STATE_DIR/.consecutive-failures" ]] && counter_present=1
+metric_line="$(grep "^halt-resume ENG-5811 building atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ "$paused_after" == "false" && "$counter_present" == "0" \
+      && "$metric_line" == *"breaker_was_paused=true"* ]]; then
+  pass_at "PR-X1: continue clears tripped breaker (paused -> false, .consecutive-failures removed, metric records breaker_was_paused=true)"
+else
+  fail_at "PR-X1: breaker clear" \
+    "paused_after=$paused_after counter_present=$counter_present metric='$metric_line'"
+fi
+_ar_clear "ENG-5811"
+rm -f "$STATE_FILE"
+
+# ── PR-X2: continue is a no-op for the breaker when not tripped
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5812" "skip-until-human-acts"
+# No STATE_FILE, no .consecutive-failures: breaker is not tripped.
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5812" --action continue || true
+paused_after="$(jq -r 'if .orchestrator.paused != null then (.orchestrator.paused | tostring) else "missing" end' "$STATE_FILE" 2>/dev/null || printf 'missing')"
+metric_line="$(grep "^halt-resume ENG-5812 building atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ "$paused_after" == "false" \
+      && "$metric_line" == *"breaker_was_paused=false"* ]]; then
+  pass_at "PR-X2: continue with no breaker trip (paused stays false, metric records breaker_was_paused=false)"
+else
+  fail_at "PR-X2: breaker no-op" \
+    "paused_after=$paused_after metric='$metric_line'"
+fi
+_ar_clear "ENG-5812"
+rm -f "$STATE_FILE"
+
+# ── PR-X3: auto_commit_in_scope no-op when no worktree present
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5813" "skip-until-human-acts"
+# Deliberately NOT creating a worktree directory.
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5813" --action continue || true
+metric_line="$(grep "^halt-resume ENG-5813 building atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ "$metric_line" == *"auto_commit_paths=0"* ]]; then
+  pass_at "PR-X3: auto-commit no-op when worktree missing (metric records auto_commit_paths=0)"
+else
+  fail_at "PR-X3: auto-commit no-worktree" "metric='$metric_line'"
+fi
+_ar_clear "ENG-5813"
+
+# ── PR-X4: auto_commit_in_scope commits an in-scope dirty path on a real worktree
+# Build a self-contained git worktree with a brainstorm doc that the breaker
+# would have suppressed. decide --action continue should auto-commit it.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5814" "skip-until-human-acts"
+WT="$PROJECT_STATE_DIR/ENG-5814/worktree"
+mkdir -p "$WT"
+(
+  set -e
+  cd "$WT"
+  git init --quiet --initial-branch=main >/dev/null 2>&1 \
+    || { git init --quiet >/dev/null && git checkout -B main --quiet; }
+  git config user.email "test@example.com"
+  git config user.name "test"
+  # Track docs/brainstorms/ in the seed commit so an untracked file under
+  # it shows as `?? docs/brainstorms/<file>` (not `?? docs/`, which is what
+  # `git status --porcelain` reports for entirely new directories — and
+  # would slip past partition_dirty_paths' allow-list match). Mirrors how
+  # real worktrees forked from origin/main already have docs/brainstorms/.
+  mkdir -p docs/brainstorms
+  printf 'placeholder\n' > docs/brainstorms/.gitkeep
+  printf 'seed\n' > seed.txt
+  git add seed.txt docs/brainstorms/.gitkeep
+  git commit --quiet -m "seed"
+  git checkout -B "feat/eng-5814-test" --quiet
+  printf -- '---\nlinear: ENG-5814\n---\n# brainstorm\n' > docs/brainstorms/eng-5814-design.md
+)
+LABELS_ON="pipeline:halted" STAGE_OF="stage:brainstorming" \
+  _ar_decide "ENG-5814" --action continue || true
+# Verify a commit landed on the feature branch with the agent message.
+last_msg="$(git -C "$WT" log -1 --pretty=%s 2>/dev/null || true)"
+metric_line="$(grep "^halt-resume ENG-5814 brainstorming atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ "$last_msg" == *"chore(pipeline): brainstorming for ENG-5814 (operator-resumed via decide)"* \
+      && "$metric_line" == *"auto_commit_paths=1"* ]]; then
+  pass_at "PR-X4: auto-commit picks up in-scope dirty path (commit landed, metric records auto_commit_paths=1)"
+else
+  fail_at "PR-X4: auto-commit in-scope" \
+    "last_msg='$last_msg' metric='$metric_line'"
+fi
+_ar_clear "ENG-5814"
+
+# ── PR-X5: auto_commit_in_scope skips main/master branches
+# Even if there's a dirty in-scope path, commit on `main` is refused.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5815" "skip-until-human-acts"
+WT="$PROJECT_STATE_DIR/ENG-5815/worktree"
+mkdir -p "$WT"
+(
+  set -e
+  cd "$WT"
+  git init --quiet --initial-branch=main >/dev/null 2>&1 \
+    || { git init --quiet >/dev/null && git checkout -B main --quiet; }
+  git config user.email "test@example.com"
+  git config user.name "test"
+  # Track docs/brainstorms/ so the untracked test doc shows at file granularity.
+  mkdir -p docs/brainstorms
+  printf 'placeholder\n' > docs/brainstorms/.gitkeep
+  printf 'seed\n' > seed.txt
+  git add seed.txt docs/brainstorms/.gitkeep
+  git commit --quiet -m "seed"
+  # Stay on main; create dirty in-scope path. Auto-commit must refuse to
+  # land it (main/master/<detached> are guarded against).
+  printf -- '---\nlinear: ENG-5815\n---\n# brainstorm\n' > docs/brainstorms/eng-5815-design.md
+)
+LABELS_ON="pipeline:halted" STAGE_OF="stage:brainstorming" \
+  _ar_decide "ENG-5815" --action continue || true
+metric_line="$(grep "^halt-resume ENG-5815 brainstorming atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+# Untracked file should still be present (not committed); commit count should be 0.
+untracked_present=0
+git -C "$WT" status --porcelain 2>/dev/null | grep -q '^?? docs/brainstorms/eng-5815-design.md$' \
+  && untracked_present=1
+if [[ "$untracked_present" == "1" && "$metric_line" == *"auto_commit_paths=0"* ]]; then
+  pass_at "PR-X5: auto-commit refuses to commit on main (file stays dirty, auto_commit_paths=0)"
+else
+  fail_at "PR-X5: auto-commit main-branch refusal" \
+    "untracked=$untracked_present metric='$metric_line'"
+fi
+_ar_clear "ENG-5815"
 
 # ── PR-dry-run: PIPELINE_DRY_RUN=1 suppresses atomic reset (FS untouched)
 # Calls cmd_decide in-process with PIPELINE_DRY_RUN=1 then resets it to "".

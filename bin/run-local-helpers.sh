@@ -198,6 +198,131 @@ partition_dirty_paths() {
   done
 }
 
+# auto_commit_in_scope <issue_id> <stage>
+# Commit + push every in-scope dirty path in the issue's worktree.
+# Used by `bin/pipeline.sh decide --action continue` to complete the
+# atomic resume when a self-leak halt suppressed the bot's tick-end
+# in-scope commit (the brainstorm doc / plan doc / etc that the agent
+# successfully wrote but never landed on origin).
+#
+# Reuses partition_dirty_paths so the path classification matches
+# exactly what the tick-end sweep would do — committing more or less
+# than the sweep would risks divergence between the operator-resumed
+# and clean-tick paths.
+#
+# Returns:
+#   stdout: count of paths committed (string-decimal; "0" on no-op)
+#   rc 0 always — auto-commit failures must not block the atomic resume.
+#         Caller distinguishes "did anything commit" via stdout, and
+#         the metric stats include the count for audit.
+#
+# Skips (logs and returns "0"):
+#   - worktree path missing or not a git repo
+#   - branch is main/master/empty (refuse to auto-commit there)
+#   - stage has no allow-list (reviewing/building/released/release/retro
+#     read-only paths legitimately have nothing to commit)
+#   - worktree clean (zero in-scope dirty paths)
+#
+# DRY-RUN: when PIPELINE_DRY_RUN=1, lists the paths it WOULD commit and
+# returns the count without touching the worktree or origin.
+auto_commit_in_scope() {
+  local issue="$1" stage="$2"
+  local worktree
+  worktree="$(issue_dir "$issue")/worktree"
+
+  if [[ ! -d "$worktree" ]]; then
+    log "auto-commit: no worktree at $worktree (skip)"
+    printf '0'
+    return 0
+  fi
+  if ! git -C "$worktree" rev-parse --show-toplevel >/dev/null 2>&1; then
+    log "auto-commit: $worktree is not a git working tree (skip)"
+    printf '0'
+    return 0
+  fi
+
+  local branch
+  branch="$(git -C "$worktree" branch --show-current 2>/dev/null || true)"
+  case "$branch" in
+    main|master|"")
+      log "auto-commit: worktree branch is '${branch:-<detached>}'; refusing (skip)"
+      printf '0'
+      return 0
+      ;;
+  esac
+
+  # No allow-list = no in-scope paths = nothing to commit. (reviewing,
+  # building, released stages legitimately return empty here — they're
+  # read-mostly per stage_output_paths.)
+  if [[ -z "$(stage_output_paths "$stage" 2>/dev/null || true)" ]]; then
+    log "auto-commit: stage=$stage has no output allow-list (skip)"
+    printf '0'
+    return 0
+  fi
+
+  local in_scope_file
+  in_scope_file="$(mktemp -t auto-commit-inscope.XXXXXX)"
+
+  # partition_dirty_paths consumes NUL-delimited records straight from
+  # `git status -z --porcelain`, INCLUDING the 2-char status prefix
+  # (`?? `, ` M`, `R …`). It strips the prefix and tracks rename/copy
+  # double-entries internally. Pipe straight in — same shape as
+  # run-local.sh:251-253 calls partition. Subshell `cd` so the
+  # frontmatter-resolution branch (_path_has_linear_frontmatter) finds
+  # the dirty path on disk relative to the worktree.
+  # FD4/FD5 routed to /dev/null — auto-commit only acts on FD3.
+  git -C "$worktree" status -z --porcelain \
+    | (cd "$worktree" && partition_dirty_paths "$stage" "$issue") \
+        3>"$in_scope_file" 4>/dev/null 5>/dev/null
+
+  local count
+  count="$(tr -cd '\0' < "$in_scope_file" | wc -c | tr -d ' ')"
+
+  if (( count == 0 )); then
+    log "auto-commit: worktree $worktree clean (no in-scope dirty paths)"
+    rm -f "$in_scope_file"
+    printf '0'
+    return 0
+  fi
+
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] auto-commit: $count in-scope path(s) on $branch"
+    tr '\0' '\n' < "$in_scope_file" | sed 's/^/[DRY_RUN]   /' >&2
+    rm -f "$in_scope_file"
+    printf '%s' "$count"
+    return 0
+  fi
+
+  log "auto-commit: $count in-scope path(s) on $branch — committing"
+  if ! (cd "$worktree" && xargs -0 git add -- < "$in_scope_file"); then
+    log "auto-commit: git add failed; in-scope paths NOT committed (operator must commit manually)"
+    rm -f "$in_scope_file"
+    printf '0'
+    return 0
+  fi
+
+  if ! git -C "$worktree" \
+        -c user.name="$BOT_NAME" \
+        -c user.email="$BOT_EMAIL" \
+        commit -m "chore(pipeline): $stage for $issue (operator-resumed via decide)" >/dev/null; then
+    log "auto-commit: git commit failed; staged in-scope paths left for operator review"
+    rm -f "$in_scope_file"
+    printf '0'
+    return 0
+  fi
+
+  if ! git -C "$worktree" push -u origin HEAD 2>&1 | sed 's/^/  push: /' >&2; then
+    log "auto-commit: git push failed (commit landed locally; will retry on next clean tick)"
+    rm -f "$in_scope_file"
+    printf '%s' "$count"
+    return 0
+  fi
+
+  log "auto-commit: $count path(s) pushed to origin/$branch"
+  rm -f "$in_scope_file"
+  printf '%s' "$count"
+}
+
 # Single-flight lock for run-local.sh. Uses POSIX-atomic mkdir(2) on
 # $1 (the lock directory) to guarantee at most one pipeline tick runs
 # concurrently on this host.
