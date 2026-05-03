@@ -251,9 +251,9 @@ write_label_fixture "stage:planning" \
   "ENG-2001|In Progress|3|Bug,stage:planning,pipeline:halted" \
   "ENG-2002|In Progress|3|Bug,stage:planning,pipeline:halted"
 write_comments_fixture "ENG-2001" \
-  "<!-- pipeline-halt: agent-blocked -->|2026-04-24T10:00:00.000Z"
+  "<!-- pipeline: verdict result=halt reason=agent-blocked -->|2026-04-24T10:00:00.000Z"
 write_comments_fixture "ENG-2002" \
-  "<!-- pipeline-halt: agent-blocked -->|2026-04-24T10:00:00.000Z"
+  "<!-- pipeline: verdict result=halt reason=agent-blocked -->|2026-04-24T10:00:00.000Z"
 write_inbox_fixture \
   "ENG-3001|Todo|3|Bug"
 out="$(main 2>/dev/null || true)"
