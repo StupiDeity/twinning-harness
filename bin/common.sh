@@ -163,6 +163,18 @@ parse_pipeline_marker() {
         json="$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$json")"
       done
     fi
+    # Apply legacy_halt_reason_aliases for verdict events with a reason
+    # field — same normalization the old-shape `halt)` branch does. This
+    # ensures a hand-crafted or future-buggy new-shape halt with a legacy
+    # reason token still produces the canonical token downstream.
+    if [[ "$event" == "verdict" ]] && jq -e '.reason' <<<"$json" >/dev/null 2>&1; then
+      local raw_reason canon_reason
+      raw_reason="$(jq -r '.reason' <<<"$json")"
+      canon_reason="$(jq -r --arg r "$raw_reason" '.legacy_halt_reason_aliases[$r] // $r' "$HARNESS_ROOT/bin/pipeline-events.json" 2>/dev/null || printf '%s' "$raw_reason")"
+      if [[ "$raw_reason" != "$canon_reason" ]]; then
+        json="$(jq -c --arg r "$canon_reason" '.reason = $r' <<<"$json")"
+      fi
+    fi
     printf '%s' "$json"
     return 0
   fi
