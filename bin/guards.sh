@@ -39,8 +39,8 @@ count_marker() {
   resp="$(bash "$SCRIPT_DIR/linear.sh" query "$q" "$vars")"
   jq -r \
     --arg m  "<!-- meta: metric name=$marker -->" \
-    --arg ml "<!-- pipeline-metric: $marker -->" \
-    '[.data.issue.comments.nodes[]? | .body | select(contains($m) or contains($ml))] | length' <<<"$resp"
+    --arg m_legacy "<!-- pipeline-metric: $marker -->" \
+    '[.data.issue.comments.nodes[]? | .body | select(contains($m) or contains($m_legacy))] | length' <<<"$resp"
 }
 
 # Count comment bodies containing $marker whose createdAt is newer than
@@ -58,14 +58,14 @@ count_marker_since_last_transition() {
   if [[ -z "$last_ts" ]]; then
     jq -r \
       --arg m  "<!-- meta: metric name=$marker -->" \
-      --arg ml "<!-- pipeline-metric: $marker -->" \
-      '[.[] | select(.body | contains($m) or contains($ml))] | length' <<<"$comments"
+      --arg m_legacy "<!-- pipeline-metric: $marker -->" \
+      '[.[] | select(.body | contains($m) or contains($m_legacy))] | length' <<<"$comments"
   else
     jq -r \
       --arg m  "<!-- meta: metric name=$marker -->" \
-      --arg ml "<!-- pipeline-metric: $marker -->" \
+      --arg m_legacy "<!-- pipeline-metric: $marker -->" \
       --arg t "$last_ts" \
-      '[.[] | select(.createdAt > $t) | select(.body | contains($m) or contains($ml))] | length' <<<"$comments"
+      '[.[] | select(.createdAt > $t) | select(.body | contains($m) or contains($m_legacy))] | length' <<<"$comments"
   fi
 }
 

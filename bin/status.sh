@@ -317,6 +317,9 @@ show_markers() {
       [[ -z "$ts" ]] && continue
       printf '  %s  %-6s  %s  %s\n' "${ts:0:19}" "$ident" "$marker" "${body:0:100}"
       found=1
+    # Recognize both new-shape `<!-- meta: metric name=... -->` and legacy
+    # `<!-- pipeline-metric: ... -->` so the dashboard surfaces in-flight
+    # issues whose comment history predates the ENG-60 vocabulary cutover.
     done < <(jq -r --arg cutoff "$cutoff" '
       .data.issue.comments.nodes[]?
       | select(.createdAt >= $cutoff)
