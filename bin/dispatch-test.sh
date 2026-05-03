@@ -274,11 +274,12 @@ DRYRUN_OUT="$_TEST_STUB_DIR/dryrun.out"
 PIPELINE_DRY_RUN=1 \
   bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$DRYRUN_OUT" >/dev/null || true
 
-# Default budget (config has no override): 30 min = 1800s.
-if grep -qE 'gtimeout.*\b1800\b' "$DRYRUN_OUT"; then
-  pass_at "dry-run log: gtimeout wrapper with default 30-min (1800s) budget"
+# ENG-65: brainstorming/planning have a 60-min built-in default; other stages
+# stay at the historical 30-min cap. No config overrides → 3600s for brainstorm.
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT"; then
+  pass_at "dry-run log: gtimeout wrapper with brainstorming built-in default (60-min / 3600s)"
 else
-  fail_at "dry-run log missing gtimeout wrapper or default budget" \
+  fail_at "dry-run log missing gtimeout wrapper or brainstorming built-in default" \
     "log: $(cat "$DRYRUN_OUT")"
 fi
 
@@ -319,6 +320,166 @@ if grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_C"; then
 else
   fail_at "dry-run log did not pick up custom dispatch_timeout_minutes" \
     "log: $(cat "$DRYRUN_OUT_C")"
+fi
+
+# ─── ENG-65 per-stage timeout fixtures ────────────────────────────────────
+# D-002: a per-stage override beats the global, mis-keyed/zero entries fall
+# through to the per-stage built-in default, and built-in defaults are 60-min
+# for brainstorming/planning and 30-min for everything else.
+
+_eng65_run_dispatch_dryrun() {
+  # $1 = target_repo, $2 = project_slug, $3 = stage, $4 = output file
+  local _t="$1" _slug="$2" _stage="$3" _out="$4"
+  PIPELINE_DRY_RUN=1 \
+  TARGET_REPO="$_t" \
+  PROJECT_SLUG="$_slug" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  PROJECT_STATE_DIR="$HARNESS_STATE_DIR/$_slug" \
+  LINEAR_API_KEY="$LINEAR_API_KEY" \
+    bash "$SCRIPT_DIR/dispatch.sh" "$_stage" "$_PROMPT_FILE" 2>"$_out" >/dev/null || true
+}
+
+# Per-stage override fixture — brainstorming gets 45 min (2700s), other stages
+# unaffected (ui still uses its 30-min built-in default = 1800s).
+TARGET_REPO_PERSTAGE="$_TEST_STUB_DIR/target-perstage"
+mkdir -p "$TARGET_REPO_PERSTAGE/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "perstage-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: 45 } }
+}' > "$TARGET_REPO_PERSTAGE/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_PERSTAGE/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_PS_BS="$_TEST_STUB_DIR/dryrun-perstage-bs.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_PERSTAGE" "perstage-slug" brainstorming "$DRYRUN_OUT_PS_BS"
+if grep -qE 'gtimeout.*\b2700\b' "$DRYRUN_OUT_PS_BS"; then
+  pass_at "ENG-65 per-stage override: brainstorming honors dispatch_timeout_minutes_per_stage=45 (2700s)"
+else
+  fail_at "ENG-65 per-stage override did not apply to brainstorming" \
+    "log: $(cat "$DRYRUN_OUT_PS_BS")"
+fi
+
+DRYRUN_OUT_PS_UI="$_TEST_STUB_DIR/dryrun-perstage-ui.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_PERSTAGE" "perstage-slug" ui "$DRYRUN_OUT_PS_UI"
+if grep -qE 'gtimeout.*\b1800\b' "$DRYRUN_OUT_PS_UI"; then
+  pass_at "ENG-65 per-stage override: ui untouched by brainstorming override (1800s built-in default)"
+else
+  fail_at "ENG-65 per-stage override leaked into ui" \
+    "log: $(cat "$DRYRUN_OUT_PS_UI")"
+fi
+
+# Fallthrough fixture — no per-stage map, but global override is 5 min (300s).
+TARGET_REPO_FT="$_TEST_STUB_DIR/target-fallthrough"
+mkdir -p "$TARGET_REPO_FT/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "ft-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes: 5 }
+}' > "$TARGET_REPO_FT/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_FT/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_FT="$_TEST_STUB_DIR/dryrun-ft.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_FT" "ft-slug" brainstorming "$DRYRUN_OUT_FT"
+if grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_FT"; then
+  pass_at "ENG-65 fallthrough: brainstorming uses global dispatch_timeout_minutes=5 when per-stage absent (300s)"
+else
+  fail_at "ENG-65 fallthrough did not pick up global override" \
+    "log: $(cat "$DRYRUN_OUT_FT")"
+fi
+
+# Built-in-default-by-stage fixture — no overrides at all; brainstorming and
+# planning land at 60 min (3600s); ui/implementing/qa land at 30 min (1800s).
+TARGET_REPO_BI="$_TEST_STUB_DIR/target-builtin"
+mkdir -p "$TARGET_REPO_BI/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "bi-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5 }
+}' > "$TARGET_REPO_BI/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_BI/.pipeline-config/schemas/linear-ids.json"
+
+for stage in brainstorming planning; do
+  out="$_TEST_STUB_DIR/dryrun-bi-$stage.out"
+  _eng65_run_dispatch_dryrun "$TARGET_REPO_BI" "bi-slug" "$stage" "$out"
+  if grep -qE 'gtimeout.*\b3600\b' "$out"; then
+    pass_at "ENG-65 built-in default: $stage uses 60-min (3600s) when no overrides set"
+  else
+    fail_at "ENG-65 built-in default for $stage" "log: $(cat "$out")"
+  fi
+done
+
+for stage in ui implementing qa; do
+  out="$_TEST_STUB_DIR/dryrun-bi-$stage.out"
+  _eng65_run_dispatch_dryrun "$TARGET_REPO_BI" "bi-slug" "$stage" "$out"
+  if grep -qE 'gtimeout.*\b1800\b' "$out"; then
+    pass_at "ENG-65 built-in default: $stage uses 30-min (1800s) when no overrides set"
+  else
+    fail_at "ENG-65 built-in default for $stage" "log: $(cat "$out")"
+  fi
+done
+
+# Zero-rejection fixture — `dispatch_timeout_minutes_per_stage.brainstorming = 0`
+# would disable the gtimeout watchdog (gtimeout's "no timeout" sentinel).
+# The (( minutes >= 1 )) guard restores the per-stage built-in default.
+TARGET_REPO_ZERO="$_TEST_STUB_DIR/target-zero"
+mkdir -p "$TARGET_REPO_ZERO/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "zero-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: 0 } }
+}' > "$TARGET_REPO_ZERO/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_ZERO/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_ZERO="$_TEST_STUB_DIR/dryrun-zero.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_ZERO" "zero-slug" brainstorming "$DRYRUN_OUT_ZERO"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_ZERO" \
+   && ! grep -qE 'gtimeout.*\b0\b' "$DRYRUN_OUT_ZERO"; then
+  pass_at "ENG-65 zero-rejection: brainstorming with per-stage=0 falls back to 60-min built-in (3600s, NOT 0)"
+else
+  fail_at "ENG-65 zero-rejection failed (watchdog would be disabled)" \
+    "log: $(cat "$DRYRUN_OUT_ZERO")"
+fi
+
+# Typo'd-key fixture — `brainstorm` (missing -ing) silently falls through to
+# the per-stage built-in default. Documented behavior so operators learn to
+# verify `gtimeout ... <seconds>` in the per-stage transcript after applying
+# their override.
+TARGET_REPO_TYPO="$_TEST_STUB_DIR/target-typo"
+mkdir -p "$TARGET_REPO_TYPO/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "typo-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorm: 45 } }
+}' > "$TARGET_REPO_TYPO/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_TYPO/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_TYPO="$_TEST_STUB_DIR/dryrun-typo.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_TYPO" "typo-slug" brainstorming "$DRYRUN_OUT_TYPO"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_TYPO"; then
+  pass_at "ENG-65 typo'd-key: brainstorming ignores 'brainstorm' (missing -ing) → 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 typo'd-key did not fall through to built-in default" \
+    "log: $(cat "$DRYRUN_OUT_TYPO")"
+fi
+
+# Non-numeric override (string "60m" instead of 60) — regex guard rejects, so
+# the value falls through to the global, then to the per-stage built-in.
+TARGET_REPO_NN="$_TEST_STUB_DIR/target-nonnumeric"
+mkdir -p "$TARGET_REPO_NN/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "nn-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: "60m" } }
+}' > "$TARGET_REPO_NN/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_NN/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_NN="$_TEST_STUB_DIR/dryrun-nonnumeric.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_NN" "nn-slug" brainstorming "$DRYRUN_OUT_NN"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_NN"; then
+  pass_at "ENG-65 non-numeric: \"60m\" string rejected; falls through to 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 non-numeric did not fall through" \
+    "log: $(cat "$DRYRUN_OUT_NN")"
 fi
 
 # ─── Group 3: stream-json renderer fixtures (ENG-26 Task 5) ──────────────
