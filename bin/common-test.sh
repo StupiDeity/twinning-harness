@@ -313,6 +313,45 @@ result="$(parse_pipeline_marker "$body")"
 [[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P16: real marker wins over backticked example" || fail_at "P16: event mismatch" "got: $result"
 [[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P16: real marker → result=pass (NOT fail)" || fail_at "P16: result mismatch (example marker was wrongly parsed)" "got: $result"
 
+# ─── ENG-61 QA adversarial coverage ─────────────────────────────────────
+
+# Fixture P17 (adversarial): backticked span containing glob metacharacters
+# (*, ?, [, ]) must not break the strip loop. Brainstorm A15 flags
+# `${var//pat/repl}` as glob-evaluated; if BASH_REMATCH[0] contains glob
+# metachars and the literal-vs-glob mismatch causes the substitution to
+# (a) not remove the span (infinite loop) or (b) over-match and consume
+# the real marker, this test exposes it.
+body='Glob test `arr[0] *.md ?path` <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P17: real marker survives glob-metachar backticked span" || fail_at "P17: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P17: glob-metachar span → real marker still parses pass" || fail_at "P17: result mismatch" "got: $result"
+
+# Fixture P18 (adversarial): tab-indented marker on a multi-line raw body
+# must NOT parse. Brainstorm D-002 awk filter `^( {4,}|\t)` claims to
+# strip both 4-space-indent AND tab-indent; the plan's P14b only covers
+# 4-space-indent. This pins the tab branch.
+body=$'Some prose.\n\t<!-- pipeline: verdict result=pass stage=implementing -->\nMore prose.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P18: tab-indented marker (raw multi-line body) NOT parsed (rc=1)" || fail_at "P18: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P18: tab-indented marker → empty stdout" || fail_at "P18: stdout not empty" "got: $result"
+
+# Fixture P19 (adversarial): backticked text containing the marker-end
+# byte sequence (`-->`) must not confuse the grep boundary. The grep
+# pattern is `[^>]+`; if a stray `>` from a stripped span leaks past the
+# strip helper into grep, the regex bounds could be perturbed.
+body='Trick: `--> not a marker -->` <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P19: real marker found despite backticked '-->' decoy" || fail_at "P19: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P19: real marker → result=pass (decoy not parsed)" || fail_at "P19: result mismatch" "got: $result"
+
+# Fixture P20 (adversarial): empty triple-backtick fence `''''''` (six
+# adjacent backticks). Step 2's regex `\`\`\`[^\`]*\`\`\`` allows zero
+# inner chars; verify the loop terminates and real marker survives.
+body='Empty fence ``````.  <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P20: real marker survives empty triple-backtick fence" || fail_at "P20: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P20: empty triple-fence → real marker still parses pass" || fail_at "P20: result mismatch" "got: $result"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
