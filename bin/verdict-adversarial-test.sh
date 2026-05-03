@@ -224,8 +224,8 @@ else
   fail_at "A12 classify-failure applies pipeline:halted" "calls=$(cat "$STUB_LOG")"
 fi
 if calls_contains "linear.sh [add-or-update-comment] [halt/implement/ENG-812] [ENG-812]" \
-   && grep -qF '<!-- pipeline-halt: agent-blocked -->' "$STUB_LOG"; then
-  pass_at "A12 classify-failure halt comment body contains <!-- pipeline-halt: agent-blocked --> marker"
+   && grep -qF '<!-- pipeline: verdict result=halt reason=agent-blocked -->' "$STUB_LOG"; then
+  pass_at "A12 classify-failure halt comment body contains new-shape halt marker (agent-blocked)"
 else
   fail_at "A12 halt-marker in body" "calls=$(cat "$STUB_LOG")"
 fi
@@ -233,8 +233,8 @@ fi
 # ─── A13: classify-failure agent-failure marker for non-human policies ─
 reset_calls
 classify_failure "ENG-813" "implement" "skip-until-code-changes" "build failed" 21 2 >/dev/null 2>&1
-if grep -qF '<!-- pipeline-halt: agent-failure -->' "$STUB_LOG"; then
-  pass_at "A13 classify-failure skip-until-code-changes uses agent-failure marker"
+if grep -qF '<!-- pipeline: verdict result=halt reason=agent-failure -->' "$STUB_LOG"; then
+  pass_at "A13 classify-failure skip-until-code-changes uses new-shape agent-failure marker"
 else
   fail_at "A13 classify-failure agent-failure marker" "calls=$(cat "$STUB_LOG")"
 fi
@@ -410,10 +410,8 @@ fi
 # pass verdict. The body contains the halt marker verbatim; scanner must
 # classify it as pipeline-halt (halt-for-human), not pipeline-stage-summary
 # nor pipeline-rejection.
-# NOTE: classify-failure.sh still emits old-shape <!-- pipeline-halt: ... -->;
-# this fixture uses new-shape to test the post-migration behavior. When
-# classify-failure.sh is migrated (future Phase 3), this fixture will match
-# what classify-failure.sh actually emits.
+# classify-failure.sh now emits new-shape <!-- pipeline: verdict result=halt ... -->
+# (migrated in ENG-60 T3.4.5); this fixture matches what classify-failure.sh emits.
 reset_calls
 export VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline: transition from=planning to=implementing -->|2026-04-23T09:00:00.000Z" \

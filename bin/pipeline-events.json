@@ -9,6 +9,7 @@
   ],
   "halt_reasons": [
     "agent-blocked",
+    "agent-failure",
     "smoke-failed",
     "iteration-exhausted",
     "scope-violation",

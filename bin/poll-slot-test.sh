@@ -366,7 +366,7 @@ chmod +x "$STUB_DIR/metrics.sh"
 
 # ─── AC-6: skip-until-code-changes auto-resume also clears halt label ──
 # Regression: ENG-26 stayed at no-work after evidence-change cleared the
-# skip label because pipeline:halted + a <!-- pipeline-halt: --> marker
+# skip label because pipeline:halted + a <!-- pipeline: verdict result=halt --> marker
 # (both written by classify-failure) kept _poll_classify_labels in
 # vacate/not-advanceable. _poll_evaluate_skip must clear the halt label
 # AND post a pipeline-decision: resume marker so the next tick can
@@ -375,7 +375,7 @@ reset_fixtures
 write_label_fixture "stage:implementing" \
   "ENG-7001|In Progress|3|Bug,stage:implementing,pipeline:halted,pipeline:skip-until-code-changes"
 write_comments_fixture "ENG-7001" \
-  "<!-- pipeline-halt: agent-failure -->|2026-04-27T05:34:40.000Z"
+  "<!-- pipeline: verdict result=halt reason=agent-failure -->|2026-04-27T05:34:40.000Z"
 
 # Plant a stale issue-state.json so the evidence-changed branch fires.
 mkdir -p "$PROJECT_STATE_DIR/ENG-7001"
