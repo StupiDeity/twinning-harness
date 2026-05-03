@@ -85,6 +85,44 @@ calls_grep() {
 }
 calls_contains() { grep -qF "$1" "$STUB_LOG" 2>/dev/null; }
 
+# ─── ENG-60-followup spec-shape assertion helpers ────────────────────
+# Replaces brittle `calls_contains "<literal marker bytes>"` checks with
+# event-payload assertions. The motivation: the previous test asserted
+# the LEGACY marker shape on the wire, so when ENG-60's parser tightened
+# to new-shape only and apply_transition was left emitting legacy, the
+# tests still passed (they were checking the bug was preserved). A
+# spec-shape assertion would have caught the divergence the moment the
+# parser changed.
+#
+# extract_call_body <command> <issue>  → first body of recorded
+# `linear.sh <command> <issue> <body>...` line.
+extract_call_body() {
+  local cmd="$1" issue="$2"
+  grep -E "^linear\.sh ${cmd} ${issue} " "$STUB_LOG" 2>/dev/null \
+    | head -1 \
+    | sed -E "s|^linear\.sh ${cmd} ${issue} ||"
+}
+
+# assert_marker_event <command> <issue> <expected_event> [<k1>=<v1> ...]
+# Round-trip the body through parse_pipeline_marker and check event +
+# every named field. Returns 0 on full match, 1 otherwise. The mismatch
+# detail is left for the caller's fail_at message.
+assert_marker_event() {
+  local cmd="$1" issue="$2" expected_event="$3"; shift 3
+  local body ev
+  body="$(extract_call_body "$cmd" "$issue")"
+  [[ -n "$body" ]] || return 1
+  ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+  [[ -n "$ev" ]] || return 1
+  [[ "$(jq -r '.event' <<<"$ev")" == "$expected_event" ]] || return 1
+  local kv k v
+  for kv in "$@"; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    [[ "$(jq -r --arg k "$k" '.[$k] // ""' <<<"$ev")" == "$v" ]] || return 1
+  done
+  return 0
+}
+
 # Build a canned comments fixture. Args are `body|createdAt` pairs,
 # processed in the order given; id is synthesised.
 mk_fixture() {
@@ -108,7 +146,7 @@ VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-901" "qa" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "0" ]] \
-   && calls_contains "add-comment ENG-901 <!-- pipeline: transition from=qa to=building -->" \
+   && assert_marker_event "add-comment" "ENG-901" "transition" "from=qa" "to=building" \
    && calls_contains "add-label ENG-901 stage:building" \
    && calls_contains "remove-label ENG-901 stage:qa" \
    && calls_contains "remove-label ENG-901 pipeline:halted"; then
@@ -133,7 +171,7 @@ VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-902" "qa" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "0" ]] \
-   && calls_contains "add-comment ENG-902 <!-- pipeline: transition from=qa to=implementing -->" \
+   && assert_marker_event "add-comment" "ENG-902" "transition" "from=qa" "to=implementing" \
    && calls_contains "add-label ENG-902 stage:implementing" \
    && calls_contains "remove-label ENG-902 stage:qa" \
    && calls_contains "remove-label ENG-902 pipeline:halted" \
@@ -255,12 +293,23 @@ VH_FIXTURE_COMMENTS="$(mk_fixture \
 VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-909" "qa" >/dev/null 2>&1 || rc=$?
-transition_posts="$(calls_grep "add-comment ENG-909 <!-- pipeline: transition")"
+# Resume path posts NO new transition comment (the existing one in fixtures is
+# the freshness waypoint already on the issue). Spec-shape: any add-comment
+# whose body parses as event=transition would falsify the resume contract.
+transition_posts="$(calls_grep "add-comment ENG-909 ")"
+post_count_with_transition_marker=0
+while IFS= read -r body; do
+  ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+  [[ -z "$ev" ]] && continue
+  [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]] \
+    && post_count_with_transition_marker=$((post_count_with_transition_marker + 1))
+done < <(grep -E '^linear\.sh add-comment ENG-909 ' "$STUB_LOG" 2>/dev/null \
+         | sed -E 's|^linear\.sh add-comment ENG-909 ||')
 if [[ "$rc" == "0" ]] \
    && calls_contains "add-label ENG-909 stage:building" \
    && calls_contains "remove-label ENG-909 stage:qa" \
    && calls_contains "remove-label ENG-909 pipeline:halted" \
-   && [[ "$transition_posts" == "0" ]]; then
+   && [[ "$post_count_with_transition_marker" == "0" ]]; then
   pass_at "case-9 resume-in-progress-transition"
 else
   fail_at "case-9 resume-in-progress-transition" "rc=$rc transition_posts=$transition_posts calls=$(cat "$STUB_LOG")"

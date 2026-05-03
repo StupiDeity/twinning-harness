@@ -110,6 +110,7 @@ failure_outcome_for_exit() {
     11) printf 'paused' ;;
     12) printf 'stage-drift' ;;
     13) printf 'lane-violation' ;;
+    14) printf 'legacy-marker-write' ;;
     20) printf 'dispatch-failed' ;;
     21) printf 'scope-violation' ;;
     22) printf 'pr-opened-too-early' ;;
@@ -137,37 +138,53 @@ failure_outcome_for_exit() {
 # Returns 0 with JSON on stdout when a marker is found.
 # Returns 1 with empty stdout when no recognizable marker is in the body.
 #
-# New shape only (`pipeline: event k=v`); old-shape branch removed in T3.1.
+# New shape only (`pipeline: <event> k=v` or `meta: <kind> k=v`); old-shape
+# `<!-- pipeline-X: ... -->` branch was removed in T3.1.
 parse_pipeline_marker() {
   local body="$1"
   local marker
 
-  # New shape: `<!-- pipeline: <event> [k=v ...] -->`
-  marker="$(grep -oE '<!-- pipeline: [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
-  if [[ -n "$marker" ]]; then
-    local payload
-    payload="$(sed -E 's/<!-- pipeline: (.+) -->/\1/' <<<"$marker")"
-    local event="${payload%% *}"
-    local rest="${payload#$event}"
-    rest="${rest# }"
-    local json
-    json="$(jq -nc --arg e "$event" '{event:$e}')"
-    # Parse remaining `k=v` pairs (whitespace-separated).
-    if [[ -n "$rest" ]]; then
-      local pair k v
-      for pair in $rest; do
-        [[ "$pair" == *=* ]] || continue
-        k="${pair%%=*}"
-        v="${pair#*=}"
-        json="$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$json")"
-      done
-    fi
-    printf '%s' "$json"
-    return 0
+  # Match either family. The grep is intentionally unanchored so a marker
+  # appearing anywhere in the body is found; we take the LAST one (`tail -1`)
+  # because mechanical summary writers append the dedup marker to the end.
+  marker="$(grep -oE '<!-- (pipeline|meta): [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  [[ -z "$marker" ]] && return 1
+
+  local family payload
+  if [[ "$marker" == "<!-- pipeline:"* ]]; then
+    family="pipeline"
+    payload="$(sed -E 's|<!-- pipeline: (.+) -->|\1|' <<<"$marker")"
+  else
+    family="meta"
+    payload="$(sed -E 's|<!-- meta: (.+) -->|\1|' <<<"$marker")"
   fi
 
-  # No recognizable marker in body — empty stdout (already empty), rc=1.
-  return 1
+  # First whitespace-token: for pipeline family, the event verb
+  # (verdict|transition|decision); for meta family, the kind
+  # (dedup|metric|evidence).
+  local first="${payload%% *}"
+  local rest="${payload#$first}"
+  rest="${rest# }"
+
+  local json
+  if [[ "$family" == "pipeline" ]]; then
+    json="$(jq -nc --arg e "$first" '{event:$e}')"
+  else
+    json="$(jq -nc --arg k "$first" '{event:"meta", kind:$k}')"
+  fi
+
+  # Parse remaining whitespace-separated k=v pairs.
+  if [[ -n "$rest" ]]; then
+    local pair k v
+    for pair in $rest; do
+      [[ "$pair" == *=* ]] || continue
+      k="${pair%%=*}"
+      v="${pair#*=}"
+      json="$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$json")"
+    done
+  fi
+  printf '%s' "$json"
+  return 0
 }
 
 # ─── Orchestrator paused flag (ENG-23) ────────────────────────────────

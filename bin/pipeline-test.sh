@@ -253,16 +253,32 @@ else
 fi
 _ar_clear "ENG-5802"
 
-# ── PR-K: operator-resume waypoint uses new-shape marker
+# ── PR-K: operator-resume waypoint passes spec-shape assertion
+# Prior version pinned a literal marker substring; that locks the writer's
+# byte sequence and would silently keep passing if the parser's expectations
+# diverged from the writer's output (the ENG-60 failure mode). Round-trip
+# the captured body through parse_pipeline_marker and assert event payload.
 : > "$_AR_LINEAR_CALLS"
 LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
   _ar_decide "ENG-5803" --action continue || true
-contains_transition="$(grep -c "<!-- pipeline: transition from=building to=building reason=operator-resume -->" "$_AR_LINEAR_CALLS" || true)"
-if [[ "$contains_transition" -ge "1" ]]; then
-  pass_at "PR-K: operator-resume waypoint is new-shape transition marker"
+posts_matching=0
+while IFS= read -r line; do
+  body="${line#add-comment ENG-5803 }"
+  [[ "$body" == "$line" ]] && continue   # not an add-comment line
+  ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+  [[ -z "$ev" ]] && continue
+  if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]] \
+     && [[ "$(jq -r '.from' <<<"$ev")" == "building" ]] \
+     && [[ "$(jq -r '.to'   <<<"$ev")" == "building" ]] \
+     && [[ "$(jq -r '.reason // ""' <<<"$ev")" == "operator-resume" ]]; then
+    posts_matching=$((posts_matching + 1))
+  fi
+done < "$_AR_LINEAR_CALLS"
+if [[ "$posts_matching" -ge "1" ]]; then
+  pass_at "PR-K: operator-resume waypoint parses as transition from=building to=building reason=operator-resume"
 else
-  fail_at "PR-K: waypoint shape" \
-    "no new-shape transition from=building to=building reason=operator-resume found; got: $(cat "$_AR_LINEAR_CALLS")"
+  fail_at "PR-K: waypoint spec-shape" \
+    "no recorded body parses as the expected transition; got: $(cat "$_AR_LINEAR_CALLS")"
 fi
 _ar_clear "ENG-5803"
 

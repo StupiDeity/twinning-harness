@@ -388,6 +388,33 @@ get_comments() {
 #
 # Stdin is read only when `--body -` is explicitly requested. Bare positional
 # bodies stay positional (no implicit stdin) to keep legacy callers stable.
+# ENG-60-followup write-time guard. Rejects bodies that contain a legacy-shape
+# pipeline marker (`<!-- pipeline-(stage-summary|rejection|halt|wait|decision|
+# sig|metric|transition): ... -->`). Hand-rolled writers were the failure mode
+# that Phase 3 missed: validators in bin/pipeline.sh only fire when callers go
+# through `pipeline.sh event/decide`, so any direct add-comment that printf'd
+# a marker body bypassed the closed registry. This guard closes that hole.
+#
+# Returns 0 (allow) on any non-legacy body. On a legacy match, prints a
+# structured error to stderr and returns 14 (a fresh exit code added to
+# common.sh::failure_outcome_for_exit as `legacy-marker-write`).
+#
+# `_reject_legacy_marker_body <caller> <body>`
+_reject_legacy_marker_body() {
+  local caller="$1" body="$2"
+  local match
+  match="$(grep -oE '<!-- pipeline-(stage-summary|rejection|rejection-target|halt|wait|decision|sig|metric|transition): [^>]+ -->' <<<"$body" 2>/dev/null | head -1 || true)"
+  if [[ -n "$match" ]]; then
+    printf 'linear.sh %s: body contains legacy-shape pipeline marker — rejected.\n' "$caller" >&2
+    printf '            offending substring: %s\n' "$match" >&2
+    printf '            use bin/pipeline.sh event/decide to emit verdicts/decisions/transitions,\n' >&2
+    printf '            or the new `<!-- meta: <kind> ... -->` family for dedup/metrics.\n' >&2
+    printf '            registry: bin/pipeline-events.json · vocab: docs/pipeline-vocabulary.md\n' >&2
+    return 14
+  fi
+  return 0
+}
+
 _resolve_body_arg() {
   local body=""
   local got_flag=0
@@ -445,6 +472,7 @@ add_comment() {
   local body
   body="$(_resolve_body_arg "$@")"
   [[ -n "$body" ]] || die "add-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
+  _reject_legacy_marker_body "add-comment" "$body" || return $?
   # Lane fence: check before any Linear API call (including dry-run).
   local _comment_class
   _comment_class="$(_classify_comment_body "$body")"
@@ -510,6 +538,7 @@ add_or_update_comment() {
   body="$(_resolve_body_arg "$@")"
   [[ -n "$body" ]] \
     || die "add-or-update-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
+  _reject_legacy_marker_body "add-or-update-comment" "$body" || return $?
 
   # ENG-60 vocabulary: write `<!-- meta: dedup key=... -->` (new shape).
   # Look up matches against the legacy `<!-- pipeline-sig: ... -->` shape too,

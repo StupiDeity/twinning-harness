@@ -251,7 +251,21 @@ set -u
 _VH_SCRIPT_DIR="$STUB_DIR"
 apply_transition ENG-814 qa building ""
 apply_transition ENG-814 qa building "" 0   # explicit no-waypoint (resume path)
-posts="$(calls_grep_count "linear.sh [add-comment] [ENG-814] [<!-- pipeline: transition from=qa to=building -->")"
+# Spec-shape: count add-comment calls whose body parses as event=transition
+# from=qa to=building, regardless of literal byte sequence. The bracket-
+# stub above records `linear.sh [add-comment] [ENG-814] [<body>]`; extract
+# the body by stripping the first three bracketed args.
+posts=0
+while IFS= read -r body; do
+  ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+  [[ -z "$ev" ]] && continue
+  if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]] \
+     && [[ "$(jq -r '.from' <<<"$ev")" == "qa" ]] \
+     && [[ "$(jq -r '.to'   <<<"$ev")" == "building" ]]; then
+    posts=$((posts + 1))
+  fi
+done < <(grep -E '^linear\.sh \[add-comment\] \[ENG-814\] \[' "$STUB_LOG" 2>/dev/null \
+         | sed -E 's|^linear\.sh \[add-comment\] \[ENG-814\] \[(.*)\]$|\1|')
 if [[ "$posts" == "1" ]]; then
   pass_at "A14 apply_transition resume-path (post_waypoint=0) skips the transition-comment repost"
 else
