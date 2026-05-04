@@ -20,14 +20,15 @@ issue_id_from_branch() {
 }
 
 remove_tree() {
-  local path="$1" branch="$2" reason="$3"
+  local path="$1" branch="$2" reason="$3" issue_id="${4:-}"
   log "cleanup: removing worktree $path (branch=$branch, reason=$reason)"
   git -C "$TARGET_REPO" worktree remove --force "$path" 2>/dev/null || {
     log "cleanup: git worktree remove failed; forcing rm of $path"
     rm -rf "$path"
   }
   git -C "$TARGET_REPO" branch -D "$branch" 2>/dev/null || true
-  bash "$SCRIPT_DIR/metrics.sh" worktree-cleanup "$3" "$branch" "success" 0 "path=$path"
+  bash "$SCRIPT_DIR/metrics.sh" worktree-cleanup "$issue_id" "" success 0 \
+    "branch=$branch reason=$reason path=$path"
 }
 
 # Transition the Linear issue to "Done" if we can resolve an issue ID from
@@ -67,7 +68,7 @@ main() {
     if (( pr_merged_count > 0 )); then
       issue_id="$(issue_id_from_branch "$branch")"
       transition_done "$issue_id"
-      remove_tree "$path" "$branch" "merged"
+      remove_tree "$path" "$branch" "merged" "$issue_id"
       continue
     fi
 
@@ -76,7 +77,7 @@ main() {
     if [[ -n "$issue_id" ]]; then
       state="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$issue_id" 2>/dev/null | jq -r '.data.issue.state.name // empty')"
       if [[ "$state" == "Canceled" ]]; then
-        remove_tree "$path" "$branch" "canceled"
+        remove_tree "$path" "$branch" "canceled" "$issue_id"
         continue
       fi
     fi
@@ -89,7 +90,8 @@ main() {
 
     if (( pr_open_count == 0 )) && (( pr_merged_count == 0 )) && [[ -z "${state:-}" ]] && (( age_days >= 30 )); then
       log "cleanup: orphan detected (path=$path branch=$branch age_days=$age_days) — NOT auto-deleting"
-      bash "$SCRIPT_DIR/metrics.sh" worktree-orphan-detected "$branch" "cleanup" "warn" 0 "path=$path age_days=$age_days"
+      bash "$SCRIPT_DIR/metrics.sh" worktree-orphan-detected "${issue_id:-}" "" warn 0 \
+        "branch=$branch path=$path age_days=$age_days"
     fi
   done
 }
