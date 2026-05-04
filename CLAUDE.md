@@ -331,7 +331,7 @@ transitions to QA. Issues at any other stage are unaffected.
 |---|---|
 | Tick is silent | `$PROJECT_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
 | Breaker tripped | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
-| Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` |
+| Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` (comment `createdAt` reflects FIRST emission only; check the `<!-- meta: reapplied at=… -->` footer for the latest re-apply moment — see `docs/runbooks/recovery.md` §4) |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
 | Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
 

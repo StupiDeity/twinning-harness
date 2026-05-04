@@ -226,6 +226,47 @@ After running `resume` (or `resume` + counter-marker), check that:
 
 ---
 
+## 4. Halted issue with stale-looking halt comment timestamp
+
+An issue carries `pipeline:halted` but the most-recent halt comment shows a `createdAt` timestamp from a much earlier occurrence. The thread looks as if the halt was already resolved (no fresh comment appears to mark a re-fire), yet the label is present.
+
+### Symptom
+
+- `bash bin/linear.sh has-label ENG-N pipeline:halted` returns 0.
+- The most-recent `<!-- pipeline: verdict result=halt … -->` comment's `createdAt` is many minutes/hours/days older than the most recent `bash bin/pipeline.sh decide ENG-N --action continue` operator action.
+- Linear's web UI does NOT reliably surface "(edited)" for API-driven `commentUpdate` calls; do not rely on the indicator. `createdAt` is the original first-emission moment regardless of any updates.
+
+### Authoritative signal
+
+**The `pipeline:halted` LABEL is the state of record.** Comment `createdAt` reflects only the FIRST emission of any given halt body; identical-body re-applies update the existing comment in place. ENG-63 introduced a `<!-- meta: reapplied at=<iso8601-utc> -->` footer that gives operators an inspectable signal of the latest re-apply moment.
+
+### Recency evidence
+
+Filter for the most recent halt comment and inspect its full body:
+
+```bash
+bash bin/linear.sh get-comments ENG-N \
+  | jq -r '.[] | select(.body | contains("verdict result=halt")) | .body' \
+  | tail -1
+```
+
+Look for a `<!-- meta: reapplied at=<ts> -->` line at the bottom of that comment body. The timestamp on that line is the most recent re-application moment (NOT the original `createdAt`).
+
+### Operator decision tree
+
+- **Footer present AND timestamp recent (< 1h)** → halt is FRESH. Investigate the halt's `reason=` token (read the full comment body) BEFORE running `bash bin/pipeline.sh decide ENG-N --action continue`. A bare `--action continue` will be silently re-halted within seconds.
+- **Footer present BUT timestamp old (> 1h)** → halt has not re-fired since the footer's timestamp; safe to investigate at leisure or run `bash bin/pipeline.sh decide ENG-N --action continue` if the cause was external (CI flake, infrastructure outage).
+- **Footer absent** → halt has only ever been emitted once at `createdAt`; treat per §3 guidance.
+
+### Verify
+
+After `--action continue`, re-fetch the comment thread and confirm:
+
+1. `bash bin/linear.sh has-label ENG-N pipeline:halted || echo "not halted"` returns `not halted`.
+2. The next 5-minute poll tick proceeds without re-applying `pipeline:halted` — check `$PROJECT_STATE_DIR/logs/local-*.log` for a successful dispatch entry on the next stage.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
