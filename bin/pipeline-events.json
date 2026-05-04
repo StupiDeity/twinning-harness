@@ -42,7 +42,8 @@
   "meta_kinds": [
     "dedup",
     "metric",
-    "evidence"
+    "evidence",
+    "reapplied"
   ],
   "stages": [
     "brainstorming",
