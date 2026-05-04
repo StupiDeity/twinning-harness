@@ -267,6 +267,22 @@ After `--action continue`, re-fetch the comment thread and confirm:
 
 ---
 
+## 5. Backfill — accumulated Canceled-issue worktrees from pre-ENG-64 hosts
+
+ENG-64 fixed `bin/cleanup-worktrees.sh::issue_id_from_branch` for macOS;
+before that fix, the BSD `sed` delimiter collision in the regex caused
+`issue_id_from_branch` to silently return empty for every branch, so the
+Canceled-issue cleanup branch never fired. Existing hosts have an
+accumulated backlog of Canceled-issue worktrees under
+`$PROJECT_STATE_DIR/ENG-*/worktree`.
+
+**Action:** none required — the next periodic cleanup tick (every
+`CLEANUP_EVERY_N_TICKS` ticks of `bin/run-local.sh`) will sweep them
+automatically. To accelerate: `TARGET_REPO=… bash bin/cleanup-worktrees.sh`
+runs the sweep manually; it is idempotent.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
