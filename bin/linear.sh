@@ -567,6 +567,26 @@ add_or_update_comment() {
     '[.data.issue.comments.nodes[]? | select(.body | contains($m) or contains($l)) | .id] | first // ""' <<<"$resp")"
 
   if [[ -n "$existing_id" ]]; then
+    # ENG-63: when the existing comment's body (with any prior
+    # `<!-- meta: reapplied at=… -->` line stripped) is byte-equal to the
+    # caller's body (also stripped), append a fresh footer so Linear's
+    # updatedAt advances and operators see an inspectable signal of the
+    # latest re-apply moment. The strip regex is line-anchored (^…$) to
+    # avoid matching a quoted mention of the marker shape inside fenced
+    # prose.
+    local existing_body strip_re existing_norm new_norm now_iso
+    existing_body="$(jq -r --arg id "$existing_id" \
+      '[.data.issue.comments.nodes[]? | select(.id == $id) | .body] | first // ""' \
+      <<<"$resp")"
+    strip_re='/^<!-- meta: reapplied at=[^>]* -->$/d'
+    existing_norm="$(printf '%s' "$existing_body" | sed -E "$strip_re")"
+    new_norm="$(printf '%s' "$body" | sed -E "$strip_re")"
+    if [[ "$existing_norm" == "$new_norm" && -n "$existing_norm" ]]; then
+      now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      body="${new_norm}"$'\n'"<!-- meta: reapplied at=${now_iso} -->"
+      bash "$SCRIPT_DIR/metrics.sh" comment-reapplied "$ident" "-" \
+        "reapplied" 0 "sig=$sig" "comment_id=$existing_id" || true
+    fi
     local mu='mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success } }'
     local mvars
     mvars="$(jq -cn --arg id "$existing_id" --arg body "$body" '{id:$id, body:$body}')"
