@@ -129,6 +129,79 @@ assert_eq "case-G: empty input under set -u → empty (no crash)" \
 assert_eq "case-G2: feat/ENG-99-foo (uppercase, I flag dropped) → empty" \
   "" "$(issue_id_from_branch "feat/ENG-99-foo" 2>/dev/null)"
 
+# ─── Cases H, I, J: remove_tree + orphan-detected metric shape ────────────
+# Lock the bin/metrics.sh:20 positional contract:
+#   slot 2 = issue_id (ENG-N or empty), slot 3 = stage (empty for cleanup),
+#   branch and reason ride in notes.
+
+# Case H: remove_tree carries ENG-13 in the issue_id slot, "" in stage,
+# and emits branch=…, reason=…, path=… as notes.
+reset_jsonl
+remove_tree "/tmp/cleanup-test-h-$$" "feat/eng-13-foo" "merged" "ENG-13" >/dev/null 2>&1
+line="$(last_line)"
+issue_id="$(jq -r '.issue_id' <<<"$line")"
+stage="$(jq -r '.stage' <<<"$line")"
+event="$(jq -r '.event' <<<"$line")"
+outcome="$(jq -r '.outcome' <<<"$line")"
+notes="$(jq -r '.notes' <<<"$line")"
+if [[ "$event" == "worktree-cleanup" ]] \
+   && [[ "$issue_id" == "ENG-13" ]] \
+   && [[ "$stage" == "" ]] \
+   && [[ "$outcome" == "success" ]] \
+   && [[ "$notes" == *"branch=feat/eng-13-foo"* ]] \
+   && [[ "$notes" == *"reason=merged"* ]] \
+   && [[ "$notes" == *"path=/tmp/cleanup-test-h-$$"* ]]; then
+  report_ok "case-H remove_tree merged: issue_id=ENG-13, stage='', notes carries branch+reason+path"
+else
+  report_fail "case-H remove_tree merged" \
+    "issue_id=ENG-13 stage='' notes~'branch=… reason=merged path=…'" \
+    "event=$event issue_id=$issue_id stage=$stage outcome=$outcome notes=$notes"
+fi
+
+# Case I: caller passes "" for issue_id (branch did not match regex);
+# JSONL must have empty issue_id, empty stage — no field-shift.
+reset_jsonl
+remove_tree "/tmp/cleanup-test-i-$$" "main" "merged" "" >/dev/null 2>&1
+line="$(last_line)"
+issue_id="$(jq -r '.issue_id' <<<"$line")"
+stage="$(jq -r '.stage' <<<"$line")"
+notes="$(jq -r '.notes' <<<"$line")"
+if [[ "$issue_id" == "" ]] \
+   && [[ "$stage" == "" ]] \
+   && [[ "$notes" == *"branch=main"* ]] \
+   && [[ "$notes" == *"reason=merged"* ]]; then
+  report_ok "case-I remove_tree empty issue_id: no field-shift, branch lands in notes"
+else
+  report_fail "case-I remove_tree empty issue_id" \
+    "issue_id='' stage='' notes~'branch=main'" \
+    "issue_id=$issue_id stage=$stage notes=$notes"
+fi
+
+# Case J: orphan-detected metric (cleanup-worktrees.sh:88) — same field
+# shape. Exercise the metrics call directly with the corrected positionals
+# so a future regression at line 88 fails this assertion.
+reset_jsonl
+bash "$HARNESS_DIR/metrics.sh" worktree-orphan-detected "ENG-13" "" warn 0 \
+  "branch=feat/eng-13-foo path=/tmp/cleanup-test-j age_days=33"
+line="$(last_line)"
+event="$(jq -r '.event' <<<"$line")"
+issue_id="$(jq -r '.issue_id' <<<"$line")"
+stage="$(jq -r '.stage' <<<"$line")"
+outcome="$(jq -r '.outcome' <<<"$line")"
+notes="$(jq -r '.notes' <<<"$line")"
+if [[ "$event" == "worktree-orphan-detected" ]] \
+   && [[ "$issue_id" == "ENG-13" ]] \
+   && [[ "$stage" == "" ]] \
+   && [[ "$outcome" == "warn" ]] \
+   && [[ "$notes" == *"branch=feat/eng-13-foo"* ]] \
+   && [[ "$notes" == *"age_days=33"* ]]; then
+  report_ok "case-J orphan-detected: issue_id=ENG-13, stage='', notes carries branch+age_days"
+else
+  report_fail "case-J orphan-detected" \
+    "issue_id=ENG-13 stage='' notes~'branch=… age_days=33'" \
+    "event=$event issue_id=$issue_id stage=$stage outcome=$outcome notes=$notes"
+fi
+
 echo
 echo "cleanup-worktrees-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
