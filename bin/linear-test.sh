@@ -509,6 +509,109 @@ err="$(add_or_update_comment "test/sig/ENG-55T" ENG-55T 2>&1)" || rc=$?
   && pass_at "ENG-55 add_or_update_comment: empty body dies cleanly" \
   || fail_at "ENG-55 add_or_update_comment: empty body" "rc=$rc err=$err"
 
+# ─── ENG-63: add_or_update_comment identical-body footer (C-001..C-004) ──
+# Exercise the commentUpdate branch under controlled GraphQL responses.
+# Override linear_query and _resolve_issue_uuid post-source (the same idiom
+# used at line 87 for SCRIPT_DIR), and flip PIPELINE_DRY_RUN=0 so the
+# function reaches the existing-id resolution path instead of the dry-run
+# short-circuit at bin/linear.sh:553.
+printf '\n--- ENG-63: identical-body re-apply visibility ---\n'
+
+_eng63_orig_linear_query="$(declare -f linear_query)"
+_eng63_orig_resolve_uuid="$(declare -f _resolve_issue_uuid)"
+_eng63_orig_dry_run="$PIPELINE_DRY_RUN"
+_eng63_orig_script_dir="$SCRIPT_DIR"
+
+# linear.sh's metric emission resolves bin/metrics.sh via $SCRIPT_DIR. The
+# lane-fence section above overrode SCRIPT_DIR to the stub dir; flip it
+# back to the real bin/ so the metric write reaches the real script.
+SCRIPT_DIR="$SCRIPT_DIR_REAL"
+
+_resolve_issue_uuid() { printf 'uuid-mock'; }
+
+_eng63_capture_file="$(mktemp -t eng63-capture.XXXXXX)"
+_eng63_canned_existing_body=""
+_eng63_canned_existing_id="cmt-mock-001"
+
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentUpdate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_eng63_capture_file"
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
+  fi
+  if [[ "$query" =~ commentCreate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_eng63_capture_file"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  jq -cn --arg id "$_eng63_canned_existing_id" --arg body "$_eng63_canned_existing_body" \
+    '{data:{issue:{comments:{nodes:[{id:$id,body:$body}]}}}}'
+}
+
+export PIPELINE_DRY_RUN=0
+mkdir -p "$PROJECT_STATE_DIR/metrics"
+: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
+
+# C-001: identical body (no prior footer) → footer appended
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Test body line 1\nTest body line 2\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file"; then
+  pass_at "ENG-63 C-001 identical body → footer appended"
+else
+  fail_at "ENG-63 C-001 identical body → footer appended" "captured: $(cat "$_eng63_capture_file")"
+fi
+
+# C-002: different body → no footer
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Test body line 1\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body $'Test body line 1 CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
+if grep -q '<!-- meta: reapplied at=' "$_eng63_capture_file"; then
+  fail_at "ENG-63 C-002 different body → no footer" "captured: $(cat "$_eng63_capture_file")"
+else
+  pass_at "ENG-63 C-002 different body → no footer"
+fi
+
+# C-003: identical body + prior footer → footer rotated, not stacked
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Test body line 1\n<!-- meta: dedup key=test/sig/ENG-63T -->\n<!-- meta: reapplied at=2025-01-01T00:00:00Z -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body $'Test body line 1\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
+_eng63_footer_count="$(grep -cE '^<!-- meta: reapplied at=' "$_eng63_capture_file" || true)"
+_eng63_has_old_ts="$(grep -c '2025-01-01T00:00:00Z' "$_eng63_capture_file" || true)"
+if [[ "$_eng63_footer_count" == "1" && "$_eng63_has_old_ts" == "0" ]]; then
+  pass_at "ENG-63 C-003 identical body + prior footer → rotated, not stacked"
+else
+  fail_at "ENG-63 C-003 identical body + prior footer → rotated, not stacked" \
+    "footer_count=$_eng63_footer_count has_old_ts=$_eng63_has_old_ts captured: $(cat "$_eng63_capture_file")"
+fi
+
+# C-004: identical body emits exactly one comment-reapplied metric event
+: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Test body line 1\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
+_eng63_metric_count="$(grep -c '"event":"comment-reapplied"' "$PROJECT_STATE_DIR/metrics/events.jsonl" || true)"
+if [[ "$_eng63_metric_count" == "1" ]]; then
+  pass_at "ENG-63 C-004 identical body → one comment-reapplied metric event"
+else
+  fail_at "ENG-63 C-004 identical body → one comment-reapplied metric event" \
+    "metric_count=$_eng63_metric_count events.jsonl: $(cat "$PROJECT_STATE_DIR/metrics/events.jsonl")"
+fi
+
+# Restore originals so subsequent tests in this file (or callers) inherit a
+# pristine env.
+rm -f "$_eng63_capture_file"
+unset -f linear_query _resolve_issue_uuid
+eval "$_eng63_orig_linear_query"
+eval "$_eng63_orig_resolve_uuid"
+export PIPELINE_DRY_RUN="$_eng63_orig_dry_run"
+SCRIPT_DIR="$_eng63_orig_script_dir"
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
