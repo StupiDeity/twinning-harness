@@ -8,19 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-require_bin gh jq git
-
-# Worktrees live at $PROJECT_STATE_DIR/ENG-*/worktree per ENG-15. The
-# enclosing per-issue dir also holds issue-state.json + stage-summary-*.md;
-# we only sweep the worktree subdir, leaving the parent untouched so
-# poll.sh's skip-state evidence survives.
-shopt -s nullglob
-worktree_paths=("$PROJECT_STATE_DIR"/ENG-*/worktree)
-if (( ${#worktree_paths[@]} == 0 )); then
-  log "no per-issue worktrees under $PROJECT_STATE_DIR; nothing to sweep"
-  exit 0
-fi
-
 # issue_id_from_branch: "feat/eng-13-foo" → "ENG-13"; empty if no match.
 issue_id_from_branch() {
   local branch="$1"
@@ -55,38 +42,58 @@ transition_done() {
   log "cleanup: transitioned $issue_id to Linear state '$done_state'"
 }
 
-for path in "${worktree_paths[@]}"; do
-  # Resolve the branch at this worktree.
-  branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)"
-  [[ -n "$branch" ]] || { log "cleanup: skip $path (not a git worktree)"; continue; }
+main() {
+  require_bin gh jq git
 
-  # 1. PR merged? If so, transition Linear to Done before removing.
-  pr_merged_count="$(gh pr list --head "$branch" --state merged --json number --jq 'length' 2>/dev/null || echo 0)"
-  if (( pr_merged_count > 0 )); then
-    issue_id="$(issue_id_from_branch "$branch")"
-    transition_done "$issue_id"
-    remove_tree "$path" "$branch" "merged"
-    continue
+  # Worktrees live at $PROJECT_STATE_DIR/ENG-*/worktree per ENG-15. The
+  # enclosing per-issue dir also holds issue-state.json + stage-summary-*.md;
+  # we only sweep the worktree subdir, leaving the parent untouched so
+  # poll.sh's skip-state evidence survives.
+  shopt -s nullglob
+  local worktree_paths=("$PROJECT_STATE_DIR"/ENG-*/worktree)
+  if (( ${#worktree_paths[@]} == 0 )); then
+    log "no per-issue worktrees under $PROJECT_STATE_DIR; nothing to sweep"
+    return 0
   fi
 
-  # 2. Linear issue Canceled?
-  issue_id="$(issue_id_from_branch "$branch")"
-  if [[ -n "$issue_id" ]]; then
-    state="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$issue_id" 2>/dev/null | jq -r '.data.issue.state.name // empty')"
-    if [[ "$state" == "Canceled" ]]; then
-      remove_tree "$path" "$branch" "canceled"
+  local path branch issue_id state pr_merged_count pr_open_count last_commit_ts now_ts age_days
+  for path in "${worktree_paths[@]}"; do
+    # Resolve the branch at this worktree.
+    branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)"
+    [[ -n "$branch" ]] || { log "cleanup: skip $path (not a git worktree)"; continue; }
+
+    # 1. PR merged? If so, transition Linear to Done before removing.
+    pr_merged_count="$(gh pr list --head "$branch" --state merged --json number --jq 'length' 2>/dev/null || echo 0)"
+    if (( pr_merged_count > 0 )); then
+      issue_id="$(issue_id_from_branch "$branch")"
+      transition_done "$issue_id"
+      remove_tree "$path" "$branch" "merged"
       continue
     fi
-  fi
 
-  # 3. Orphan: no open PR AND no merged PR AND no open issue AND no commits in 30 days.
-  pr_open_count="$(gh pr list --head "$branch" --state open --json number --jq 'length' 2>/dev/null || echo 0)"
-  last_commit_ts="$(git -C "$path" log -1 --format=%ct 2>/dev/null || echo 0)"
-  now_ts="$(date +%s)"
-  age_days=$(( (now_ts - last_commit_ts) / 86400 ))
+    # 2. Linear issue Canceled?
+    issue_id="$(issue_id_from_branch "$branch")"
+    if [[ -n "$issue_id" ]]; then
+      state="$(bash "$SCRIPT_DIR/linear.sh" get-issue "$issue_id" 2>/dev/null | jq -r '.data.issue.state.name // empty')"
+      if [[ "$state" == "Canceled" ]]; then
+        remove_tree "$path" "$branch" "canceled"
+        continue
+      fi
+    fi
 
-  if (( pr_open_count == 0 )) && (( pr_merged_count == 0 )) && [[ -z "${state:-}" ]] && (( age_days >= 30 )); then
-    log "cleanup: orphan detected (path=$path branch=$branch age_days=$age_days) — NOT auto-deleting"
-    bash "$SCRIPT_DIR/metrics.sh" worktree-orphan-detected "$branch" "cleanup" "warn" 0 "path=$path age_days=$age_days"
-  fi
-done
+    # 3. Orphan: no open PR AND no merged PR AND no open issue AND no commits in 30 days.
+    pr_open_count="$(gh pr list --head "$branch" --state open --json number --jq 'length' 2>/dev/null || echo 0)"
+    last_commit_ts="$(git -C "$path" log -1 --format=%ct 2>/dev/null || echo 0)"
+    now_ts="$(date +%s)"
+    age_days=$(( (now_ts - last_commit_ts) / 86400 ))
+
+    if (( pr_open_count == 0 )) && (( pr_merged_count == 0 )) && [[ -z "${state:-}" ]] && (( age_days >= 30 )); then
+      log "cleanup: orphan detected (path=$path branch=$branch age_days=$age_days) — NOT auto-deleting"
+      bash "$SCRIPT_DIR/metrics.sh" worktree-orphan-detected "$branch" "cleanup" "warn" 0 "path=$path age_days=$age_days"
+    fi
+  done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
