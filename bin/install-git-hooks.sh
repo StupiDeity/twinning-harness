@@ -21,14 +21,21 @@ cd "$REPO_ROOT"
 # the +x bit, but a fresh clone via some tools/file-systems can lose it).
 chmod +x .githooks/* 2>/dev/null || true
 
+target="$REPO_ROOT/.githooks"
 current="$(git config --get core.hooksPath || true)"
-if [[ "$current" == ".githooks" ]]; then
-  printf 'install-git-hooks: core.hooksPath already set to .githooks (no-op)\n'
+if [[ "$current" == "$target" ]]; then
+  printf 'install-git-hooks: core.hooksPath already set to %s (no-op)\n' "$target"
   exit 0
 fi
 
-git config core.hooksPath .githooks
-printf 'install-git-hooks: core.hooksPath -> .githooks\n'
+# ABSOLUTE path so every linked worktree uses the same hook regardless of
+# the feature branch's tip (the alternative — relative `.githooks` —
+# resolves per-worktree against each working tree, so a feature branch
+# that pre-dates the latest hook hardening would still execute the OLD
+# hook on commits triggered from inside its linked worktree, e.g. by
+# pipeline.sh decide --action continue's auto_commit_in_scope).
+git config core.hooksPath "$target"
+printf 'install-git-hooks: core.hooksPath -> %s\n' "$target"
 printf '  installed hooks:\n'
 for h in .githooks/*; do
   [[ -f "$h" && -x "$h" ]] && printf '    %s\n' "$h"

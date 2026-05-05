@@ -15,6 +15,46 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 [[ -n "$REPO_ROOT" ]] || { printf 'pre-commit: not inside a git repo\n' >&2; exit 1; }
 cd "$REPO_ROOT"
 
+# ─── Test-isolation hardening (2026-05-04 incident) ──────────────────
+# Forensic finding: ENG-63/64/65 implementing dispatches halted on
+# SEVERE scope violations because test fixtures inside `bin/*-test.sh`
+# leaked `seed.txt` (and stray fixture branches) into the live worktree.
+# Root mechanisms — defended-against here by stripping the in-bound env
+# and operating from a neutral cwd, so test fixtures cannot inadvertently
+# resolve a tempdir path back into the harness's actual git repo:
+#
+#   1) git invokes hooks with `GIT_INDEX_FILE=.git/index` (relative).
+#      A test fixture's `cd $tempdir && git ...` resolves the relative
+#      path against $tempdir/.git — fine when $tempdir/.git exists, but
+#      pathological when a subshell's cd silently fails or when $tempdir
+#      isn't yet a git repo at the time GIT_INDEX_FILE is consulted.
+#   2) The harness's main repo had `core.bare=true` set (cause unknown,
+#      possibly a stray `git init --bare` or a config-merge accident);
+#      that flag short-circuits `git init` heuristics in fixtures and
+#      makes `git status` on the harness root refuse with
+#      "must be run in a work tree", masking the true repo state.
+#
+# The hook is the correct defense layer because every test invocation
+# during a commit goes through it. Belt-and-suspenders test-side hardening
+# (unset GIT_* in each test file) tracked separately.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_NAMESPACE \
+      GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL \
+      GIT_PREFIX GIT_INTERNAL_GETTEXT_TEST_FALLBACKS GIT_CEILING_DIRECTORIES \
+      GIT_DISCOVERY_ACROSS_FILESYSTEM
+
+# Invariant: the harness's main repo MUST NOT be bare. Bare-mode flips
+# `git status` semantics on the harness root and hides leaked-into-parent
+# state. If we detect bare=true, fix it loudly and continue — the hook
+# is the right place to self-heal because it runs on every commit.
+HARNESS_GIT_DIR="$REPO_ROOT/.git"
+if [[ -d "$HARNESS_GIT_DIR" ]]; then
+  bare="$(git --git-dir="$HARNESS_GIT_DIR" config --get core.bare 2>/dev/null || printf 'false')"
+  if [[ "$bare" == "true" ]]; then
+    git --git-dir="$HARNESS_GIT_DIR" config core.bare false
+    printf '[pre-commit] WARNING: harness main repo had core.bare=true; reset to false. Investigate (likely test-fixture leak via inherited GIT_DIR).\n' >&2
+  fi
+fi
+
 # ─── Known-broken-on-main tests ──────────────────────────────────────
 # Tests in this list are RUN but excluded from the pass/fail gate. Each
 # entry MUST be paired with a one-line comment explaining what's broken

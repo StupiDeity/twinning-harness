@@ -404,6 +404,52 @@ else
   fi
 fi
 
+# ─── Branch-name convention defense (2026-05-04 ENG-63/64/65 incident) ─
+# Three feature branches got created by agents using the `feature/eng-N-…`
+# prefix (instead of canonical `feat/eng-N-…`). The harness's run-local.sh
+# fell into a "legacy feature/* coexistence" path that dispatched the
+# agent from the operator's checkout with no per-issue worktree, scope-
+# check fired against the wrong working tree, three issues halted, the
+# breaker tripped. AGENT_PROMPTS.md now carries an explicit section
+# instructing agents to use {branch_name} verbatim and never run any of
+# the four branch-creation forms (-b / -B / -m / -c). Pin those instructions
+# so a future prompt edit can't quietly drop them.
+prompts_full="$(cat "$SCRIPT_DIR/../AGENT_PROMPTS.md")"
+
+if grep -qE '^### Branch-name convention' <<<"$prompts_full"; then
+  ok 'Branch-name convention section present'
+else
+  nope 'Branch-name convention section present' \
+       'top-level §"Branch-name convention" missing — agents have no canonical-prefix instruction'
+fi
+
+# Each banned branch-creation form must be explicitly named so an agent
+# reading the section in isolation knows exactly what NOT to do.
+for forbidden in 'git checkout -b' 'git checkout -B' 'git branch -m' 'git switch -c'; do
+  if grep -qF "$forbidden" <<<"$prompts_full"; then
+    ok "Branch-name convention names forbidden form: $forbidden"
+  else
+    nope "Branch-name convention names forbidden form: $forbidden" \
+         'section must explicitly enumerate banned commands so agents cannot rationalize a near-equivalent'
+  fi
+done
+
+# The canonical shape `feat/eng-N-<slug>` and `fix/eng-N-<slug>` must be
+# named, alongside at least one rejected variant.
+if grep -qF 'feat/eng-N-' <<<"$prompts_full" \
+   && grep -qF 'fix/eng-N-' <<<"$prompts_full"; then
+  ok 'Branch-name convention names canonical feat/ + fix/ prefixes'
+else
+  nope 'Branch-name convention names canonical feat/ + fix/ prefixes' \
+       'agent must see the exact canonical shape, not just a prose hint'
+fi
+if grep -qF 'feature/' <<<"$prompts_full"; then
+  ok 'Branch-name convention rejects `feature/` variant'
+else
+  nope 'Branch-name convention rejects `feature/` variant' \
+       'the May-2026 incident name is feature/* — pin its rejection so the precedent is durable'
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

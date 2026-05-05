@@ -67,6 +67,19 @@ verdict — it validates against the registry and dies on unknown tokens. Do
 NOT hand-craft marker bodies in scripts. The legacy `bin/post-verdict.sh`
 wrapper still works for one release but logs a deprecation line on use.
 
+### Branch-name convention (MANDATORY — applies to every stage)
+
+The orchestrator computes the canonical branch name once via
+`bin/branch-name.sh` and substitutes it into your prompt as `{branch_name}`.
+The shape is **`feat/eng-N-<slug>`** for Feature/Improvement issues, **`fix/eng-N-<slug>`** for Bug-labeled issues. Variants like `feature/…`, `bugfix/…`, `hotfix/…`, `chore/…`, or anything Linear's auto-generated `gitBranchName` suggests (e.g. `<username>/eng-N-…`) are **not** canonical and **must not be used**.
+
+Hard rules:
+
+1. **Use `{branch_name}` verbatim.** Never substitute a similar-looking name. The orchestrator's per-issue worktree path is keyed off this exact string; a divergent name forces the harness into a legacy fallback path that runs your dispatch from the operator's checkout, breaks scope-check (the plan lives on the wrong branch), and silently corrupts the operator's working tree. ENG-63/64/65 (May 2026) all halted in this exact way after agents ran `git checkout -B feature/eng-N-…`. Do not repeat.
+2. **Do not run `git checkout -b`, `git checkout -B`, `git branch -m`, or `git switch -c` to create a new branch.** The orchestrator has already created `{branch_name}` and checked it out in the per-issue worktree before you start. If `git status` shows you on a different branch, that's a bug — emit `verdict halt --reason agent-blocked` and exit; do not "fix" it by renaming.
+3. **Do not derive a branch name from Linear's `gitBranchName` field, the issue title, or your own slug.** Those are not the same as `{branch_name}` and using any of them as a substitute counts as rule 1.
+4. **You may run `git checkout {branch_name}` (without `-b`) to switch into the worktree's branch** if a tool moved HEAD elsewhere. That's the only branch-mutation operation you're permitted.
+
 **Freshness rule:** the Verdict Handler considers only markers newer than the
 most recent `<!-- pipeline: transition ... -->` comment, and picks the latest
 verdict-shaped marker among those. Verdict comments are append-only — use
@@ -558,7 +571,7 @@ Read these files first (in order, where present):
 Your scope: backend modules per the profile's File layout (e.g. server/handler code, storage/migrations, business logic crates, unit + integration tests).
 You do NOT touch: frontend modules per the profile's File layout (UI components, frontend routes, CSS, frontend state stores).
 
-Branch: `{branch_name}` (base: main). Check out a fresh worktree at this branch.
+Branch: `{branch_name}` (base: main). The orchestrator has already created the per-issue worktree on this branch — do NOT run `git checkout -b`, `git checkout -B`, `git branch -m`, or `git switch -c`. See "Branch-name convention" above.
 
 Precondition — Plan-contract completeness (MANDATORY, BEFORE ANY CODE):
 Parse the plan's `api-contract` fenced block (if applicable to the project's stack — see the profile). If any of these hold, STOP and do not code:
@@ -694,7 +707,7 @@ You do NOT touch: backend modules per the profile's File layout.
 Branch: `{branch_name}` (already carries backend commits from the Implementation Agent).
 
 Precondition — Branch-state verification (MANDATORY, BEFORE ANY CODE):
-Check out `{branch_name}` and verify:
+Verify you're on `{branch_name}` (the orchestrator's per-issue worktree is already on it; do NOT create or rename branches — see "Branch-name convention" §). Then verify:
   1. `git log --oneline main..HEAD` returns ≥1 commit (implement stage actually ran).
   2. `git merge-base --is-ancestor main HEAD` succeeds (no conflict with main).
   3. Every backend gate listed in the Project profile addendum's "Build & test gates" section passes.
