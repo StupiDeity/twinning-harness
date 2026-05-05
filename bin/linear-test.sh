@@ -509,7 +509,7 @@ err="$(add_or_update_comment "test/sig/ENG-55T" ENG-55T 2>&1)" || rc=$?
   && pass_at "ENG-55 add_or_update_comment: empty body dies cleanly" \
   || fail_at "ENG-55 add_or_update_comment: empty body" "rc=$rc err=$err"
 
-# ─── ENG-63: add_or_update_comment identical-body footer (C-001..C-004) ──
+# ─── ENG-63: add_or_update_comment identical-body footer (C-001..C-006) ──
 # Exercise the commentUpdate branch under controlled GraphQL responses.
 # Override linear_query and _resolve_issue_uuid post-source (the same idiom
 # used at line 87 for SCRIPT_DIR), and flip PIPELINE_DRY_RUN=0 so the
@@ -590,17 +590,50 @@ else
 fi
 
 # C-004: identical body emits exactly one comment-reapplied metric event
-: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
+# (delta-based: count before vs after, so prior-test residue does not mask
+# a regression where this call writes zero or two events.)
 : > "$_eng63_capture_file"
 _eng63_canned_existing_body=$'Test body line 1\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
+_eng63_metric_count_before="$(grep -c '"event":"comment-reapplied"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
 add_or_update_comment "test/sig/ENG-63T" ENG-63T \
   --body "$_eng63_canned_existing_body" >/dev/null 2>&1
-_eng63_metric_count="$(grep -c '"event":"comment-reapplied"' "$PROJECT_STATE_DIR/metrics/events.jsonl" || true)"
-if [[ "$_eng63_metric_count" == "1" ]]; then
+_eng63_metric_count_after="$(grep -c '"event":"comment-reapplied"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
+_eng63_metric_delta=$(( _eng63_metric_count_after - _eng63_metric_count_before ))
+if [[ "$_eng63_metric_delta" == "1" ]]; then
   pass_at "ENG-63 C-004 identical body → one comment-reapplied metric event"
 else
   fail_at "ENG-63 C-004 identical body → one comment-reapplied metric event" \
-    "metric_count=$_eng63_metric_count events.jsonl: $(cat "$PROJECT_STATE_DIR/metrics/events.jsonl")"
+    "delta=$_eng63_metric_delta before=$_eng63_metric_count_before after=$_eng63_metric_count_after"
+fi
+
+# C-005: identical body, existing carries trailing newline → footer still appended
+# Guards against a future regression where the equality check loses its trailing-
+# newline tolerance (today the shell's $() command-substitution strips trailing
+# newlines from both norms; the test pins the property so a refactor of that path
+# can't silently re-introduce the asymmetry).
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Test body line 1\nTest body line 2\n\n<!-- meta: dedup key=test/sig/ENG-63T -->\n'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body $'Test body line 1\nTest body line 2\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file"; then
+  pass_at "ENG-63 C-005 trailing-newline asymmetry → footer still appended"
+else
+  fail_at "ENG-63 C-005 trailing-newline asymmetry → footer still appended" \
+    "captured: $(cat "$_eng63_capture_file")"
+fi
+
+# C-006: no existing matching comment → commentCreate path, no footer.
+# Stub returns one node with empty body — first jq's `select(.body | contains($m))`
+# yields no match, existing_id is empty, function falls through to commentCreate.
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=""
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body $'Brand new body\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
+if grep -q '<!-- meta: reapplied at=' "$_eng63_capture_file"; then
+  fail_at "ENG-63 C-006 no existing comment → no footer on create" \
+    "captured: $(cat "$_eng63_capture_file")"
+else
+  pass_at "ENG-63 C-006 no existing comment → no footer on create"
 fi
 
 # Restore originals so subsequent tests in this file (or callers) inherit a
@@ -611,6 +644,10 @@ eval "$_eng63_orig_linear_query"
 eval "$_eng63_orig_resolve_uuid"
 export PIPELINE_DRY_RUN="$_eng63_orig_dry_run"
 SCRIPT_DIR="$_eng63_orig_script_dir"
+unset _eng63_orig_linear_query _eng63_orig_resolve_uuid _eng63_orig_dry_run \
+      _eng63_orig_script_dir _eng63_capture_file _eng63_canned_existing_body \
+      _eng63_canned_existing_id _eng63_footer_count _eng63_has_old_ts \
+      _eng63_metric_count_before _eng63_metric_count_after _eng63_metric_delta
 
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
