@@ -167,8 +167,13 @@ post_completion_comment() {
   # Order matters: strip dedup-marker LINES *before* byte-truncating so a
   # mid-line byte cut inside a `<!-- meta: dedup key=… -->` line cannot leave
   # a partial (and therefore unmatched-by-sed) marker in the posted body.
-  # Both new-shape and legacy `<!-- pipeline-sig: … -->` lines are stripped
-  # so an agent that copies a stale fixture can't hijack the dedup key.
+  # Both new-shape and any legacy `<!-- pipeline-<word>: … -->` lines are
+  # stripped so an agent that copies a stale fixture can't hijack the dedup
+  # key, and so the linear.sh lane-fence (PR #44) doesn't reject the post for
+  # carrying a legacy verdict-family marker (`pipeline-stage-summary`,
+  # `pipeline-rejection`, `pipeline-halt`, etc.) the agent may have emitted.
+  # The new `<!-- pipeline: <event> ... -->` shape (no hyphen between
+  # `pipeline` and the event) is preserved.
   local body fallback_marker=""
   if [[ -L "$summary_path" ]]; then
     fallback_marker="summary_symlink_refused"
@@ -176,7 +181,7 @@ post_completion_comment() {
     fallback_marker="summary_missing"
   else
     local fsize; fsize="$(wc -c < "$summary_path" | tr -d ' ')"
-    body="$(sed -E -e '/<!-- meta: dedup key=.* -->/d' -e '/<!-- pipeline-sig: .* -->/d' "$summary_path" | head -c 32768)"
+    body="$(sed -E -e '/<!-- meta: dedup key=.* -->/d' -e '/<!-- pipeline-[a-z]+: .* -->/d' "$summary_path" | head -c 32768)"
     if (( fsize > 32768 )); then
       body+=$'\n\n_[truncated at 32 KiB]_'
       body+=$'\n<!-- meta: metric name=summary_truncated -->'
