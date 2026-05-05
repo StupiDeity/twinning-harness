@@ -2324,6 +2324,24 @@ rc=0; result="$(_fresh_wait_reason ENG-WS7 building 2>/dev/null)" || rc=$?
 [[ "$rc" -eq 1 ]] && pass_at "WS7: wait with non-allow-listed reason → rc=1 (F-2 enforced)" "rc=$rc" || fail_at "WS7: rc mismatch" "expected 1, got $rc"
 [[ -z "$result" ]] && pass_at "WS7: wait with bogus reason → empty stdout" || fail_at "WS7: stdout not empty" "got: $result"
 
+# Fixture WS8 (adversarial, cold-pass gap): explicit pivot symmetry. The
+# plan's Failure Mode table claims "Wait at T1, verdict pivot at T2 > T1"
+# is "covered by WS1/WS3 — predicate is != \"wait\" not enum". Pin the
+# pivot branch explicitly so a future regression that special-cases the
+# enum (e.g. accidentally including pivot in the wait branch) is caught.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=pivot stage=building -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS8 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS8: wait shadowed by newer pivot → rc=1 (D-004 symmetry pinned)" "rc=$rc" || fail_at "WS8: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS8: pivot shadows wait → empty stdout" || fail_at "WS8: stdout not empty" "got: $result"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

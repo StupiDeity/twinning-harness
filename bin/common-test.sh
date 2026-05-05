@@ -352,6 +352,26 @@ result="$(parse_pipeline_marker "$body")"
 [[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P20: real marker survives empty triple-backtick fence" || fail_at "P20: event mismatch" "got: $result"
 [[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P20: empty triple-fence → real marker still parses pass" || fail_at "P20: result mismatch" "got: $result"
 
+# Fixture P21 (adversarial, cold-pass gap): marker as the entire body —
+# no surrounding prose. Boundary case for the strip helper: ensures it
+# doesn't trim or eat the marker when the body has zero context.
+body='<!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P21: marker-as-entire-body still parses" || fail_at "P21: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P21: marker-as-entire-body → result=pass" || fail_at "P21: result mismatch" "got: $result"
+
+# Fixture P22 (adversarial, current-behavior pin): tilde-fenced markdown
+# blocks (~~~) are NOT stripped by the helper — only backticks are.
+# Stage-summary writers in this harness use backtick fences (per
+# AGENT_PROMPTS.md convention), but if a future writer ever switches to
+# `~~~` fences, this fixture catches the silent regression. Pins the
+# brainstorm's deliberate "backticks only" scope decision so future
+# contributors do not accidentally extend or remove tilde handling
+# without an explicit decision.
+body='Example: ~~~<!-- pipeline: verdict result=pass stage=implementing -->~~~ here.'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P22: tilde-fenced marker IS still parsed (current behavior — backticks-only scope per brainstorm)" || fail_at "P22: tilde behavior changed" "got: $result"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
