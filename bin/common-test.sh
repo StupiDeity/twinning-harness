@@ -372,6 +372,19 @@ body='Example: ~~~<!-- pipeline: verdict result=pass stage=implementing -->~~~ h
 result="$(parse_pipeline_marker "$body")"
 [[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P22: tilde-fenced marker IS still parsed (current behavior — backticks-only scope per brainstorm)" || fail_at "P22: tilde behavior changed" "got: $result"
 
+# Fixture P23 (adversarial, cold-pass gap): body has a lone unbalanced
+# backtick BEFORE a real marker. The sed s/`[^`]*`/ /g substitution
+# requires PAIRED backticks; with a single stray backtick the regex
+# does not match and the body passes through unmodified. Pins the
+# brainstorm §5 "unbalanced backticks → marker still parses" claim
+# explicitly, and protects against future regressions where a maintainer
+# might "fix" the strip helper to greedy-match a lone backtick to the
+# next `>` or end-of-line and accidentally consume the real marker.
+body='Stray backtick: ` then real <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P23: lone unbalanced backtick before real marker → real survives" || fail_at "P23: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P23: lone backtick → result=pass (strip is conservative)" || fail_at "P23: result mismatch" "got: $result"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

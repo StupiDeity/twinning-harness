@@ -2342,6 +2342,25 @@ rc=0; result="$(_fresh_wait_reason ENG-WS8 building 2>/dev/null)" || rc=$?
 [[ "$rc" -eq 1 ]] && pass_at "WS8: wait shadowed by newer pivot → rc=1 (D-004 symmetry pinned)" "rc=$rc" || fail_at "WS8: rc mismatch" "expected 1, got $rc"
 [[ -z "$result" ]] && pass_at "WS8: pivot shadows wait → empty stdout" || fail_at "WS8: stdout not empty" "got: $result"
 
+# Fixture WS9 (adversarial, cold-pass gap): two waits in the freshness
+# window — older wait has an allow-listed reason, latest wait has a
+# non-allow-listed reason. Latest-wins beats reason-allow-list: there
+# is no fallback to the older valid wait. Distinct from WS7 (single wait
+# with bogus reason) — confirms the post-loop guard does not silently
+# downgrade to an earlier wait when the latest wait is rejected.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=wait reason=invented-token -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS9 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS9: latest wait with bogus reason → rc=1 (no fallback to older valid wait)" "rc=$rc" || fail_at "WS9: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS9: two waits, latest invalid → empty stdout" || fail_at "WS9: stdout not empty" "got: $result"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
