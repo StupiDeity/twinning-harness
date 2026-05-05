@@ -25,7 +25,9 @@ fi
 issue_id_from_branch() {
   local branch="$1"
   local m
-  m="$(sed -nE 's|^(feat|fix)/(eng-[0-9]+)-.*|\2|pI' <<<"$branch" || true)"
+  # Use `#` as the sed delimiter so the `|` alternation inside (feat|fix)
+  # doesn't terminate the pattern under BSD sed.
+  m="$(sed -nE 's#^(feat|fix)/(eng-[0-9]+)-.*#\2#pI' <<<"$branch" || true)"
   [[ -n "$m" ]] || return 0
   printf '%s\n' "$(tr '[:lower:]' '[:upper:]' <<<"$m")"
 }
