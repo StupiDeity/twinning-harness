@@ -4,9 +4,11 @@
 # Two contracts are pinned here:
 #   1. issue_id_from_branch's regex (cases A-G2). The original sed used
 #      `|` as both the s-command delimiter and ERE alternation operator,
-#      which BSD sed parses as the closing delimiter. Cases A-G2 lock
-#      the contract: lowercase feat/fix prefixes match; everything else
-#      returns empty.
+#      which BSD sed parses as the closing delimiter. PR #51 swapped the
+#      delimiter to `#` (no `#` ever appears in branch names) and kept
+#      the `I` flag for case-insensitive matching. Cases A-G2 lock the
+#      post-fix contract: feat/fix prefixes match (case-insensitive on
+#      the eng-N segment); everything else returns empty.
 #   2. remove_tree + worktree-orphan-detected metric shape (cases H, I, J).
 #      The original metric calls passed reason/branch in the issue_id/stage
 #      slots, producing JSONL with issue_id="merged" and stage="feat/eng-…".
@@ -126,8 +128,8 @@ assert_eq "case-F: feat/foo-bar (no eng-N) → empty" \
 assert_eq "case-G: empty input under set -u → empty (no crash)" \
   "" "$(issue_id_from_branch "" 2>/dev/null)"
 
-assert_eq "case-G2: feat/ENG-99-foo (uppercase, I flag dropped) → empty" \
-  "" "$(issue_id_from_branch "feat/ENG-99-foo" 2>/dev/null)"
+assert_eq "case-G2: feat/ENG-99-foo (uppercase, I flag preserved) → ENG-99" \
+  "ENG-99" "$(issue_id_from_branch "feat/ENG-99-foo" 2>/dev/null)"
 
 # ─── Cases H, I, J: remove_tree + orphan-detected metric shape ────────────
 # Lock the bin/metrics.sh:20 positional contract:
