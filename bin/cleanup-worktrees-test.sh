@@ -204,6 +204,76 @@ else
     "event=$event issue_id=$issue_id stage=$stage outcome=$outcome notes=$notes"
 fi
 
+# ─── QA adversarial coverage (ENG-64) ─────────────────────────────────────
+# Cases K, L, M, N pin breakage classes the original Failure Mode → Test
+# Map did not exercise. Surfaced by a cold-review pass after H/I/J landed.
+
+# Case K (boundary on regex input): branch name containing the new sed
+# delimiter `#`. The bug class being regressed is "swap one delim-collision
+# for another" — a contributor reading the original BSD sed bug might
+# assume `#` in a branch name re-triggers the same parse-error class. It
+# does NOT (sed's delimiter is meta-syntax of the s-command, not the
+# input stream); `.*` matches `#` like any other byte. Lock that.
+assert_eq "case-K: feat/eng-13-#weird (new sed delim in input) → ENG-13" \
+  "ENG-13" "$(issue_id_from_branch "feat/eng-13-#weird" 2>/dev/null)"
+
+# Case L (notes-fidelity through jq escaping): path with embedded spaces.
+# `metrics.sh` passes notes via `--arg`, which jq escapes; round-trip
+# through `jq -r '.notes'` must give the original string back. Reachable
+# in production when `$PROJECT_STATE_DIR` is under a path that contains
+# spaces (default `~/.local/state/twinning-harness` does not, but
+# operator-overridden state dirs commonly do).
+reset_jsonl
+remove_tree "/tmp/cleanup test l-$$" "feat/eng-13-foo" "merged" "ENG-13" >/dev/null 2>&1
+line="$(last_line)"
+notes="$(jq -r '.notes' <<<"$line")"
+issue_id="$(jq -r '.issue_id' <<<"$line")"
+if [[ "$issue_id" == "ENG-13" ]] \
+   && [[ "$notes" == *"path=/tmp/cleanup test l-$$"* ]] \
+   && [[ "$notes" == *"branch=feat/eng-13-foo"* ]]; then
+  report_ok "case-L remove_tree path-with-spaces: notes round-trip preserves spaces"
+else
+  report_fail "case-L remove_tree path-with-spaces" \
+    "issue_id=ENG-13 notes contains 'path=/tmp/cleanup test l-$$'" \
+    "issue_id=$issue_id notes=$notes"
+fi
+
+# Case M (concurrency): four parallel remove_tree invocations writing to
+# the same events.jsonl. metrics.sh appends via `>>` after a single
+# `jq -cn` render — POSIX guarantees atomicity for writes < PIPE_BUF
+# (4 KiB on macOS/Linux). Lock that the line count is exact and each
+# line parses as JSON. A regression that splits the jq render across
+# multiple write() syscalls would surface here as a torn line.
+reset_jsonl
+for i in 1 2 3 4; do
+  remove_tree "/tmp/cleanup-test-m-$$-$i" "feat/eng-$i-foo" "merged" "ENG-$i" >/dev/null 2>&1 &
+done
+wait
+line_count="$(wc -l < "$JSONL" | tr -d ' ')"
+parseable_count=0
+while IFS= read -r jline; do
+  if jq -e . <<<"$jline" >/dev/null 2>&1; then
+    parseable_count=$((parseable_count + 1))
+  fi
+done < "$JSONL"
+if [[ "$line_count" == "4" ]] && [[ "$parseable_count" == "4" ]]; then
+  report_ok "case-M concurrent remove_tree x4: all 4 JSONL lines written and parseable"
+else
+  report_fail "case-M concurrent remove_tree x4" \
+    "line_count=4 parseable_count=4" \
+    "line_count=$line_count parseable_count=$parseable_count"
+fi
+
+# Case N (boundary on regex length): very long issue-number segment
+# (20 digits) and very long slug. Confirms the regex doesn't cap the
+# capture length and BSD sed's regex engine handles long inputs cleanly.
+# Reachable if Linear ever issues 4+ digit IDs (already does — ENG-100+
+# is current); the 20-digit form is paranoid future-proofing.
+big_branch="feat/eng-12345678901234567890-$(printf 'x%.0s' {1..200})"
+got="$(issue_id_from_branch "$big_branch" 2>/dev/null)"
+assert_eq "case-N: 20-digit eng-N + 200-char slug → ENG-12345678901234567890" \
+  "ENG-12345678901234567890" "$got"
+
 echo
 echo "cleanup-worktrees-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
