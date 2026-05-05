@@ -128,6 +128,40 @@ failure_outcome_for_exit() {
   esac
 }
 # ─── Pipeline-marker parser (ENG-60) ──────────────────────────
+# _strip_code_blocks_and_spans <body> — pre-strip the body before the
+# parse_pipeline_marker grep so prose-quoted markers (backticked spans,
+# triple-backtick fences, 4-space-indented blocks) do NOT push the
+# freshness floor or trip protocol-violation halts (ENG-61 Bug A).
+#
+# Same-file private; not added to the export -f list (F-3 lane discipline).
+# Markers are written at column 0 by contract (AGENT_PROMPTS.md +
+# bin/pipeline.sh writes raw HTML comments unindented), so over-stripping
+# indented lines is benign.
+#
+_strip_code_blocks_and_spans() {
+  local body="$1"
+  # Step 1 (multi-line bodies only): strip 4-space-indented blocks.
+  # Production callers (run-stage.sh, verdict-handler.sh, scope-check.sh,
+  # pipeline.sh) pre-collapse newlines via jq gsub("\n"; " ") before
+  # passing the body, so this is a no-op for them. Activates for direct
+  # callers (tests, future call sites that preserve newlines).
+  if [[ "$body" == *$'\n'* ]]; then
+    body="$(awk '!/^( {4,}|\t)/' <<<"$body")"
+  fi
+  # Collapse newlines to spaces so the steps below scan in a single pass.
+  body="${body//$'\n'/ }"
+  # Steps 2/3: strip triple-backtick fences then single-backtick spans.
+  # sed-based substitution (brainstorm A15/A16). The earlier
+  # ${var//pat/repl} form treated BASH_REMATCH[0] as a glob, not a
+  # literal substring; when the matched span contained glob metachars
+  # ([, ], *, ?) the substitution silently did nothing and the regex
+  # match held → infinite loop on any body with backticked code spans
+  # quoting paths/globs (P17). sed regex is glob-immune and anchors
+  # to literal positions.
+  body="$(printf '%s' "$body" | sed -E 's/`{3}[^`]*`{3}/ /g; s/`[^`]*`/ /g')"
+  printf '%s' "$body"
+}
+
 # parse_pipeline_marker <body> — translate a Linear comment body containing
 # a pipeline marker (new shape) into a uniform JSON event.
 #
@@ -150,6 +184,11 @@ failure_outcome_for_exit() {
 parse_pipeline_marker() {
   local body="$1"
   local marker
+
+  # ENG-61 Bug A: pre-strip backtick-quoted spans/fences so prose-quoted
+  # markers in stage summaries, plan bodies, and discussion comments do
+  # NOT register as real state-driving events.
+  body="$(_strip_code_blocks_and_spans "$body")"
 
   # Match either family. The grep is intentionally unanchored so a marker
   # appearing anywhere in the body is found; we take the LAST one (`tail -1`)

@@ -275,6 +275,116 @@ result="$(parse_pipeline_marker 'just prose, no marker' 2>/dev/null)" && rc=0 ||
 [[ "$rc" -eq 1 ]] && pass_at "P12: rc=1 on no marker" || fail_at "P12: rc mismatch" "expected 1, got $rc"
 [[ -z "$result" ]] && pass_at "P12: empty stdout" || fail_at "P12: stdout not empty" "got: $result"
 
+# ─── ENG-61 Bug A: prose-quoted markers must NOT parse as real markers ───
+
+# Fixture P13: marker enclosed in single backticks must NOT parse.
+body='Discussion: the legacy stripper was triggered by `<!-- pipeline: verdict result=pass stage=implementing -->` in body text.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P13: backticked marker NOT parsed (rc=1)" || fail_at "P13: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P13: backticked marker → empty stdout" || fail_at "P13: stdout not empty" "got: $result"
+
+# Fixture P14: marker inside triple-backtick fenced block must NOT parse
+# (single-line, post-gsub-collapse shape — mirrors production callers' input).
+body='Example: ```<!-- pipeline: verdict result=pass stage=implementing -->``` is what the agent emits.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P14: triple-backtick fenced marker NOT parsed (rc=1)" || fail_at "P14: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P14: triple-backtick fenced marker → empty stdout" || fail_at "P14: stdout not empty" "got: $result"
+
+# Fixture P14b: multi-line raw body with 4-space-indented marker must NOT parse.
+# Pins the indented-block code path (step 1 of strip helper). Bypasses the
+# typical caller's gsub-collapse by passing newlines preserved.
+body=$'Some prose.\n    <!-- pipeline: verdict result=pass stage=implementing -->\nMore prose.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P14b: 4-space-indented marker (raw multi-line body) NOT parsed (rc=1)" || fail_at "P14b: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P14b: 4-space-indented marker → empty stdout" || fail_at "P14b: stdout not empty" "got: $result"
+
+# Fixture P15: real marker on a line with no backticks must still parse
+# (regression check that the strip helper does not over-strip).
+body='Plain prose. <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P15: bare real marker still parses" || fail_at "P15: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P15: bare real marker → result=pass" || fail_at "P15: result mismatch" "got: $result"
+
+# Fixture P16: real marker followed by a backticked example marker; real one
+# must win (tail -1 semantics survive the pre-strip — example removed → only
+# the real marker remains for grep → tail -1 picks it).
+body='Real: <!-- pipeline: verdict result=pass stage=implementing --> See also: `<!-- pipeline: verdict result=fail target=planning -->` for the failure case.'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P16: real marker wins over backticked example" || fail_at "P16: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P16: real marker → result=pass (NOT fail)" || fail_at "P16: result mismatch (example marker was wrongly parsed)" "got: $result"
+
+# ─── ENG-61 QA adversarial coverage ─────────────────────────────────────
+
+# Fixture P17 (adversarial): backticked span containing glob metacharacters
+# (*, ?, [, ]) must not break the strip loop. Brainstorm A15 flags
+# `${var//pat/repl}` as glob-evaluated; if BASH_REMATCH[0] contains glob
+# metachars and the literal-vs-glob mismatch causes the substitution to
+# (a) not remove the span (infinite loop) or (b) over-match and consume
+# the real marker, this test exposes it.
+body='Glob test `arr[0] *.md ?path` <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P17: real marker survives glob-metachar backticked span" || fail_at "P17: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P17: glob-metachar span → real marker still parses pass" || fail_at "P17: result mismatch" "got: $result"
+
+# Fixture P18 (adversarial): tab-indented marker on a multi-line raw body
+# must NOT parse. Brainstorm D-002 awk filter `^( {4,}|\t)` claims to
+# strip both 4-space-indent AND tab-indent; the plan's P14b only covers
+# 4-space-indent. This pins the tab branch.
+body=$'Some prose.\n\t<!-- pipeline: verdict result=pass stage=implementing -->\nMore prose.'
+result="$(parse_pipeline_marker "$body" 2>/dev/null)" && rc=0 || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "P18: tab-indented marker (raw multi-line body) NOT parsed (rc=1)" || fail_at "P18: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "P18: tab-indented marker → empty stdout" || fail_at "P18: stdout not empty" "got: $result"
+
+# Fixture P19 (adversarial): backticked text containing the marker-end
+# byte sequence (`-->`) must not confuse the grep boundary. The grep
+# pattern is `[^>]+`; if a stray `>` from a stripped span leaks past the
+# strip helper into grep, the regex bounds could be perturbed.
+body='Trick: `--> not a marker -->` <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P19: real marker found despite backticked '-->' decoy" || fail_at "P19: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P19: real marker → result=pass (decoy not parsed)" || fail_at "P19: result mismatch" "got: $result"
+
+# Fixture P20 (adversarial): empty triple-backtick fence `''''''` (six
+# adjacent backticks). Step 2's regex `\`\`\`[^\`]*\`\`\`` allows zero
+# inner chars; verify the loop terminates and real marker survives.
+body='Empty fence ``````.  <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P20: real marker survives empty triple-backtick fence" || fail_at "P20: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P20: empty triple-fence → real marker still parses pass" || fail_at "P20: result mismatch" "got: $result"
+
+# Fixture P21 (adversarial, cold-pass gap): marker as the entire body —
+# no surrounding prose. Boundary case for the strip helper: ensures it
+# doesn't trim or eat the marker when the body has zero context.
+body='<!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P21: marker-as-entire-body still parses" || fail_at "P21: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P21: marker-as-entire-body → result=pass" || fail_at "P21: result mismatch" "got: $result"
+
+# Fixture P22 (adversarial, current-behavior pin): tilde-fenced markdown
+# blocks (~~~) are NOT stripped by the helper — only backticks are.
+# Stage-summary writers in this harness use backtick fences (per
+# AGENT_PROMPTS.md convention), but if a future writer ever switches to
+# `~~~` fences, this fixture catches the silent regression. Pins the
+# brainstorm's deliberate "backticks only" scope decision so future
+# contributors do not accidentally extend or remove tilde handling
+# without an explicit decision.
+body='Example: ~~~<!-- pipeline: verdict result=pass stage=implementing -->~~~ here.'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P22: tilde-fenced marker IS still parsed (current behavior — backticks-only scope per brainstorm)" || fail_at "P22: tilde behavior changed" "got: $result"
+
+# Fixture P23 (adversarial, cold-pass gap): body has a lone unbalanced
+# backtick BEFORE a real marker. The sed s/`[^`]*`/ /g substitution
+# requires PAIRED backticks; with a single stray backtick the regex
+# does not match and the body passes through unmodified. Pins the
+# brainstorm §5 "unbalanced backticks → marker still parses" claim
+# explicitly, and protects against future regressions where a maintainer
+# might "fix" the strip helper to greedy-match a lone backtick to the
+# next `>` or end-of-line and accidentally consume the real marker.
+body='Stray backtick: ` then real <!-- pipeline: verdict result=pass stage=implementing -->'
+result="$(parse_pipeline_marker "$body")"
+[[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P23: lone unbalanced backtick before real marker → real survives" || fail_at "P23: event mismatch" "got: $result"
+[[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P23: lone backtick → result=pass (strip is conservative)" || fail_at "P23: result mismatch" "got: $result"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

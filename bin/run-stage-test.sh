@@ -2205,6 +2205,162 @@ EOF
 result="$(_fresh_wait_reason ENG-WR3 building 2>/dev/null || printf '')"
 [[ "$result" == "awaiting-ci" ]] && pass_at "WR3: new-shape wait awaiting-ci returned" "got: '$result'" || fail_at "WR3: new-shape wait awaiting-ci returned" "got: '$result'"
 
+# ─── Group: _fresh_wait_reason Bug B (wait shadowed by newer non-wait) ───
+
+printf '\n--- _fresh_wait_reason: Bug B (wait shadows newer non-wait) ---\n'
+
+# Fixture WS1: wait at T1 followed by verdict pass at T2 > T1 → rc=1.
+# Bug B fix's primary scenario (ENG-61 AC #2 fixture 1): the existing
+# second loop tracked only wait verdicts and returned the stale wait
+# reason; the fix tracks the latest verdict of any result and returns
+# rc=1 when the latest verdict is no longer a wait.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=pass stage=building -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS1 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS1: wait shadowed by newer pass → rc=1" "rc=$rc" || fail_at "WS1: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS1: wait shadowed by newer pass → empty stdout" || fail_at "WS1: stdout not empty" "got: $result"
+
+# Fixture WS2: wait at T1, no later verdict → reason returned + rc=0.
+# Regression check that the wait carve-out still works when no later
+# verdict shadows it (AC #2 fixture 2).
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(_fresh_wait_reason ENG-WS2 building 2>/dev/null || printf '')"
+[[ "$result" == "awaiting-approval" ]] && pass_at "WS2: wait alone → reason returned" "got: '$result'" || fail_at "WS2: wait reason mismatch" "got: '$result'"
+
+# Fixture WS3: wait at T1 followed by verdict halt at T2 > T1 → rc=1.
+# Confirms the predicate is "any non-wait" — pivot/fail/halt all shadow
+# (AC #2 fixture 3, plus implicit pivot/fail symmetry per design D-004).
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=halt reason=agent-blocked -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS3 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS3: wait shadowed by newer halt → rc=1" "rc=$rc" || fail_at "WS3: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS3: wait shadowed by newer halt → empty stdout" || fail_at "WS3: stdout not empty" "got: $result"
+
+# ─── ENG-61 QA adversarial coverage ───────────────────────────────────────
+
+printf '\n--- _fresh_wait_reason: QA adversarial coverage ---\n'
+
+# Fixture WS4 (adversarial): no transition ever, wait at T1, pass at T2.
+# Brainstorm §6 says transition is the freshness floor; with no
+# transition (last_t empty) the floor check short-circuits and every
+# verdict is considered. Latest is the pass → rc=1.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c2","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=pass stage=building -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS4 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS4: no transition + wait then pass → rc=1" "rc=$rc" || fail_at "WS4: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS4: no transition + wait then pass → empty stdout" || fail_at "WS4: stdout not empty" "got: $result"
+
+# Fixture WS5 (adversarial): wait older than transition, no later verdict
+# → rc=1. Post-transition freshness window is empty; fresh_result stays
+# empty so the != "wait" guard returns 1. Pins the no-verdict-after-
+# transition path that the AC2 fixtures don't exercise.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS5 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS5: wait older than transition, no later verdict → rc=1" "rc=$rc" || fail_at "WS5: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS5: wait older than transition → empty stdout" || fail_at "WS5: stdout not empty" "got: $result"
+
+# Fixture WS6 (adversarial): reverse case — pass at T1, wait at T2 > T1.
+# Wait IS the latest verdict, so the wait reason should be returned.
+# Confirms latest-wins semantics from D-003 — the new logic does NOT
+# silently discard a fresh wait that came AFTER a pass.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=pass stage=building -->"},
+  {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-ci -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+result="$(_fresh_wait_reason ENG-WS6 building 2>/dev/null || printf '')"
+[[ "$result" == "awaiting-ci" ]] && pass_at "WS6: pass-then-wait → wait reason returned (latest-wins)" "got: '$result'" || fail_at "WS6: wait reason not returned" "got: '$result'"
+
+# Fixture WS7 (adversarial): wait with non-allow-listed reason must rc=1
+# even when it IS the latest verdict (security F-2 / brainstorm §6).
+# Latest-verdict tracking must NOT bypass the post-loop reason allow-list.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=invented-token -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS7 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS7: wait with non-allow-listed reason → rc=1 (F-2 enforced)" "rc=$rc" || fail_at "WS7: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS7: wait with bogus reason → empty stdout" || fail_at "WS7: stdout not empty" "got: $result"
+
+# Fixture WS8 (adversarial, cold-pass gap): explicit pivot symmetry. The
+# plan's Failure Mode table claims "Wait at T1, verdict pivot at T2 > T1"
+# is "covered by WS1/WS3 — predicate is != \"wait\" not enum". Pin the
+# pivot branch explicitly so a future regression that special-cases the
+# enum (e.g. accidentally including pivot in the wait branch) is caught.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=pivot stage=building -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS8 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS8: wait shadowed by newer pivot → rc=1 (D-004 symmetry pinned)" "rc=$rc" || fail_at "WS8: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS8: pivot shadows wait → empty stdout" || fail_at "WS8: stdout not empty" "got: $result"
+
+# Fixture WS9 (adversarial, cold-pass gap): two waits in the freshness
+# window — older wait has an allow-listed reason, latest wait has a
+# non-allow-listed reason. Latest-wins beats reason-allow-list: there
+# is no fallback to the older valid wait. Distinct from WS7 (single wait
+# with bogus reason) — confirms the post-loop guard does not silently
+# downgrade to an earlier wait when the latest wait is rejected.
+COMMENTS_JSON='[
+  {"id":"c1","createdAt":"2026-05-03T10:00:00Z","body":"<!-- pipeline: transition from=qa to=building -->"},
+  {"id":"c2","createdAt":"2026-05-03T11:00:00Z","body":"<!-- pipeline: verdict result=wait reason=awaiting-approval -->"},
+  {"id":"c3","createdAt":"2026-05-03T12:00:00Z","body":"<!-- pipeline: verdict result=wait reason=invented-token -->"}
+]'
+cat > "$STUB_DIR/linear.sh" <<EOF
+#!/bin/bash
+[[ "\$1" == "get-comments" ]] && printf '%s' '$COMMENTS_JSON'
+EOF
+rc=0; result="$(_fresh_wait_reason ENG-WS9 building 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 1 ]] && pass_at "WS9: latest wait with bogus reason → rc=1 (no fallback to older valid wait)" "rc=$rc" || fail_at "WS9: rc mismatch" "expected 1, got $rc"
+[[ -z "$result" ]] && pass_at "WS9: two waits, latest invalid → empty stdout" || fail_at "WS9: stdout not empty" "got: $result"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
