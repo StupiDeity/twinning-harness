@@ -581,11 +581,16 @@ add_or_update_comment() {
     strip_re='/^<!-- meta: reapplied at=[^>]* -->$/d'
     existing_norm="$(printf '%s' "$existing_body" | sed -E "$strip_re")"
     new_norm="$(printf '%s' "$body" | sed -E "$strip_re")"
+    # Defensive trailing-newline trim. Shell `$()` already strips trailing
+    # newlines from the cmdsub above; the explicit trim documents intent and
+    # guards a refactor that loses the cmdsub property.
+    existing_norm="${existing_norm%$'\n'}"
+    new_norm="${new_norm%$'\n'}"
     if [[ "$existing_norm" == "$new_norm" && -n "$existing_norm" ]]; then
       now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       body="${new_norm}"$'\n'"<!-- meta: reapplied at=${now_iso} -->"
-      bash "$SCRIPT_DIR/metrics.sh" comment-reapplied "$ident" "-" \
-        "reapplied" 0 "sig=$sig" "comment_id=$existing_id" || true
+      bash "$SCRIPT_DIR/metrics.sh" comment-reapplied "$ident" "" \
+        "reapplied" 0 || true
     fi
     local mu='mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success } }'
     local mvars
