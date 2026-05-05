@@ -483,6 +483,17 @@ add_comment() {
     return 0
   fi
 
+  # Pipeline-event markers (verdict, transition, decision) are append-only by
+  # design — find_fresh_verdict's freshness floor depends on each emission
+  # carrying a distinct createdAt. Hash-dedup against a prior identical body
+  # silently breaks that contract: e.g. an agent retrying `verdict pass` after
+  # an operator-resume would dedup against the pre-resume verdict, leaving
+  # the freshness window empty and tripping `protocol-violation/no-marker`
+  # (ENG-73). Skip dedup when the body carries any new-shape pipeline marker.
+  if [[ "$body" == *'<!-- pipeline: '* ]]; then
+    : # fall through to the post; verdict/transition/decision are append-only
+  else
+
   # Normalize body for dedup: strip ISO timestamps + git SHAs so that
   # reworded-only-by-timestamp comments (ENG-14 TDD evidence pattern) dedup.
   local norm_body
@@ -516,6 +527,7 @@ add_comment() {
     log "add-comment: duplicate suppressed on $ident (hash=${new_hash:0:12}...)"
     return 0
   fi
+  fi  # close pipeline-marker bypass
 
   local issue_uuid
   issue_uuid="$(_resolve_issue_uuid "$ident")"
