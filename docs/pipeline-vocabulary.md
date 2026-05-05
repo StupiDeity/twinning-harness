@@ -85,6 +85,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `dedup`
 - `metric`
 - `evidence`
+- `reapplied`
 
 ### `stages`
 
