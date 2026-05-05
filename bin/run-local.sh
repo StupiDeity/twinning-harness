@@ -62,6 +62,23 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 log "== tick start =="
 
+# Invariant: the harness's TARGET_REPO and HARNESS_ROOT git repos must
+# NOT be bare. Bare-mode flips `git status` semantics and hides leaked
+# state from the partition_dirty_paths sweep — exactly the failure mode
+# that produced ENG-63/64/65's seed.txt scope-violation halts on
+# 2026-05-04 (cause: test-fixture leak through inherited GIT_DIR).
+# Self-heal here so the next tick can run cleanly; investigate via the
+# warning if it ever fires.
+for _git_dir in "$TARGET_REPO/.git" "$HARNESS_ROOT/.git"; do
+  if [[ -d "$_git_dir" ]]; then
+    bare="$(git --git-dir="$_git_dir" config --get core.bare 2>/dev/null || printf 'false')"
+    if [[ "$bare" == "true" ]]; then
+      git --git-dir="$_git_dir" config core.bare false
+      log "WARNING: $_git_dir had core.bare=true; reset to false (test-fixture leak suspected — see ENG-63/64/65)"
+    fi
+  fi
+done
+
 SECRETS_FILE="$HARNESS_CONFIG_DIR/secrets.env"
 if [[ -f "$SECRETS_FILE" ]]; then
   set -a; source "$SECRETS_FILE"; set +a
