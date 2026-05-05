@@ -636,6 +636,117 @@ else
   pass_at "ENG-63 C-006 no existing comment → no footer on create"
 fi
 
+# ─── ENG-63: QA-authored adversarial coverage (AD-001..AD-005) ──
+# These tests target gaps the plan's Failure Mode → Test Map did not
+# enumerate, surfaced by an independent cold review of the api-contract
+# and new code paths. Each pin is a property already implied by the
+# brainstorm's design decisions (D-002 line-anchored regex; D-003 single
+# rotating footer; D-004 create-path bypass) but not directly exercised
+# by C-001..C-006.
+
+# AD-001: mid-line `<!-- meta: reapplied at=… -->` substring is NOT stripped.
+# Pins D-002's line-anchored regex shape: a quoted mention of the marker
+# (e.g. inside fenced prose) must survive normalization, otherwise an
+# un-anchored regex regression would silently drop content from operator-
+# facing bodies. Construct an existing body with the marker text mid-line;
+# new body identical → footer SHOULD append (norms equal because both
+# carry the mid-line text identically).
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'prefix <!-- meta: reapplied at=2026-01-01T00:00:00Z --> suffix\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
+# Footer must append (bodies equal after strip) AND the original 2026-01-01
+# timestamp must survive in the captured commentUpdate body (line-anchored
+# regex did not strip the mid-line occurrence).
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file" \
+   && grep -q 'prefix <!-- meta: reapplied at=2026-01-01T00:00:00Z --> suffix' "$_eng63_capture_file"; then
+  pass_at "ENG-63 AD-001 mid-line marker substring survives strip (line-anchored regex)"
+else
+  fail_at "ENG-63 AD-001 mid-line marker substring survives strip (line-anchored regex)" \
+    "captured: $(cat "$_eng63_capture_file")"
+fi
+
+# AD-002: multiple stacked historical footers in existing body → all stripped,
+# rotation collapses to exactly ONE footer. Pins D-003's single-footer
+# invariant under a corrupted-history scenario where a buggy past write
+# stacked 3 footers; the new write must still detect equality and produce
+# a single fresh footer, not five.
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Halt body\n<!-- meta: dedup key=test/sig/ENG-63T -->\n<!-- meta: reapplied at=2025-01-01T00:00:00Z -->\n<!-- meta: reapplied at=2025-02-02T00:00:00Z -->\n<!-- meta: reapplied at=2025-03-03T00:00:00Z -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body $'Halt body\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
+_eng63_ad002_count="$(grep -cE '^<!-- meta: reapplied at=' "$_eng63_capture_file" || true)"
+_eng63_ad002_old_jan="$(grep -c '2025-01-01T00:00:00Z' "$_eng63_capture_file" || true)"
+_eng63_ad002_old_feb="$(grep -c '2025-02-02T00:00:00Z' "$_eng63_capture_file" || true)"
+_eng63_ad002_old_mar="$(grep -c '2025-03-03T00:00:00Z' "$_eng63_capture_file" || true)"
+if [[ "$_eng63_ad002_count" == "1" \
+   && "$_eng63_ad002_old_jan" == "0" \
+   && "$_eng63_ad002_old_feb" == "0" \
+   && "$_eng63_ad002_old_mar" == "0" ]]; then
+  pass_at "ENG-63 AD-002 stacked historical footers → collapse to one fresh footer"
+else
+  fail_at "ENG-63 AD-002 stacked historical footers → collapse to one fresh footer" \
+    "count=$_eng63_ad002_count jan=$_eng63_ad002_old_jan feb=$_eng63_ad002_old_feb mar=$_eng63_ad002_old_mar captured: $(cat "$_eng63_capture_file")"
+fi
+
+# AD-003: caller body is ONLY a `<!-- meta: reapplied at=… -->` line plus
+# the dedup marker (no other content). After strip, `new_norm` carries
+# only the dedup marker line; if existing body matches that exact shape
+# (no prior content), the `-n existing_norm` guard still fires (norm
+# is non-empty) and footer appends. Pins that the guard's purpose is
+# specifically to short-circuit on EMPTY norms (jq parse failure /
+# null body), not on small-but-present norms.
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'<!-- meta: dedup key=test/sig/ENG-63T -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body $'<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file"; then
+  pass_at "ENG-63 AD-003 dedup-marker-only body → guard accepts non-empty norm, footer appends"
+else
+  fail_at "ENG-63 AD-003 dedup-marker-only body → guard accepts non-empty norm, footer appends" \
+    "captured: $(cat "$_eng63_capture_file")"
+fi
+
+# AD-004: legacy-marker-shaped existing comment (`<!-- pipeline-sig: ... -->`)
+# is the matched comment in `existing_id` lookup; caller passes a body
+# carrying the new-shape `<!-- meta: dedup key=... -->` marker. The two
+# bodies differ by marker shape → `existing_norm != new_norm` →
+# no footer → caller's body posted (in-place migration to new shape).
+# Pins the documented behaviour for plan Failure Mode row "Mixed
+# legacy/new dedup marker shapes" beyond the C-002 trivial-different-
+# bodies case.
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Halt body\n\n<!-- pipeline-sig: test/sig/ENG-63T -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body $'Halt body\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
+# Footer must NOT appear (norms differ by marker shape) AND the captured
+# body must carry the new-shape marker (in-place migration occurred).
+if grep -q '<!-- meta: reapplied at=' "$_eng63_capture_file"; then
+  fail_at "ENG-63 AD-004 legacy→new marker migration → no footer (bodies differ by marker)" \
+    "captured: $(cat "$_eng63_capture_file")"
+elif grep -qF '<!-- meta: dedup key=test/sig/ENG-63T -->' "$_eng63_capture_file"; then
+  pass_at "ENG-63 AD-004 legacy→new marker migration → no footer (bodies differ by marker)"
+else
+  fail_at "ENG-63 AD-004 legacy→new marker migration → no footer (bodies differ by marker)" \
+    "expected new-shape marker in captured body; captured: $(cat "$_eng63_capture_file")"
+fi
+
+# AD-005: identical body containing multibyte Unicode (emoji + CJK) → footer
+# appends. Pins that the byte-equality comparison and the `sed -E` strip
+# both handle Unicode payloads correctly — operator-facing halt bodies
+# routinely carry non-ASCII (project / branch names, error messages).
+: > "$_eng63_capture_file"
+_eng63_canned_existing_body=$'Halt: 失败 ⚠️ retry\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
+add_or_update_comment "test/sig/ENG-63T" ENG-63T \
+  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file" \
+   && grep -q '失败' "$_eng63_capture_file"; then
+  pass_at "ENG-63 AD-005 multibyte Unicode body → footer appends, content survives"
+else
+  fail_at "ENG-63 AD-005 multibyte Unicode body → footer appends, content survives" \
+    "captured: $(cat "$_eng63_capture_file")"
+fi
+
 # Restore originals so subsequent tests in this file (or callers) inherit a
 # pristine env.
 rm -f "$_eng63_capture_file"
@@ -647,7 +758,8 @@ SCRIPT_DIR="$_eng63_orig_script_dir"
 unset _eng63_orig_linear_query _eng63_orig_resolve_uuid _eng63_orig_dry_run \
       _eng63_orig_script_dir _eng63_capture_file _eng63_canned_existing_body \
       _eng63_canned_existing_id _eng63_footer_count _eng63_has_old_ts \
-      _eng63_metric_count_before _eng63_metric_count_after _eng63_metric_delta
+      _eng63_metric_count_before _eng63_metric_count_after _eng63_metric_delta \
+      _eng63_ad002_count _eng63_ad002_old_jan _eng63_ad002_old_feb _eng63_ad002_old_mar
 
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
