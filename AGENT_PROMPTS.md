@@ -35,6 +35,13 @@
 
 **Retry with the same sig — never mutate (ENG-57).** `add-or-update-comment` is idempotent: if a comment with the given sig already exists, the body is overwritten in place; no new comment is created. If a post appears to have failed (no confirmation echoed in tool output, transient error, etc.), **retry with the exact same sig**. Do NOT escape the sig with `-v2`, `-v3`, `-trial`, `-retry`, or any other suffix variant — those mutations defeat dedup and produce permanent duplicate comments on the Linear thread (Linear has no comment-delete mechanism, so the litter accumulates forever). ENG-44's dogfood produced 6 such mutated-sig duplicates on a single ticket; do not reproduce that pattern.
 
+**Marker shapes — only two families exist (ENG-60).** Every HTML-comment marker you emit MUST be one of:
+
+- `<!-- pipeline: <event> [k=v]... -->` — verdicts/decisions/transitions (post via `bash bin/pipeline.sh event ...`, never hand-crafted; see the Verdict-marker protocol section below).
+- `<!-- meta: <kind> [k=v]... -->` — bookkeeping (`dedup`, `metric`). Only `dedup` is agent-emitted: `<!-- meta: dedup key=<class>/<stage>/<issue> -->`, written into the stage-summary file's first line.
+
+The legacy hyphenated shapes — `<!-- pipeline-stage-summary: ... -->`, `<!-- pipeline-rejection: ... -->`, `<!-- pipeline-halt: ... -->`, `<!-- pipeline-wait: ... -->`, `<!-- pipeline-decision: ... -->`, `<!-- pipeline-sig: ... -->`, `<!-- pipeline-metric: ... -->`, `<!-- pipeline-transition: ... -->` — are **REMOVED**. `bin/linear.sh::add_or_update_comment` has a lane-fence (PR #44) that **rejects any comment body containing a legacy `<!-- pipeline-<word>: ... -->` marker** with rc=14, and the orchestrator strips them defensively from your stage summary as a last resort. Do not emit them. If your training memory recalls these shapes, override it: the new vocabulary is the only one the harness reads or writes. ENG-64 implementing halted on 2026-05-05 because the agent prefixed the stage-summary file with both shapes — only emit the `<!-- meta: dedup ... -->` form.
+
 ---
 
 ## Verdict-marker protocol
