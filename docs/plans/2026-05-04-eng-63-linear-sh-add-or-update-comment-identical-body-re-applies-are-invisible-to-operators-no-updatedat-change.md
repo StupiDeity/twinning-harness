@@ -777,8 +777,9 @@ Pulled from the brainstorm's §5 Error Handling and §6 Edge Cases.
 | Different body re-applied | Caller posts a body that differs (after stripping any prior footer) | No footer appended; commentUpdate called with the caller's body verbatim; no metric event | unit | `C-002 different body → no footer` |
 | Identical body, prior footer present | Existing comment carries `<!-- meta: reapplied at=<ts1> -->`; caller posts identical body (no footer) | Old footer stripped; new footer with fresh timestamp appended; exactly ONE footer line in the resulting body | unit | `C-003 identical body + prior footer → rotated, not stacked` |
 | Identical body emits metric | Caller posts identical body → footer path | Exactly ONE `comment-reapplied` JSONL line written to `events.jsonl` per identical-body re-apply | unit | `C-004 identical body → one comment-reapplied metric event` |
-| First-ever post (no existing comment) | Caller posts under a new sig with no existing comment | `commentCreate` called with the body verbatim; no footer; no metric | unit | (existing) `bin/linear-test.sh:493-510` ENG-55 dry-run cases — covered by the absence of any C-00× footer assertion on the create path |
-| jq extraction returns empty body | GraphQL response shape is malformed or `body` is null | `existing_norm` empty; `&& -n "$existing_norm"` guard skips the footer; commentUpdate called with caller's body verbatim (functionally equivalent to today's behaviour) | unit | (covered by the C-001 guard — flipping the canned `_eng63_canned_existing_body` to empty would skip the footer; documented in §6 of the brainstorm; no separate fixture) |
+| First-ever post (no existing comment) | Caller posts under a new sig with no existing comment | `commentCreate` called with the body verbatim; no footer; no metric | unit | `C-006 no existing comment → no footer on create` |
+| jq extraction returns empty body | GraphQL response shape is malformed or `body` is null | `existing_norm` empty; `&& -n "$existing_norm"` guard skips the footer; commentUpdate called with caller's body verbatim (functionally equivalent to today's behaviour) | unit | (no separate fixture — the guard is exercised implicitly by the create path in C-006: when the canned existing body is empty, the first jq's `select(.body \| contains($m))` yields no match, existing_id is empty, and the function takes the commentCreate branch instead of reaching the guard. To exercise the guard directly would require a stub that returns a node containing the marker but a `null` body — a shape Linear's API never produces in practice; the guard is a defensive belt-and-braces against a hypothetical jq parse failure.) |
+| Trailing-newline asymmetry | Existing body carries trailing `\n` while caller's body does not | Footer still appended (shell `$()` strips trailing newlines from both norms; explicit `${var%$'\n'}` trim documents intent) | unit | `C-005 trailing-newline asymmetry → footer still appended` |
 | Mixed legacy/new dedup marker shapes | Existing comment carries legacy `<!-- pipeline-sig: <sig> -->`, caller posts new `<!-- meta: dedup key=<sig> -->` | Bodies differ by marker shape → no footer → caller's body posted (in-place migration to new shape) | unit | (covered by C-002 — different bodies branch) |
 | Caller passes body already containing `meta: reapplied` | Unexpected; tolerated | Strip applies symmetrically; caller's footer becomes a no-op residue; if equal, fresh footer rewritten; if unequal, caller's footer rides along | unit | (covered by C-003 — rotation logic strips both old and new footers identically) |
 | Re-apply at exact same UTC second | Two re-applies separated by sub-second intervals | Identical timestamps → second re-apply's normalised body matches first's → bug re-emerges. Practical exposure: zero (harness tick is 5 min; Linear roundtrip alone takes \>100ms) | (none — documented impossibility, no defensive code per brainstorm §6) | n/a |
@@ -789,17 +790,18 @@ Pulled from the brainstorm's §5 Error Handling and §6 Edge Cases.
 ### Unit (sole layer)
 
 The change is fully testable at the unit level via the source-and-stub
-pattern already used by `bin/linear-test.sh`. C-001…C-004 verify the
-four critical observable properties (footer-on-identical, no-footer-on-
-different, rotation, metric-emission count). The `linear_query`
-override technique (post-source global-function rewrite, A-009)
-exercises the `commentUpdate` branch under controlled GraphQL responses
-without hitting the network.
+pattern already used by `bin/linear-test.sh`. C-001…C-006 verify the
+six critical observable properties (footer-on-identical, no-footer-on-
+different, rotation, metric-emission count via before/after delta,
+trailing-newline asymmetry pinned, no-footer-on-create). The
+`linear_query` override technique (post-source global-function rewrite,
+A-009) exercises both the `commentUpdate` and `commentCreate` branches
+under controlled GraphQL responses without hitting the network.
 
-The four cases are sufficient because the change touches exactly one
-function (`add_or_update_comment`) at exactly one branch (the
-`commentUpdate` arm), and the four cases cover every observable
-behavioural axis introduced:
+The six cases are sufficient because the change touches exactly one
+function (`add_or_update_comment`) at two branches (`commentUpdate` and
+`commentCreate`), and the cases cover every observable behavioural axis
+introduced:
 1. footer-presence × body-identity (2x2 — three meaningful cells; the
    "different body + no prior footer → no footer" cell is C-002, the
    "identical body + no prior footer → footer added" cell is C-001,
@@ -808,7 +810,12 @@ behavioural axis introduced:
    composition of C-002 + the strip-symmetry, not separately
    exercised).
 2. metric-emission count (C-004 — exactly 1 per identical-body
-   re-apply).
+   re-apply, asserted as a before/after delta so prior-test residue
+   does not mask a regression).
+3. byte-equality robustness (C-005 — trailing-newline asymmetry
+   between existing and caller body must not silently skip the footer).
+4. create-path passthrough (C-006 — when no existing comment matches
+   the sig, `commentCreate` is called and no footer is added).
 
 ### Integration / smoke / e2e
 
