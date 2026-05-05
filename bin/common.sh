@@ -138,11 +138,6 @@ failure_outcome_for_exit() {
 # bin/pipeline.sh writes raw HTML comments unindented), so over-stripping
 # indented lines is benign.
 #
-# A15 fallback: ${var//pat/repl} treats the pattern as a glob. The
-# matched span (BASH_REMATCH[0]) here is backtick-fenced literal Linear
-# text — alphanumerics, whitespace, and punctuation. If a pathological
-# body surfaces post-deploy, swap step 2/3 for a sed-based substitution:
-#   body="$(printf '%s' "$body" | sed -E 's/`{3}[^`]*`{3}//g; s/`[^`]*`//g')"
 _strip_code_blocks_and_spans() {
   local body="$1"
   # Step 1 (multi-line bodies only): strip 4-space-indented blocks.
@@ -153,16 +148,17 @@ _strip_code_blocks_and_spans() {
   if [[ "$body" == *$'\n'* ]]; then
     body="$(awk '!/^( {4,}|\t)/' <<<"$body")"
   fi
-  # Collapse newlines to spaces so step 2/3 regexes scan in a single pass.
+  # Collapse newlines to spaces so the steps below scan in a single pass.
   body="${body//$'\n'/ }"
-  # Step 2: triple-backtick fenced regions.
-  while [[ "$body" =~ \`\`\`[^\`]*\`\`\` ]]; do
-    body="${body//${BASH_REMATCH[0]}/ }"
-  done
-  # Step 3: single-backtick code spans.
-  while [[ "$body" =~ \`[^\`]*\` ]]; do
-    body="${body//${BASH_REMATCH[0]}/ }"
-  done
+  # Steps 2/3: strip triple-backtick fences then single-backtick spans.
+  # sed-based substitution (brainstorm A15/A16). The earlier
+  # ${var//pat/repl} form treated BASH_REMATCH[0] as a glob, not a
+  # literal substring; when the matched span contained glob metachars
+  # ([, ], *, ?) the substitution silently did nothing and the regex
+  # match held → infinite loop on any body with backticked code spans
+  # quoting paths/globs (P17). sed regex is glob-immune and anchors
+  # to literal positions.
+  body="$(printf '%s' "$body" | sed -E 's/`{3}[^`]*`{3}/ /g; s/`[^`]*`/ /g')"
   printf '%s' "$body"
 }
 
