@@ -6,7 +6,9 @@
 #             (linear.sh write rejected for caller's PIPELINE_WRITER lane),
 #             20=dispatch-failed, 21=scope-violation, 22=pr-opened-too-early,
 #             24=linear-post-failed, 25=agent-contract-missing (agent exited clean
-#             but emitted neither the stage-summary file nor a verdict-marker comment).
+#             but emitted neither the stage-summary file nor a verdict-marker comment),
+#             26=worktree-mutation-forbidden (build-stage transcript invoked
+#             git checkout/switch/pull/reset; ENG-71).
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -679,6 +681,25 @@ main() {
         "implement-stage transcript invoked forbidden tool: $_viol_cmd" 22
       rm -f "$_viol_file" "$prompt_file"
       exit 22
+    elif (( dispatch_rc == 26 )); then
+      # ENG-71: build-stage transcript invoked one of `git checkout`,
+      # `git switch`, `git pull`, `git reset` — the four worktree-HEAD-
+      # mutating verbs the build agent is contractually forbidden from
+      # invoking (the merge is server-side via `gh pr merge --auto`;
+      # local sync is the harness's job). Read the matched command
+      # from the sidecar written by _render_and_capture_stream and
+      # surface a skip-until-human-acts halt. The orchestrator's
+      # post-dispatch _post_dispatch_check_worktree_head detector
+      # (D-003) does not run because we exit before the post-dispatch
+      # chain — but if an undetected bypass mutated HEAD anyway, the
+      # next tick's run-local cleanup will pick it up.
+      local _viol_file _viol_cmd
+      _viol_file="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_cmd="$(cat "$_viol_file" 2>/dev/null || printf '<command-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "build-stage transcript invoked forbidden worktree-HEAD-mutating tool: $_viol_cmd" 26
+      rm -f "$_viol_file" "$prompt_file"
+      exit 26
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20

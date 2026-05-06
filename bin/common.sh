@@ -123,6 +123,7 @@ failure_outcome_for_exit() {
     22) printf 'pr-opened-too-early' ;;
     24) printf 'linear-post-failed' ;;
     25) printf 'agent-contract-missing' ;;
+    26) printf 'worktree-mutation-forbidden' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
