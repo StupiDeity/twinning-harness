@@ -1315,19 +1315,26 @@ if [[ "$as11_failures" == "0" ]]; then
   pass_at "AS11: passthrough — only allowed git verbs (fetch/clone/rebase) → rc=0 for all four forbidden patterns"
 fi
 
-# AS12 — helper-level passthrough mirror (assert_no_tool_invocation is
-# stage-agnostic; the gate lives in _render_and_capture_stream — see
-# AT7 for the renderer-wrapper cross-stage gating test).
+# AS12 — chained-command bypass (documents D-002's startswith blind spot
+# that justifies D-003 in run-stage.sh, ENG-71 brainstorm §7 / O-4).
+# Pre-iter-6 this slot tested "helper is stage-agnostic" via a non-matching
+# transcript — but the helper has no stage parameter, so the assertion was
+# tautological (review iter-2 m4). Repurposed: a chained command that
+# starts with the allowed `git fetch` prefix but contains the forbidden
+# `git checkout` after `&&`. assert_no_tool_invocation prefix-matches via
+# jq's `startswith`, so the chained command does NOT match the
+# `git checkout` pattern. Pinning this behavior is what proves the D-003
+# state-of-the-world catch-net is not redundant.
 TX_AS12="$_TEST_STUB_DIR/tx-as12.ndjson"
 cat > "$TX_AS12" <<'NDJSON'
 {"type":"system","subtype":"init","session_id":"as12","model":"claude-opus-4-7"}
-{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hello"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git fetch origin main && git checkout main"}}]}}
 NDJSON
 out_as12="$(assert_no_tool_invocation "$TX_AS12" "git checkout")" && rc_as12=0 || rc_as12=$?
 if [[ "$rc_as12" == "0" && -z "$out_as12" ]]; then
-  pass_at "AS12: helper is stage-agnostic; non-matching transcript → rc=0 (cross-stage gating exercised at renderer level by AT7)"
+  pass_at "AS12: chained-command bypass — \`git fetch && git checkout\` does NOT match \`git checkout\` (startswith blind spot; D-003 is the catch-net for this surface)"
 else
-  fail_at "AS12" "rc=$rc_as12 out=$out_as12"
+  fail_at "AS12 chained-command bypass" "rc=$rc_as12 out=$out_as12 (expected rc=0 because the chained command starts with 'git fetch', not 'git checkout')"
 fi
 
 # ─── QA-authored adversarial fixtures (AT1-AT5; ENG-43 not in Failure Mode → Test Map) ─
