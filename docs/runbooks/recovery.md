@@ -283,6 +283,67 @@ runs the sweep manually; it is idempotent.
 
 ---
 
+## 6. Halted issue with `worktree-mutation-forbidden` exit code
+
+An issue carries `pipeline:halted` after a build dispatch with the halt
+comment body referencing "build-stage transcript invoked forbidden
+worktree-HEAD-mutating tool" and an `events.jsonl` row with
+`outcome=worktree-mutation-forbidden`.
+
+### Symptom
+
+- `bash bin/linear.sh has-label ENG-N pipeline:halted` returns 0.
+- The most-recent `<!-- pipeline: verdict result=halt reason=agent-blocked -->`
+  halt comment body contains: `build-stage transcript invoked forbidden
+  worktree-HEAD-mutating tool: <command>`.
+- `events.jsonl` shows a `stage-end` event with
+  `outcome=worktree-mutation-forbidden` for the building stage.
+- Optionally, an additional `<!-- meta: metric name=worktree-mutated-by-agent -->`
+  comment exists if the chained-command bypass also fired the post-dispatch
+  HEAD-detection (D-003 path); the worktree's HEAD will then be detached.
+
+### Authoritative signal
+
+The build agent's tool allowlist excludes `git checkout`, `git switch`,
+`git pull`, and `git reset` (verified at `bin/dispatch.sh::allowed_tools_for
+"building"`). A transcript that invoked any of these — standalone or
+chained — indicates either a tool-lane matcher bypass or a prompt-side
+drift. The dispatch-time assertion (ENG-71 D-002) is the contract test;
+the orchestrator's post-dispatch HEAD-detection (ENG-71 D-003) is the
+catch-net for chained-command variants the assertion's `startswith`
+matcher does not catch.
+
+### Recovery
+
+1. Inspect the matched command in the halt comment body. Confirm it
+   is one of the four forbidden patterns and was issued by the build
+   agent (not by an operator manually stepping into the worktree).
+2. If the worktree HEAD is detached (D-003 fired), no operator action
+   is required for the worktree itself — `cleanup-worktrees.sh` will
+   remove it on the next post-merge tick.
+3. If the worktree HEAD is on `main` AND the operator's primary
+   `~/code/<repo>/` checkout is locked (`fatal: 'main' is already used
+   by worktree at …`), manually detach: `git -C
+   <issue-worktree-path> checkout --detach`. This is the same operation
+   D-003 performs automatically; running it manually is safe and
+   idempotent.
+4. Resume the issue: `bash bin/pipeline.sh decide ENG-N --action continue`.
+   The next tick re-dispatches build; if the underlying matcher bypass
+   persists, the assertion will fire again (idempotent).
+
+### Verify
+
+After `--action continue`:
+
+1. `bash bin/linear.sh has-label ENG-N pipeline:halted || echo "not halted"`
+   returns `not halted`.
+2. The next 5-minute poll tick re-dispatches build. Inspect the new
+   dispatch's transcript at
+   `$PROJECT_STATE_DIR/<ident>/logs/building-*.log` to confirm the
+   re-dispatch is clean (no rc=26 in the log).
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
