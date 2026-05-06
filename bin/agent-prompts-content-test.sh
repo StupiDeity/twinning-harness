@@ -450,6 +450,42 @@ else
        'the May-2026 incident name is feature/* — pin its rejection so the precedent is durable'
 fi
 
+# ─── Build → implement loopback rebase rule (ENG-65/ENG-75 May 2026) ────
+# Build P6 ("no conflicts with main") rejects with verdict fail target=implementing
+# and a meta:metric name=merge_conflict marker. The implement agent's only
+# correct response is to rebase onto origin/main and force-push — without
+# that, the next build cycle re-fails P6 on the same conflict and the
+# loop is infinite. ENG-65 (May 2026) cycled twice this way before
+# operator intervention because §3 had no explicit instruction. Pin the
+# instruction in §3 so a future prompt edit can't quietly drop it.
+
+# §3 must mention the loopback signal (transition from=building to=implementing).
+if printf '%s\n' "$s3" | grep -qE 'building.*to=implementing|build.*loopback'; then
+  ok '§3 names the build→implement loopback signal'
+else
+  nope '§3 names the build→implement loopback signal' \
+       'agent needs an explicit hook to detect "this dispatch is post-build-rejection"'
+fi
+
+# §3 must instruct rebase + push (the actual remediation).
+if printf '%s\n' "$s3" | grep -q 'rebase origin/main' \
+   && printf '%s\n' "$s3" | grep -qE 'force-with-lease|force.push'; then
+  ok '§3 instructs rebase origin/main + force-push on loopback'
+else
+  nope '§3 instructs rebase origin/main + force-push on loopback' \
+       'without explicit rebase + force-push, agents add new commits but the remote stays behind main, P6 re-fails forever'
+fi
+
+# §3 must explicitly disallow the wrong response ("add more tests / new commits without rebasing").
+# The instruction is "Do NOT interpret a build-loopback as 'add more tests'" — pin the
+# distinctive substring so the negative carve-out can't get edited away in cleanup.
+if printf '%s\n' "$s3" | grep -qF 'add more tests'; then
+  ok '§3 explicitly bans "add more tests" as the loopback response'
+else
+  nope '§3 explicitly bans "add more tests" as the loopback response' \
+       'ENG-65 cycle was caused by agent treating loopback as "add adversarial coverage"; carve-out must be pinned'
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

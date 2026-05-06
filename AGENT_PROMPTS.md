@@ -580,6 +580,19 @@ You do NOT touch: frontend modules per the profile's File layout (UI components,
 
 Branch: `{branch_name}` (base: main). The orchestrator has already created the per-issue worktree on this branch — do NOT run `git checkout -b`, `git checkout -B`, `git branch -m`, or `git switch -c`. See "Branch-name convention" above.
 
+Build → implement loopback handling (MANDATORY when present):
+
+If the most recent `<!-- pipeline: transition ... -->` on this issue has `from=building to=implementing` AND a `<!-- meta: metric name=merge_conflict -->` comment exists, **this dispatch is a build-stage rejection for P6 (conflicts with main). Your FIRST action MUST be to rebase the branch onto `origin/main` and force-push** — without that, the next build cycle will re-fail P6 on the same conflict and the loop is infinite. Concrete steps:
+
+  1. `git fetch origin main`
+  2. `git rebase origin/main` — resolve any conflicts in your scope's files; use the post-rebase `bin/scope-check.sh::is_benign` rules to keep changes minimal.
+  3. `git push --force-with-lease origin {branch_name}` — required because the rebase rewrites the published history.
+  4. Continue the dispatch ONLY if rebase succeeded; if you cannot resolve a conflict, halt with `verdict halt --reason agent-blocked` and a comment describing the conflict.
+
+Do NOT interpret a build-loopback as "add more tests" or "validate the existing branch state" — the build agent specifically flagged a remote/main divergence; only the rebase resolves it. Adding new commits without rebasing pushes the loopback into the next iteration's same P6 fail (ENG-65 May 2026 cycled twice this way before operator intervention).
+
+If this dispatch is NOT a build-loopback (i.e., the most recent transition was `to=implementing` from `planning`, or `from=reviewing to=implementing`), this section does not apply — proceed to the next precondition.
+
 Precondition — Plan-contract completeness (MANDATORY, BEFORE ANY CODE):
 Parse the plan's `api-contract` fenced block (if applicable to the project's stack — see the profile). If any of these hold, STOP and do not code:
   - The block is missing while Backend Tasks reference an FE↔BE API endpoint.
