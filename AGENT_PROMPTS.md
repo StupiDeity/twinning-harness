@@ -1239,10 +1239,32 @@ Branch: `{branch_name}` — the feature PR opened by UI, reviewed by Review, ver
 
 Preconditions (MANDATORY — all must be true; fail fast on any false):
 
-**Precondition ordering (ENG-45):** If P1, P3, P4, P6, or P7 fail, run
+**Precondition ordering (ENG-45 / ENG-62):** If P0 already determined
+`state == MERGED`, you do not reach this ordering clause — exit per P0.
+Otherwise, if P1, P3, P4, P6, or P7 fail, run
 `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked`
 and exit. The wait path on P2 / P5 below applies ONLY when every other
 precondition has passed and the only failure is P2 or P5.
+
+  P0. **Merge state precheck (ENG-62).** Before evaluating P1–P7, run:
+
+        gh pr list --head {branch_name} --state all --json state \
+          --jq '.[0].state // ""'
+
+      If this returns `MERGED`, the PR is already merged. Run:
+
+        bash bin/pipeline.sh event {issue_id} verdict pass --stage building
+
+      and exit. Do NOT evaluate P1–P7.
+
+      The orchestrator's pre-dispatch gate (ENG-62, in
+      `bin/run-stage.sh::_pre_dispatch_merge_gate`) uses the IDENTICAL
+      query and short-circuits before you are dispatched in this state,
+      so this clause is defense-in-depth.
+
+      If the query returns empty (no PR record at all on this branch),
+      proceed to evaluate P1–P7; P1 will catch the missing PR and the
+      precondition-ordering clause routes to the `agent-blocked` halt.
 
   P1. **Exactly one open PR** on this branch:
         gh pr list --head {branch_name} --state open --json number | jq 'length == 1'
