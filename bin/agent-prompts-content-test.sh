@@ -556,6 +556,28 @@ else
     "phrase 'git fetch origin main && git checkout main' missing"
 fi
 
+# ENG-71 C1 regression pin: §7 must NOT recommend `gh api repos/.../branches/main`
+# to verify the merge SHA — `gh api` is not in the building tool allowlist
+# (only `gh pr view`, `gh pr list`, `gh pr checks`, `gh pr edit`, `gh pr merge`,
+# `gh run` per bin/dispatch.sh::allowed_tools_for "building"). Following the
+# §7 advice would force the agent to halt with `agent-blocked` — exactly the
+# operator-impact fix the rule was meant to prevent. The MANDATORY rule
+# paragraph names a permitted alternative (`gh pr view <N> --json mergeCommit`)
+# so the agent has a path to verify the merge SHA without a checkout AND
+# without hitting an allowlist denial.
+if printf '%s\n' "$s7" | grep -qF 'gh api repos'; then
+  nope "§7 must not recommend \`gh api repos/...\` (not in building allowlist)" \
+    "phrase still present; rewrite the recipe to use a permitted verb (\`gh pr view\`)"
+else
+  ok "§7 worktree-HEAD rule does NOT recommend disallowed \`gh api\` recipe (ENG-71 C1)"
+fi
+if printf '%s\n' "$s7" | grep -qF 'gh pr view'; then
+  ok "§7 names a permitted SHA-verification path (\`gh pr view\` is in building allowlist)"
+else
+  nope "§7 names permitted SHA-verification path" \
+    "no \`gh pr view\` mention in §7 — agent has no allowlisted way to verify the merge SHA"
+fi
+
 # ─── ENG-71 symmetric pin: bin/dispatch.sh's building-stage block names
 # the SAME four pattern literals (ENG-62 Bld-001 discipline).
 DISPATCH_SH="$HARNESS_ROOT/bin/dispatch.sh"

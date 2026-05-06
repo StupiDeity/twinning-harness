@@ -3055,6 +3055,24 @@ else
     "current_head=$current_head_t9 metric_count=$metric_count_t9 comment_count=$comment_count_t9"
 fi
 
+# ─── Case 71-4: rc=26 arm invokes _post_dispatch_check_worktree_head ───
+# Structure pin: D-002's transcript scan is post-stream — by the time it
+# returns 26 the agent has already executed the forbidden Bash command,
+# so the worktree may already be on `main`. Without invoking the helper
+# in the rc=26 arm, the rc=26 path exits and main stays globally locked
+# until cleanup-worktrees.sh runs on the next post-merge tick (which
+# only fires on merged/canceled/30-day-orphan triggers — none fire on a
+# halted build). The rc=26 arm in run-stage.sh::main MUST call
+# _post_dispatch_check_worktree_head before exit 26 so the helper
+# detaches HEAD on the way out.
+RC26_ARM_BLOCK="$(awk '/elif \(\( dispatch_rc == 26 \)\); then/,/^    elif/' "$HARNESS_DIR/run-stage.sh")"
+if printf '%s\n' "$RC26_ARM_BLOCK" | grep -qF '_post_dispatch_check_worktree_head'; then
+  pass_at "case-71-4 rc=26 arm invokes _post_dispatch_check_worktree_head before exit 26"
+else
+  fail_at "case-71-4 rc=26 arm missing helper invocation" \
+    "block did not contain _post_dispatch_check_worktree_head"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
