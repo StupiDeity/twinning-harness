@@ -2932,6 +2932,129 @@ else
     "rc=$ENG_62_CASE_M_RC stage_end=$stage_end_count transition=$transition_landed metrics=$(cat "$ENG_62_CASE_M_METRICS" 2>/dev/null)"
 fi
 
+# ─── ENG-71: D-003 _post_dispatch_check_worktree_head fixtures ─────────
+# Pin the post-dispatch worktree-HEAD detector across three states:
+# (case 7) mismatch — worktree on main but expected feat/eng-…  → detach,
+# emit metric, post sig-deduped Linear comment;
+# (case 8) match — worktree on the expected branch  → no-op, no metric,
+# no comment;
+# (case 9) stage gate — qa with HEAD on main  → no-op (stage-gated to
+# building only).
+#
+# Each case stubs `metrics.sh` (writes invocations to a capture file
+# under $STUB_DIR), uses a real `git init`'d worktree under
+# $STUB_DIR/wt-T7/worktree, and asserts the detach action's effect on
+# the actual git state plus the metric+comment side-effects.
+printf '\n--- ENG-71: D-003 _post_dispatch_check_worktree_head ---\n'
+
+reset_metrics_capture() { : > "$STUB_DIR/metrics.capture"; }
+if [[ ! -x "$STUB_DIR/metrics.sh" ]]; then
+  cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+# args: \$1 event \$2 ident \$3 stage \$4 outcome \$5 duration_ms \$6 notes
+printf 'EVENT=%s\nIDENT=%s\nSTAGE=%s\nOUTCOME=%s\nNOTES=%s\n---\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" >> "$STUB_DIR/metrics.capture"
+exit 0
+SH
+  chmod +x "$STUB_DIR/metrics.sh"
+fi
+reset_metrics_capture
+
+# ─── Case 71-1: D-003 detach-on-mismatch (stage=building, HEAD on main) ─
+reset_capture
+ENG_T7_WT="$(issue_dir ENG-T7)/worktree"
+rm -rf "$ENG_T7_WT"
+mkdir -p "$ENG_T7_WT"
+( cd "$ENG_T7_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+# Override branch-name.sh to return a different branch than `main` so the
+# mismatch fires. Restored to the default mock-slug shape after this case.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/eng-t7-mock-slug\n'
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+_post_dispatch_check_worktree_head ENG-T7 building >/dev/null 2>&1 || true
+
+current_head_t7="$(git -C "$ENG_T7_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_t7="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_t7="$(grep -c '^SIG=warn/worktree-mutated/ENG-T7$' "$CAPTURE_FILE" 2>/dev/null || true)"
+
+if [[ "$current_head_t7" == "HEAD" ]] \
+   && [[ "$metric_count_t7" == "1" ]] \
+   && [[ "$comment_count_t7" == "1" ]]; then
+  pass_at "case-71-1 D-003 detach-on-mismatch (stage=building, current=main, expected=feat/eng-t7-…) → HEAD detached, metric+comment emitted"
+else
+  fail_at "case-71-1 D-003 detach-on-mismatch" \
+    "current_head=$current_head_t7 metric_count=$metric_count_t7 comment_count=$comment_count_t7"
+fi
+
+# Restore branch-name.sh to the default mock-slug shape for downstream cases.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+# ─── Case 71-2: D-003 no-detach when HEAD on expected branch ───────────
+reset_capture
+reset_metrics_capture
+ENG_T8_WT="$(issue_dir ENG-T8)/worktree"
+rm -rf "$ENG_T8_WT"
+mkdir -p "$ENG_T8_WT"
+( cd "$ENG_T8_WT" \
+  && git init --quiet -b feat/eng-t8-mock-slug \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+_post_dispatch_check_worktree_head ENG-T8 building >/dev/null 2>&1 || true
+
+current_head_t8="$(git -C "$ENG_T8_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_t8="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_t8="$(grep -c '^SIG=warn/worktree-mutated/ENG-T8$' "$CAPTURE_FILE" 2>/dev/null || true)"
+
+if [[ "$current_head_t8" == "feat/eng-t8-mock-slug" ]] \
+   && [[ "$metric_count_t8" == "0" ]] \
+   && [[ "$comment_count_t8" == "0" ]]; then
+  pass_at "case-71-2 D-003 no-detach when HEAD on expected branch → no detach, no metric, no comment"
+else
+  fail_at "case-71-2 D-003 no-detach" \
+    "current_head=$current_head_t8 metric_count=$metric_count_t8 comment_count=$comment_count_t8"
+fi
+
+# ─── Case 71-3: D-003 stage gate (stage=qa with HEAD on main → no-op) ─
+reset_capture
+reset_metrics_capture
+ENG_T9_WT="$(issue_dir ENG-T9)/worktree"
+rm -rf "$ENG_T9_WT"
+mkdir -p "$ENG_T9_WT"
+( cd "$ENG_T9_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+_post_dispatch_check_worktree_head ENG-T9 qa >/dev/null 2>&1 || true
+
+current_head_t9="$(git -C "$ENG_T9_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_t9="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_t9="$(grep -c '^SIG=warn/worktree-mutated/ENG-T9$' "$CAPTURE_FILE" 2>/dev/null || true)"
+
+if [[ "$current_head_t9" == "main" ]] \
+   && [[ "$metric_count_t9" == "0" ]] \
+   && [[ "$comment_count_t9" == "0" ]]; then
+  pass_at "case-71-3 D-003 stage gate (stage=qa) → no-op even when HEAD on main"
+else
+  fail_at "case-71-3 D-003 stage gate" \
+    "current_head=$current_head_t9 metric_count=$metric_count_t9 comment_count=$comment_count_t9"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
