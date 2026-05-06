@@ -526,6 +526,56 @@ else
        'ENG-65 cycle was caused by agent treating loopback as "add adversarial coverage"; carve-out must be pinned'
 fi
 
+# ─── ENG-71: §7 build agent must not check out main / pull / reset ────
+# Pin the MANDATORY worktree-HEAD rule paragraph in §7 (D-001) and the
+# symmetric pattern enumeration in `bin/dispatch.sh::_render_and_capture_stream`'s
+# building-stage block (ENG-62 Bld-001 prompt-orchestrator symmetry
+# discipline). A future contributor who adds a fifth pattern to either
+# site without updating the other fails this test.
+if printf '%s\n' "$s7" | grep -qF 'MANDATORY worktree-HEAD rule (ENG-71)'; then
+  ok "§7 contains ENG-71 worktree-HEAD MANDATORY rule"
+else
+  nope "§7 contains ENG-71 worktree-HEAD MANDATORY rule" "phrase missing"
+fi
+for pat in 'git checkout' 'git switch' 'git pull' 'git reset'; do
+  if printf '%s\n' "$s7" | grep -qF "\`$pat\`"; then
+    ok "§7 explicitly names \`$pat\` as forbidden"
+  else
+    nope "§7 names \`$pat\`" "pattern not back-tick-quoted in §7"
+  fi
+done
+if printf '%s\n' "$s7" | grep -qF 'chained commands'; then
+  ok "§7 names chained-command class explicitly"
+else
+  nope "§7 names chained-command class" "phrase missing"
+fi
+if printf '%s\n' "$s7" | grep -qF 'git fetch origin main && git checkout main'; then
+  ok "§7 contains literal worked example of chained-command bypass"
+else
+  nope "§7 contains literal chained-command worked example" \
+    "phrase 'git fetch origin main && git checkout main' missing"
+fi
+
+# ─── ENG-71 symmetric pin: bin/dispatch.sh's building-stage block names
+# the SAME four pattern literals (ENG-62 Bld-001 discipline).
+DISPATCH_SH="$HARNESS_ROOT/bin/dispatch.sh"
+if [[ -f "$DISPATCH_SH" ]]; then
+  eng71_dispatch_missing=""
+  for pat in "'git checkout'" "'git switch'" "'git pull'" "'git reset'"; do
+    if ! grep -qF "$pat" "$DISPATCH_SH"; then
+      eng71_dispatch_missing+="$pat "
+    fi
+  done
+  if [[ -z "$eng71_dispatch_missing" ]]; then
+    ok "ENG-71 symmetric pin: bin/dispatch.sh names all four forbidden patterns"
+  else
+    nope "ENG-71 symmetric pin: bin/dispatch.sh missing patterns" \
+      "patterns missing from bin/dispatch.sh: $eng71_dispatch_missing"
+  fi
+else
+  nope "ENG-71 symmetric pin: bin/dispatch.sh exists" "file missing"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
