@@ -610,6 +610,18 @@ main() {
     fi
   fi
 
+  # ENG-62: pre-dispatch merge-detection gate. If the PR for stage=building
+  # is already MERGED (e.g., a prior dispatch fired `gh pr merge --auto`
+  # successfully), there is nothing left for the build agent to do —
+  # dispatching costs ≈ $1.50 and risks an awaiting-approval emission from
+  # a prompt-following regression. Apply the transition directly and exit.
+  if _pre_dispatch_merge_gate "$ident" "$stage"; then
+    t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" \
+      "merged-pre-dispatch" "$duration" || true
+    exit 0
+  fi
+
   # Guarantee the per-issue state dir exists before dispatch so an agent's first
   # Write of stage-summary-<stage>.md cannot fail on missing parents.
   mkdir -p "$(issue_dir "$ident")"
