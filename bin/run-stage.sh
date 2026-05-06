@@ -586,8 +586,12 @@ main() {
       # and operator review is required. skip-until-human-acts policy
       # (vs. retry-immediately for generic exit 20) ensures the next
       # tick won't re-dispatch automatically.
+      # ENG-65 D-004: surface the worktree-resume hint so the operator
+      # can inspect the partial artifact (the watchdog SIGTERM may fire
+      # mid-iteration with a usable doc on disk; see ENG-58 incident)
+      # and either resume via `--action continue` or fix the underlying P0.
       classify_failure "$ident" "$stage" "skip-until-human-acts" \
-        "dispatch wall-clock timeout — agent exceeded budget without exiting" 124
+        "dispatch wall-clock timeout — agent exceeded budget without exiting. Partial worktree artifacts may resume cleanly. Inspect: $(issue_dir "$ident")/worktree/. If the artifact looks complete, run: bash bin/pipeline.sh decide $ident --action continue" 124
       rm -f "$prompt_file"
       exit 124
     elif (( dispatch_rc == 22 )); then

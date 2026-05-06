@@ -261,6 +261,59 @@ jq '.dispatch.tools = {"implement":["Bash(bash bin/*-test.sh:*)"],"qa":["Bash(ba
 `bin/dispatch-test.sh` warns if the harness-self config exists locally but is missing
 these entries (skipped silently when the config is absent — CI or non-harness operators).
 
+## Per-stage dispatch timeouts (ENG-65)
+
+`dispatch.sh::main` wraps each `claude -p` invocation with a `gtimeout` watchdog
+(ENG-48). The cap defaults to **60 min for `brainstorming` and `planning`** (where
+persona-review iterations legitimately span >30 min) and **30 min for every other
+stage**. Two layers of override sit above those built-ins:
+
+1. `orchestrator.dispatch_timeout_minutes_per_stage[<stage>]` — per-stage override
+   in the target's `.pipeline-config/config.json`. Wins over both the global and
+   the built-in default. Highest precedence.
+2. `orchestrator.dispatch_timeout_minutes` — the existing global override (ENG-48).
+   Applies to every stage.
+3. Per-stage built-in default (above) — applied when neither override resolves.
+
+```json
+{
+  "orchestrator": {
+    "dispatch_timeout_minutes": 30,
+    "dispatch_timeout_minutes_per_stage": {
+      "brainstorming": 60,
+      "planning":      60
+    }
+  }
+}
+```
+
+Validation:
+- Values must be **integers** (e.g. `60`, not `"60m"` or `"1h"`). Non-integer values
+  fail the `^[0-9]+$` regex guard and fall through to the next layer.
+- A resolved value `< 1` is rejected (gtimeout treats `0` as "no timeout", which
+  would silently disable the watchdog). The per-stage built-in default is restored.
+
+The canonical stage keys (gerund form per `dispatch.sh::allowed_tools_for`):
+`brainstorming`, `planning`, `implementing`, `ui`, `reviewing`, `qa`, `building`,
+`released`. **An unknown key (e.g. `brainstorm` missing `-ing`) silently falls
+through** to the global, then to the built-in default — no warning is emitted.
+After applying an override, grep `gtimeout ... <seconds>` in the per-stage
+transcript at `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log` to confirm the
+override took effect.
+
+Trade-off: a longer cap wastes more spend on a stalled agent before the watchdog
+fires; a tighter cap risks SIGTERM mid-iteration on legitimate persona-review
+work (the failure mode that drove ENG-65). Brainstorm's prompt-side 2-iteration
+cap (D-001) bounds the persona path to ~36–60 min, so 60 min for brainstorming
+is the upper bound — not a green light to widen further.
+
+When SIGTERM fires before a `result` event lands, `_render_and_capture_stream`
+falls back to summing per-message `assistant.message.usage.*` and writes a
+partial usage file with `cost_usd: null` and `partial: true` (D-003). The
+on-disk `partial: true` field is the discriminator the retrospective uses to
+distinguish SIGTERM-captured runs from genuine zero-cost dispatches; the flag
+stream emitted by `_cost_flags_for` shows `--cost-usd 0` (jq `// 0` coercion).
+
 ## When wiring a new script
 
 - `source "$SCRIPT_DIR/common.sh"` first, before anything else. It enforces `TARGET_REPO`
@@ -334,6 +387,7 @@ transitions to QA. Issues at any other stage are unaffected.
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` (comment `createdAt` reflects FIRST emission only; check the `<!-- meta: reapplied at=… -->` footer for the latest re-apply moment — see `docs/runbooks/recovery.md` §4) |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
 | Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
+| Brainstorm halts at iteration 2 with `iteration-exhausted` (was: resolved on iteration 3) | New ENG-65 behavior: brainstorm voluntarily halts after 2 persona-review iterations with unresolved P0 instead of starting iteration 3. Inspect `$PROJECT_STATE_DIR/<ident>/worktree/docs/brainstorms/`; resume via `--action continue` or fix the underlying P0 in the plan. Bounded worst-case spend, costs one extra operator touch on slow-converging brainstorms. |
 
 **What `--action continue` clears (atomic, ENG-58 ported to ENG-60):**
 

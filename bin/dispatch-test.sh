@@ -274,11 +274,12 @@ DRYRUN_OUT="$_TEST_STUB_DIR/dryrun.out"
 PIPELINE_DRY_RUN=1 \
   bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$DRYRUN_OUT" >/dev/null || true
 
-# Default budget (config has no override): 30 min = 1800s.
-if grep -qE 'gtimeout.*\b1800\b' "$DRYRUN_OUT"; then
-  pass_at "dry-run log: gtimeout wrapper with default 30-min (1800s) budget"
+# ENG-65: brainstorming/planning have a 60-min built-in default; other stages
+# stay at the historical 30-min cap. No config overrides → 3600s for brainstorm.
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT"; then
+  pass_at "dry-run log: gtimeout wrapper with brainstorming built-in default (60-min / 3600s)"
 else
-  fail_at "dry-run log missing gtimeout wrapper or default budget" \
+  fail_at "dry-run log missing gtimeout wrapper or brainstorming built-in default" \
     "log: $(cat "$DRYRUN_OUT")"
 fi
 
@@ -319,6 +320,166 @@ if grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_C"; then
 else
   fail_at "dry-run log did not pick up custom dispatch_timeout_minutes" \
     "log: $(cat "$DRYRUN_OUT_C")"
+fi
+
+# ─── ENG-65 per-stage timeout fixtures ────────────────────────────────────
+# D-002: a per-stage override beats the global, mis-keyed/zero entries fall
+# through to the per-stage built-in default, and built-in defaults are 60-min
+# for brainstorming/planning and 30-min for everything else.
+
+_eng65_run_dispatch_dryrun() {
+  # $1 = target_repo, $2 = project_slug, $3 = stage, $4 = output file
+  local _t="$1" _slug="$2" _stage="$3" _out="$4"
+  PIPELINE_DRY_RUN=1 \
+  TARGET_REPO="$_t" \
+  PROJECT_SLUG="$_slug" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  PROJECT_STATE_DIR="$HARNESS_STATE_DIR/$_slug" \
+  LINEAR_API_KEY="$LINEAR_API_KEY" \
+    bash "$SCRIPT_DIR/dispatch.sh" "$_stage" "$_PROMPT_FILE" 2>"$_out" >/dev/null || true
+}
+
+# Per-stage override fixture — brainstorming gets 45 min (2700s), other stages
+# unaffected (ui still uses its 30-min built-in default = 1800s).
+TARGET_REPO_PERSTAGE="$_TEST_STUB_DIR/target-perstage"
+mkdir -p "$TARGET_REPO_PERSTAGE/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "perstage-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: 45 } }
+}' > "$TARGET_REPO_PERSTAGE/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_PERSTAGE/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_PS_BS="$_TEST_STUB_DIR/dryrun-perstage-bs.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_PERSTAGE" "perstage-slug" brainstorming "$DRYRUN_OUT_PS_BS"
+if grep -qE 'gtimeout.*\b2700\b' "$DRYRUN_OUT_PS_BS"; then
+  pass_at "ENG-65 per-stage override: brainstorming honors dispatch_timeout_minutes_per_stage=45 (2700s)"
+else
+  fail_at "ENG-65 per-stage override did not apply to brainstorming" \
+    "log: $(cat "$DRYRUN_OUT_PS_BS")"
+fi
+
+DRYRUN_OUT_PS_UI="$_TEST_STUB_DIR/dryrun-perstage-ui.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_PERSTAGE" "perstage-slug" ui "$DRYRUN_OUT_PS_UI"
+if grep -qE 'gtimeout.*\b1800\b' "$DRYRUN_OUT_PS_UI"; then
+  pass_at "ENG-65 per-stage override: ui untouched by brainstorming override (1800s built-in default)"
+else
+  fail_at "ENG-65 per-stage override leaked into ui" \
+    "log: $(cat "$DRYRUN_OUT_PS_UI")"
+fi
+
+# Fallthrough fixture — no per-stage map, but global override is 5 min (300s).
+TARGET_REPO_FT="$_TEST_STUB_DIR/target-fallthrough"
+mkdir -p "$TARGET_REPO_FT/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "ft-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes: 5 }
+}' > "$TARGET_REPO_FT/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_FT/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_FT="$_TEST_STUB_DIR/dryrun-ft.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_FT" "ft-slug" brainstorming "$DRYRUN_OUT_FT"
+if grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_FT"; then
+  pass_at "ENG-65 fallthrough: brainstorming uses global dispatch_timeout_minutes=5 when per-stage absent (300s)"
+else
+  fail_at "ENG-65 fallthrough did not pick up global override" \
+    "log: $(cat "$DRYRUN_OUT_FT")"
+fi
+
+# Built-in-default-by-stage fixture — no overrides at all; brainstorming and
+# planning land at 60 min (3600s); ui/implementing/qa land at 30 min (1800s).
+TARGET_REPO_BI="$_TEST_STUB_DIR/target-builtin"
+mkdir -p "$TARGET_REPO_BI/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "bi-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5 }
+}' > "$TARGET_REPO_BI/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_BI/.pipeline-config/schemas/linear-ids.json"
+
+for stage in brainstorming planning; do
+  out="$_TEST_STUB_DIR/dryrun-bi-$stage.out"
+  _eng65_run_dispatch_dryrun "$TARGET_REPO_BI" "bi-slug" "$stage" "$out"
+  if grep -qE 'gtimeout.*\b3600\b' "$out"; then
+    pass_at "ENG-65 built-in default: $stage uses 60-min (3600s) when no overrides set"
+  else
+    fail_at "ENG-65 built-in default for $stage" "log: $(cat "$out")"
+  fi
+done
+
+for stage in ui implementing qa; do
+  out="$_TEST_STUB_DIR/dryrun-bi-$stage.out"
+  _eng65_run_dispatch_dryrun "$TARGET_REPO_BI" "bi-slug" "$stage" "$out"
+  if grep -qE 'gtimeout.*\b1800\b' "$out"; then
+    pass_at "ENG-65 built-in default: $stage uses 30-min (1800s) when no overrides set"
+  else
+    fail_at "ENG-65 built-in default for $stage" "log: $(cat "$out")"
+  fi
+done
+
+# Zero-rejection fixture — `dispatch_timeout_minutes_per_stage.brainstorming = 0`
+# would disable the gtimeout watchdog (gtimeout's "no timeout" sentinel).
+# The (( minutes >= 1 )) guard restores the per-stage built-in default.
+TARGET_REPO_ZERO="$_TEST_STUB_DIR/target-zero"
+mkdir -p "$TARGET_REPO_ZERO/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "zero-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: 0 } }
+}' > "$TARGET_REPO_ZERO/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_ZERO/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_ZERO="$_TEST_STUB_DIR/dryrun-zero.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_ZERO" "zero-slug" brainstorming "$DRYRUN_OUT_ZERO"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_ZERO" \
+   && ! grep -qE 'gtimeout.*\b0\b' "$DRYRUN_OUT_ZERO"; then
+  pass_at "ENG-65 zero-rejection: brainstorming with per-stage=0 falls back to 60-min built-in (3600s, NOT 0)"
+else
+  fail_at "ENG-65 zero-rejection failed (watchdog would be disabled)" \
+    "log: $(cat "$DRYRUN_OUT_ZERO")"
+fi
+
+# Typo'd-key fixture — `brainstorm` (missing -ing) silently falls through to
+# the per-stage built-in default. Documented behavior so operators learn to
+# verify `gtimeout ... <seconds>` in the per-stage transcript after applying
+# their override.
+TARGET_REPO_TYPO="$_TEST_STUB_DIR/target-typo"
+mkdir -p "$TARGET_REPO_TYPO/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "typo-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorm: 45 } }
+}' > "$TARGET_REPO_TYPO/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_TYPO/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_TYPO="$_TEST_STUB_DIR/dryrun-typo.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_TYPO" "typo-slug" brainstorming "$DRYRUN_OUT_TYPO"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_TYPO"; then
+  pass_at "ENG-65 typo'd-key: brainstorming ignores 'brainstorm' (missing -ing) → 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 typo'd-key did not fall through to built-in default" \
+    "log: $(cat "$DRYRUN_OUT_TYPO")"
+fi
+
+# Non-numeric override (string "60m" instead of 60) — regex guard rejects, so
+# the value falls through to the global, then to the per-stage built-in.
+TARGET_REPO_NN="$_TEST_STUB_DIR/target-nonnumeric"
+mkdir -p "$TARGET_REPO_NN/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "nn-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: "60m" } }
+}' > "$TARGET_REPO_NN/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_NN/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_NN="$_TEST_STUB_DIR/dryrun-nonnumeric.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_NN" "nn-slug" brainstorming "$DRYRUN_OUT_NN"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_NN"; then
+  pass_at "ENG-65 non-numeric: \"60m\" string rejected; falls through to 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 non-numeric did not fall through" \
+    "log: $(cat "$DRYRUN_OUT_NN")"
 fi
 
 # ─── Group 3: stream-json renderer fixtures (ENG-26 Task 5) ──────────────
@@ -640,6 +801,341 @@ if [[ "$keys_k" == "$expected_keys" ]] \
   pass_at "fixture-K forward-compat: unknown future fields ignored; six-field allowlist enforced"
 else
   fail_at "fixture-K forward-compat" "keys=$keys_k request_id=$has_request_id_k thinking=$has_thinking_k"
+fi
+
+# ─── Fixture L: ENG-65 partial-usage capture on SIGTERM (no result event) ─
+# A wall-clock SIGTERM mid-stream loses the aggregated `result` event.
+# D-003: sum per-message assistant.message.usage.* across the captured
+# NDJSON, mark the file as `partial: true` with `cost_usd: null`. The
+# downstream `_cost_flags_for // 0` coerces null → 0 — verified separately
+# in run-stage-test (case-23). The `partial` flag on disk is the
+# discriminator that distinguishes "captured under SIGTERM" from "clean
+# zero-cost dispatch" for the retrospective.
+USAGE_L="$ISSUE_DIR/usage-plan-L.json"
+rm -f "$USAGE_L" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_L" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"deadbeef-l","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}
+{"type":"assistant","message":{"id":"msg_02","content":[{"type":"text","text":"more"}],"usage":{"input_tokens":200,"output_tokens":80,"cache_read_input_tokens":30,"cache_creation_input_tokens":15}}}
+{"type":"assistant","message":{"id":"msg_03","content":[{"type":"text","text":"yet more"}],"usage":{"input_tokens":50,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}
+NDJSON
+
+if [[ ! -s "$USAGE_L" ]]; then
+  fail_at "fixture-L partial usage" "usage file missing or empty: $USAGE_L"
+else
+  partial_l="$(jq -r '.partial' "$USAGE_L" 2>/dev/null || printf '')"
+  cost_l_null="$(jq -r '.cost_usd == null' "$USAGE_L" 2>/dev/null || printf 'false')"
+  ti_l="$(jq -r '.tokens_in' "$USAGE_L" 2>/dev/null || printf '')"
+  to_l="$(jq -r '.tokens_out' "$USAGE_L" 2>/dev/null || printf '')"
+  cr_l="$(jq -r '.cache_read' "$USAGE_L" 2>/dev/null || printf '')"
+  cc_l="$(jq -r '.cache_create' "$USAGE_L" 2>/dev/null || printf '')"
+  model_l="$(jq -r '.model' "$USAGE_L" 2>/dev/null || printf '')"
+  if [[ "$partial_l" == "true" ]] \
+     && [[ "$cost_l_null" == "true" ]] \
+     && [[ "$ti_l" == "350"  ]] \
+     && [[ "$to_l" == "150"  ]] \
+     && [[ "$cr_l" == "55"   ]] \
+     && [[ "$cc_l" == "28"   ]] \
+     && [[ "$model_l" == "claude-opus-4-7" ]]; then
+    pass_at "fixture-L partial usage: tokens summed across assistant events; partial=true, cost_usd=null, model from init"
+  else
+    fail_at "fixture-L partial usage" \
+      "partial=$partial_l cost_null=$cost_l_null tokens_in=$ti_l tokens_out=$to_l cache_read=$cr_l cache_create=$cc_l model=$model_l"
+  fi
+fi
+
+# ─── Fixture L extension: malformed/missing usage block on assistant event ─
+# A degraded assistant event lacks the `message.usage` key entirely. The
+# `(.message.usage // {})` guard absorbs the missing event as 0, so the
+# sum equals only the valid events' total. Mirrors the F2/D-002 tolerance:
+# one bad event must not crash the partial-extraction filter.
+USAGE_L2="$ISSUE_DIR/usage-plan-L2.json"
+rm -f "$USAGE_L2" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_L2" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"deadbeef-l2","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}
+{"type":"assistant","message":{"id":"msg_02","content":[{"type":"text","text":"missing usage block"}]}}
+{"type":"assistant","message":{"id":"msg_03","content":[{"type":"text","text":"more"}],"usage":{"input_tokens":50,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}
+NDJSON
+
+if [[ ! -s "$USAGE_L2" ]]; then
+  fail_at "fixture-L2 malformed usage" "usage file missing or empty: $USAGE_L2"
+else
+  partial_l2="$(jq -r '.partial' "$USAGE_L2" 2>/dev/null || printf '')"
+  ti_l2="$(jq -r '.tokens_in' "$USAGE_L2" 2>/dev/null || printf '')"
+  to_l2="$(jq -r '.tokens_out' "$USAGE_L2" 2>/dev/null || printf '')"
+  if [[ "$partial_l2" == "true" ]] \
+     && [[ "$ti_l2" == "150" ]] \
+     && [[ "$to_l2" == "70"  ]]; then
+    pass_at "fixture-L2 malformed usage: missing message.usage absorbed as 0; valid events still summed"
+  else
+    fail_at "fixture-L2 malformed usage" "partial=$partial_l2 tokens_in=$ti_l2 (expected 150) tokens_out=$to_l2 (expected 70)"
+  fi
+fi
+
+# Existing Fixture H regression — empty stdin must still soft-fail under
+# the new partial path because the `_partial_sum > 0` guard rejects a
+# zero-token sum. Verify (a) no usage file is written and (b) the soft-fail
+# log line still fires. This is the same assertion as Fixture H above; we
+# pin it again here so a future refactor of the partial-extraction filter
+# can't accidentally start writing a partial file with all-zeros.
+USAGE_HE="$ISSUE_DIR/usage-plan-HE.json"
+rm -f "$USAGE_HE" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+RENDER_OUT_HE="$(_render_and_capture_stream "$USAGE_HE" "$ISSUE_DIR" </dev/null 2>&1)"
+if [[ ! -e "$USAGE_HE" ]] && grep -q 'no result event found in stream' <<<"$RENDER_OUT_HE"; then
+  pass_at "ENG-65 fixture-H regression pin: empty stdin → no partial file written (zero-token guard)"
+else
+  fail_at "ENG-65 fixture-H regression" "exists=$([[ -e $USAGE_HE ]] && echo y || echo n) out=$RENDER_OUT_HE"
+fi
+
+# ─── ENG-65 QA adversarial coverage ───────────────────────────────────────
+# These four fixtures cover gaps surfaced by the QA cold-pass:
+#   QA1 — negative integer per-stage override pinned at "fall through"
+#         (the regex `^[0-9]+$` excludes `-` so the negative is rejected
+#         and the built-in default applies; pins the contract so a future
+#         "be more permissive" regex change can't accidentally pass `-5`
+#         to gtimeout, which would error opaquely at invocation time).
+#   QA2 — float / decimal per-stage override is rejected by the regex.
+#         A naive `60.5` (operator copies a derived average) must not
+#         silently apply (bash arithmetic would truncate or error).
+#   QA3 — partial-usage filter when `assistant.message.usage` is a
+#         non-object (array) — type confusion from a buggy upstream.
+#         Currently `(.input_tokens // 0)` on `[]` makes the jq
+#         invocation fail, dropping the partial file silently. Pin the
+#         observable behavior (no file written, soft-fail log emitted)
+#         so a future refactor can't quietly start writing a corrupt
+#         partial file.
+#   QA4 — partial-usage filter with multiple `system`/`init` events,
+#         only the second carrying a `.model`. The filter takes the
+#         FIRST init's model via `[0].model // ""`, so the resulting
+#         file's `model` field is empty even though a model is present
+#         later in the stream. Document this as expected-but-degraded
+#         behavior (operator can still see the partial token sums and
+#         the `partial: true` discriminator).
+
+# QA1 — negative integer per-stage override
+TARGET_REPO_NEG="$_TEST_STUB_DIR/target-negative"
+mkdir -p "$TARGET_REPO_NEG/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "neg-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: -5 } }
+}' > "$TARGET_REPO_NEG/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_NEG/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_NEG="$_TEST_STUB_DIR/dryrun-negative.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_NEG" "neg-slug" brainstorming "$DRYRUN_OUT_NEG"
+# Assert the resolved seconds is the 60-min default (3600), and that no
+# negative seconds value (e.g. ` -300 `) leaked into the gtimeout invocation.
+if grep -qE 'gtimeout.*[[:space:]]3600[[:space:]]' "$DRYRUN_OUT_NEG" \
+   && ! grep -qE 'gtimeout.*[[:space:]]-[0-9]+[[:space:]]' "$DRYRUN_OUT_NEG"; then
+  pass_at "ENG-65 QA1 (adversarial): negative integer per-stage=-5 rejected by regex; falls through to 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 QA1: negative integer per-stage override leaked through" \
+    "log: $(cat "$DRYRUN_OUT_NEG")"
+fi
+
+# QA2 — float / decimal per-stage override
+TARGET_REPO_FLOAT="$_TEST_STUB_DIR/target-float"
+mkdir -p "$TARGET_REPO_FLOAT/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "float-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: 60.5 } }
+}' > "$TARGET_REPO_FLOAT/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_FLOAT/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_FLOAT="$_TEST_STUB_DIR/dryrun-float.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_FLOAT" "float-slug" brainstorming "$DRYRUN_OUT_FLOAT"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_FLOAT"; then
+  pass_at "ENG-65 QA2 (adversarial): float per-stage=60.5 rejected by regex; falls through to 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 QA2: float per-stage override leaked through" \
+    "log: $(cat "$DRYRUN_OUT_FLOAT")"
+fi
+
+# QA3 — `assistant.message.usage` is an array (type confusion)
+USAGE_QA3="$ISSUE_DIR/usage-plan-QA3.json"
+rm -f "$USAGE_QA3" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+NDJSON_QA3="$_TEST_STUB_DIR/qa3.ndjson"
+cat > "$NDJSON_QA3" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"qa3","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":[100,50,20,10]}}
+NDJSON
+RENDER_OUT_QA3="$(_render_and_capture_stream "$USAGE_QA3" "$ISSUE_DIR" < "$NDJSON_QA3" 2>&1)"
+if [[ ! -e "$USAGE_QA3" ]] && grep -q 'no result event found in stream' <<<"$RENDER_OUT_QA3"; then
+  pass_at "ENG-65 QA3 (adversarial): array-shaped message.usage → jq fails gracefully → no partial file written (soft-fail log emitted)"
+else
+  fail_at "ENG-65 QA3: array usage value silently produced a partial file" \
+    "exists=$([[ -e "$USAGE_QA3" ]] && echo y || echo n) out=$RENDER_OUT_QA3"
+fi
+
+# QA4 — multiple system/init events; only second carries .model
+USAGE_QA4="$ISSUE_DIR/usage-plan-QA4.json"
+rm -f "$USAGE_QA4" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_QA4" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"qa4-first"}
+{"type":"system","subtype":"init","session_id":"qa4-second","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}
+NDJSON
+
+if [[ ! -s "$USAGE_QA4" ]]; then
+  fail_at "ENG-65 QA4: usage file missing despite valid assistant event" "path=$USAGE_QA4"
+else
+  partial_qa4="$(jq -r '.partial' "$USAGE_QA4" 2>/dev/null || printf '')"
+  ti_qa4="$(jq -r '.tokens_in' "$USAGE_QA4" 2>/dev/null || printf '')"
+  model_qa4="$(jq -r '.model' "$USAGE_QA4" 2>/dev/null || printf '')"
+  # Filter takes [0].model — first init lacks .model so // "" yields "".
+  # Pin this as expected-but-degraded; the partial token sum is still
+  # correct and `partial: true` is the load-bearing discriminator.
+  if [[ "$partial_qa4" == "true" ]] \
+     && [[ "$ti_qa4" == "100" ]] \
+     && [[ "$model_qa4" == "" ]]; then
+    pass_at "ENG-65 QA4 (adversarial): multi-init stream — first init wins for .model (empty when absent), tokens still summed correctly"
+  else
+    fail_at "ENG-65 QA4: multi-init partial-usage extraction" \
+      "partial=$partial_qa4 tokens_in=$ti_qa4 model=$model_qa4"
+  fi
+fi
+
+# QA5 — precedence-chain short-circuit pin (operator-trap documentation).
+# When the per-stage value is *present-but-malformed* AND the global is
+# valid, the implementation does NOT fall through to the global — the
+# global lookup only fires when per-stage is empty. Both reads share the
+# same `_cfg_minutes` slot, so a non-empty malformed value (passes the
+# `[[ -z "$_cfg_minutes" ]]` guard, fails the regex) shorts the chain to
+# the built-in default and silently bypasses the operator's global cap
+# for the affected stage.
+#
+# This pins the *actual* behavior so a future refactor doesn't change it
+# accidentally. CLAUDE.md's "fall through to the next layer" prose is
+# slightly imprecise re: this case; the plan's pseudocode (the contract)
+# is what the implementation follows. Doc clarification is a follow-up.
+# Operators who hit this surprise can grep the per-stage transcript for
+# the resolved `gtimeout ... <seconds>` to confirm which layer won.
+TARGET_REPO_PREC="$_TEST_STUB_DIR/target-precedence"
+mkdir -p "$TARGET_REPO_PREC/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "prec-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes: 5, dispatch_timeout_minutes_per_stage: { brainstorming: "60m" } }
+}' > "$TARGET_REPO_PREC/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_PREC/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_PREC="$_TEST_STUB_DIR/dryrun-precedence.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_PREC" "prec-slug" brainstorming "$DRYRUN_OUT_PREC"
+# Actual behavior: malformed per-stage shorts the chain → built-in 60-min
+# (3600s) wins, NOT the operator's 5-min global. Pin the surprise so a
+# future change either fixes it (and breaks this test, prompting a doc
+# update) or knowingly preserves it.
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_PREC" \
+   && ! grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_PREC"; then
+  pass_at "ENG-65 QA5 (adversarial): malformed per-stage shorts the precedence chain to built-in (3600s) — pins the operator-trap that bypasses the global override"
+else
+  fail_at "ENG-65 QA5: precedence-chain pin (expected built-in 3600s; got something else)" \
+    "log: $(cat "$DRYRUN_OUT_PREC")"
+fi
+
+# QA6 — prompt-side D-001 contract pin. AGENT_PROMPTS.md §1 step 3 must
+# carry the `iteration-exhausted` halt instruction and must NOT carry the
+# old "Iterate at most 3 times" / `brainstorm_escalate` language.
+# render-prompt.sh validates fence count, not content; without this grep,
+# a future agent could silently revert D-001 and the harness would
+# happily re-dispatch unbounded persona-review iterations. The prompt is
+# load-bearing for ENG-65 — pin it.
+ENG_65_PROMPTS_PATH="$SCRIPT_DIR/../AGENT_PROMPTS.md"
+[[ -f "$ENG_65_PROMPTS_PATH" ]] || ENG_65_PROMPTS_PATH="$HARNESS_ROOT/AGENT_PROMPTS.md"
+if [[ ! -f "$ENG_65_PROMPTS_PATH" ]]; then
+  fail_at "ENG-65 QA6 prompt-contract" "AGENT_PROMPTS.md not found at $ENG_65_PROMPTS_PATH"
+else
+  # Extract §1 (Brainstorm Agent) — bounded by `## 1.` heading and the next
+  # `## ` heading. Then assert the four substring conditions.
+  brainstorm_section="$(awk '/^## 1\./{ in_b=1 } in_b{print} /^## 2\./{ if (in_b) exit }' "$ENG_65_PROMPTS_PATH")"
+  qa6_ok=1
+  qa6_msg=""
+  if ! grep -qF 'iteration-exhausted' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="missing iteration-exhausted; "
+  fi
+  if ! grep -qF 'Do NOT start iteration 3' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="missing 'Do NOT start iteration 3'; "
+  fi
+  if grep -qF 'Iterate at most 3 times' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="legacy 'Iterate at most 3 times' still present; "
+  fi
+  if grep -qF 'brainstorm_escalate' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="dead brainstorm_escalate marker still present; "
+  fi
+  if (( qa6_ok == 1 )); then
+    pass_at "ENG-65 QA6 (adversarial): AGENT_PROMPTS §1 carries iteration-exhausted + 'Do NOT start iteration 3'; legacy 'Iterate at most 3 times' / brainstorm_escalate removed"
+  else
+    fail_at "ENG-65 QA6 prompt-contract drift" "$qa6_msg"
+  fi
+fi
+
+# QA7 — `dispatch_timeout_minutes_per_stage` is a non-object (array shape).
+# Surfaced by the round-3 cold-pass: jq's `<arr>[$s]` indexing errors with
+# "Cannot index array with string"; the `2>/dev/null || true` swallows the
+# error stream, the per-stage read returns empty, and the resolver falls
+# through to the global lookup (then to the built-in default). This is a
+# different code path from QA5 (parent-key TYPE confusion vs. value-shape
+# malformed) but it lands at the same observable: built-in default wins,
+# no operator-visible warning.
+#
+# Pin the graceful-fallthrough so a future "tighten jq's type guard"
+# refactor either preserves silent fallthrough (test stays green) or
+# adds an explicit reject + log (test breaks, prompting a doc update).
+TARGET_REPO_ARR="$_TEST_STUB_DIR/target-arrshape"
+mkdir -p "$TARGET_REPO_ARR/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "arr-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: ["brainstorming", 60] }
+}' > "$TARGET_REPO_ARR/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_ARR/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_ARR="$_TEST_STUB_DIR/dryrun-arrshape.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_ARR" "arr-slug" brainstorming "$DRYRUN_OUT_ARR"
+# No global override either, so built-in default 60-min (3600s) must win.
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_ARR"; then
+  pass_at "ENG-65 QA7 (adversarial): dispatch_timeout_minutes_per_stage as array (parent-key type confusion) → jq error swallowed → built-in default 3600s wins"
+else
+  fail_at "ENG-65 QA7: array-shaped parent key did not fall through cleanly" \
+    "log: $(cat "$DRYRUN_OUT_ARR")"
+fi
+
+# QA8 — JSON-string-of-digits per-stage value (`"45"`). The plan and
+# CLAUDE.md say "Values must be integers (e.g. 60, not '60m' or '1h')",
+# but jq -r unquotes string values, so a JSON string `"45"` emerges from
+# the jq pipe as the bareword `45`, passes the `^[0-9]+$` regex, and is
+# silently honored as a 45-minute override. This is contrary to the
+# "integers-only" doc claim — a documentation drift that the operator
+# might exploit unintentionally (eg. copy-pasting from a YAML→JSON
+# converter that wraps numerics).
+#
+# Pin the *actual* behavior. Future strict-type refactor either:
+#   (a) tightens the jq filter to reject non-numeric JSON values
+#       (test breaks → prompts a doc-update PR), or
+#   (b) updates CLAUDE.md to document numeric-strings-OK as supported
+#       (test stays green, doc gets a one-liner).
+TARGET_REPO_STR="$_TEST_STUB_DIR/target-strdigit"
+mkdir -p "$TARGET_REPO_STR/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "str-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: "45" } }
+}' > "$TARGET_REPO_STR/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_STR/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_STR="$_TEST_STUB_DIR/dryrun-strdigit.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_STR" "str-slug" brainstorming "$DRYRUN_OUT_STR"
+# Assert override applied: 45 min = 2700s. (Built-in 3600s would mean the
+# string was rejected; the test then has to flip to a strict-rejection
+# expectation, which is the intentional break-on-tighten signal.)
+if grep -qE 'gtimeout.*\b2700\b' "$DRYRUN_OUT_STR"; then
+  pass_at "ENG-65 QA8 (adversarial): JSON string-of-digits '45' silently accepted (jq -r strips quotes, regex passes) → 2700s applied. Pins doc/code drift; tighten the filter or update CLAUDE.md."
+else
+  fail_at "ENG-65 QA8: numeric-string per-stage override behavior changed (expected 2700s)" \
+    "log: $(cat "$DRYRUN_OUT_STR")"
 fi
 
 # ─── Group 7: assert_no_tool_invocation fixtures (ENG-43, AS1-AS6) ────

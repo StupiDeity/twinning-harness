@@ -144,7 +144,37 @@ _render_and_capture_stream() {
       rm -f "$usage_file"
     fi
   else
-    log "[cost] no result event found in stream (soft fail; usage-<stage>.json not written)"
+    # ENG-65 D-003: SIGTERM (or any path leaving no result event) loses
+    # cost telemetry pre-fix. Sum per-message assistant.message.usage
+    # so the metrics stream isn't biased toward zero on watchdog kills.
+    # cost_usd is set to JSON null because total_cost_usd is only on the
+    # result event; downstream `_cost_flags_for` coerces null → 0 via
+    # `// 0`. The `partial: true` field is the on-disk discriminator the
+    # retrospective reads to separate "captured under SIGTERM" from
+    # "clean zero-cost dispatch."
+    local _partial_json
+    _partial_json="$(jq -nR '
+      [inputs | (fromjson? // empty)] as $events
+      | ($events | map(select(.type=="system" and .subtype=="init"))[0].model // "") as $model
+      | ($events | map(select(.type=="assistant") | (.message.usage // {}))) as $usages
+      | { tokens_in:    ($usages | map(.input_tokens // 0)             | add // 0),
+          tokens_out:   ($usages | map(.output_tokens // 0)            | add // 0),
+          cache_read:   ($usages | map(.cache_read_input_tokens // 0)  | add // 0),
+          cache_create: ($usages | map(.cache_creation_input_tokens // 0) | add // 0),
+          cost_usd:     null,
+          model:        $model,
+          partial:      true }
+    ' < "$raw_capture" 2>/dev/null || printf '')"
+    local _partial_sum=0
+    if [[ -n "$_partial_json" ]]; then
+      _partial_sum="$(printf '%s' "$_partial_json" | jq -r '(.tokens_in + .tokens_out)' 2>/dev/null || printf 0)"
+    fi
+    if [[ -n "$_partial_json" && "$_partial_sum" =~ ^[0-9]+$ && "$_partial_sum" -gt 0 ]]; then
+      ( umask 077; printf '%s' "$_partial_json" > "$usage_file" )
+      log "[cost] partial usage captured (no result event; SIGTERM-style termination): tokens_in+out=${_partial_sum}"
+    else
+      log "[cost] no result event found in stream (soft fail; usage-<stage>.json not written)"
+    fi
   fi
 
   # ENG-43: defense-in-depth assertion. Tool lane should already deny
@@ -262,19 +292,38 @@ main() {
   local denies
   denies="$(disallowed_platform_tools)"
 
-  # ENG-48 watchdog budget. Default 30 min — long enough for any legit
-  # stage we have today, short enough that a self-rescheduling agent
-  # can't hold the run-local lock for hours unnoticed. Override via
-  # config.json::orchestrator.dispatch_timeout_minutes (per-stage
-  # overrides can be added later if any stage routinely exceeds this).
-  # The CONFIG read is defensive — the mutex-test contract assumes
-  # dispatch.sh needs TARGET_REPO only for the directory-existence
-  # check, not for a real config.json.
-  local timeout_minutes=30
+  # ENG-48/ENG-65 watchdog budget. Brainstorming/planning iterate through
+  # ≤2 persona-review passes that legitimately span >30 min; everything
+  # else stays at the historical 30-min cap. Resolution precedence:
+  #   1. orchestrator.dispatch_timeout_minutes_per_stage[<stage>]  (ENG-65)
+  #   2. orchestrator.dispatch_timeout_minutes                     (ENG-48)
+  #   3. per-stage built-in default (60 for brainstorm/plan, 30 otherwise)
+  # A non-integer value at layer 1 or 2 falls through. A 0 minute resolved
+  # value would disable the wrapper (gtimeout's no-timeout sentinel) so it
+  # is rejected explicitly, restoring the per-stage built-in default. The
+  # CONFIG read is defensive — the mutex-test contract assumes dispatch.sh
+  # needs TARGET_REPO only for the directory-existence check, not for a
+  # real config.json.
+  local timeout_minutes
+  case "$stage" in
+    brainstorming|planning) timeout_minutes=60 ;;
+    *)                      timeout_minutes=30 ;;
+  esac
   if [[ -f "$CONFIG" ]]; then
     local _cfg_minutes
-    _cfg_minutes="$(jq -r '.orchestrator.dispatch_timeout_minutes // empty' "$CONFIG" 2>/dev/null || true)"
+    _cfg_minutes="$(jq -r --arg s "$stage" \
+      '.orchestrator.dispatch_timeout_minutes_per_stage[$s] // empty' \
+      "$CONFIG" 2>/dev/null || true)"
+    if [[ -z "$_cfg_minutes" ]]; then
+      _cfg_minutes="$(jq -r '.orchestrator.dispatch_timeout_minutes // empty' "$CONFIG" 2>/dev/null || true)"
+    fi
     [[ -n "$_cfg_minutes" && "$_cfg_minutes" =~ ^[0-9]+$ ]] && timeout_minutes="$_cfg_minutes"
+  fi
+  if (( timeout_minutes < 1 )); then
+    case "$stage" in
+      brainstorming|planning) timeout_minutes=60 ;;
+      *)                      timeout_minutes=30 ;;
+    esac
   fi
   local timeout_seconds=$(( timeout_minutes * 60 ))
 

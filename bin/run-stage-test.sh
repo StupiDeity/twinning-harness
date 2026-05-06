@@ -2360,6 +2360,75 @@ EOF
 rc=0; result="$(_fresh_wait_reason ENG-WS9 building 2>/dev/null)" || rc=$?
 [[ "$rc" -eq 1 ]] && pass_at "WS9: latest wait with bogus reason → rc=1 (no fallback to older valid wait)" "rc=$rc" || fail_at "WS9: rc mismatch" "expected 1, got $rc"
 [[ -z "$result" ]] && pass_at "WS9: two waits, latest invalid → empty stdout" || fail_at "WS9: stdout not empty" "got: $result"
+# ─── ENG-65 D-004: dispatch_rc==124 halt reason includes worktree-resume hint ───
+# The reason string is constructed inline at run-stage.sh's `dispatch_rc == 124`
+# branch. Pin the substrings so a future refactor can't strip the operator-facing
+# inspection path or the resume command. Source-text assertion is the right tool
+# here because the surrounding flow (cmd_run main) is harder to invoke than a
+# helper, and the failure mode we care about is "operator gets a halt comment
+# that lacks the resume hint" — exactly what a substring check catches.
+printf '\n--- ENG-65 D-004: dispatch_rc==124 halt reason hint ---\n'
+
+eng65_124_block="$(awk '/if \(\( dispatch_rc == 124 \)\); then/{ in_b=1 } in_b{print} /exit 124/{ if (in_b) { in_b=0; print "----END----"; exit } }' "$HARNESS_DIR/run-stage.sh")"
+if [[ -z "$eng65_124_block" ]]; then
+  fail_at "ENG-65 D-004: dispatch_rc==124 branch not found in run-stage.sh" \
+    "expected an 'if (( dispatch_rc == 124 )); then ... exit 124' block"
+else
+  ok=1
+  for needle in 'wall-clock timeout' 'Inspect:' 'worktree' '--action continue'; do
+    if ! grep -qF -- "$needle" <<<"$eng65_124_block"; then
+      fail_at "ENG-65 D-004: missing substring in dispatch_rc==124 halt reason" \
+        "missing: $needle"
+      ok=0
+    fi
+  done
+  if (( ok == 1 )); then
+    pass_at "ENG-65 D-004: dispatch_rc==124 halt reason carries worktree-resume hint (Inspect: ...worktree, --action continue)"
+  fi
+fi
+
+# ─── ENG-65 Task 6: _cost_flags_for emits --cost-usd 0 for a partial usage file ─
+# B-003 contract: when usage-<stage>.json has cost_usd: null and partial: true
+# (the shape D-003 writes on SIGTERM), _cost_flags_for must coerce null → 0
+# via jq's // 0 default. The flag stream stays clean (--cost-usd 0, NOT
+# --cost-usd null), so metrics.sh stage-end downstream sees a well-formed
+# zero-cost dispatch. The partial: true discriminator on disk is the
+# retrospective's cue — not the flag stream's.
+COST_DIR_PARTIAL="$(issue_dir ENG-T65-PARTIAL)"
+mkdir -p "$COST_DIR_PARTIAL"
+cat > "$COST_DIR_PARTIAL/usage-brainstorming.json" <<'JSON'
+{"tokens_in":350,"tokens_out":150,"cache_read":55,"cache_create":28,"cost_usd":null,"model":"claude-opus-4-7","partial":true}
+JSON
+
+cost_flags_p=()
+while IFS= read -r _cf_line; do
+  cost_flags_p+=("$_cf_line")
+done < <(_cost_flags_for ENG-T65-PARTIAL brainstorming)
+
+# Find --cost-usd, then assert the next slot is the literal string "0".
+cost_idx=-1
+for i in "${!cost_flags_p[@]}"; do
+  [[ "${cost_flags_p[$i]}" == "--cost-usd" ]] && { cost_idx=$((i+1)); break; }
+done
+cost_val=""
+[[ $cost_idx -ge 0 ]] && cost_val="${cost_flags_p[$cost_idx]}"
+
+# tokens_in must round-trip from the partial file (not zeroed by accident).
+tokens_in_idx=-1
+for i in "${!cost_flags_p[@]}"; do
+  [[ "${cost_flags_p[$i]}" == "--tokens-in" ]] && { tokens_in_idx=$((i+1)); break; }
+done
+tokens_in_val=""
+[[ $tokens_in_idx -ge 0 ]] && tokens_in_val="${cost_flags_p[$tokens_in_idx]}"
+
+if [[ "${#cost_flags_p[@]}" == "12" ]] \
+   && [[ "$cost_val" == "0" ]] \
+   && [[ "$tokens_in_val" == "350" ]]; then
+  pass_at "ENG-65 Task 6: _cost_flags_for partial file → --cost-usd 0 (jq // 0 coercion); tokens_in survives"
+else
+  fail_at "ENG-65 Task 6: _cost_flags_for partial-file coercion" \
+    "count=${#cost_flags_p[@]} cost_val=$cost_val tokens_in_val=$tokens_in_val flags=$(printf '%s|' "${cost_flags_p[@]}")"
+fi
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
