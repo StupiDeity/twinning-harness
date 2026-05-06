@@ -2657,6 +2657,154 @@ fi
 mv "$STUB_DIR/gh.disabled" "$STUB_DIR/gh"
 unset MOCK_GH_PR_STATE
 
+# ════════════════════════════════════════════════════════════════════════════
+# ENG-62 QA adversarial coverage: boundary + idempotency cases not in the
+# plan's Failure Mode → Test Map. Each pins an invariant a future refactor
+# could plausibly break (e.g. swapping `==` for `=~`, adding case-insensitive
+# matching, switching summary write to append).
+# ════════════════════════════════════════════════════════════════════════════
+
+printf '\n--- ENG-62 QA adversarial cases ---\n'
+
+# ─── ENG-62 Case G: case-sensitivity on the MERGED comparison ────────────
+# The helper uses `[[ "$_pr_state" == "MERGED" ]]` (exact match). A future
+# `shopt -s nocasematch` regression OR an accidental `==` → `=~` swap would
+# falsely fire the gate on lowercase/mixed-case states. gh CLI is documented
+# to return uppercase ("MERGED", "OPEN", "CLOSED") but pinning the exact-match
+# invariant catches the regression class.
+for _state in merged Merged mErGeD MERGED_BUT_NOT_REALLY; do
+  _eng62_reset_capture
+  export MOCK_GH_PR_STATE="$_state"
+  rc=0
+  _pre_dispatch_merge_gate ENG-62QG building || rc=$?
+  side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+  if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+    pass_at "ENG-62 case G: state='$_state' rejected (exact-match guard)"
+  else
+    fail_at "ENG-62 case G (state='$_state')" "rc=$rc side_effects=$side_effects"
+  fi
+done
+unset _state MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case H: substring / glob-prefix robustness ──────────────────
+# A future `[[ "$_pr_state" == MERGED* ]]` (glob) or `=~ MERGED` (regex)
+# regression would falsely fire on near-substrings. Pin exact-match.
+for _state in MERGED-WITH-CONFLICTS UNMERGED PREMERGED REMERGED; do
+  _eng62_reset_capture
+  export MOCK_GH_PR_STATE="$_state"
+  rc=0
+  _pre_dispatch_merge_gate ENG-62QH building || rc=$?
+  side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+  if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+    pass_at "ENG-62 case H: state='$_state' rejected (no substring match)"
+  else
+    fail_at "ENG-62 case H (state='$_state')" "rc=$rc side_effects=$side_effects"
+  fi
+done
+unset _state MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case I: whitespace-padded state rejected ─────────────────────
+# Defends against jq output drift / future `--jq` formula changes that emit
+# trailing or leading whitespace. Exact `==` should reject these.
+# (NOTE: a pure trailing-newline is NOT adversarial here — command
+# substitution strips trailing \n, so 'MERGED\n' captures as 'MERGED' and
+# the gate fires by design — that is the normal gh CLI output shape.)
+for _state in 'MERGED ' ' MERGED' '  MERGED  '; do
+  _eng62_reset_capture
+  export MOCK_GH_PR_STATE="$_state"
+  rc=0
+  _pre_dispatch_merge_gate ENG-62QI building || rc=$?
+  side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+  if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+    pass_at "ENG-62 case I: whitespace-padded state rejected (exact-match)"
+  else
+    fail_at "ENG-62 case I (state='$(printf %q "$_state")')" "rc=$rc side_effects=$side_effects"
+  fi
+done
+unset _state MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case J: clean-rerun idempotency (no Linear failure) ──────────
+# Two back-to-back invocations on a MERGED PR (without any stub failure
+# injection) — both rc=0, second invocation produces the same shape of
+# side effects as the first. Pins that future caching / once-per-tick
+# optimisations don't silently skip the second invocation when it should
+# still post a transition waypoint (the operator's only audit trail of
+# the second tick's gate decision). Distinct from case E which exercises
+# RECOVERY from a partial failure.
+export MOCK_GH_PR_STATE="MERGED"
+mkdir -p "$(issue_dir ENG-62QJ)"
+# First invocation.
+_eng62_reset_capture
+rc1=0
+_pre_dispatch_merge_gate ENG-62QJ building || rc1=$?
+add1="$(_eng62_capture_count '^SUBCMD=add-label$')"
+remove1="$(_eng62_capture_count '^SUBCMD=remove-label$')"
+trans1="$(_eng62_capture_count 'pipeline: transition from=building to=released')"
+# Second invocation — gate should re-fire idempotently (not short-circuit).
+_eng62_reset_capture
+rc2=0
+_pre_dispatch_merge_gate ENG-62QJ building || rc2=$?
+add2="$(_eng62_capture_count '^SUBCMD=add-label$')"
+remove2="$(_eng62_capture_count '^SUBCMD=remove-label$')"
+trans2="$(_eng62_capture_count 'pipeline: transition from=building to=released')"
+if [[ "$rc1" == 0 && "$rc2" == 0 \
+      && "$add1" -ge 1 && "$add2" -ge 1 \
+      && "$remove1" -ge 1 && "$remove2" -ge 1 \
+      && "$trans1" -ge 1 && "$trans2" -ge 1 ]]; then
+  pass_at "ENG-62 case J: clean-rerun idempotency (both rc=0; both produce full transition shape)"
+else
+  fail_at "ENG-62 case J" "rc1=$rc1 rc2=$rc2 add1=$add1 add2=$add2 remove1=$remove1 remove2=$remove2 trans1=$trans1 trans2=$trans2"
+fi
+unset MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case K: stage-summary content + branch interpolation ────────
+# Pin that the summary file is actually populated with the expected text
+# AND that the branch name is interpolated correctly. Defends against a
+# future printf format-string regression that loses the branch name (a
+# silent drift would still make case A pass on the `-s` size check).
+export MOCK_GH_PR_STATE="MERGED"
+mkdir -p "$(issue_dir ENG-62QK)"
+# Pre-seed the summary file with stale content; the gate must overwrite,
+# not append.
+printf 'STALE-SUMMARY-FROM-PRIOR-RUN\n' > "$(issue_dir ENG-62QK)/stage-summary-building.md"
+_eng62_reset_capture
+rc=0
+_pre_dispatch_merge_gate ENG-62QK building || rc=$?
+summary_body="$(cat "$(issue_dir ENG-62QK)/stage-summary-building.md" 2>/dev/null || printf '')"
+expected_branch="feat/eng-62qk-mock-slug"  # branch-name.sh stub lowercases ident
+contains_branch=0; grep -qF "$expected_branch" <<<"$summary_body" && contains_branch=1
+contains_marker=0; grep -qF 'Pre-dispatch merge detection (ENG-62)' <<<"$summary_body" && contains_marker=1
+no_stale=1;        grep -qF 'STALE-SUMMARY' <<<"$summary_body" && no_stale=0
+if [[ "$rc" == 0 \
+      && "$contains_branch" == 1 \
+      && "$contains_marker" == 1 \
+      && "$no_stale" == 1 ]]; then
+  pass_at "ENG-62 case K: stage-summary overwrites stale + interpolates branch name"
+else
+  fail_at "ENG-62 case K" "rc=$rc contains_branch=$contains_branch contains_marker=$contains_marker no_stale=$no_stale body=${summary_body:0:200}"
+fi
+unset MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case L: empty / whitespace ident rejected harmlessly ─────────
+# A defensive caller-contract test: passing empty or whitespace ident
+# must NOT trigger a partial transition. The branch-name.sh stub maps
+# empty ident → 'feat/-mock-slug' (a real-but-bogus branch); since
+# MOCK_GH_PR_STATE is unset for these iterations, the gh stub returns
+# empty → not MERGED → rc=1, no side effects.
+for _ident in '' '   ' $'\t'; do
+  _eng62_reset_capture
+  unset MOCK_GH_PR_STATE
+  rc=0
+  _pre_dispatch_merge_gate "$_ident" building || rc=$?
+  side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+  if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+    pass_at "ENG-62 case L: empty/whitespace ident=$(printf %q "$_ident") rejected harmlessly"
+  else
+    fail_at "ENG-62 case L (ident=$(printf %q "$_ident"))" "rc=$rc side_effects=$side_effects"
+  fi
+done
+unset _ident
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
