@@ -293,6 +293,61 @@ case "$got" in
   *)  ok 'missing_config_file_no_trailing_comma' ;;
 esac
 
+# ─── ENG-76: prompt-utility patterns must be in their stage's allowlist ─
+# ENG-62 (May 2026) surfaced a longstanding gap: the review prompt tells
+# the agent to bump `bash bin/guards.sh bump <issue> review_rejection`,
+# but the reviewing stage allowlist did not include `Bash(bash bin/guards.sh:*)`.
+# Same gap on QA (`qa_rejection`) and release (`slack.sh info` + `metrics.sh release`).
+# The agents gracefully degraded by noting the gap in their rejection
+# comment, but counters never bumped, Slack notifications never posted,
+# and release events never landed in events.jsonl. Pin the patterns now
+# so a future allowlist edit can't quietly drop them again.
+printf '\n--- ENG-76: stage allowlists carry the utilities the prompts invoke ---\n'
+
+cfg="$(mkconfig "$_TEST_ROOT/cfg-eng76" '')"
+
+# review: prompt says `guards.sh bump <issue> review_rejection`.
+review_tools="$(CONFIG="$cfg" allowed_tools_for reviewing)"
+contains 'eng76_review_carries_guards_dotpipeline' \
+  'Bash(bash .pipeline/bin/guards.sh:*)' "$review_tools"
+contains 'eng76_review_carries_guards_bin' \
+  'Bash(bash bin/guards.sh:*)' "$review_tools"
+
+# qa: prompt says `guards.sh bump <issue> qa_rejection`.
+qa_tools="$(CONFIG="$cfg" allowed_tools_for qa)"
+contains 'eng76_qa_carries_guards_dotpipeline' \
+  'Bash(bash .pipeline/bin/guards.sh:*)' "$qa_tools"
+contains 'eng76_qa_carries_guards_bin' \
+  'Bash(bash bin/guards.sh:*)' "$qa_tools"
+
+# release: prompt says `slack.sh info` + `metrics.sh release`.
+release_tools="$(CONFIG="$cfg" allowed_tools_for released)"
+contains 'eng76_release_carries_slack_dotpipeline' \
+  'Bash(bash .pipeline/bin/slack.sh:*)' "$release_tools"
+contains 'eng76_release_carries_slack_bin' \
+  'Bash(bash bin/slack.sh:*)' "$release_tools"
+contains 'eng76_release_carries_metrics_dotpipeline' \
+  'Bash(bash .pipeline/bin/metrics.sh:*)' "$release_tools"
+contains 'eng76_release_carries_metrics_bin' \
+  'Bash(bash bin/metrics.sh:*)' "$release_tools"
+
+# build: prompt says `slack.sh info / warn` (already present pre-ENG-76; pin it).
+build_tools="$(CONFIG="$cfg" allowed_tools_for building)"
+contains 'eng76_build_carries_slack_dotpipeline' \
+  'Bash(bash .pipeline/bin/slack.sh:*)' "$build_tools"
+contains 'eng76_build_carries_slack_bin' \
+  'Bash(bash bin/slack.sh:*)' "$build_tools"
+
+# Negative: stages that don't invoke these utilities should NOT have
+# them granted — least-privilege defense (e.g. brainstorm/plan/implement/ui
+# don't bump counters or post Slack).
+for stg in brainstorming planning implementing ui; do
+  tools="$(CONFIG="$cfg" allowed_tools_for "$stg")"
+  notcontains "eng76_${stg}_no_guards" 'Bash(bash bin/guards.sh:*)' "$tools"
+  notcontains "eng76_${stg}_no_slack"  'Bash(bash bin/slack.sh:*)'  "$tools"
+  notcontains "eng76_${stg}_no_metrics" 'Bash(bash bin/metrics.sh:*)' "$tools"
+done
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
