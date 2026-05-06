@@ -888,6 +888,116 @@ else
   fail_at "ENG-65 fixture-H regression" "exists=$([[ -e $USAGE_HE ]] && echo y || echo n) out=$RENDER_OUT_HE"
 fi
 
+# ─── ENG-65 QA adversarial coverage ───────────────────────────────────────
+# These four fixtures cover gaps surfaced by the QA cold-pass:
+#   QA1 — negative integer per-stage override pinned at "fall through"
+#         (the regex `^[0-9]+$` excludes `-` so the negative is rejected
+#         and the built-in default applies; pins the contract so a future
+#         "be more permissive" regex change can't accidentally pass `-5`
+#         to gtimeout, which would error opaquely at invocation time).
+#   QA2 — float / decimal per-stage override is rejected by the regex.
+#         A naive `60.5` (operator copies a derived average) must not
+#         silently apply (bash arithmetic would truncate or error).
+#   QA3 — partial-usage filter when `assistant.message.usage` is a
+#         non-object (array) — type confusion from a buggy upstream.
+#         Currently `(.input_tokens // 0)` on `[]` makes the jq
+#         invocation fail, dropping the partial file silently. Pin the
+#         observable behavior (no file written, soft-fail log emitted)
+#         so a future refactor can't quietly start writing a corrupt
+#         partial file.
+#   QA4 — partial-usage filter with multiple `system`/`init` events,
+#         only the second carrying a `.model`. The filter takes the
+#         FIRST init's model via `[0].model // ""`, so the resulting
+#         file's `model` field is empty even though a model is present
+#         later in the stream. Document this as expected-but-degraded
+#         behavior (operator can still see the partial token sums and
+#         the `partial: true` discriminator).
+
+# QA1 — negative integer per-stage override
+TARGET_REPO_NEG="$_TEST_STUB_DIR/target-negative"
+mkdir -p "$TARGET_REPO_NEG/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "neg-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: -5 } }
+}' > "$TARGET_REPO_NEG/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_NEG/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_NEG="$_TEST_STUB_DIR/dryrun-negative.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_NEG" "neg-slug" brainstorming "$DRYRUN_OUT_NEG"
+# Assert the resolved seconds is the 60-min default (3600), and that no
+# negative seconds value (e.g. ` -300 `) leaked into the gtimeout invocation.
+if grep -qE 'gtimeout.*[[:space:]]3600[[:space:]]' "$DRYRUN_OUT_NEG" \
+   && ! grep -qE 'gtimeout.*[[:space:]]-[0-9]+[[:space:]]' "$DRYRUN_OUT_NEG"; then
+  pass_at "ENG-65 QA1 (adversarial): negative integer per-stage=-5 rejected by regex; falls through to 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 QA1: negative integer per-stage override leaked through" \
+    "log: $(cat "$DRYRUN_OUT_NEG")"
+fi
+
+# QA2 — float / decimal per-stage override
+TARGET_REPO_FLOAT="$_TEST_STUB_DIR/target-float"
+mkdir -p "$TARGET_REPO_FLOAT/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "float-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: 60.5 } }
+}' > "$TARGET_REPO_FLOAT/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_FLOAT/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_FLOAT="$_TEST_STUB_DIR/dryrun-float.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_FLOAT" "float-slug" brainstorming "$DRYRUN_OUT_FLOAT"
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_FLOAT"; then
+  pass_at "ENG-65 QA2 (adversarial): float per-stage=60.5 rejected by regex; falls through to 60-min built-in (3600s)"
+else
+  fail_at "ENG-65 QA2: float per-stage override leaked through" \
+    "log: $(cat "$DRYRUN_OUT_FLOAT")"
+fi
+
+# QA3 — `assistant.message.usage` is an array (type confusion)
+USAGE_QA3="$ISSUE_DIR/usage-plan-QA3.json"
+rm -f "$USAGE_QA3" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+NDJSON_QA3="$_TEST_STUB_DIR/qa3.ndjson"
+cat > "$NDJSON_QA3" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"qa3","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":[100,50,20,10]}}
+NDJSON
+RENDER_OUT_QA3="$(_render_and_capture_stream "$USAGE_QA3" "$ISSUE_DIR" < "$NDJSON_QA3" 2>&1)"
+if [[ ! -e "$USAGE_QA3" ]] && grep -q 'no result event found in stream' <<<"$RENDER_OUT_QA3"; then
+  pass_at "ENG-65 QA3 (adversarial): array-shaped message.usage → jq fails gracefully → no partial file written (soft-fail log emitted)"
+else
+  fail_at "ENG-65 QA3: array usage value silently produced a partial file" \
+    "exists=$([[ -e "$USAGE_QA3" ]] && echo y || echo n) out=$RENDER_OUT_QA3"
+fi
+
+# QA4 — multiple system/init events; only second carries .model
+USAGE_QA4="$ISSUE_DIR/usage-plan-QA4.json"
+rm -f "$USAGE_QA4" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+_render_and_capture_stream "$USAGE_QA4" "$ISSUE_DIR" >/dev/null 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"qa4-first"}
+{"type":"system","subtype":"init","session_id":"qa4-second","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"id":"msg_01","content":[{"type":"text","text":"work"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}
+NDJSON
+
+if [[ ! -s "$USAGE_QA4" ]]; then
+  fail_at "ENG-65 QA4: usage file missing despite valid assistant event" "path=$USAGE_QA4"
+else
+  partial_qa4="$(jq -r '.partial' "$USAGE_QA4" 2>/dev/null || printf '')"
+  ti_qa4="$(jq -r '.tokens_in' "$USAGE_QA4" 2>/dev/null || printf '')"
+  model_qa4="$(jq -r '.model' "$USAGE_QA4" 2>/dev/null || printf '')"
+  # Filter takes [0].model — first init lacks .model so // "" yields "".
+  # Pin this as expected-but-degraded; the partial token sum is still
+  # correct and `partial: true` is the load-bearing discriminator.
+  if [[ "$partial_qa4" == "true" ]] \
+     && [[ "$ti_qa4" == "100" ]] \
+     && [[ "$model_qa4" == "" ]]; then
+    pass_at "ENG-65 QA4 (adversarial): multi-init stream — first init wins for .model (empty when absent), tokens still summed correctly"
+  else
+    fail_at "ENG-65 QA4: multi-init partial-usage extraction" \
+      "partial=$partial_qa4 tokens_in=$ti_qa4 model=$model_qa4"
+  fi
+fi
+
 # ─── Group 7: assert_no_tool_invocation fixtures (ENG-43, AS1-AS6) ────
 # AS1-AS6 deliver the issue's fixtures E-J (renamed per brainstorm
 # D-009 to avoid colliding with existing fixtures A-K above). Each
