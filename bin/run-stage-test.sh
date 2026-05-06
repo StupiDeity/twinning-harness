@@ -2403,6 +2403,41 @@ else
   fi
 fi
 
+# ─── ENG-62 followup: merge-gate-fires path pairs stage-start with stage-end ─
+# ENG-10 D-004 contract: every stage-end must be paired with a stage-start so
+# retrospective §1's stage-pairing pass doesn't see orphans. The original
+# ENG-62 implementation of `_pre_dispatch_merge_gate` (PR #56) only emitted
+# `stage-end "merged-pre-dispatch"`, not the matching `stage-start` —
+# review #3 flagged it major; review #4 reversed without the code being
+# changed; the fix landed only in this followup. Pin the pairing here as a
+# source-text assertion so a future refactor of the gate-fires block can't
+# silently drop one event again. Same style as the ENG-65 D-004 test above.
+printf '\n--- ENG-62 followup: merge-gate-fires pairs stage-start + stage-end ---\n'
+
+eng62_gate_block="$(awk '/if _pre_dispatch_merge_gate "\$ident" "\$stage"; then/{ in_b=1 } in_b{print} in_b && /exit 0/{ in_b=0; print "----END----"; exit }' "$HARNESS_DIR/run-stage.sh")"
+if [[ -z "$eng62_gate_block" ]]; then
+  fail_at "ENG-62 gate-fires block not found in run-stage.sh" \
+    "expected 'if _pre_dispatch_merge_gate ...; then ... exit 0' block"
+else
+  # Bash `\` line-continuations split metrics.sh invocations across two lines,
+  # so collapse the block to a single line before substring-matching. Any
+  # surviving "stage-start" + "merged-pre-dispatch" co-occurrence is the
+  # paired emission; same for stage-end.
+  eng62_gate_flat="$(tr '\n' ' ' <<<"$eng62_gate_block")"
+  has_start=0; has_end=0
+  # `metrics.sh"` (with closing quote) followed by ` stage-start` then later
+  # the literal `merged-pre-dispatch` outcome token, all before the next `|`
+  # (which terminates the bash invocation as `|| true`).
+  grep -qE 'metrics\.sh"? stage-start[^|]*merged-pre-dispatch' <<<"$eng62_gate_flat" && has_start=1
+  grep -qE 'metrics\.sh"? stage-end[^|]*merged-pre-dispatch' <<<"$eng62_gate_flat" && has_end=1
+  if (( has_start == 1 && has_end == 1 )); then
+    pass_at "ENG-62 followup: gate-fires block carries paired stage-start + stage-end (merged-pre-dispatch)"
+  else
+    fail_at "ENG-62 followup: gate-fires block missing paired stage-{start,end}" \
+      "has_start=$has_start has_end=$has_end (expected both 1)"
+  fi
+fi
+
 # ─── ENG-65 Task 6: _cost_flags_for emits --cost-usd 0 for a partial usage file ─
 # B-003 contract: when usage-<stage>.json has cost_usd: null and partial: true
 # (the shape D-003 writes on SIGTERM), _cost_flags_for must coerce null → 0

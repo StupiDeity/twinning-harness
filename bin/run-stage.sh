@@ -617,6 +617,13 @@ main() {
   # a prompt-following regression. Apply the transition directly and exit.
   if _pre_dispatch_merge_gate "$ident" "$stage"; then
     t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+    # ENG-10 D-004: pair every stage-end with a stage-start so retrospective
+    # §1's stage-pairing pass doesn't see an orphaned terminal event. Mirrors
+    # the precondition-failure path above (lines ~574-580) and every other
+    # early-exit in this file. The gate-fires path was the one early-exit
+    # that didn't pair them (ENG-62 review finding).
+    bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" \
+      "merged-pre-dispatch" 0 || true
     bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" \
       "merged-pre-dispatch" "$duration" || true
     exit 0
