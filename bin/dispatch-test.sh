@@ -998,6 +998,80 @@ else
   fi
 fi
 
+# QA5 — precedence-chain short-circuit pin (operator-trap documentation).
+# When the per-stage value is *present-but-malformed* AND the global is
+# valid, the implementation does NOT fall through to the global — the
+# global lookup only fires when per-stage is empty. Both reads share the
+# same `_cfg_minutes` slot, so a non-empty malformed value (passes the
+# `[[ -z "$_cfg_minutes" ]]` guard, fails the regex) shorts the chain to
+# the built-in default and silently bypasses the operator's global cap
+# for the affected stage.
+#
+# This pins the *actual* behavior so a future refactor doesn't change it
+# accidentally. CLAUDE.md's "fall through to the next layer" prose is
+# slightly imprecise re: this case; the plan's pseudocode (the contract)
+# is what the implementation follows. Doc clarification is a follow-up.
+# Operators who hit this surprise can grep the per-stage transcript for
+# the resolved `gtimeout ... <seconds>` to confirm which layer won.
+TARGET_REPO_PREC="$_TEST_STUB_DIR/target-precedence"
+mkdir -p "$TARGET_REPO_PREC/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "prec-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes: 5, dispatch_timeout_minutes_per_stage: { brainstorming: "60m" } }
+}' > "$TARGET_REPO_PREC/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_PREC/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_PREC="$_TEST_STUB_DIR/dryrun-precedence.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_PREC" "prec-slug" brainstorming "$DRYRUN_OUT_PREC"
+# Actual behavior: malformed per-stage shorts the chain → built-in 60-min
+# (3600s) wins, NOT the operator's 5-min global. Pin the surprise so a
+# future change either fixes it (and breaks this test, prompting a doc
+# update) or knowingly preserves it.
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_PREC" \
+   && ! grep -qE 'gtimeout.*\b300\b' "$DRYRUN_OUT_PREC"; then
+  pass_at "ENG-65 QA5 (adversarial): malformed per-stage shorts the precedence chain to built-in (3600s) — pins the operator-trap that bypasses the global override"
+else
+  fail_at "ENG-65 QA5: precedence-chain pin (expected built-in 3600s; got something else)" \
+    "log: $(cat "$DRYRUN_OUT_PREC")"
+fi
+
+# QA6 — prompt-side D-001 contract pin. AGENT_PROMPTS.md §1 step 3 must
+# carry the `iteration-exhausted` halt instruction and must NOT carry the
+# old "Iterate at most 3 times" / `brainstorm_escalate` language.
+# render-prompt.sh validates fence count, not content; without this grep,
+# a future agent could silently revert D-001 and the harness would
+# happily re-dispatch unbounded persona-review iterations. The prompt is
+# load-bearing for ENG-65 — pin it.
+ENG_65_PROMPTS_PATH="$SCRIPT_DIR/../AGENT_PROMPTS.md"
+[[ -f "$ENG_65_PROMPTS_PATH" ]] || ENG_65_PROMPTS_PATH="$HARNESS_ROOT/AGENT_PROMPTS.md"
+if [[ ! -f "$ENG_65_PROMPTS_PATH" ]]; then
+  fail_at "ENG-65 QA6 prompt-contract" "AGENT_PROMPTS.md not found at $ENG_65_PROMPTS_PATH"
+else
+  # Extract §1 (Brainstorm Agent) — bounded by `## 1.` heading and the next
+  # `## ` heading. Then assert the four substring conditions.
+  brainstorm_section="$(awk '/^## 1\./{ in_b=1 } in_b{print} /^## 2\./{ if (in_b) exit }' "$ENG_65_PROMPTS_PATH")"
+  qa6_ok=1
+  qa6_msg=""
+  if ! grep -qF 'iteration-exhausted' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="missing iteration-exhausted; "
+  fi
+  if ! grep -qF 'Do NOT start iteration 3' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="missing 'Do NOT start iteration 3'; "
+  fi
+  if grep -qF 'Iterate at most 3 times' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="legacy 'Iterate at most 3 times' still present; "
+  fi
+  if grep -qF 'brainstorm_escalate' <<<"$brainstorm_section"; then
+    qa6_ok=0; qa6_msg+="dead brainstorm_escalate marker still present; "
+  fi
+  if (( qa6_ok == 1 )); then
+    pass_at "ENG-65 QA6 (adversarial): AGENT_PROMPTS §1 carries iteration-exhausted + 'Do NOT start iteration 3'; legacy 'Iterate at most 3 times' / brainstorm_escalate removed"
+  else
+    fail_at "ENG-65 QA6 prompt-contract drift" "$qa6_msg"
+  fi
+fi
+
 # ─── Group 7: assert_no_tool_invocation fixtures (ENG-43, AS1-AS6) ────
 # AS1-AS6 deliver the issue's fixtures E-J (renamed per brainstorm
 # D-009 to avoid colliding with existing fixtures A-K above). Each
