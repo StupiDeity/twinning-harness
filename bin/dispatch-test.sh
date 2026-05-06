@@ -1072,6 +1072,72 @@ else
   fi
 fi
 
+# QA7 — `dispatch_timeout_minutes_per_stage` is a non-object (array shape).
+# Surfaced by the round-3 cold-pass: jq's `<arr>[$s]` indexing errors with
+# "Cannot index array with string"; the `2>/dev/null || true` swallows the
+# error stream, the per-stage read returns empty, and the resolver falls
+# through to the global lookup (then to the built-in default). This is a
+# different code path from QA5 (parent-key TYPE confusion vs. value-shape
+# malformed) but it lands at the same observable: built-in default wins,
+# no operator-visible warning.
+#
+# Pin the graceful-fallthrough so a future "tighten jq's type guard"
+# refactor either preserves silent fallthrough (test stays green) or
+# adds an explicit reject + log (test breaks, prompting a doc update).
+TARGET_REPO_ARR="$_TEST_STUB_DIR/target-arrshape"
+mkdir -p "$TARGET_REPO_ARR/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "arr-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: ["brainstorming", 60] }
+}' > "$TARGET_REPO_ARR/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_ARR/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_ARR="$_TEST_STUB_DIR/dryrun-arrshape.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_ARR" "arr-slug" brainstorming "$DRYRUN_OUT_ARR"
+# No global override either, so built-in default 60-min (3600s) must win.
+if grep -qE 'gtimeout.*\b3600\b' "$DRYRUN_OUT_ARR"; then
+  pass_at "ENG-65 QA7 (adversarial): dispatch_timeout_minutes_per_stage as array (parent-key type confusion) → jq error swallowed → built-in default 3600s wins"
+else
+  fail_at "ENG-65 QA7: array-shaped parent key did not fall through cleanly" \
+    "log: $(cat "$DRYRUN_OUT_ARR")"
+fi
+
+# QA8 — JSON-string-of-digits per-stage value (`"45"`). The plan and
+# CLAUDE.md say "Values must be integers (e.g. 60, not '60m' or '1h')",
+# but jq -r unquotes string values, so a JSON string `"45"` emerges from
+# the jq pipe as the bareword `45`, passes the `^[0-9]+$` regex, and is
+# silently honored as a 45-minute override. This is contrary to the
+# "integers-only" doc claim — a documentation drift that the operator
+# might exploit unintentionally (eg. copy-pasting from a YAML→JSON
+# converter that wraps numerics).
+#
+# Pin the *actual* behavior. Future strict-type refactor either:
+#   (a) tightens the jq filter to reject non-numeric JSON values
+#       (test breaks → prompts a doc-update PR), or
+#   (b) updates CLAUDE.md to document numeric-strings-OK as supported
+#       (test stays green, doc gets a one-liner).
+TARGET_REPO_STR="$_TEST_STUB_DIR/target-strdigit"
+mkdir -p "$TARGET_REPO_STR/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "str-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5, dispatch_timeout_minutes_per_stage: { brainstorming: "45" } }
+}' > "$TARGET_REPO_STR/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$TARGET_REPO_STR/.pipeline-config/schemas/linear-ids.json"
+
+DRYRUN_OUT_STR="$_TEST_STUB_DIR/dryrun-strdigit.out"
+_eng65_run_dispatch_dryrun "$TARGET_REPO_STR" "str-slug" brainstorming "$DRYRUN_OUT_STR"
+# Assert override applied: 45 min = 2700s. (Built-in 3600s would mean the
+# string was rejected; the test then has to flip to a strict-rejection
+# expectation, which is the intentional break-on-tighten signal.)
+if grep -qE 'gtimeout.*\b2700\b' "$DRYRUN_OUT_STR"; then
+  pass_at "ENG-65 QA8 (adversarial): JSON string-of-digits '45' silently accepted (jq -r strips quotes, regex passes) → 2700s applied. Pins doc/code drift; tighten the filter or update CLAUDE.md."
+else
+  fail_at "ENG-65 QA8: numeric-string per-stage override behavior changed (expected 2700s)" \
+    "log: $(cat "$DRYRUN_OUT_STR")"
+fi
+
 # ─── Group 7: assert_no_tool_invocation fixtures (ENG-43, AS1-AS6) ────
 # AS1-AS6 deliver the issue's fixtures E-J (renamed per brainstorm
 # D-009 to avoid colliding with existing fixtures A-K above). Each
