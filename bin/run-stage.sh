@@ -742,16 +742,24 @@ main() {
       # invoking (the merge is server-side via `gh pr merge --auto`;
       # local sync is the harness's job). Read the matched command
       # from the sidecar written by _render_and_capture_stream and
-      # surface a skip-until-human-acts halt. The orchestrator's
-      # post-dispatch _post_dispatch_check_worktree_head detector
-      # (D-003) does not run because we exit before the post-dispatch
-      # chain — but if an undetected bypass mutated HEAD anyway, the
-      # next tick's run-local cleanup will pick it up.
+      # surface a skip-until-human-acts halt.
+      #
+      # D-002's assert_no_tool_invocation runs AFTER the agent has
+      # already executed the forbidden Bash command (the transcript
+      # scan is post-stream), so the worktree may already be on `main`
+      # by the time we reach this arm. Invoke the post-dispatch
+      # HEAD-detection helper before exit so HEAD is detached on the
+      # way out and `main` is globally unlocked. The helper is
+      # idempotent (no-op when HEAD already on the expected branch)
+      # and stage-gated to building, so calling it on this fail path
+      # is safe regardless of whether the agent's chained-command
+      # actually mutated HEAD or not.
       local _viol_file _viol_cmd
       _viol_file="$(issue_dir "$ident")/.transcript-violation-${stage}"
       _viol_cmd="$(cat "$_viol_file" 2>/dev/null || printf '<command-unavailable>')"
       classify_failure "$ident" "$stage" "skip-until-human-acts" \
         "build-stage transcript invoked forbidden worktree-HEAD-mutating tool: $_viol_cmd" 26
+      _post_dispatch_check_worktree_head "$ident" "$stage" || true
       rm -f "$_viol_file" "$prompt_file"
       exit 26
     elif (( dispatch_rc != 0 )); then

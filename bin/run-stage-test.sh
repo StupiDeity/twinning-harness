@@ -3065,7 +3065,7 @@ fi
 # halted build). The rc=26 arm in run-stage.sh::main MUST call
 # _post_dispatch_check_worktree_head before exit 26 so the helper
 # detaches HEAD on the way out.
-RC26_ARM_BLOCK="$(awk '/elif \(\( dispatch_rc == 26 \)\); then/,/^    elif/' "$HARNESS_DIR/run-stage.sh")"
+RC26_ARM_BLOCK="$(awk '/elif \(\( dispatch_rc == 26 \)\); then/,/exit 26/' "$HARNESS_DIR/run-stage.sh")"
 if printf '%s\n' "$RC26_ARM_BLOCK" | grep -qF '_post_dispatch_check_worktree_head'; then
   pass_at "case-71-4 rc=26 arm invokes _post_dispatch_check_worktree_head before exit 26"
 else
