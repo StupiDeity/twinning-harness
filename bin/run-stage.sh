@@ -508,6 +508,59 @@ _post_review_dispatch_update() {
     || log "post-review-update: review-state update failed for $issue (continuing)"
 }
 
+# ENG-62: pre-dispatch merge-detection gate. If the PR for stage=building
+# is already MERGED (e.g., a prior dispatch fired `gh pr merge --auto`
+# successfully), there is nothing left for the build agent to do —
+# dispatching costs ≈ $1.50 and risks an awaiting-approval emission from
+# a prompt-following regression on a future build prompt rewrite.
+# Returns 0 = gate fired, transition applied (caller MUST exit 0 after).
+# Returns 1 = gate did not fire (caller proceeds to dispatch as today).
+# Stage-gated to "building" — only stage with PR-merge semantics today
+# (security parallel to _fresh_wait_reason's allow-list at lines 303-306).
+# Fail-open on gh outage / branch-derivation failure (D-006).
+_pre_dispatch_merge_gate() {
+  # Lane attribution mirrors _handle_wait at lines 382-383: file-scope
+  # inheritance is correct today, but explicit assignment prevents silent
+  # lane-violation if a future caller invokes this helper from an agent
+  # sub-shell.
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+
+  local ident="$1" stage="$2"
+  case "$stage" in building) ;; *) return 1 ;; esac
+  command -v gh >/dev/null 2>&1 || return 1
+
+  local _branch
+  _branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident" 2>/dev/null || printf '')"
+  [[ -n "$_branch" ]] || return 1
+
+  # --state all so a --delete-branch'd merged PR is still found. Mirrors
+  # the --state all fallback at line 160 for pr_url derivation.
+  local _pr_state
+  _pr_state="$(gh pr list --head "$_branch" --state all --json state \
+                --jq '.[0].state // ""' 2>/dev/null || printf '')"
+  [[ "$_pr_state" == "MERGED" ]] || return 1
+
+  log "build pre-dispatch: PR for $_branch is MERGED; transitioning building → released without invoking agent (ENG-62)"
+
+  local _summary_path
+  _summary_path="$(issue_dir "$ident")/stage-summary-${stage}.md"
+  mkdir -p "$(dirname "$_summary_path")"
+  printf 'Pre-dispatch merge detection (ENG-62): PR on `%s` was already MERGED at orchestrator entry. Transitioned `building → released` without invoking the build agent.\n' \
+    "$_branch" > "$_summary_path"
+
+  # Success-path state cleanup, mirroring the cleanup at lines 851-855.
+  rm -f "$(issue_dir "$ident")/wait-${stage}.json" 2>/dev/null || true
+  rm -f "$(issue_dir "$ident")/issue-state.json"     2>/dev/null || true
+
+  # Apply the transition directly. Each step in apply_transition is
+  # idempotent (verdict-handler.sh:158-184); on partial failure (e.g.,
+  # transient Linear add-label outage) the next tick re-enters cleanly.
+  apply_transition "$ident" "building" "released" "" || true
+
+  return 0
+}
+
 main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
