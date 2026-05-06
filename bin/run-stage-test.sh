@@ -2805,6 +2805,98 @@ for _ident in '' '   ' $'\t'; do
 done
 unset _ident
 
+# ─── ENG-62 Case M (QA adversarial round 2): metrics emission via main() ─
+# Plan Failure Mode → Test Map row 1 promises the gate-fires path emits
+# `metrics.sh stage-end` with outcome=merged-pre-dispatch. Cases A–L call
+# `_pre_dispatch_merge_gate` directly and therefore CANNOT exercise the
+# metrics call, which lives in main() at run-stage.sh:618-622. This case
+# drives main() with stage=building + MOCK_GH_PR_STATE=MERGED through the
+# canonical stub chain (mirrors ENG-45 case N's main()-driving pattern at
+# lines ~1285-1290) and asserts on the captured metrics.sh argv.
+#
+# Defends Failure Mode Map row 1's metric promise. Without this case, a
+# regression that drops the metrics call (or changes the literal to e.g.
+# 'merge-detected') would silently pass cases A–L while breaking the
+# retrospective's outcome-rollup rationale (Q1/Task 6).
+ENG_62_CASE_M_DIR="$(issue_dir ENG-62QM)"
+mkdir -p "$ENG_62_CASE_M_DIR"
+
+# linear.sh stub for the main() drive: verify_preconditions calls has-label
+# with pipeline:paused (must return non-zero) and stage:building (must
+# return 0). Everything else captures into CAPTURE_FILE so the apply_transition
+# side effects are still observable to the gate's normal contract.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  has-label)
+    case "\${3:-}" in
+      pipeline:paused) exit 1 ;;
+      stage:*)         exit 0 ;;
+      pipeline:halted) exit 1 ;;
+      *)               exit 1 ;;
+    esac
+    ;;
+  stage-of)     printf 'stage:building\n' ;;
+  get-comments) printf '[]' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# metrics.sh capture stub — records every invocation with subcmd + ident +
+# stage + outcome on a single line; lets us assert on the gate's exact
+# argv shape. Mirrors ENG-45 case O's metrics capture at lines 1373-1379.
+ENG_62_CASE_M_METRICS="$STUB_DIR/case-m-metrics.capture"
+: > "$ENG_62_CASE_M_METRICS"
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'EVENT=%s IDENT=%s STAGE=%s OUTCOME=%s DURATION=%s\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" >> "$ENG_62_CASE_M_METRICS"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+_eng62_reset_capture
+export MOCK_GH_PR_STATE="MERGED"
+ENG_62_CASE_M_RC=0
+(
+  main ENG-62QM building
+) >/dev/null 2>&1 || ENG_62_CASE_M_RC=$?
+unset MOCK_GH_PR_STATE
+# Cleanup the metrics.sh stub so subsequent cases (none today, but defensive
+# for future inserts) don't see the case-M capture stub.
+rm -f "$STUB_DIR/metrics.sh"
+
+# Re-establish the linear.sh capturing stub (mirrors lines 2485-2497).
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  stage-of)     printf 'stage:building\n' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+stage_end_count="$(grep -c 'EVENT=stage-end .*OUTCOME=merged-pre-dispatch' "$ENG_62_CASE_M_METRICS" 2>/dev/null || true)"
+transition_landed="$(_eng62_capture_count 'pipeline: transition from=building to=released')"
+if [[ "$ENG_62_CASE_M_RC" == 0 \
+      && "$stage_end_count" -ge 1 \
+      && "$transition_landed" -ge 1 ]]; then
+  pass_at "ENG-62 case M: main() gate-fires path emits stage-end outcome=merged-pre-dispatch + transition (FM-map row 1)"
+else
+  fail_at "ENG-62 case M" \
+    "rc=$ENG_62_CASE_M_RC stage_end=$stage_end_count transition=$transition_landed metrics=$(cat "$ENG_62_CASE_M_METRICS" 2>/dev/null)"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
