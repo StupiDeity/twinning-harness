@@ -1234,6 +1234,102 @@ else
   fail_at "AS6" "rc=$rc_as6 out=$out_as6"
 fi
 
+# ─── ENG-71: build-stage forbidden patterns (AS7-AS12) ────────────────
+# Pin the four worktree-HEAD-mutating verbs (`git checkout`, `git switch`,
+# `git pull`, `git reset`) at the helper level. These mirror AS1's shape:
+# tool_use with .input.command starting with the pattern → rc=1, matched
+# command on stdout. AS11 covers passthrough (only allowed git verbs);
+# AS12 confirms the helper is stage-agnostic (the gate lives in
+# _render_and_capture_stream, exercised at the renderer level by AT7).
+printf '\n--- ENG-71: build-stage forbidden patterns (AS7-AS12) ---\n'
+
+# AS7 — git checkout standalone
+TX_AS7="$_TEST_STUB_DIR/tx-as7.ndjson"
+cat > "$TX_AS7" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as7","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout main"}}]}}
+NDJSON
+out_as7="$(assert_no_tool_invocation "$TX_AS7" "git checkout")" && rc_as7=0 || rc_as7=$?
+if [[ "$rc_as7" == "1" && "$out_as7" == "git checkout main" ]]; then
+  pass_at "AS7: git checkout standalone → rc=1, matched command on stdout"
+else
+  fail_at "AS7" "rc=$rc_as7 out=$out_as7"
+fi
+
+# AS8 — git switch standalone
+TX_AS8="$_TEST_STUB_DIR/tx-as8.ndjson"
+cat > "$TX_AS8" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as8","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git switch main"}}]}}
+NDJSON
+out_as8="$(assert_no_tool_invocation "$TX_AS8" "git switch")" && rc_as8=0 || rc_as8=$?
+if [[ "$rc_as8" == "1" && "$out_as8" == "git switch main" ]]; then
+  pass_at "AS8: git switch standalone → rc=1, matched command on stdout"
+else
+  fail_at "AS8" "rc=$rc_as8 out=$out_as8"
+fi
+
+# AS9 — git pull standalone
+TX_AS9="$_TEST_STUB_DIR/tx-as9.ndjson"
+cat > "$TX_AS9" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as9","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git pull --ff-only origin main"}}]}}
+NDJSON
+out_as9="$(assert_no_tool_invocation "$TX_AS9" "git pull")" && rc_as9=0 || rc_as9=$?
+if [[ "$rc_as9" == "1" && "$out_as9" == "git pull --ff-only origin main" ]]; then
+  pass_at "AS9: git pull standalone → rc=1, matched command on stdout"
+else
+  fail_at "AS9" "rc=$rc_as9 out=$out_as9"
+fi
+
+# AS10 — git reset standalone
+TX_AS10="$_TEST_STUB_DIR/tx-as10.ndjson"
+cat > "$TX_AS10" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as10","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git reset --hard origin/main"}}]}}
+NDJSON
+out_as10="$(assert_no_tool_invocation "$TX_AS10" "git reset")" && rc_as10=0 || rc_as10=$?
+if [[ "$rc_as10" == "1" && "$out_as10" == "git reset --hard origin/main" ]]; then
+  pass_at "AS10: git reset standalone → rc=1, matched command on stdout"
+else
+  fail_at "AS10" "rc=$rc_as10 out=$out_as10"
+fi
+
+# AS11 — passthrough: only allowed verbs present → rc=0 for each forbidden pattern
+TX_AS11="$_TEST_STUB_DIR/tx-as11.ndjson"
+cat > "$TX_AS11" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as11","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git fetch origin main"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git clone --quiet --branch foo /src /dst"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git rebase --quiet origin/main"}}]}}
+NDJSON
+as11_failures=0
+for _pat in 'git checkout' 'git switch' 'git pull' 'git reset'; do
+  out_as11="$(assert_no_tool_invocation "$TX_AS11" "$_pat")" && rc_as11=0 || rc_as11=$?
+  if [[ "$rc_as11" != "0" || -n "$out_as11" ]]; then
+    as11_failures=$((as11_failures+1))
+    fail_at "AS11 ($_pat passthrough)" "rc=$rc_as11 out=$out_as11"
+  fi
+done
+if [[ "$as11_failures" == "0" ]]; then
+  pass_at "AS11: passthrough — only allowed git verbs (fetch/clone/rebase) → rc=0 for all four forbidden patterns"
+fi
+
+# AS12 — helper-level passthrough mirror (assert_no_tool_invocation is
+# stage-agnostic; the gate lives in _render_and_capture_stream — see
+# AT7 for the renderer-wrapper cross-stage gating test).
+TX_AS12="$_TEST_STUB_DIR/tx-as12.ndjson"
+cat > "$TX_AS12" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"as12","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hello"}}]}}
+NDJSON
+out_as12="$(assert_no_tool_invocation "$TX_AS12" "git checkout")" && rc_as12=0 || rc_as12=$?
+if [[ "$rc_as12" == "0" && -z "$out_as12" ]]; then
+  pass_at "AS12: helper is stage-agnostic; non-matching transcript → rc=0 (cross-stage gating exercised at renderer level by AT7)"
+else
+  fail_at "AS12" "rc=$rc_as12 out=$out_as12"
+fi
+
 # ─── QA-authored adversarial fixtures (AT1-AT5; ENG-43 not in Failure Mode → Test Map) ─
 # AS1-AS6 cover the helper in isolation. AT1-AT5 cover gaps the plan
 # explicitly accepted as "implicit" or didn't enumerate — most importantly
@@ -1360,6 +1456,57 @@ if [[ "$rc_at5" == "1" && "$out_at5" == "gh pr create.*literal-dot-star" ]]; the
 else
   fail_at "AT5 regex literal" "rc=$rc_at5 out=$out_at5"
 fi
+
+# ─── AT6: renderer integration, stage="building" + match → rc=26, sidecar, log ─
+# AS7-AS12 cover the helper. AT6 covers the renderer-wrapper end-to-end
+# for the build path: gating, sidecar write, pre-clean, log emission.
+USAGE_AT6="$ISSUE_DIR/usage-building-AT6.json"
+RAW_AT6="$ISSUE_DIR/.raw-stream.ndjson.tmp"
+VIOLATION_AT6="$ISSUE_DIR/.transcript-violation-building"
+rm -f "$USAGE_AT6" "$RAW_AT6" "$VIOLATION_AT6"
+
+at6_rc=0
+RENDER_OUT_AT6="$(
+  _render_and_capture_stream "$USAGE_AT6" "$ISSUE_DIR" "building" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at6","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout main"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || at6_rc=$?
+
+if [[ "$at6_rc" == "26" ]] \
+   && [[ -f "$VIOLATION_AT6" ]] \
+   && [[ "$(cat "$VIOLATION_AT6")" == "git checkout main" ]] \
+   && grep -q '\[assert\] build-stage transcript invoked forbidden tool: git checkout main' <<<"$RENDER_OUT_AT6"; then
+  pass_at "AT6 (renderer integration): stage=building+match → rc=26, sidecar written, log line emitted"
+else
+  fail_at "AT6 renderer integration" "rc=$at6_rc viol_exists=$([[ -f $VIOLATION_AT6 ]] && echo y || echo n) viol_body=$(cat "$VIOLATION_AT6" 2>/dev/null) out=$RENDER_OUT_AT6"
+fi
+rm -f "$VIOLATION_AT6"
+
+# ─── AT7: renderer cross-stage gating, stage="qa" + match → rc=0 ─
+# The building-stage block must not fire on non-building stages. Mirror
+# of AT2 for the building-stage gate.
+USAGE_AT7="$ISSUE_DIR/usage-qa-AT7.json"
+VIOLATION_AT7_BUILD="$ISSUE_DIR/.transcript-violation-building"
+VIOLATION_AT7_QA="$ISSUE_DIR/.transcript-violation-qa"
+rm -f "$USAGE_AT7" "$ISSUE_DIR/.raw-stream.ndjson.tmp" "$VIOLATION_AT7_BUILD" "$VIOLATION_AT7_QA"
+
+at7_rc=0
+_render_and_capture_stream "$USAGE_AT7" "$ISSUE_DIR" "qa" >/dev/null 2>&1 <<'NDJSON' || at7_rc=$?
+{"type":"system","subtype":"init","session_id":"at7","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout main-should-be-ignored-on-qa"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+
+if [[ "$at7_rc" == "0" ]] \
+   && [[ ! -f "$VIOLATION_AT7_BUILD" ]] \
+   && [[ ! -f "$VIOLATION_AT7_QA" ]]; then
+  pass_at "AT7 (cross-stage gating): stage=qa with matching transcript → rc=0, no sidecar"
+else
+  fail_at "AT7 cross-stage gating" "rc=$at7_rc viol_build=$([[ -f $VIOLATION_AT7_BUILD ]] && echo y || echo n) viol_qa=$([[ -f $VIOLATION_AT7_QA ]] && echo y || echo n)"
+fi
+rm -f "$VIOLATION_AT7_BUILD" "$VIOLATION_AT7_QA"
 
 # ─── ENG-49 Gap #7: prompt↔allowlist contract ─────────────────────────
 # For each stage, every `gh pr <verb>` token appearing in
