@@ -43,11 +43,27 @@ printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
 SH
 chmod +x "$STUB_DIR/branch-name.sh"
 
-# Toggleable gh stub: MOCK_GH_PR_URL controls the `gh pr list` output.
+# Toggleable gh stub: routes by the value of the --json arg.
+#   MOCK_GH_PR_URL   — controls `gh pr list --json url` output.
+#   MOCK_GH_PR_STATE — controls `gh pr list --json state` output (ENG-62).
+# Argument scan walks argv to find `--json <value>` so the stub stays oblivious
+# to other flag ordering. ${VAR-} (single-dash) is empty on unset OR empty,
+# matches neither the secret-name pattern nor secret-probe-lint.sh's
+# ${VAR:-FALLBACK} matcher (ENG-46) — lint-clean by construction.
 cat > "$STUB_DIR/gh" <<'SH'
 #!/usr/bin/env bash
-# Only handles: gh pr list --head <branch> --state {open|all} --json url --jq '.[0].url // ""'
-printf '%s' "${MOCK_GH_PR_URL:-}"
+json_arg=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--json" ]]; then
+    json_arg="${2-}"
+    break
+  fi
+  shift
+done
+case "$json_arg" in
+  state) printf '%s' "${MOCK_GH_PR_STATE-}" ;;
+  url|*) printf '%s' "${MOCK_GH_PR_URL-}" ;;
+esac
 SH
 chmod +x "$STUB_DIR/gh"
 
@@ -2429,6 +2445,217 @@ else
   fail_at "ENG-65 Task 6: _cost_flags_for partial-file coercion" \
     "count=${#cost_flags_p[@]} cost_val=$cost_val tokens_in_val=$tokens_in_val flags=$(printf '%s|' "${cost_flags_p[@]}")"
 fi
+# ════════════════════════════════════════════════════════════════════════════
+# ENG-62: pre-dispatch merge-detection gate (_pre_dispatch_merge_gate)
+# ════════════════════════════════════════════════════════════════════════════
+# Cases A–F exercise the helper's full contract per the plan's Failure Mode
+# → Test Map (docs/plans/2026-05-06-eng-62-…). Helper lives in run-stage.sh
+# above main(); apply_transition is sourced from verdict-handler.sh
+# (run-stage.sh:21-22). _VH_SCRIPT_DIR was overridden to STUB_DIR at line
+# ~2161 above, so apply_transition's linear.sh calls reach the capturing stub.
+
+printf '\n--- ENG-62 _pre_dispatch_merge_gate cases ---\n'
+
+# Re-establish the canonical gh stub: an earlier case (line ~1988)
+# overwrote it with a `pr view`-only variant for _post_review_dispatch_update
+# testing, which silently returns empty for `gh pr list --json state` —
+# making case A/E look like rc=1 fail-open paths even with MOCK_GH_PR_STATE
+# correctly exported.
+cat > "$STUB_DIR/gh" <<'SH'
+#!/usr/bin/env bash
+json_arg=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--json" ]]; then
+    json_arg="${2-}"
+    break
+  fi
+  shift
+done
+case "$json_arg" in
+  state) printf '%s' "${MOCK_GH_PR_STATE-}" ;;
+  url|*) printf '%s' "${MOCK_GH_PR_URL-}" ;;
+esac
+SH
+chmod +x "$STUB_DIR/gh"
+
+# Re-establish a captures-everything linear.sh stub so the case-A/E
+# assertions on add-label / remove-label / add-comment substrings work.
+# Mirrors the "rebuilt" stub at lines 890-905 (preserves get-comments and
+# stage-of returns; everything else captures into CAPTURE_FILE).
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  stage-of)     printf 'stage:building\n' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# Restore the canonical branch-name.sh stub in case an earlier case
+# overwrote it (defensive — tests above might have).
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+_eng62_reset_capture() { : > "$CAPTURE_FILE"; }
+_eng62_capture_count() {
+  local pat="$1"
+  grep -cE "$pat" "$CAPTURE_FILE" 2>/dev/null || true
+}
+
+# ─── ENG-62 Case A: gate fires on MERGED (D-001 happy path) ─────────────
+_eng62_reset_capture
+export MOCK_GH_PR_STATE="MERGED"
+mkdir -p "$(issue_dir ENG-62T1)"
+printf '{}' > "$(issue_dir ENG-62T1)/wait-building.json"
+printf '{}' > "$(issue_dir ENG-62T1)/issue-state.json"
+rc=0
+_pre_dispatch_merge_gate ENG-62T1 building || rc=$?
+summary_present=0; [[ -s "$(issue_dir ENG-62T1)/stage-summary-building.md" ]] && summary_present=1
+wait_present=1;    [[ ! -e "$(issue_dir ENG-62T1)/wait-building.json" ]]      && wait_present=0
+state_present=1;   [[ ! -e "$(issue_dir ENG-62T1)/issue-state.json" ]]        && state_present=0
+add_label_released="$(_eng62_capture_count '^SUBCMD=add-label$')"
+remove_label_building="$(_eng62_capture_count '^SUBCMD=remove-label$')"
+transition_post="$(_eng62_capture_count 'pipeline: transition from=building to=released')"
+if [[ "$rc" == 0 \
+      && "$summary_present" == 1 \
+      && "$wait_present" == 0 \
+      && "$state_present" == 0 \
+      && "$add_label_released" -ge 1 \
+      && "$remove_label_building" -ge 1 \
+      && "$transition_post" -ge 1 ]]; then
+  pass_at "ENG-62 case A: gate fires on MERGED (transition + cleanup applied)"
+else
+  fail_at "ENG-62 case A" \
+    "rc=$rc summary=$summary_present wait=$wait_present state=$state_present add=$add_label_released remove=$remove_label_building transition=$transition_post"
+fi
+unset MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case B: gate skips on non-MERGED (D-006 contract) ───────────
+for _state in OPEN CLOSED DRAFT ""; do
+  _eng62_reset_capture
+  export MOCK_GH_PR_STATE="$_state"
+  rc=0
+  _pre_dispatch_merge_gate ENG-62T2 building || rc=$?
+  side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+  if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+    pass_at "ENG-62 case B: gate skips on state='$_state' (rc=1, no side effects)"
+  else
+    fail_at "ENG-62 case B (state='$_state')" "rc=$rc side_effects=$side_effects"
+  fi
+done
+unset _state MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case C: stage allow-list (security parallel to _fresh_wait_reason) ─
+export MOCK_GH_PR_STATE="MERGED"
+for _stage in implementing ui reviewing qa planning brainstorming released; do
+  _eng62_reset_capture
+  rc=0
+  _pre_dispatch_merge_gate ENG-62T3 "$_stage" || rc=$?
+  side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+  if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+    pass_at "ENG-62 case C: stage='$_stage' rejected by allow-list (rc=1)"
+  else
+    fail_at "ENG-62 case C (stage='$_stage')" "rc=$rc side_effects=$side_effects"
+  fi
+done
+unset _stage MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case D: branch-derivation failure → fail-open (D-006) ───────
+export MOCK_GH_PR_STATE="MERGED"
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf ''
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+_eng62_reset_capture
+rc=0
+_pre_dispatch_merge_gate ENG-62T4 building || rc=$?
+side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+  pass_at "ENG-62 case D: empty branch-name → fail-open (rc=1, no side effects)"
+else
+  fail_at "ENG-62 case D" "rc=$rc side_effects=$side_effects"
+fi
+# Restore the canonical branch-name.sh stub for subsequent cases.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+unset MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case E: apply_transition partial-failure idempotency ────────
+# First invocation: linear.sh's first add-label call returns 1 (Linear
+# outage). The gate's `apply_transition ... || true` swallows the error
+# and the gate still returns 0. Second invocation with linear.sh restored
+# completes the transition idempotently.
+export MOCK_GH_PR_STATE="MERGED"
+mkdir -p "$(issue_dir ENG-62T5)"
+_eng62_reset_capture
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+if [[ "\${1:-}" == "add-label" && ! -f "$STUB_DIR/.eng62_first_add_done" ]]; then
+  : > "$STUB_DIR/.eng62_first_add_done"
+  exit 1
+fi
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+rc1=0
+_pre_dispatch_merge_gate ENG-62T5 building || rc1=$?
+_eng62_reset_capture
+rc2=0
+_pre_dispatch_merge_gate ENG-62T5 building || rc2=$?
+transition_post_2="$(_eng62_capture_count 'pipeline: transition from=building to=released')"
+add_label_released_2="$(_eng62_capture_count '^SUBCMD=add-label$')"
+if [[ "$rc1" == 0 && "$rc2" == 0 \
+      && "$transition_post_2" -ge 1 \
+      && "$add_label_released_2" -ge 1 ]]; then
+  pass_at "ENG-62 case E: partial-failure recovery (both invocations rc=0; second produces full transition)"
+else
+  fail_at "ENG-62 case E" "rc1=$rc1 rc2=$rc2 transition2=$transition_post_2 add2=$add_label_released_2"
+fi
+rm -f "$STUB_DIR/.eng62_first_add_done"
+# Restore the canonical capturing linear.sh stub.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  stage-of)     printf 'stage:building\n' ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+unset MOCK_GH_PR_STATE
+
+# ─── ENG-62 Case F: gh missing from PATH → fail-open ────────────────────
+export MOCK_GH_PR_STATE="MERGED"
+mv "$STUB_DIR/gh" "$STUB_DIR/gh.disabled"
+_eng62_reset_capture
+rc=0
+_pre_dispatch_merge_gate ENG-62T6 building || rc=$?
+side_effects="$(_eng62_capture_count 'SUBCMD=add-label|SUBCMD=remove-label|pipeline: transition')"
+if [[ "$rc" == 1 && "$side_effects" == 0 ]]; then
+  pass_at "ENG-62 case F: gh missing from PATH → fail-open (rc=1, no side effects)"
+else
+  fail_at "ENG-62 case F" "rc=$rc side_effects=$side_effects"
+fi
+mv "$STUB_DIR/gh.disabled" "$STUB_DIR/gh"
+unset MOCK_GH_PR_STATE
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
