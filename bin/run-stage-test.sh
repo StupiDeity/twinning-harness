@@ -3088,6 +3088,40 @@ else
     "block did not contain _post_dispatch_check_worktree_head"
 fi
 
+# ─── Case 71-4b: success-path call-site invokes the helper (ENG-71 review iter-6 [M2]) ───
+# Companion to 71-4. The rc=26 arm is the D-002-catches-violation path.
+# The success-path call-site at the post-`verdict_handler` block is the
+# chained-command-bypass path — when the agent ran a command that started
+# with an allowed prefix (matcher-bypass) and dispatch_rc==0, D-002's
+# transcript scan returns no findings, but the worktree may STILL be on
+# `main`. Without a structural pin asserting the helper is invoked there,
+# a future refactor (e.g., consolidating post-dispatch hooks into a
+# single function) could silently regress the chained-command defense.
+# The plan's FM-Map row for "chained command bypasses D-002" is a
+# coverage claim until this assertion holds.
+SUCCESS_ARM_BLOCK="$(awk '/verdict_handler "\$ident" "\$vh_stage"/,/cost_flags=|metrics\.sh stage-end/' "$HARNESS_DIR/run-stage.sh")"
+if printf '%s\n' "$SUCCESS_ARM_BLOCK" | grep -qF '_post_dispatch_check_worktree_head'; then
+  pass_at "case-71-4b success-path call-site invokes _post_dispatch_check_worktree_head after verdict_handler"
+else
+  fail_at "case-71-4b success-path call-site missing helper invocation" \
+    "block between verdict_handler and stage-end emission did not contain _post_dispatch_check_worktree_head"
+fi
+
+# ─── Case 71-4c: M1 already-detached HEAD early-exit (ENG-71 review iter-6 [M1]) ───
+# `git rev-parse --abbrev-ref HEAD` returns the literal "HEAD" when the
+# worktree is detached. Without an early-exit on that value, the helper
+# would re-run `git checkout --detach` (no-op) and re-emit the
+# worktree-mutated-by-agent metric every dispatch on a worktree that
+# D-003 already detached on a prior tick. Pin the guard so a future
+# refactor can't drop the idempotency.
+HELPER_BLOCK="$(awk '/^_post_dispatch_check_worktree_head\(\) \{/,/^\}/' "$HARNESS_DIR/run-stage.sh")"
+if printf '%s\n' "$HELPER_BLOCK" | grep -qE '"\$current_branch" == "HEAD".*return 0'; then
+  pass_at "case-71-4c helper carries already-detached HEAD early-exit (\"HEAD\" == current_branch → return 0)"
+else
+  fail_at "case-71-4c helper missing already-detached HEAD early-exit" \
+    "no '[[ \"\$current_branch\" == \"HEAD\" ]] && return 0' guard found in _post_dispatch_check_worktree_head"
+fi
+
 # ─── Case 71-5: D-003 detach-failure body language (ENG-71 m1) ─────────
 # When `git checkout --detach` fails (in this fixture: .git made read-only
 # so the ref update is denied), the operator-visibility comment body MUST

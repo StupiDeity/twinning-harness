@@ -429,6 +429,15 @@ _post_dispatch_check_worktree_head() {
     log "post-dispatch worktree-HEAD check: skipping ($ident, $stage) — expected_branch='$expected_branch' current_branch='$current_branch' (one or both empty; branch-name.sh outage or git unavailable). No detach attempted."
     return 0
   fi
+  # ENG-71 review iter-6 [M1]: when HEAD is already detached (this helper
+  # ran on a prior tick, or any other actor detached), `git rev-parse
+  # --abbrev-ref HEAD` returns the literal string "HEAD". Steady-state of
+  # this helper is "HEAD detached so main is unlocked" — re-running
+  # `git checkout --detach` (a no-op on already-detached) and re-emitting
+  # the worktree-mutated metric every dispatch would just pollute
+  # events.jsonl. Mirrors the early-exit precedent at push_branch_if_ahead
+  # (line 236).
+  [[ "$current_branch" == "HEAD" ]] && return 0
   [[ "$current_branch" == "$expected_branch" ]] && return 0
 
   log "post-dispatch: WORKTREE HEAD MUTATED — expected=$expected_branch current=$current_branch; detaching to unlock parent ref"
