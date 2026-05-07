@@ -798,6 +798,244 @@ MD
 }
 test_frontmatter_d004_basename_match_unchanged
 
+# ─── ENG-69: per-issue halt vs. global breaker ────────────────────────────
+# Regression lock for the 2026-05-05 ENG-63 incident: a stray test fixture
+# left behind by a review-stage agent's run was classified as self-leak by
+# the tick-end sweep and unconditionally tripped the GLOBAL
+# orchestrator.paused breaker on first occurrence. ENG-64 and ENG-65 (both
+# stage:implementing with no halt of their own) were silently blocked across
+# 63 launchd ticks until manual intervention. The tests below verify the
+# new lane separation:
+#   1. self-leak halts only the affected issue (per-issue lane via
+#      classify_failure with skip-until-human-acts)
+#   2. leaked-in-scope at threshold halts only the affected issue
+#   3. rc=24 (linear-post-failed) still trips the global breaker; any
+#      other non-zero rc routes per-issue
+#   4. cross-issue isolation regression lock — multi-tick sequence where
+#      ENG-A's halt does not block ENG-B/ENG-C clean runs
+
+# Build a stubs dir with a no-op metrics.sh that logs args to
+# $STUB_METRICS_LOG. _eng69_make_stubs always writes the script body fresh
+# so repeated calls are safe in-suite.
+_eng69_make_stubs() {
+  local sd="$1"
+  mkdir -p "$sd"
+  cat > "$sd/metrics.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_METRICS_LOG"
+STUB
+  chmod +x "$sd/metrics.sh"
+}
+
+# ─── ENG-69 #1: halt_issue_for_self_leak routes per-issue ─────────────────
+
+test_halt_issue_for_self_leak_per_issue_routes_correctly() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-selfleak.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    # Pipe-separated capture so the reason field's spaces don't collide with
+    # field boundaries when assertions parse it back out.
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-X reviewing aabbccdd1122 ddeeff334455 \
+      >/dev/null 2>&1
+  )
+
+  # 1a. classify_failure called with the per-issue policy + new exit code.
+  local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
+  assert_eq "ENG-69#1 self-leak routes per-issue (skip-until-human-acts, exit 26)" \
+    "issue=ENG-X stage=reviewing policy=skip-until-human-acts exit=26" \
+    "$got_call"
+
+  # 1b. reason field carries the leak hashes verbatim and contains no
+  #     raw filesystem paths (security P1-1).
+  local got_reason; got_reason="$(awk -F'|' '{print $4}' "$classify_log")"
+  case "$got_reason" in
+    *aabbccdd1122*ddeeff334455*) report_ok "ENG-69#1 self-leak reason carries both hashes" ;;
+    *) report_fail "ENG-69#1 self-leak reason carries both hashes" \
+         "contains aabbccdd1122 and ddeeff334455" "$got_reason" ;;
+  esac
+  case "$got_reason" in
+    */*) report_fail "ENG-69#1 self-leak reason has no raw paths" \
+         "no '/' in reason" "$got_reason" ;;
+    *)   report_ok "ENG-69#1 self-leak reason has no raw paths" ;;
+  esac
+
+  # 1c. hash-list slice matches the hex-only regex (no positional swaps,
+  #     no zeros/constants).
+  local hash_slice="${got_reason#*leaked hashes: }"
+  hash_slice="${hash_slice%% (and*}"
+  if [[ "$hash_slice" =~ ^[0-9a-f]{12}(\,\ [0-9a-f]{12})*$ ]]; then
+    report_ok "ENG-69#1 self-leak hash list matches ^[0-9a-f]{12}(, [0-9a-f]{12})*$"
+  else
+    report_fail "ENG-69#1 self-leak hash list matches ^[0-9a-f]{12}(, [0-9a-f]{12})*$" \
+      "hex-only sha12 list" "$hash_slice"
+  fi
+
+  # 1d. global breaker NOT tripped (set_orchestrator_paused never invoked).
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused")"
+  assert_eq "ENG-69#1 self-leak does not trip global breaker" "false" "$pause_state"
+
+  # 1e. global per-project counter file does NOT exist (the bug it locks down).
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#1 self-leak does not write global counter" \
+      "no .consecutive-failures" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#1 self-leak does not write global counter"
+  fi
+
+  # 1f. metric event shape preserved (sweep-self-leak-out-of-scope) so the
+  #     retrospective's §1 filter does not need to relearn the event name.
+  local metric_line; metric_line="$(cat "$STUB_METRICS_LOG" 2>/dev/null || true)"
+  case "$metric_line" in
+    *sweep-self-leak-out-of-scope*ENG-X*reviewing*self-leak*count=2*aabbccdd1122*ddeeff334455*)
+      report_ok "ENG-69#1 self-leak metric event shape preserved" ;;
+    *)
+      report_fail "ENG-69#1 self-leak metric event shape preserved" \
+        "sweep-self-leak-out-of-scope ENG-X reviewing self-leak ... count=2 hashes=...,..." \
+        "$metric_line" ;;
+  esac
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_per_issue_routes_correctly
+
+# Truncation sub-case: more than 5 hashes → reason carries 5 + "(and N more)".
+test_halt_issue_for_self_leak_truncation_at_5() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-trunc.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-X reviewing \
+      000011112222 333344445555 666677778888 9999aaaabbbb ccccddddeeee \
+      ffff00001111 222233334444 >/dev/null 2>&1
+  )
+
+  local reason; reason="$(awk -F'|' '{print $4}' "$classify_log")"
+  case "$reason" in
+    *"(and 2 more)"*)
+      report_ok "ENG-69#1 truncation: reason ends with '(and 2 more)'" ;;
+    *)
+      report_fail "ENG-69#1 truncation: reason ends with '(and 2 more)'" \
+        "(and 2 more)" "$reason" ;;
+  esac
+  # The 6th and 7th hashes must NOT appear in the reason (truncation).
+  case "$reason" in
+    *ffff00001111*|*222233334444*)
+      report_fail "ENG-69#1 truncation: hashes 6+ omitted from reason" \
+        "no ffff00001111 or 222233334444" "$reason" ;;
+    *)
+      report_ok "ENG-69#1 truncation: hashes 6+ omitted from reason" ;;
+  esac
+  # The first 5 hashes MUST appear (no positional swap regression).
+  case "$reason" in
+    *000011112222*333344445555*666677778888*9999aaaabbbb*ccccddddeeee*)
+      report_ok "ENG-69#1 truncation: first 5 hashes present in order" ;;
+    *)
+      report_fail "ENG-69#1 truncation: first 5 hashes present in order" \
+        "all 5 leading hashes in order" "$reason" ;;
+  esac
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_truncation_at_5
+
+# DRY-RUN sub-case: PIPELINE_DRY_RUN=1 must skip classify_failure (the FS
+# state-file write is the irreversible side effect we suppress on dry-run
+# ticks).
+test_halt_issue_for_self_leak_dry_run_skips_classify() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-dryrun.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    PIPELINE_DRY_RUN=1
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-X reviewing aabbccdd1122 >/dev/null 2>&1
+  )
+
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#1 dry-run skips classify_failure" "0" "$n_calls"
+  # But the metric IS emitted (audit trail for dry-run inspection).
+  case "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" in
+    *sweep-self-leak-out-of-scope*) report_ok "ENG-69#1 dry-run still emits metric" ;;
+    *) report_fail "ENG-69#1 dry-run still emits metric" \
+         "sweep-self-leak-out-of-scope" "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" ;;
+  esac
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_dry_run_skips_classify
+
+# Issue-id validation: bogus issue id must die() before any side effect.
+test_halt_issue_for_self_leak_rejects_bogus_issue_id() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-bogus.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+  local rc=0
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    halt_issue_for_self_leak '../../etc/passwd' reviewing aabbccdd1122 \
+      >/dev/null 2>&1
+  ) || rc=$?
+  if (( rc != 0 )); then
+    report_ok "ENG-69#1 bogus issue id is rejected (die)"
+  else
+    report_fail "ENG-69#1 bogus issue id is rejected (die)" "non-zero exit" "rc=$rc"
+  fi
+  # Metric MUST NOT have been emitted before the validation check.
+  local got_metric; got_metric="$(cat "$STUB_METRICS_LOG" 2>/dev/null || true)"
+  assert_eq "ENG-69#1 bogus issue id emits no metric" "" "$got_metric"
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_rejects_bogus_issue_id
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
