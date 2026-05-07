@@ -860,14 +860,14 @@ test_halt_issue_for_self_leak_per_issue_routes_correctly() {
     classify_failure() {
       printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
     }
-    halt_issue_for_self_leak ENG-X reviewing aabbccdd1122 ddeeff334455 \
+    halt_issue_for_self_leak ENG-901 reviewing aabbccdd1122 ddeeff334455 \
       >/dev/null 2>&1
   ) || true
 
   # 1a. classify_failure called with the per-issue policy + new exit code.
   local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
   assert_eq "ENG-69#1 self-leak routes per-issue (skip-until-human-acts, exit 26)" \
-    "issue=ENG-X stage=reviewing policy=skip-until-human-acts exit=26" \
+    "issue=ENG-901 stage=reviewing policy=skip-until-human-acts exit=26" \
     "$got_call"
 
   # 1b. reason field carries the leak hashes verbatim and contains no
@@ -915,11 +915,11 @@ test_halt_issue_for_self_leak_per_issue_routes_correctly() {
   #     retrospective's §1 filter does not need to relearn the event name.
   local metric_line; metric_line="$(cat "$STUB_METRICS_LOG" 2>/dev/null || true)"
   case "$metric_line" in
-    *sweep-self-leak-out-of-scope*ENG-X*reviewing*self-leak*count=2*aabbccdd1122*ddeeff334455*)
+    *sweep-self-leak-out-of-scope*ENG-901*reviewing*self-leak*count=2*aabbccdd1122*ddeeff334455*)
       report_ok "ENG-69#1 self-leak metric event shape preserved" ;;
     *)
       report_fail "ENG-69#1 self-leak metric event shape preserved" \
-        "sweep-self-leak-out-of-scope ENG-X reviewing self-leak ... count=2 hashes=...,..." \
+        "sweep-self-leak-out-of-scope ENG-901 reviewing self-leak ... count=2 hashes=...,..." \
         "$metric_line" ;;
   esac
 
@@ -947,7 +947,7 @@ test_halt_issue_for_self_leak_truncation_at_5() {
     classify_failure() {
       printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
     }
-    halt_issue_for_self_leak ENG-X reviewing \
+    halt_issue_for_self_leak ENG-901 reviewing \
       000011112222 333344445555 666677778888 9999aaaabbbb ccccddddeeee \
       ffff00001111 222233334444 >/dev/null 2>&1
   ) || true
@@ -1004,7 +1004,7 @@ test_halt_issue_for_self_leak_dry_run_skips_classify() {
     classify_failure() {
       printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
     }
-    halt_issue_for_self_leak ENG-X reviewing aabbccdd1122 >/dev/null 2>&1
+    halt_issue_for_self_leak ENG-901 reviewing aabbccdd1122 >/dev/null 2>&1
   ) || true
 
   local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
