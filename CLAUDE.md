@@ -394,19 +394,22 @@ transitions to QA. Issues at any other stage are unaffected.
 | Symptom | Where to look |
 |---|---|
 | Tick is silent | `$PROJECT_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
-| Breaker tripped | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 and `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`; flip back via `set_orchestrator_paused false` (or `jq`) and the next successful tick clears the counter |
+| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure) | Linear comments under sig `halt/<stage>/<issue>` (verdict `result=halt reason=agent-blocked`); `pipeline:halted` + `pipeline:skip-until-human-acts` labels; `$(issue_dir <issue>)/.consecutive-failures` carries the per-issue count. Other issues continue to be polled — do NOT touch `orchestrator.paused`. **One-command recovery:** `bash bin/pipeline.sh decide <ENG-N> --action continue` (clears halt label, skip labels, per-issue counter, issue-state, posts operator-resume waypoint). |
+| Global breaker (infrastructure outage) | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 from `rc=24` (`linear-post-failed`) accumulated across ticks; `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`. Resolve with `set_orchestrator_paused false` (or any `decide --action continue`, which also clears the breaker via `_pipeline_clear_breaker`). The next clean tick clears the global counter. |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` (comment `createdAt` reflects FIRST emission only; check the `<!-- meta: reapplied at=… -->` footer for the latest re-apply moment — see `docs/runbooks/recovery.md` §4) |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
 | Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
 | Brainstorm halts at iteration 2 with `iteration-exhausted` (was: resolved on iteration 3) | New ENG-65 behavior: brainstorm voluntarily halts after 2 persona-review iterations with unresolved P0 instead of starting iteration 3. Inspect `$PROJECT_STATE_DIR/<ident>/worktree/docs/brainstorms/`; resume via `--action continue` or fix the underlying P0 in the plan. Bounded worst-case spend, costs one extra operator touch on slow-converging brainstorms. |
 
-**What `--action continue` clears (atomic, ENG-58 ported to ENG-60):**
+**What `--action continue` clears (atomic, ENG-58 ported to ENG-60; ENG-69 added per-issue counter clear):**
 
 1. `pipeline:halted` label
 2. `pipeline:skip-until-code-changes` and `pipeline:skip-until-human-acts` labels
 3. `$PROJECT_STATE_DIR/<ident>/wait-*.json` files
 4. `$PROJECT_STATE_DIR/<ident>/issue-state.json` IFF its `.policy == "skip-until-human-acts"`
-5. Posts a `<!-- pipeline: transition from=<stage> to=<stage> reason=operator-resume -->` waypoint to reset `count_marker_since_last_transition` (rejection counter) and `find_fresh_verdict` freshness.
+5. Global breaker: `orchestrator.paused=true` cleared and `$PROJECT_STATE_DIR/.consecutive-failures` removed (via `_pipeline_clear_breaker`)
+6. Per-issue counter: `$(issue_dir <issue>)/.consecutive-failures` removed (sibling of the global counter; written by `tally_leaked_in_scope_failure` and `route_run_stage_exit`'s per-issue arm)
+7. Posts a `<!-- pipeline: transition from=<stage> to=<stage> reason=operator-resume -->` waypoint to reset `count_marker_since_last_transition` (rejection counter) and `find_fresh_verdict` freshness.
 
 **Idempotent — safe to re-run.** Every operation (remove-label, rm -f,
 add-comment) is idempotent; the operator-resume waypoint is posted
