@@ -796,6 +796,20 @@ main() {
       _post_dispatch_check_worktree_head "$ident" "$stage" || true
       rm -f "$_viol_file" "$prompt_file"
       exit 26
+    elif (( dispatch_rc == 13 )); then
+      # ENG-68: stage transcript invoked a forbidden core.bare git form
+      # (one of: `git config core.bare`, `git init --bare`, `git --bare`,
+      # `git config --add core.bare`, `git -c core.bare=`). Read the
+      # matched command from the sidecar and surface a halt with
+      # lane-violation outcome and skip-until-human-acts policy —
+      # operator must investigate the allowlist drift before resume.
+      local _viol_file_13 _viol_cmd_13
+      _viol_file_13="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_cmd_13="$(cat "$_viol_file_13" 2>/dev/null || printf '<command-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "stage transcript invoked forbidden core.bare git form: $_viol_cmd_13" 13
+      rm -f "$_viol_file_13" "$prompt_file"
+      exit 13
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20

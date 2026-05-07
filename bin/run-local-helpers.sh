@@ -323,6 +323,121 @@ auto_commit_in_scope() {
   printf '%s' "$count"
 }
 
+# ENG-68 D-001: capture forensic snapshot of $git_dir before the caller's
+# self-heal flips core.bare back to false. Side effects only — never raises;
+# heal must proceed even if capture fails. Idempotent across retries.
+#
+# Args: $1 = git_dir (e.g. $HARNESS_ROOT/.git, $TARGET_REPO/.git)
+# Returns: 0 always.
+capture_core_bare_forensic() {
+  local git_dir="$1"
+  [[ -n "$git_dir" && -d "$git_dir" ]] || return 0
+
+  local ts forensic_root base
+  ts="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+  base="${PROJECT_STATE_DIR:-${HARNESS_STATE_DIR:-${HOME}/.local/state/twinning-harness}/_unscoped}"
+  forensic_root="$base/forensics/core-bare-flip-${ts}"
+  mkdir -p "$forensic_root" 2>/dev/null || return 0
+
+  # Capture nine artifacts in parallel; each redirects stdout+stderr so a
+  # single failing capture leaves a `.error` sibling rather than losing the
+  # rest. `|| printf …` covers the redirect itself failing (e.g. RO mount).
+  {
+    git --git-dir="$git_dir" config --list --show-origin > "$forensic_root/config.before" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/config.before.error"
+  } &
+  {
+    stat -f '%Sm %m %N' "$git_dir/config" > "$forensic_root/config-mtime" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/config-mtime.error"
+  } &
+  {
+    git --git-dir="$git_dir" reflog HEAD --date=iso 2>&1 | head -50 \
+      > "$forensic_root/reflog-HEAD" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/reflog-HEAD.error"
+  } &
+  {
+    git --git-dir="$git_dir" reflog --date=iso --all 2>&1 | head -200 \
+      > "$forensic_root/reflog-all" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/reflog-all.error"
+  } &
+  {
+    git --git-dir="$git_dir" for-each-ref \
+      --format='%(objectname:short) %(refname) %(committerdate:iso)' 2>&1 | head -200 \
+      > "$forensic_root/branches" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/branches.error"
+  } &
+  {
+    git --git-dir="$git_dir" worktree list --porcelain > "$forensic_root/worktrees" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/worktrees.error"
+  } &
+  {
+    ps -ef | grep -E '(git|claude|sourcetree|tower|gitkraken|launchd)' \
+      | grep -v grep > "$forensic_root/ps-snapshot" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/ps-snapshot.error"
+  } &
+  {
+    local _today_log
+    _today_log="${PROJECT_STATE_DIR:-}/logs/local-$(date -u +%Y-%m-%d).log"
+    if [[ -f "$_today_log" ]]; then
+      tail -500 "$_today_log" > "$forensic_root/recent-tick-log" 2>&1
+    else
+      printf '<no log file at %s>\n' "$_today_log" > "$forensic_root/recent-tick-log"
+    fi
+  } &
+  {
+    env | grep -E '^(GIT_|PIPELINE_|TARGET_|HARNESS_|PROJECT_)' | LC_ALL=C sort \
+      > "$forensic_root/env-snapshot" 2>&1 \
+      || printf 'capture failed: %s\n' "$?" > "$forensic_root/env-snapshot.error"
+  } &
+  wait
+
+  # Stage transcripts: enumerate the most-recently modified per-stage logs
+  # under the project's logs dir and snapshot the last 100 lines of each
+  # (best-effort; the tmp NDJSON capture is removed by dispatch.sh's RETURN
+  # trap, so per-stage `*.log` is the only post-run signal).
+  local _logs_dir="${PROJECT_STATE_DIR:-}/logs"
+  if [[ -d "$_logs_dir" ]]; then
+    ls -t "$_logs_dir"/*-*.log 2>/dev/null | head -10 \
+      > "$forensic_root/recent-stage-transcripts.list" 2>&1
+    while IFS= read -r _stage_log; do
+      [[ -f "$_stage_log" ]] || continue
+      local _base; _base="$(basename "$_stage_log")"
+      tail -100 "$_stage_log" > "$forensic_root/stage-tail.${_base}" 2>&1 || true
+    done < "$forensic_root/recent-stage-transcripts.list"
+  fi
+
+  # Always log the dump location so operators see it in tick logs even
+  # without a Linear comment (LINEAR_API_KEY may be unset at heal time).
+  if declare -f log >/dev/null 2>&1; then
+    log "[forensic] core.bare=true detected on $git_dir; dump at $forensic_root"
+  else
+    printf '[%s] [forensic] core.bare=true detected on %s; dump at %s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$git_dir" "$forensic_root" >&2
+  fi
+
+  # Best-effort Linear announcement. Skipped if LINEAR_API_KEY is unset
+  # (heal site at run-local.sh:72-80 fires BEFORE secrets sourcing at
+  # line 84) or if no fallback issue is configured.
+  local _post_issue="${PIPELINE_ISSUE_ID:-${PIPELINE_FORENSIC_FALLBACK_ISSUE:-}}"
+  if [[ -n "${LINEAR_API_KEY-}" && -n "$_post_issue" && -n "${HARNESS_ROOT:-}" \
+        && -x "$HARNESS_ROOT/bin/linear.sh" ]]; then
+    local _utc_day; _utc_day="$(date -u +%Y-%m-%d)"
+    bash "$HARNESS_ROOT/bin/linear.sh" add-or-update-comment \
+      "core-bare-flip/${_utc_day}" "$_post_issue" --body - <<EOF || true
+<!-- meta: forensic kind=core-bare-flip path=${forensic_root} -->
+core.bare=true detected on ${git_dir} at ${ts} (UTC).
+Self-heal applied; forensic snapshot at:
+\`${forensic_root}\`
+
+Inspect: \`ls ${forensic_root}\`
+
+(See ENG-68 for trigger-class investigation; \`docs/runbooks/recovery.md\` §"ENG-68 follow-up" for disposition rules.)
+EOF
+  fi
+
+  return 0
+}
+
 # Single-flight lock for run-local.sh. Uses POSIX-atomic mkdir(2) on
 # $1 (the lock directory) to guarantee at most one pipeline tick runs
 # concurrently on this host.

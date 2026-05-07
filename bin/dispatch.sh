@@ -216,6 +216,34 @@ _render_and_capture_stream() {
       fi
     done
   fi
+  # ENG-68 D-003: forbid `core.bare`-touching git forms across ALL stages.
+  # Defense-in-depth on top of D-002 (the implementing/ui base allowlist
+  # no longer carries Bash(git:*)). Catches future allowlist drift on any
+  # stage AND covers stages whose base allowlist still has wide Bash(git:*)
+  # (qa). The five patterns cover:
+  #   1. `git config core.bare ...` (the literal write)
+  #   2. `git init --bare`           (creates bare init in pwd)
+  #   3. `git --bare ...`            (top-level option that flips per-invocation)
+  #   4. `git config --add core.bare ...` (rare but valid syntax)
+  #   5. `git -c core.bare=...`      (top-level config override)
+  # `assert_no_tool_invocation`'s startswith semantics match each form's
+  # leading prefix exactly; compound shells (`git status; git config core.bare`)
+  # are an acknowledged residual gap (brainstorm OQ-3).
+  local _git_pattern _matched_git
+  for _git_pattern in \
+      "git config core.bare" \
+      "git init --bare" \
+      "git --bare" \
+      "git config --add core.bare" \
+      "git -c core.bare="; do
+    if _matched_git="$(assert_no_tool_invocation "$raw_capture" "$_git_pattern")"; then
+      :   # rc 0: no match, fall through to next pattern
+    else
+      printf '%s\n' "$_matched_git" > "$violation_file"
+      log "[assert] stage=$stage transcript invoked forbidden git form: ${_matched_git}"
+      return 13
+    fi
+  done
 }
 
 # ENG-48 isolation: platform tools whose call from a headless dispatch
@@ -270,8 +298,8 @@ allowed_tools_for() {
     # Canonical gerund-form stage names.
     brainstorming)  base='Read,Write,Edit,Grep,Glob,TaskCreate,WebFetch,Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
     planning)       base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git log:*),Bash(git diff:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
-    implementing)   base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(rustc:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
-    ui)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
+    implementing)   base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(cargo:*),Bash(bun:*),Bash(rustc:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
+    ui)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
     reviewing)      base='Read,Write,Grep,Glob,TaskCreate,Agent,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
     qa)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
     building)       base='Read,Write,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*)' ;;

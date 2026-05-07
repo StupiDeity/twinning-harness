@@ -86,6 +86,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `metric`
 - `evidence`
 - `reapplied`
+- `forensic`
 
 ### `stages`
 
