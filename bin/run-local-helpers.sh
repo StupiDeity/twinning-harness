@@ -132,6 +132,73 @@ tally_leaked_in_scope_failure() {
   fi
 }
 
+# route_run_stage_exit <issue> <stage> <rc>  (ENG-69)
+# Routes a run-stage exit to the appropriate counter lane:
+#   rc==0  → clear both global and per-issue counters; return 0.
+#   rc==24 → global counter += 1; trip breaker at FAIL_THRESHOLD.
+#   else   → per-issue counter += 1; classify_failure halt at threshold,
+#            with the original rc passed through unchanged so the existing
+#            failure_outcome_for_exit taxonomy entries (21=scope-violation,
+#            124=dispatch-timeout, etc.) survive into the retrospective.
+#
+# Pre-ENG-69, every non-zero run-stage rc accumulated into the GLOBAL
+# .consecutive-failures counter, so three independent agent failures on
+# three different issues tripped the breaker and froze every other
+# issue's poll. rc=24 (linear-post-failed) is the one infrastructure
+# failure that GENUINELY portends "the next dispatch on ANY issue will
+# also fail" — it stays in the global lane. Everything else is per-issue.
+#
+# Counter-file integrity: same sanitizer pattern as
+# tally_leaked_in_scope_failure (pic="${pic//[^0-9]/}"; pic="${pic:-0}")
+# so a corrupt body resumes at 1 rather than tripping arithmetic errors
+# under set -e. Atomic write via tmp file + mv -f (security P1-3).
+#
+# Returns 0 in all cases; the caller in run-local.sh still does
+# `[[ $rc -ne 0 ]] && exit $rc` so existing exit semantics are preserved.
+route_run_stage_exit() {
+  local issue="$1" stage="$2" rc="$3"
+  [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+    || die "route_run_stage_exit: invalid issue id '$issue'"
+  local pic_file
+  pic_file="$(issue_dir "$issue")/.consecutive-failures"
+  if (( rc == 0 )); then
+    rm -f "$FAIL_COUNTER" 2>/dev/null || true
+    rm -f "$pic_file" 2>/dev/null || true
+    return 0
+  fi
+  case "$rc" in
+    24)
+      local count
+      count="$(cat "$FAIL_COUNTER" 2>/dev/null || printf '0')"
+      count="${count//[^0-9]/}"; count="${count:-0}"
+      count=$((count + 1))
+      mkdir -p "$(dirname "$FAIL_COUNTER")"
+      printf '%s\n' "$count" > "${FAIL_COUNTER}.tmp.$$"
+      mv -f "${FAIL_COUNTER}.tmp.$$" "$FAIL_COUNTER"
+      log "run-stage.sh exited $rc on $issue (linear-post-failed; infrastructure); global consecutive failures = $count"
+      if (( count >= ${FAIL_THRESHOLD:-3} )); then
+        trip_breaker
+      fi
+      ;;
+    *)
+      mkdir -p "$(dirname "$pic_file")"
+      local pic
+      pic="$(cat "$pic_file" 2>/dev/null || printf '0')"
+      pic="${pic//[^0-9]/}"; pic="${pic:-0}"
+      pic=$((pic + 1))
+      printf '%s\n' "$pic" > "${pic_file}.tmp.$$"
+      mv -f "${pic_file}.tmp.$$" "$pic_file"
+      log "run-stage.sh exited $rc on $issue; per-issue consecutive failures = $pic"
+      if (( pic >= ${FAIL_THRESHOLD:-3} )); then
+        classify_failure "$issue" "$stage" "skip-until-human-acts" \
+          "exceeded ${FAIL_THRESHOLD:-3} consecutive same-issue failures (last exit ${rc})" \
+          "$rc"
+      fi
+      ;;
+  esac
+  return 0
+}
+
 stage_output_paths() {
   local stage="$1"
   case "$stage" in
