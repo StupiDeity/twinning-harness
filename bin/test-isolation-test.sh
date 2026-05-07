@@ -265,5 +265,114 @@ else
 fi
 rm -rf "$t4c_probe"
 
+# ─── T5: capture_core_bare_forensic helper unit tests (ENG-68) ──────
+# Addresses review iteration 2 finding 'major (a)': the forensic helper
+# (the load-bearing observability code for AC #1) had zero unit tests.
+# T5a — happy path: helper creates the forensic_root with the expected
+#       artifact filenames; returns 0.
+# T5b — empty git_dir: returns 0 immediately, no dir created.
+# T5c — non-existent git_dir: returns 0 immediately, no dir created.
+# T5d — meta_kind registry consistency: pipeline-events.json::meta_kinds
+#       contains "forensic" AND docs/pipeline-vocabulary.md renders the
+#       same entry (catches drift introduced by forgetting to re-run
+#       bin/generate-vocabulary-doc.sh).
+#
+# T5a/b/c source bin/run-local-helpers.sh and call the helper with a
+# stub `log` shim plus a temp HARNESS_STATE_DIR. PROJECT_STATE_DIR /
+# LINEAR_API_KEY / PIPELINE_FORENSIC_FALLBACK_ISSUE are unset so the
+# helper's Linear-post path is a no-op; the dir + artifacts are the
+# load-bearing assertion target.
+
+# shellcheck source=run-local-helpers.sh
+source "$HARNESS_ROOT/bin/run-local-helpers.sh" 2>/dev/null || true
+
+if ! declare -f capture_core_bare_forensic >/dev/null 2>&1; then
+  fail_at "T5 precondition" "capture_core_bare_forensic undefined after sourcing run-local-helpers.sh"
+else
+  # Stub log() so the helper's `log "[forensic] ..."` does not die; restore
+  # any pre-existing definition after T5.
+  _t5_had_log=0
+  declare -f log >/dev/null 2>&1 && _t5_had_log=1
+  log() { :; }
+  _t5_saved_state="${HARNESS_STATE_DIR-}"
+  _t5_saved_proj="${PROJECT_STATE_DIR-}"
+  _t5_saved_lkey="${LINEAR_API_KEY-}"
+  _t5_saved_fallback="${PIPELINE_FORENSIC_FALLBACK_ISSUE-}"
+  _t5_saved_issue="${PIPELINE_ISSUE_ID-}"
+  unset PROJECT_STATE_DIR LINEAR_API_KEY PIPELINE_FORENSIC_FALLBACK_ISSUE PIPELINE_ISSUE_ID
+
+  # T5a — happy path
+  T5A_STATE="$(mktemp -d -t t5a-state.XXXXXX)"
+  t5a_probe="$(build_probe)"
+  t5a_rc=0
+  HARNESS_STATE_DIR="$T5A_STATE" capture_core_bare_forensic "$t5a_probe/.git" || t5a_rc=$?
+  # forensic dir lives at $HARNESS_STATE_DIR/_unscoped/forensics/core-bare-flip-<ts>/
+  shopt -s nullglob
+  t5a_dirs=("$T5A_STATE/_unscoped/forensics/core-bare-flip-"*)
+  shopt -u nullglob
+  t5a_dir="${t5a_dirs[0]:-}"
+  if (( t5a_rc == 0 )) && [[ -d "$t5a_dir" ]] \
+     && [[ -e "$t5a_dir/config.before" || -e "$t5a_dir/config.before.error" ]] \
+     && [[ -e "$t5a_dir/branches"      || -e "$t5a_dir/branches.error" ]] \
+     && [[ -e "$t5a_dir/env-snapshot"  || -e "$t5a_dir/env-snapshot.error" ]] \
+     && [[ -e "$t5a_dir/ps-snapshot"   || -e "$t5a_dir/ps-snapshot.error" ]]; then
+    pass_at "T5a: helper creates forensic dir + key artifacts (config.before/branches/env-snapshot/ps-snapshot)"
+  else
+    fail_at "T5a" "rc=$t5a_rc dir=${t5a_dir:-<none>} (artifact presence below)
+      config.before:  $([[ -e $t5a_dir/config.before  ]] && echo y || echo n)/$([[ -e $t5a_dir/config.before.error  ]] && echo err || echo .)
+      branches:       $([[ -e $t5a_dir/branches       ]] && echo y || echo n)/$([[ -e $t5a_dir/branches.error       ]] && echo err || echo .)
+      env-snapshot:   $([[ -e $t5a_dir/env-snapshot   ]] && echo y || echo n)/$([[ -e $t5a_dir/env-snapshot.error   ]] && echo err || echo .)
+      ps-snapshot:    $([[ -e $t5a_dir/ps-snapshot    ]] && echo y || echo n)/$([[ -e $t5a_dir/ps-snapshot.error    ]] && echo err || echo .)"
+  fi
+  rm -rf "$t5a_probe" "$T5A_STATE"
+
+  # T5b — empty git_dir
+  T5B_STATE="$(mktemp -d -t t5b-state.XXXXXX)"
+  t5b_rc=0
+  HARNESS_STATE_DIR="$T5B_STATE" capture_core_bare_forensic "" || t5b_rc=$?
+  if (( t5b_rc == 0 )) && [[ ! -d "$T5B_STATE/_unscoped/forensics" ]]; then
+    pass_at "T5b: empty git_dir returns 0 with no side effects"
+  else
+    fail_at "T5b" "rc=$t5b_rc forensics_dir=$([[ -d "$T5B_STATE/_unscoped/forensics" ]] && echo present || echo absent)"
+  fi
+  rm -rf "$T5B_STATE"
+
+  # T5c — non-existent path
+  T5C_STATE="$(mktemp -d -t t5c-state.XXXXXX)"
+  t5c_rc=0
+  HARNESS_STATE_DIR="$T5C_STATE" capture_core_bare_forensic "/no/such/path/to/git_dir" || t5c_rc=$?
+  if (( t5c_rc == 0 )) && [[ ! -d "$T5C_STATE/_unscoped/forensics" ]]; then
+    pass_at "T5c: non-existent git_dir returns 0 with no side effects"
+  else
+    fail_at "T5c" "rc=$t5c_rc forensics_dir=$([[ -d "$T5C_STATE/_unscoped/forensics" ]] && echo present || echo absent)"
+  fi
+  rm -rf "$T5C_STATE"
+
+  # Restore env so subsequent tests (or repeated invocations) inherit prior state.
+  if [[ -n "$_t5_saved_state"    ]]; then export HARNESS_STATE_DIR="$_t5_saved_state"; else unset HARNESS_STATE_DIR; fi
+  if [[ -n "$_t5_saved_proj"     ]]; then export PROJECT_STATE_DIR="$_t5_saved_proj"; fi
+  if [[ -n "$_t5_saved_lkey"     ]]; then export LINEAR_API_KEY="$_t5_saved_lkey"; fi
+  if [[ -n "$_t5_saved_fallback" ]]; then export PIPELINE_FORENSIC_FALLBACK_ISSUE="$_t5_saved_fallback"; fi
+  if [[ -n "$_t5_saved_issue"    ]]; then export PIPELINE_ISSUE_ID="$_t5_saved_issue"; fi
+  if (( _t5_had_log == 0 )); then unset -f log 2>/dev/null || true; fi
+fi
+
+# T5d — meta_kind registry consistency.
+# pipeline-events.json::meta_kinds is the source-of-truth array;
+# docs/pipeline-vocabulary.md is the rendered doc. After Task 7 they
+# must both list "forensic". Drift here is a P0 finding for any future
+# ENG-60 follow-up (CLAUDE.md "Pipeline vocabulary" §).
+if jq -e '.meta_kinds | index("forensic")' \
+     "$HARNESS_ROOT/bin/pipeline-events.json" >/dev/null 2>&1 \
+   && grep -qE '^- `forensic`' "$HARNESS_ROOT/docs/pipeline-vocabulary.md"; then
+  pass_at "T5d: forensic meta_kind registered in pipeline-events.json AND rendered in vocabulary doc"
+else
+  src_has=$(jq -r '.meta_kinds | index("forensic") // "MISSING"' \
+              "$HARNESS_ROOT/bin/pipeline-events.json" 2>/dev/null || printf MISSING)
+  doc_has=$(grep -qE '^- `forensic`' "$HARNESS_ROOT/docs/pipeline-vocabulary.md" \
+              && printf yes || printf no)
+  fail_at "T5d" "pipeline-events.json: $src_has, vocabulary doc lists forensic: $doc_has"
+fi
+
 printf '\ntest-isolation: passed=%d failed=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1
