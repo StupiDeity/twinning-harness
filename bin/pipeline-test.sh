@@ -464,6 +464,30 @@ else
 fi
 _ar_clear "ENG-5815"
 
+# ── PR-X6 (ENG-69): continue clears the per-issue consecutive-failures counter
+# Plant a non-empty $(issue_dir)/.consecutive-failures (set by
+# tally_leaked_in_scope_failure or route_run_stage_exit's per-issue arm) AND
+# the global counter; assert decide --action continue removes BOTH (the
+# global one via _pipeline_clear_breaker, the per-issue one via the new
+# rm -f line in cmd_decide). Without the per-issue clear, the next
+# escalation re-fires immediately on the threshold-1 -> threshold tick.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5816" "skip-until-human-acts"
+mkdir -p "$PROJECT_STATE_DIR/ENG-5816"
+printf '2\n' > "$PROJECT_STATE_DIR/ENG-5816/.consecutive-failures"
+printf '1\n' > "$PROJECT_STATE_DIR/.consecutive-failures"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
+  _ar_decide "ENG-5816" --action continue || true
+per_issue_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-5816/.consecutive-failures" ]] && per_issue_present=1
+global_present=0; [[ -e "$PROJECT_STATE_DIR/.consecutive-failures" ]] && global_present=1
+if [[ "$per_issue_present" == "0" && "$global_present" == "0" ]]; then
+  pass_at "PR-X6: continue clears per-issue + global consecutive-failures counter"
+else
+  fail_at "PR-X6: per-issue counter clear" \
+    "per_issue_present=$per_issue_present global_present=$global_present"
+fi
+_ar_clear "ENG-5816"
+
 # ── PR-dry-run: PIPELINE_DRY_RUN=1 suppresses atomic reset (FS untouched)
 # Calls cmd_decide in-process with PIPELINE_DRY_RUN=1 then resets it to "".
 : > "$_AR_LINEAR_CALLS"
