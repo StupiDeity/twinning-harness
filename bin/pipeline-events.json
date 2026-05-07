@@ -43,7 +43,8 @@
     "dedup",
     "metric",
     "evidence",
-    "reapplied"
+    "reapplied",
+    "forensic"
   ],
   "stages": [
     "brainstorming",
