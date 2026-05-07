@@ -699,6 +699,68 @@ else
   ok '§7 wait-exit examples are bare (no env-var prefix on `bash bin/pipeline.sh event ...`)'
 fi
 
+# ─── ENG-74 QA adversarial (round 2): per-stage rule-sentence integrity.
+# The plan-loop's two greps (`Do NOT prepend env-var assignments` and
+# `PIPELINE_WRITER=agent`) match independently, so a future rewrite that
+# preserves both literal tokens but loses the load-bearing linkage to
+# `bash bin/...` would slip through — leaving the agent without a clear
+# binding from the warning to the operative command shape. Pin a single
+# regex per stage that the bolded sentence keeps all three anchors in
+# order on the same paragraph line: warning trigger → canonical example →
+# `bash bin/...` invocation target.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent" \
+  "## 8. Release Agent" \
+  "## 9. Retrospective Agent (Scheduled)"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  if printf '%s\n' "$body" | grep -qE 'Do NOT prepend env-var assignments.*PIPELINE_WRITER=agent.*bash bin/'; then
+    ok "$short rule sentence keeps trigger→example→target linkage on one line (ENG-74)"
+  else
+    nope "$short rule sentence keeps trigger→example→target linkage on one line (ENG-74)" \
+         "the three anchors must co-occur on a single paragraph line; a rewrite that splits them across lines or loses the linkage breaks the agent's binding"
+  fi
+done
+
+# ─── ENG-74 QA adversarial (round 2): bin/dispatch.sh env wrapper and
+# claude invocation must live in the same `local cmd=(...)` array.
+# The existing symmetric pin (line 649) only checks the prefix
+# `local cmd=(env PIPELINE_WRITER=agent`. A refactor that splits the env
+# wrapper away from the claude invocation (e.g., env wrapper applied to a
+# different command, claude moved to a sibling cmd array without the
+# wrapper) keeps the prefix substring but breaks the rule's premise that
+# `dispatch.sh::main` exports `PIPELINE_WRITER=agent` INTO the agent's
+# claude subprocess. Assert `claude` appears within 10 lines AFTER the
+# env wrapper line so the two stay coupled.
+if [[ -f "$DISPATCH_SH" ]] \
+   && grep -A 10 'local cmd=(env PIPELINE_WRITER=agent' "$DISPATCH_SH" | grep -q 'claude'; then
+  ok 'ENG-74 symmetric pin: bin/dispatch.sh env wrapper reaches claude in the same cmd array'
+else
+  nope 'ENG-74 symmetric pin: bin/dispatch.sh env wrapper reaches claude in the same cmd array' \
+       'the env PIPELINE_WRITER=agent wrapper and claude invocation must share one cmd array; splitting them silently invalidates the rule premise'
+fi
+
+# ─── ENG-74 QA adversarial (round 2): no `env VAR=val bash bin/...`
+# command shape anywhere in AGENT_PROMPTS.md. The rule says "an env-var
+# assignment is not `bash`" but an agent could mis-read this as making
+# `env VAR=val bash bin/...` permissible (it isn't — first token is
+# `env`, not `bash`, so the Bash(bash bin/...) matcher still fails).
+# Forbid the shape globally so a "wrong-way" anti-example or escape-hatch
+# hedge cannot land in any stage's prompt body.
+if grep -qE '\benv[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+bash[[:space:]]+(\.pipeline/)?bin/' "$PROMPTS"; then
+  nope 'ENG-74 QA: no `env VAR=val bash bin/...` command shape anywhere in AGENT_PROMPTS.md' \
+       '`env VAR=val bash bin/...` is also unmatchable (first token is env, not bash); a copy-pasteable example would re-trigger the ENG-64 sandbox denial under a different shape'
+else
+  ok 'ENG-74 QA: no `env VAR=val bash bin/...` command shape anywhere in AGENT_PROMPTS.md'
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
