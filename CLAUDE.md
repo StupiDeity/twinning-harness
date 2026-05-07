@@ -216,6 +216,17 @@ every tick and includes/excludes the issue based on `policy` plus a recomputed
 `pipeline_content_hash` (sha256 over `bin/**`, `config.json`, `AGENT_PROMPTS.md`) and
 branch-head SHA.
 
+The harness orchestrator NEVER dispatches an agent into the operator's `$TARGET_REPO`
+checkout — every dispatch resolves a per-issue worktree first (ENG-67, May 2026). If
+`bin/run-local.sh` ever logs `FATAL: internal: worktree_path empty after
+reconcile=proceed (ENG-67); refusing to dispatch from $TARGET_REPO`, that is the
+D-003 invariant `die`-ing — most likely a Linear-API outage in `branch-name.sh`,
+which now blocks ticks loudly rather than silently dispatching from the operator's
+checkout. Operator action: inspect `$PROJECT_STATE_DIR/<slug>/logs/local-*.log` for
+the preceding error from `branch-name.sh`/`linear.sh`, fix the underlying cause
+(network, API key, Linear status), and the next tick resumes; do NOT bypass the
+`die` by re-introducing a soft fallback.
+
 ## Sweep + scope partition (ENG-14)
 
 After a clean stage run, `run-local.sh` does a tick-start vs tick-end dirty-path

@@ -206,30 +206,36 @@ case "$reconcile_decision" in
     ;;
 esac
 
-# Determine branch name and worktree path. Only for new-model branches; for
-# legacy feature/* in-flight, skip worktree creation and fall through.
+# Determine branch name and worktree path. The legacy `feature/*`
+# coexistence path that used to live here was deleted in ENG-67
+# (May 2026): it dispatched the agent from the operator's $TARGET_REPO
+# checkout when an agent had created a non-canonical
+# `feature/eng-N-...` branch (the May-2026 ENG-63/64/65 failure mode),
+# silently mutating the operator's HEAD and breaking scope-check.
+# PR #48 (commit 4635cd3) closed the upstream cause at the prompt
+# level (AGENT_PROMPTS.md:77-88 hard-rules 1-4 +
+# bin/agent-prompts-content-test.sh:447-491 pins); the orchestrator-
+# side coexistence is no longer needed. Any future feature/* branch
+# that somehow appears falls through to canonical resolution, where
+# ensure_worktree creates a fresh worktree off origin/main — a clean
+# error surface, not a silent dispatch into $TARGET_REPO.
 branch=""
 worktree_path=""
 if [[ "$reconcile_decision" == "proceed" ]]; then
-  # Legacy-branch coexistence: if a feature/<issue> branch already exists
-  # locally or on origin, use the old flow for this issue.
-  ident_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
-  if [[ -n "$(git -C "$TARGET_REPO" branch --list "feature/${ident_lower}-*" 2>/dev/null)" ]] \
-     || git -C "$TARGET_REPO" ls-remote --heads origin "feature/${ident_lower}-*" 2>/dev/null | grep -q "feature/"; then
-    log "legacy feature/* branch detected for $issue_id — using old flow (no worktree)"
-  else
-    branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
-    worktree_path="$(resolve_worktree_path "$branch" "$issue_id")"
-    mkdir -p "$(dirname "$worktree_path")"
-    ensure_worktree "$branch" "$worktree_path"
-  fi
+  branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
+  worktree_path="$(resolve_worktree_path "$branch" "$issue_id")"
+  mkdir -p "$(dirname "$worktree_path")"
+  ensure_worktree "$branch" "$worktree_path"
 fi
 
-# Dispatch run-stage.sh from the worktree if one was resolved, else from main.
-dispatch_cwd="$TARGET_REPO"
-if [[ -n "$worktree_path" ]]; then
-  dispatch_cwd="$worktree_path"
-fi
+# After ENG-67, every reconcile_decision=="proceed" tick resolves a
+# per-issue worktree_path; the link:/human reconcile branches `exit 0`
+# at lines 177-205 before reaching here. So the previous fallback
+# `dispatch_cwd=$TARGET_REPO` is unreachable by construction. Surface
+# any future regression that lets worktree_path stay empty as a loud
+# failure rather than a silent dispatch into the operator's checkout.
+[[ -n "$worktree_path" ]] || die "internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from \$TARGET_REPO"
+dispatch_cwd="$worktree_path"
 
 # Tick-start dirty-path snapshot for self-leak detection (ENG-14 D-4).
 # Any out-of-scope path present at end-of-tick that is NOT in this
