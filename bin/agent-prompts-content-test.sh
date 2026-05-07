@@ -526,6 +526,78 @@ else
        'ENG-65 cycle was caused by agent treating loopback as "add adversarial coverage"; carve-out must be pinned'
 fi
 
+# ─── ENG-71: §7 build agent must not check out main / pull / reset ────
+# Pin the MANDATORY worktree-HEAD rule paragraph in §7 (D-001) and the
+# symmetric pattern enumeration in `bin/dispatch.sh::_render_and_capture_stream`'s
+# building-stage block (ENG-62 Bld-001 prompt-orchestrator symmetry
+# discipline). A future contributor who adds a fifth pattern to either
+# site without updating the other fails this test.
+if printf '%s\n' "$s7" | grep -qF 'MANDATORY worktree-HEAD rule (ENG-71)'; then
+  ok "§7 contains ENG-71 worktree-HEAD MANDATORY rule"
+else
+  nope "§7 contains ENG-71 worktree-HEAD MANDATORY rule" "phrase missing"
+fi
+for pat in 'git checkout' 'git switch' 'git pull' 'git reset'; do
+  if printf '%s\n' "$s7" | grep -qF "\`$pat\`"; then
+    ok "§7 explicitly names \`$pat\` as forbidden"
+  else
+    nope "§7 names \`$pat\`" "pattern not back-tick-quoted in §7"
+  fi
+done
+if printf '%s\n' "$s7" | grep -qF 'chained commands'; then
+  ok "§7 names chained-command class explicitly"
+else
+  nope "§7 names chained-command class" "phrase missing"
+fi
+if printf '%s\n' "$s7" | grep -qF 'git fetch origin main && git checkout main'; then
+  ok "§7 contains literal worked example of chained-command bypass"
+else
+  nope "§7 contains literal chained-command worked example" \
+    "phrase 'git fetch origin main && git checkout main' missing"
+fi
+
+# ENG-71 C1 regression pin: §7 must NOT recommend `gh api repos/.../branches/main`
+# to verify the merge SHA — `gh api` is not in the building tool allowlist
+# (only `gh pr view`, `gh pr list`, `gh pr checks`, `gh pr edit`, `gh pr merge`,
+# `gh run` per bin/dispatch.sh::allowed_tools_for "building"). Following the
+# §7 advice would force the agent to halt with `agent-blocked` — exactly the
+# operator-impact fix the rule was meant to prevent. The MANDATORY rule
+# paragraph names a permitted alternative (`gh pr view <N> --json mergeCommit`)
+# so the agent has a path to verify the merge SHA without a checkout AND
+# without hitting an allowlist denial.
+if printf '%s\n' "$s7" | grep -qF 'gh api repos'; then
+  nope "§7 must not recommend \`gh api repos/...\` (not in building allowlist)" \
+    "phrase still present; rewrite the recipe to use a permitted verb (\`gh pr view\`)"
+else
+  ok "§7 worktree-HEAD rule does NOT recommend disallowed \`gh api\` recipe (ENG-71 C1)"
+fi
+if printf '%s\n' "$s7" | grep -qF 'gh pr view'; then
+  ok "§7 names a permitted SHA-verification path (\`gh pr view\` is in building allowlist)"
+else
+  nope "§7 names permitted SHA-verification path" \
+    "no \`gh pr view\` mention in §7 — agent has no allowlisted way to verify the merge SHA"
+fi
+
+# ─── ENG-71 symmetric pin: bin/dispatch.sh's building-stage block names
+# the SAME four pattern literals (ENG-62 Bld-001 discipline).
+DISPATCH_SH="$HARNESS_ROOT/bin/dispatch.sh"
+if [[ -f "$DISPATCH_SH" ]]; then
+  eng71_dispatch_missing=""
+  for pat in "'git checkout'" "'git switch'" "'git pull'" "'git reset'"; do
+    if ! grep -qF "$pat" "$DISPATCH_SH"; then
+      eng71_dispatch_missing+="$pat "
+    fi
+  done
+  if [[ -z "$eng71_dispatch_missing" ]]; then
+    ok "ENG-71 symmetric pin: bin/dispatch.sh names all four forbidden patterns"
+  else
+    nope "ENG-71 symmetric pin: bin/dispatch.sh missing patterns" \
+      "patterns missing from bin/dispatch.sh: $eng71_dispatch_missing"
+  fi
+else
+  nope "ENG-71 symmetric pin: bin/dispatch.sh exists" "file missing"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

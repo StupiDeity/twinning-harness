@@ -2932,6 +2932,406 @@ else
     "rc=$ENG_62_CASE_M_RC stage_end=$stage_end_count transition=$transition_landed metrics=$(cat "$ENG_62_CASE_M_METRICS" 2>/dev/null)"
 fi
 
+# ─── ENG-71: D-003 _post_dispatch_check_worktree_head fixtures ─────────
+# Pin the post-dispatch worktree-HEAD detector across three states:
+# (case 7) mismatch — worktree on main but expected feat/eng-…  → detach,
+# emit metric, post sig-deduped Linear comment;
+# (case 8) match — worktree on the expected branch  → no-op, no metric,
+# no comment;
+# (case 9) stage gate — qa with HEAD on main  → no-op (stage-gated to
+# building only).
+#
+# Each case stubs `metrics.sh` (writes invocations to a capture file
+# under $STUB_DIR), uses a real `git init`'d worktree under
+# $STUB_DIR/wt-T7/worktree, and asserts the detach action's effect on
+# the actual git state plus the metric+comment side-effects.
+printf '\n--- ENG-71: D-003 _post_dispatch_check_worktree_head ---\n'
+
+reset_metrics_capture() { : > "$STUB_DIR/metrics.capture"; }
+if [[ ! -x "$STUB_DIR/metrics.sh" ]]; then
+  cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+# args: \$1 event \$2 ident \$3 stage \$4 outcome \$5 duration_ms \$6 notes
+printf 'EVENT=%s\nIDENT=%s\nSTAGE=%s\nOUTCOME=%s\nNOTES=%s\n---\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" >> "$STUB_DIR/metrics.capture"
+exit 0
+SH
+  chmod +x "$STUB_DIR/metrics.sh"
+fi
+reset_metrics_capture
+
+# ─── Case 71-1: D-003 detach-on-mismatch (stage=building, HEAD on main) ─
+reset_capture
+ENG_T7_WT="$(issue_dir ENG-T7)/worktree"
+rm -rf "$ENG_T7_WT"
+mkdir -p "$ENG_T7_WT"
+( cd "$ENG_T7_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+# Override branch-name.sh to return a different branch than `main` so the
+# mismatch fires. Restored to the default mock-slug shape after this case.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/eng-t7-mock-slug\n'
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+_post_dispatch_check_worktree_head ENG-T7 building >/dev/null 2>&1 || true
+
+current_head_t7="$(git -C "$ENG_T7_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_t7="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_t7="$(grep -c '^SIG=worktree-mutation/ENG-T7$' "$CAPTURE_FILE" 2>/dev/null || true)"
+# ENG-71 m3 (review iter-2 feedback): assert body content too, not just SIG header.
+# Without these checks a regression that produces an empty/malformed body still
+# passes the SIG-only count. The fields pinned: meta marker (operator-visibility
+# discriminator), current branch (so operator knows what HEAD landed on), expected
+# branch (so operator knows what should have been there), and the success-path
+# detach phrasing introduced by ENG-71 m1 (review iter-2 feedback).
+body_t7="$(awk '/^BODY_BEGIN$/{flag=1; next} /^BODY_END$/{flag=0} flag' "$CAPTURE_FILE")"
+body_has_meta_t7="$(grep -cF '<!-- meta: metric name=worktree-mutated-by-agent -->' <<<"$body_t7" || true)"
+body_has_current_t7="$(grep -cF 'main' <<<"$body_t7" || true)"
+body_has_expected_t7="$(grep -cF 'feat/eng-t7-mock-slug' <<<"$body_t7" || true)"
+body_has_detach_success_t7="$(grep -cF 'detached HEAD' <<<"$body_t7" || true)"
+
+if [[ "$current_head_t7" == "HEAD" ]] \
+   && [[ "$metric_count_t7" == "1" ]] \
+   && [[ "$comment_count_t7" == "1" ]] \
+   && (( body_has_meta_t7 >= 1 )) \
+   && (( body_has_current_t7 >= 1 )) \
+   && (( body_has_expected_t7 >= 1 )) \
+   && (( body_has_detach_success_t7 >= 1 )); then
+  pass_at "case-71-1 D-003 detach-on-mismatch (stage=building, current=main, expected=feat/eng-t7-…) → HEAD detached, metric+comment emitted, body names current/expected/meta/detach-success"
+else
+  fail_at "case-71-1 D-003 detach-on-mismatch" \
+    "current_head=$current_head_t7 metric_count=$metric_count_t7 comment_count=$comment_count_t7 meta=$body_has_meta_t7 current=$body_has_current_t7 expected=$body_has_expected_t7 detach=$body_has_detach_success_t7"
+fi
+
+# Restore branch-name.sh to the default mock-slug shape for downstream cases.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+# ─── Case 71-2: D-003 no-detach when HEAD on expected branch ───────────
+reset_capture
+reset_metrics_capture
+ENG_T8_WT="$(issue_dir ENG-T8)/worktree"
+rm -rf "$ENG_T8_WT"
+mkdir -p "$ENG_T8_WT"
+( cd "$ENG_T8_WT" \
+  && git init --quiet -b feat/eng-t8-mock-slug \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+_post_dispatch_check_worktree_head ENG-T8 building >/dev/null 2>&1 || true
+
+current_head_t8="$(git -C "$ENG_T8_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_t8="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_t8="$(grep -c '^SIG=worktree-mutation/ENG-T8$' "$CAPTURE_FILE" 2>/dev/null || true)"
+
+if [[ "$current_head_t8" == "feat/eng-t8-mock-slug" ]] \
+   && [[ "$metric_count_t8" == "0" ]] \
+   && [[ "$comment_count_t8" == "0" ]]; then
+  pass_at "case-71-2 D-003 no-detach when HEAD on expected branch → no detach, no metric, no comment"
+else
+  fail_at "case-71-2 D-003 no-detach" \
+    "current_head=$current_head_t8 metric_count=$metric_count_t8 comment_count=$comment_count_t8"
+fi
+
+# ─── Case 71-3: D-003 stage gate (stage=qa with HEAD on main → no-op) ─
+reset_capture
+reset_metrics_capture
+ENG_T9_WT="$(issue_dir ENG-T9)/worktree"
+rm -rf "$ENG_T9_WT"
+mkdir -p "$ENG_T9_WT"
+( cd "$ENG_T9_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+_post_dispatch_check_worktree_head ENG-T9 qa >/dev/null 2>&1 || true
+
+current_head_t9="$(git -C "$ENG_T9_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_t9="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_t9="$(grep -c '^SIG=worktree-mutation/ENG-T9$' "$CAPTURE_FILE" 2>/dev/null || true)"
+
+if [[ "$current_head_t9" == "main" ]] \
+   && [[ "$metric_count_t9" == "0" ]] \
+   && [[ "$comment_count_t9" == "0" ]]; then
+  pass_at "case-71-3 D-003 stage gate (stage=qa) → no-op even when HEAD on main"
+else
+  fail_at "case-71-3 D-003 stage gate" \
+    "current_head=$current_head_t9 metric_count=$metric_count_t9 comment_count=$comment_count_t9"
+fi
+
+# ─── Case 71-4: rc=26 arm invokes _post_dispatch_check_worktree_head ───
+# Structure pin: D-002's transcript scan is post-stream — by the time it
+# returns 26 the agent has already executed the forbidden Bash command,
+# so the worktree may already be on `main`. Without invoking the helper
+# in the rc=26 arm, the rc=26 path exits and main stays globally locked
+# until cleanup-worktrees.sh runs on the next post-merge tick (which
+# only fires on merged/canceled/30-day-orphan triggers — none fire on a
+# halted build). The rc=26 arm in run-stage.sh::main MUST call
+# _post_dispatch_check_worktree_head before exit 26 so the helper
+# detaches HEAD on the way out.
+RC26_ARM_BLOCK="$(awk '/elif \(\( dispatch_rc == 26 \)\); then/,/exit 26/' "$HARNESS_DIR/run-stage.sh")"
+if printf '%s\n' "$RC26_ARM_BLOCK" | grep -qF '_post_dispatch_check_worktree_head'; then
+  pass_at "case-71-4 rc=26 arm invokes _post_dispatch_check_worktree_head before exit 26"
+else
+  fail_at "case-71-4 rc=26 arm missing helper invocation" \
+    "block did not contain _post_dispatch_check_worktree_head"
+fi
+
+# ─── Case 71-4b: success-path call-site invokes the helper (ENG-71 review iter-6 [M2]) ───
+# Companion to 71-4. The rc=26 arm is the D-002-catches-violation path.
+# The success-path call-site at the post-`verdict_handler` block is the
+# chained-command-bypass path — when the agent ran a command that started
+# with an allowed prefix (matcher-bypass) and dispatch_rc==0, D-002's
+# transcript scan returns no findings, but the worktree may STILL be on
+# `main`. Without a structural pin asserting the helper is invoked there,
+# a future refactor (e.g., consolidating post-dispatch hooks into a
+# single function) could silently regress the chained-command defense.
+# The plan's FM-Map row for "chained command bypasses D-002" is a
+# coverage claim until this assertion holds.
+SUCCESS_ARM_BLOCK="$(awk '/verdict_handler "\$ident" "\$vh_stage"/,/cost_flags=|metrics\.sh stage-end/' "$HARNESS_DIR/run-stage.sh")"
+if printf '%s\n' "$SUCCESS_ARM_BLOCK" | grep -qF '_post_dispatch_check_worktree_head'; then
+  pass_at "case-71-4b success-path call-site invokes _post_dispatch_check_worktree_head after verdict_handler"
+else
+  fail_at "case-71-4b success-path call-site missing helper invocation" \
+    "block between verdict_handler and stage-end emission did not contain _post_dispatch_check_worktree_head"
+fi
+
+# ─── Case 71-4c: M1 already-detached HEAD early-exit (ENG-71 review iter-6 [M1]) ───
+# `git rev-parse --abbrev-ref HEAD` returns the literal "HEAD" when the
+# worktree is detached. Without an early-exit on that value, the helper
+# would re-run `git checkout --detach` (no-op) and re-emit the
+# worktree-mutated-by-agent metric every dispatch on a worktree that
+# D-003 already detached on a prior tick. Pin the guard so a future
+# refactor can't drop the idempotency.
+HELPER_BLOCK="$(awk '/^_post_dispatch_check_worktree_head\(\) \{/,/^\}/' "$HARNESS_DIR/run-stage.sh")"
+if printf '%s\n' "$HELPER_BLOCK" | grep -qE '"\$current_branch" == "HEAD".*return 0'; then
+  pass_at "case-71-4c helper carries already-detached HEAD early-exit (\"HEAD\" == current_branch → return 0)"
+else
+  fail_at "case-71-4c helper missing already-detached HEAD early-exit" \
+    "no '[[ \"\$current_branch\" == \"HEAD\" ]] && return 0' guard found in _post_dispatch_check_worktree_head"
+fi
+
+# ─── Case 71-5: D-003 detach-failure body language (ENG-71 m1) ─────────
+# When `git checkout --detach` fails (in this fixture: .git made read-only
+# so the ref update is denied), the operator-visibility comment body MUST
+# NOT claim "Orchestrator detached HEAD" — that would be a lie. Instead
+# the body should say "detach … failed" so the operator knows main may
+# still be locked and they need to recover manually.
+#
+# Pre-iter-6 the body unconditionally claimed success regardless of the
+# detach exit code; this fixture pins the conditional language and the
+# detach_rc field in the metric notes.
+reset_capture
+reset_metrics_capture
+ENG_T75_WT="$(issue_dir ENG-T75)/worktree"
+rm -rf "$ENG_T75_WT"
+mkdir -p "$ENG_T75_WT"
+( cd "$ENG_T75_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/eng-t75-mock-slug\n'
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+# Make .git read-only so `git checkout --detach`'s ref-update fails. We
+# capture rc explicitly because BSD chmod on Darwin sometimes warns on
+# subdir-perm changes; the test cares only about the post-state, not the
+# chmod's exit code.
+chmod -R a-w "$ENG_T75_WT/.git" 2>/dev/null || true
+
+_post_dispatch_check_worktree_head ENG-T75 building >/dev/null 2>&1 || true
+
+# Restore write perms so the EXIT-trap rm -rf can clean up.
+chmod -R u+w "$ENG_T75_WT/.git" 2>/dev/null || true
+
+body_t75="$(awk '/^BODY_BEGIN$/{flag=1; next} /^BODY_END$/{flag=0} flag' "$CAPTURE_FILE")"
+body_claims_success_t75="$(grep -cF 'detached HEAD' <<<"$body_t75" || true)"
+body_says_failed_t75="$(grep -ciE 'detach.*failed|failed.*detach' <<<"$body_t75" || true)"
+# Match the metric NOTES line directly off metrics.capture rather than
+# awk -F= split (which would lose everything after the first `=` since
+# the notes string itself contains `=` separators between fields).
+notes_has_detach_rc_nonzero="$(grep -cE '^NOTES=.*detach_rc=[1-9]' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+
+if (( body_says_failed_t75 >= 1 )) \
+   && (( body_claims_success_t75 == 0 )) \
+   && (( notes_has_detach_rc_nonzero >= 1 )); then
+  pass_at "case-71-5 D-003 detach-failure (read-only .git) → body says detach failed (no success claim), metric notes carry detach_rc!=0"
+else
+  fail_at "case-71-5 D-003 detach-failure body" \
+    "body_says_failed=$body_says_failed_t75 body_claims_success=$body_claims_success_t75 notes_detach_rc=$notes_has_detach_rc_nonzero notes='$metric_notes_t75'"
+fi
+
+# Restore the default branch-name.sh stub for any tests appended below.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+# ─── Case 71-6: D-003 empty-branch-name log line (ENG-71 m2) ───────────
+# When branch-name.sh dies (Linear API outage in production) D-003 returns
+# 0 to avoid detaching on a wrong expected value — but pre-iter-6 it did
+# so SILENTLY, with no log line, leaving operators unable to distinguish
+# "no mismatch" from "branch resolution failed". Pin a log line so the
+# silent skip is observable.
+reset_capture
+reset_metrics_capture
+ENG_T76_WT="$(issue_dir ENG-T76)/worktree"
+rm -rf "$ENG_T76_WT"
+mkdir -p "$ENG_T76_WT"
+( cd "$ENG_T76_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+# Stub branch-name.sh to return empty (simulating Linear API outage).
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf ''
+exit 1
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+t76_stderr="$(_post_dispatch_check_worktree_head ENG-T76 building 2>&1 >/dev/null || true)"
+
+current_head_t76="$(git -C "$ENG_T76_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_t76="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_t76="$(grep -c '^SIG=worktree-mutation/ENG-T76$' "$CAPTURE_FILE" 2>/dev/null || true)"
+log_line_emitted_t76="$(grep -ciE 'expected_branch=|branch.*resolution|skip.*ENG-T76' <<<"$t76_stderr" || true)"
+
+if [[ "$current_head_t76" == "main" ]] \
+   && [[ "$metric_count_t76" == "0" ]] \
+   && [[ "$comment_count_t76" == "0" ]] \
+   && (( log_line_emitted_t76 >= 1 )); then
+  pass_at "case-71-6 D-003 empty branch-name → no detach, no metric, no comment, BUT log line emitted (silent-skip diagnostic)"
+else
+  fail_at "case-71-6 D-003 empty-branch log line" \
+    "current_head=$current_head_t76 metric=$metric_count_t76 comment=$comment_count_t76 log_emitted=$log_line_emitted_t76 stderr='${t76_stderr}'"
+fi
+
+# Restore default branch-name.sh.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+# ─── ENG-71 QA-authored adversarial cases (case-71-q1 / case-71-q2) ────
+# Cases 71-1..71-6 cover the FM-Map. The cold sub-agent (May-2026) flagged
+# two surfaces that exist in the helper body but have no fixture:
+#   case-71-q1 — worktree directory missing entirely. Helper guard:
+#                `[[ -d "$wt/.git" ]] || [[ -f "$wt/.git" ]] || return 0`.
+#                The legitimate path that exercises this is concurrent
+#                cleanup-worktrees.sh nuking the worktree between the
+#                build dispatch and the post-dispatch helper call. The
+#                helper must return 0 silently — no detach attempt, no
+#                metric, no comment, no `git -C` stderr noise to
+#                contaminate the per-stage transcript.
+#   case-71-q2 — branch-name.sh returns trailing whitespace (e.g.,
+#                `feat/foo  \n`, `feat/foo\r\n`). The helper does NO
+#                trimming on `expected_branch` before string-comparing
+#                with `current_branch` (which IS trimmed by `git
+#                rev-parse --abbrev-ref`). A whitespace-padded resolver
+#                output thus reports a spurious mismatch and detaches a
+#                correctly-positioned worktree. This fixture documents
+#                CURRENT BEHAVIOR (spurious detach when branch-name.sh
+#                output has trailing whitespace) so a future fix that
+#                adds trimming makes the assertion flip — at which point
+#                the test name should also flip from "documents
+#                non-trimming" to "trims trailing whitespace".
+
+# ─── Case 71-q1: worktree directory absent (concurrent cleanup) ────────
+reset_capture
+reset_metrics_capture
+ENG_TQ1_WT="$(issue_dir ENG-TQ1)/worktree"
+rm -rf "$(issue_dir ENG-TQ1)"   # simulate cleanup-worktrees.sh having nuked it
+# branch-name.sh stub still resolves successfully — the guard's job is to
+# short-circuit on the worktree-missing condition independently.
+
+t_q1_stderr="$(_post_dispatch_check_worktree_head ENG-TQ1 building 2>&1 >/dev/null || true)"
+
+metric_count_tq1="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_tq1="$(grep -c '^SIG=worktree-mutation/ENG-TQ1$' "$CAPTURE_FILE" 2>/dev/null || true)"
+detach_attempted_tq1="$(grep -cE 'WORKTREE HEAD MUTATED|detaching to unlock' <<<"$t_q1_stderr" || true)"
+
+if (( metric_count_tq1 == 0 )) \
+   && (( comment_count_tq1 == 0 )) \
+   && (( detach_attempted_tq1 == 0 )); then
+  pass_at "case-71-q1 D-003 missing worktree (concurrent cleanup) → silent return 0, no detach, no metric, no comment"
+else
+  fail_at "case-71-q1 D-003 missing worktree" \
+    "metric=$metric_count_tq1 comment=$comment_count_tq1 detach_attempted=$detach_attempted_tq1 stderr='${t_q1_stderr}'"
+fi
+
+# ─── Case 71-q2: branch-name.sh trailing-whitespace output (CURRENT BEHAVIOR) ──
+# Documents that the helper does NOT trim trailing whitespace from
+# branch-name.sh output. With current behavior, the worktree HEAD is on
+# `feat/eng-tq2-mock-slug` and branch-name.sh returns
+# `feat/eng-tq2-mock-slug   ` (three trailing spaces) — string equality
+# fails, helper detaches. If a future commit adds `expected_branch="$(...
+# | tr -d '[:space:]')"` or similar trimming to the helper, this fixture
+# will start FAILING (no detach) and the assertion direction must be
+# inverted. The flip is the contract change being introduced.
+reset_capture
+reset_metrics_capture
+ENG_TQ2_WT="$(issue_dir ENG-TQ2)/worktree"
+rm -rf "$ENG_TQ2_WT"
+mkdir -p "$ENG_TQ2_WT"
+( cd "$ENG_TQ2_WT" \
+  && git init --quiet -b feat/eng-tq2-mock-slug \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+# Stub branch-name.sh to return the correct branch BUT with trailing whitespace.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/eng-tq2-mock-slug   \n'
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+_post_dispatch_check_worktree_head ENG-TQ2 building >/dev/null 2>&1 || true
+
+current_head_tq2="$(git -C "$ENG_TQ2_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_tq2="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_tq2="$(grep -c '^SIG=worktree-mutation/ENG-TQ2$' "$CAPTURE_FILE" 2>/dev/null || true)"
+
+# CURRENT BEHAVIOR: spurious mismatch + detach (the helper does NOT trim).
+# A future fix that adds trimming will require flipping this assertion to
+# `current_head=="feat/eng-tq2-mock-slug" && metric==0 && comment==0`.
+if [[ "$current_head_tq2" == "HEAD" ]] \
+   && (( metric_count_tq2 == 1 )) \
+   && (( comment_count_tq2 == 1 )); then
+  pass_at "case-71-q2 D-003 trailing-whitespace branch-name → spurious detach (CURRENT BEHAVIOR; flip if helper adds trimming)"
+else
+  fail_at "case-71-q2 D-003 trailing-whitespace" \
+    "current_head=$current_head_tq2 metric=$metric_count_tq2 comment=$comment_count_tq2 (expected: spurious detach because helper does not trim)"
+fi
+
+# Restore default branch-name.sh.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

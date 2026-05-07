@@ -191,6 +191,31 @@ _render_and_capture_stream() {
       return 22
     fi
   fi
+
+  # ENG-71: defense-in-depth assertion. Build's tool lane denies
+  # Bash(git checkout:*), Bash(git switch:*), Bash(git pull:*), and
+  # Bash(git reset:*) by omission (only Bash(git fetch:*),
+  # Bash(git clone:*), Bash(git rebase:*) are permitted; verified at
+  # allowed_tools_for "building" in this file). This is the second line
+  # of defense if the lane's prefix-matcher is bypassed (ENG-61 observed;
+  # chained-command hypothesis in ENG-71 brainstorm §1). Stage-gated to
+  # "building" only — other stages observe no behavior change. Modulo the
+  # inherited `startswith` blind spot on chained commands (e.g., `git fetch
+  # origin main && git checkout main` starts with `git fetch` and bypasses
+  # this loop's matcher); D-003 in run-stage.sh is the catch-net for that
+  # surface (ENG-71 §7 / O-4).
+  if [[ "$stage" == "building" ]]; then
+    local _pat _matched_cmd
+    for _pat in 'git checkout' 'git switch' 'git pull' 'git reset'; do
+      if _matched_cmd="$(assert_no_tool_invocation "$raw_capture" "$_pat")"; then
+        :   # rc 0: no match, fall through to next pattern
+      else
+        printf '%s\n' "$_matched_cmd" > "$violation_file"
+        log "[assert] build-stage transcript invoked forbidden tool: ${_matched_cmd}"
+        return 26
+      fi
+    done
+  fi
 }
 
 # ENG-48 isolation: platform tools whose call from a headless dispatch

@@ -6,7 +6,9 @@
 #             (linear.sh write rejected for caller's PIPELINE_WRITER lane),
 #             20=dispatch-failed, 21=scope-violation, 22=pr-opened-too-early,
 #             24=linear-post-failed, 25=agent-contract-missing (agent exited clean
-#             but emitted neither the stage-summary file nor a verdict-marker comment).
+#             but emitted neither the stage-summary file nor a verdict-marker comment),
+#             26=worktree-mutation-forbidden (build-stage transcript invoked
+#             git checkout/switch/pull/reset; ENG-71).
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -387,6 +389,94 @@ _post_dispatch_apply_halt() {
   fi
 }
 
+# ENG-71: defense-in-depth detector for the worktree-on-main symptom.
+# D-002 (in dispatch.sh) catches the contract violation pre-exit; this
+# is the state-of-the-world fallback that runs even if D-002 misses
+# (chained commands that bypass the startswith matcher per the brainstorm
+# §7 known-limitation; future matcher change silently re-permits
+# Bash(git checkout:*); etc.).
+#
+# On detection, detach HEAD to the current commit. A detached HEAD is
+# invisible to git's "branch already checked out" lock, so the operator's
+# primary main-checkout becomes usable again. We do NOT auto-switch back
+# to {branch_name} — if the agent left commits on main locally, switching
+# back would silently abandon them; detach preserves them as a
+# reflog-recoverable orphan and surfaces the anomaly via the metric.
+#
+# Stage-gated to "building" because that's the only stage with the
+# observed symptom (post-merge worktree-on-main). Other stages may
+# legitimately have detached HEADs (none today, but the gate keeps
+# the change minimal).
+_post_dispatch_check_worktree_head() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+
+  local ident="$1" stage="$2"
+  case "$stage" in building) ;; *) return 0 ;; esac
+  local wt; wt="$(issue_dir "$ident")/worktree"
+  [[ -d "$wt/.git" ]] || [[ -f "$wt/.git" ]] || return 0
+
+  # Resolve expected branch via branch-name.sh (the canonical derivation;
+  # mirrors run-local.sh:220). Soft-fail on Linear API outage so we don't
+  # detach on a wrong expected value. ENG-71 m2 (review iter-2): emit a
+  # log line on the silent-skip path so operators can distinguish "no
+  # mismatch" from "branch-name.sh returned empty" in the per-stage
+  # transcript.
+  local expected_branch current_branch
+  expected_branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident" 2>/dev/null || printf '')"
+  current_branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '')"
+  if [[ -z "$expected_branch" || -z "$current_branch" ]]; then
+    log "post-dispatch worktree-HEAD check: skipping ($ident, $stage) — expected_branch='$expected_branch' current_branch='$current_branch' (one or both empty; branch-name.sh outage or git unavailable). No detach attempted."
+    return 0
+  fi
+  # ENG-71 review iter-6 [M1]: when HEAD is already detached (this helper
+  # ran on a prior tick, or any other actor detached), `git rev-parse
+  # --abbrev-ref HEAD` returns the literal string "HEAD". Steady-state of
+  # this helper is "HEAD detached so main is unlocked" — re-running
+  # `git checkout --detach` (a no-op on already-detached) and re-emitting
+  # the worktree-mutated metric every dispatch would just pollute
+  # events.jsonl. Mirrors the early-exit precedent at push_branch_if_ahead
+  # (line 236).
+  [[ "$current_branch" == "HEAD" ]] && return 0
+  [[ "$current_branch" == "$expected_branch" ]] && return 0
+
+  log "post-dispatch: WORKTREE HEAD MUTATED — expected=$expected_branch current=$current_branch; detaching to unlock parent ref"
+  # ENG-71 m1 (review iter-2): capture the detach exit code via PIPESTATUS
+  # so the operator-visibility comment body and the metric notes can both
+  # describe the actual detach outcome. Pre-iter-6 the body unconditionally
+  # claimed "Orchestrator detached HEAD" even when `git checkout --detach`
+  # silently failed (the `|| true` swallowed the rc), which mis-led
+  # operators into believing main was unlocked when in fact it was still
+  # locked by a failed detach.
+  git -C "$wt" checkout --detach 2>&1 | sed 's/^/  detach: /' >&2
+  local _detach_rc=${PIPESTATUS[0]}
+  bash "$SCRIPT_DIR/metrics.sh" worktree-mutated-by-agent "$ident" "$stage" \
+    "warn" 0 "expected=$expected_branch current=$current_branch detach_rc=$_detach_rc" \
+    || log "metrics.sh worktree-mutated-by-agent emission failed (non-blocking)"
+
+  # Operator-visibility: post a non-halting Linear comment so an operator
+  # skimming the issue thread sees the detach without grepping events.jsonl
+  # or per-stage transcripts. Sig-deduped via add-or-update-comment so
+  # re-fires on retry collapse to one comment per issue. ENG-71 m5 (review
+  # iter-2): sig prefix `worktree-mutation/<issue>` is functionally named
+  # (mirrors the existing `completion/<stage>/<issue>` and
+  # `protocol-violation/<reason>/<issue>` patterns: <category>/<issue>)
+  # rather than the prior severity-adjective `warn/<topic>/<issue>` which
+  # had no precedent in the codebase.
+  local _detach_status
+  if (( _detach_rc == 0 )); then
+    _detach_status='Orchestrator detached HEAD to unlock `main` globally. The merged feature commit is preserved as a detached-HEAD reflog entry; `cleanup-worktrees.sh` will remove the worktree on the next post-merge tick. No operator action required.'
+  else
+    _detach_status="Orchestrator attempted to detach HEAD but \`git checkout --detach\` failed (rc=$_detach_rc); \`main\` may STILL be globally locked. Operator action required: from a sibling shell run \`git -C $wt checkout --detach\` (or \`git worktree remove --force $wt\` if the worktree is otherwise corrupt)."
+  fi
+  local _body
+  _body="$(printf '<!-- meta: metric name=worktree-mutated-by-agent -->\n\nBuild agent left this worktree on `%s` (expected `%s`) post-dispatch. %s' \
+    "$current_branch" "$expected_branch" "$_detach_status")"
+  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment \
+    "worktree-mutation/$ident" "$ident" "$_body" \
+    || log "linear.sh add-or-update-comment failed for worktree-mutation/$ident (non-blocking)"
+}
+
 # Idempotent counter mutation + budget check for wait exits. All Linear writes
 # inside this function go through the orchestrator lane (security F-4). State
 # file at $(issue_dir)/wait-${stage}.json is owned by the orchestrator (per
@@ -679,6 +769,33 @@ main() {
         "implement-stage transcript invoked forbidden tool: $_viol_cmd" 22
       rm -f "$_viol_file" "$prompt_file"
       exit 22
+    elif (( dispatch_rc == 26 )); then
+      # ENG-71: build-stage transcript invoked one of `git checkout`,
+      # `git switch`, `git pull`, `git reset` — the four worktree-HEAD-
+      # mutating verbs the build agent is contractually forbidden from
+      # invoking (the merge is server-side via `gh pr merge --auto`;
+      # local sync is the harness's job). Read the matched command
+      # from the sidecar written by _render_and_capture_stream and
+      # surface a skip-until-human-acts halt.
+      #
+      # D-002's assert_no_tool_invocation runs AFTER the agent has
+      # already executed the forbidden Bash command (the transcript
+      # scan is post-stream), so the worktree may already be on `main`
+      # by the time we reach this arm. Invoke the post-dispatch
+      # HEAD-detection helper before exit so HEAD is detached on the
+      # way out and `main` is globally unlocked. The helper is
+      # idempotent (no-op when HEAD already on the expected branch)
+      # and stage-gated to building, so calling it on this fail path
+      # is safe regardless of whether the agent's chained-command
+      # actually mutated HEAD or not.
+      local _viol_file _viol_cmd
+      _viol_file="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_cmd="$(cat "$_viol_file" 2>/dev/null || printf '<command-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "build-stage transcript invoked forbidden worktree-HEAD-mutating tool: $_viol_cmd" 26
+      _post_dispatch_check_worktree_head "$ident" "$stage" || true
+      rm -f "$_viol_file" "$prompt_file"
+      exit 26
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20
@@ -913,6 +1030,12 @@ main() {
   vh_stage="${current_stage_label#stage:}"
   local vh_rc=0
   verdict_handler "$ident" "$vh_stage" || vh_rc=$?
+
+  # ENG-71: defense-in-depth check for the worktree-on-main symptom
+  # observed in ENG-61. Stage-gated to building inside the helper.
+  case "$stage" in
+    building) _post_dispatch_check_worktree_head "$ident" "$stage" ;;
+  esac
 
   t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
   # ENG-26 D-005: claude ran for all three vh_rc arms below (success,

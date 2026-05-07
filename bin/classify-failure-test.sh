@@ -200,6 +200,20 @@ outcome=$(latest_outcome)
   && pass_at "case-14 exit 0 subcode=1 → scope-approval-pending" \
   || fail_at "case-14" "outcome=$outcome"
 
+# ─── Test 15: exit 26 → outcome=worktree-mutation-forbidden (ENG-71) ──
+# Pin the new build-stage exit code added in ENG-71. Without this fixture,
+# a regression that drops the `26)` arm in failure_outcome_for_exit routes
+# silently to `unknown-exit-26` and the retrospective's §1 outcome filter
+# misses it (CLAUDE.md: "adding a new exit code without updating that
+# switch routes it to `unknown-exit-N` and the retrospective's §1 filter
+# will not classify it").
+reset_state; reset_metrics
+classify_failure "ENG-913" "building" "skip-until-human-acts" "wt" 26 ""
+outcome=$(latest_outcome)
+[[ "$outcome" == "worktree-mutation-forbidden" ]] \
+  && pass_at "case-15 exit 26 → worktree-mutation-forbidden" \
+  || fail_at "case-15" "outcome=$outcome"
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
