@@ -216,6 +216,34 @@ _render_and_capture_stream() {
       fi
     done
   fi
+  # ENG-68 D-003: forbid `core.bare`-touching git forms across ALL stages.
+  # Defense-in-depth on top of D-002 (the implementing/ui base allowlist
+  # no longer carries Bash(git:*)). Catches future allowlist drift on any
+  # stage AND covers stages whose base allowlist still has wide Bash(git:*)
+  # (qa). The five patterns cover:
+  #   1. `git config core.bare ...` (the literal write)
+  #   2. `git init --bare`           (creates bare init in pwd)
+  #   3. `git --bare ...`            (top-level option that flips per-invocation)
+  #   4. `git config --add core.bare ...` (rare but valid syntax)
+  #   5. `git -c core.bare=...`      (top-level config override)
+  # `assert_no_tool_invocation`'s startswith semantics match each form's
+  # leading prefix exactly; compound shells (`git status; git config core.bare`)
+  # are an acknowledged residual gap (brainstorm OQ-3).
+  local _git_pattern _matched_git
+  for _git_pattern in \
+      "git config core.bare" \
+      "git init --bare" \
+      "git --bare" \
+      "git config --add core.bare" \
+      "git -c core.bare="; do
+    if _matched_git="$(assert_no_tool_invocation "$raw_capture" "$_git_pattern")"; then
+      :   # rc 0: no match, fall through to next pattern
+    else
+      printf '%s\n' "$_matched_git" > "$violation_file"
+      log "[assert] stage=$stage transcript invoked forbidden git form: ${_matched_git}"
+      return 13
+    fi
+  done
 }
 
 # ENG-48 isolation: platform tools whose call from a headless dispatch
