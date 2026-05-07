@@ -91,6 +91,47 @@ halt_issue_for_self_leak() {
     26
 }
 
+# tally_leaked_in_scope_failure <issue> <stage> <leaked_count> <leaked_hashes_csv>  (ENG-69)
+# Increments the per-issue consecutive-failures counter at
+# $(issue_dir <issue>)/.consecutive-failures and escalates to a
+# skip-until-human-acts halt at FAIL_THRESHOLD. Does NOT touch the global
+# counter or trip the breaker.
+#
+# Pre-ENG-69, leaked-in-scope counted against the GLOBAL FAIL_COUNTER and
+# tripped the breaker at threshold. That collapses three independent
+# leak events on three different issues into a harness-wide pause.
+# Now each issue gets its own counter; only same-issue accumulation
+# escalates, and only against THAT issue.
+#
+# Counter-file integrity: the file is read with a non-digit sanitizer
+# (pic="${pic//[^0-9]/}"; pic="${pic:-0}") so a corrupt body resumes at
+# 0+1=1 rather than tripping arithmetic errors under set -e. The write
+# is atomic: tmp file + mv -f, so a crash mid-tick cannot leave a torn
+# counter (security P1-3 — tampering reverts to a clean integer).
+tally_leaked_in_scope_failure() {
+  local issue="$1" stage="$2" leaked_count="$3" leaked_hashes="$4"
+  [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+    || die "tally_leaked_in_scope_failure: invalid issue id '$issue'"
+  bash "$SCRIPT_DIR/metrics.sh" sweep-leaked-in-scope "$issue" "$stage" \
+    "leak" 0 "count=${leaked_count} hashes=${leaked_hashes}" \
+    || log "metrics.sh sweep-leaked-in-scope emission failed (non-blocking)"
+  [[ "${PIPELINE_DRY_RUN:-}" == "1" ]] && return 0
+  local pic_file pic
+  pic_file="$(issue_dir "$issue")/.consecutive-failures"
+  mkdir -p "$(dirname "$pic_file")"
+  pic="$(cat "$pic_file" 2>/dev/null || printf '0')"
+  pic="${pic//[^0-9]/}"; pic="${pic:-0}"
+  pic=$((pic + 1))
+  printf '%s\n' "$pic" > "${pic_file}.tmp.$$"
+  mv -f "${pic_file}.tmp.$$" "$pic_file"
+  log "sweep-leaked-in-scope: ${leaked_count} path(s) on $issue; per-issue consecutive failures = $pic (in-scope paths NOT committed)"
+  if (( pic >= ${FAIL_THRESHOLD:-3} )); then
+    classify_failure "$issue" "$stage" "skip-until-human-acts" \
+      "leaked-in-scope at threshold: ${pic} consecutive failures (last leak: ${leaked_count} path(s))" \
+      27
+  fi
+}
+
 stage_output_paths() {
   local stage="$1"
   case "$stage" in
