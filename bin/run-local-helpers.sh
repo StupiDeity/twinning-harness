@@ -44,6 +44,53 @@ trip_breaker() {
   set_orchestrator_paused true
 }
 
+# halt_issue_for_self_leak <issue> <stage> <hash1> [<hash2> ...]  (ENG-69)
+# Halts a single issue for self-leak via classify_failure with
+# skip-until-human-acts policy. Does NOT trip the global breaker.
+#
+# Pre-ENG-69, run-local.sh's tick-end sweep called trip_breaker on the
+# FIRST occurrence of a self-leak — collapsing a per-issue agent failure
+# into a harness-wide pause that froze every other issue's poll until
+# manual intervention (the 2026-05-05 ENG-63 → ENG-64/65 incident). The
+# new lane keeps the global breaker for genuinely cross-issue
+# infrastructure outages (rc=24, linear-post-failed) and routes
+# bot-introduced out-of-scope leaks through classify_failure against
+# the affected issue only.
+#
+# The reason string passed to classify_failure carries ONLY sha12 hashes
+# (max 5, with "(and N more)" suffix when count > 5); no raw filesystem
+# paths flow into the halt-comment body via this entrypoint (security
+# P1-1 — adversarial filenames cannot inject HTML markers, Unicode
+# direction overrides, or shell metacharacters). The leak metric still
+# carries the full hash list for retrospective audit.
+halt_issue_for_self_leak() {
+  local issue="$1" stage="$2"
+  shift 2
+  [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+    || die "halt_issue_for_self_leak: invalid issue id '$issue'"
+  local hashes=("$@") count=$#
+  local leak_csv="" h
+  for h in "${hashes[@]}"; do
+    leak_csv="${leak_csv:+${leak_csv},}${h}"
+  done
+  bash "$SCRIPT_DIR/metrics.sh" sweep-self-leak-out-of-scope "$issue" "$stage" \
+    "self-leak" 0 "count=${count} hashes=${leak_csv}" \
+    || log "metrics.sh sweep-self-leak-out-of-scope emission failed (non-blocking)"
+  log "SELF-LEAK: ${count} bot-introduced out-of-scope path(s) on $issue; halting issue (in-scope paths NOT committed)"
+  [[ "${PIPELINE_DRY_RUN:-}" == "1" ]] && return 0
+  local hash_lines="" h_count=0
+  for h in "${hashes[@]}"; do
+    (( h_count >= 5 )) && break
+    hash_lines="${hash_lines}${hash_lines:+, }${h}"
+    h_count=$((h_count + 1))
+  done
+  local suffix=""
+  (( count > 5 )) && suffix=" (and $((count - 5)) more)"
+  classify_failure "$issue" "$stage" "skip-until-human-acts" \
+    "self-leak: ${count} bot-introduced out-of-scope path(s); leaked hashes: ${hash_lines}${suffix}" \
+    26
+}
+
 stage_output_paths() {
   local stage="$1"
   case "$stage" in

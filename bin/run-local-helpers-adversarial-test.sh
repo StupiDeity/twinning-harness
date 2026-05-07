@@ -40,6 +40,14 @@ report_fail() {
   printf '  got:      %s\n' "$got" >&2
   FAIL=$((FAIL + 1))
   FAILED_CASES+=("$name")
+  # ENG-69 debug: temporary write so the failing case details survive the
+  # pre-commit hook's stdout-capture-and-discard behavior. Remove once the
+  # test stabilizes.
+  {
+    printf '%s\n' "FAIL: $name"
+    printf '%s\n' "  expected: $expected"
+    printf '%s\n' "  got:      $got"
+  } >> /tmp/eng69-test-debug.log 2>/dev/null || true
 }
 
 assert_eq() {
@@ -838,6 +846,9 @@ test_halt_issue_for_self_leak_per_issue_routes_correctly() {
   export STUB_METRICS_LOG="$tdir/metrics.log"
   : > "$STUB_METRICS_LOG"
 
+  # `|| true` so a non-zero rc from the helper does not propagate set -e
+  # to the parent shell (which would abort the test script before we
+  # reach the assertion block below).
   (
     SCRIPT_DIR="$stub_dir"
     PROJECT_STATE_DIR="$tdir/state"
@@ -851,7 +862,7 @@ test_halt_issue_for_self_leak_per_issue_routes_correctly() {
     }
     halt_issue_for_self_leak ENG-X reviewing aabbccdd1122 ddeeff334455 \
       >/dev/null 2>&1
-  )
+  ) || true
 
   # 1a. classify_failure called with the per-issue policy + new exit code.
   local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
@@ -874,10 +885,12 @@ test_halt_issue_for_self_leak_per_issue_routes_correctly() {
   esac
 
   # 1c. hash-list slice matches the hex-only regex (no positional swaps,
-  #     no zeros/constants).
+  #     no zeros/constants). Use grep -E for portability — bash 3.2's `=~`
+  #     accepts `\,` and `\ ` in undefined-behavior territory and the
+  #     backslash escapes are not needed (neither is a metachar in ERE).
   local hash_slice="${got_reason#*leaked hashes: }"
   hash_slice="${hash_slice%% (and*}"
-  if [[ "$hash_slice" =~ ^[0-9a-f]{12}(\,\ [0-9a-f]{12})*$ ]]; then
+  if printf '%s' "$hash_slice" | grep -qE '^[0-9a-f]{12}(, [0-9a-f]{12})*$'; then
     report_ok "ENG-69#1 self-leak hash list matches ^[0-9a-f]{12}(, [0-9a-f]{12})*$"
   else
     report_fail "ENG-69#1 self-leak hash list matches ^[0-9a-f]{12}(, [0-9a-f]{12})*$" \
@@ -937,7 +950,7 @@ test_halt_issue_for_self_leak_truncation_at_5() {
     halt_issue_for_self_leak ENG-X reviewing \
       000011112222 333344445555 666677778888 9999aaaabbbb ccccddddeeee \
       ffff00001111 222233334444 >/dev/null 2>&1
-  )
+  ) || true
 
   local reason; reason="$(awk -F'|' '{print $4}' "$classify_log")"
   case "$reason" in
@@ -992,7 +1005,7 @@ test_halt_issue_for_self_leak_dry_run_skips_classify() {
       printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
     }
     halt_issue_for_self_leak ENG-X reviewing aabbccdd1122 >/dev/null 2>&1
-  )
+  ) || true
 
   local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
   assert_eq "ENG-69#1 dry-run skips classify_failure" "0" "$n_calls"
