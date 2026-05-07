@@ -366,3 +366,63 @@ linear.sh: lane=orchestrator denied: remove-label stage:wrong
 ```
 
 If you see this, re-run the command with `PIPELINE_WRITER=human` prefix.
+
+---
+
+## ENG-68 follow-up: `core.bare` recurrence after fix
+
+PR landing ENG-68 ships **preventative measures** that block the H1
+trigger class (agent-dispatch invokes a `core.bare`-touching git form)
+starting on the first dispatch post-merge: enumerated allowlist on
+implement/ui (D-002) and a transcript-based assertion across all
+stages (D-003), plus forensic capture (D-001) at both self-heal sites
+for any non-H1 recurrence. The 30-day window starting from PR-merge
+date is a **confirmation observation period** — if zero recurrences
+fire, H1 was the root cause and the fix is complete; if ≥2 recurrences
+fire without H1 signatures, we escalate to ENG-68-2 with the forensic
+data set as the input.
+
+### Decision rule
+
+Count the number of times the `WARNING: $_git_dir had core.bare=true`
+log line fires in `$PROJECT_STATE_DIR/logs/local-*.log` (or
+`[pre-commit] WARNING: harness main repo had core.bare=true` in the
+hook's stderr) during the 30 days post-merge.
+
+| Recurrences in 30 days | Forensic class | Disposition |
+|---|---|---|
+| 0 | n/a | Close ENG-68 as "trigger class identified, fix shipped." Self-heal stays as belt-and-braces. |
+| 1 | `recent-stage-transcripts` shows a tool_use with `.input.command` matching one of D-003's five patterns | Confirms H1; close ENG-68 with same disposition. The transcript assertion (D-003) was the prevention; the heal + forensic dump together prove the cause. |
+| ≥ 2 | None of the dumps show a matching tool_use | Escalate. Open ENG-68-2 with the forensic dirs as the data-set, working through H2 / H3 / H4 in priority order (brainstorm §6). Do NOT auto-ship filesystem write-protection — that path lands on the new ticket. |
+
+### Inspecting a forensic dump
+
+```bash
+ls $PROJECT_STATE_DIR/forensics/                   # list incidents
+ls $PROJECT_STATE_DIR/forensics/core-bare-flip-<ts>/  # nine artifacts
+cat $PROJECT_STATE_DIR/forensics/core-bare-flip-<ts>/config.before
+cat $PROJECT_STATE_DIR/forensics/core-bare-flip-<ts>/reflog-HEAD
+cat $PROJECT_STATE_DIR/forensics/core-bare-flip-<ts>/recent-stage-transcripts.list
+```
+
+Cross-reference fields to discriminate hypotheses (brainstorm §6):
+
+- `config-mtime` — exact wall-clock of the write
+- `recent-stage-transcripts` — was a stage active during the window?
+- `ps-snapshot` — was a GUI tool active?
+- `env-snapshot` — was `GIT_DIR` poisoned?
+
+### Configuring the Linear announcement
+
+Forensic dumps include a Linear comment heads-up (sig `core-bare-flip/<utc-iso-day>`)
+IFF `LINEAR_API_KEY` and `PIPELINE_FORENSIC_FALLBACK_ISSUE` (or `PIPELINE_ISSUE_ID`)
+are set when the helper fires. For the harness-self target, add to
+`~/.config/twinning-harness/secrets.env`:
+
+```bash
+PIPELINE_FORENSIC_FALLBACK_ISSUE=ENG-68
+```
+
+Cross-project operators leave the env var unset and rely on the dir +
+the `[forensic] core.bare=true detected … dump at …` line in the tick
+log.
