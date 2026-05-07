@@ -132,6 +132,11 @@ done
 
 # T4a precondition: source dispatch.sh to expose assert_no_tool_invocation.
 # common.sh requires TARGET_REPO + a config.json — seed a throwaway one.
+# Save & restore the env afterward so T4b inherits the same env T3 saw.
+_t4_saved_target_repo="${TARGET_REPO-}"
+_t4_saved_project_slug="${PROJECT_SLUG-}"
+_t4_saved_pipeline_dry_run="${PIPELINE_DRY_RUN-}"
+_t4_saved_linear_api_key="${LINEAR_API_KEY-}"
 T4A_TARGET="$(mktemp -d -t t4a-target.XXXXXX)"
 mkdir -p "$T4A_TARGET/.pipeline-config/schemas"
 cat > "$T4A_TARGET/.pipeline-config/config.json" <<'JSON'
@@ -199,6 +204,28 @@ else
   rm -rf "$t4a_probe"
 fi
 rm -rf "$T4A_TARGET"
+
+# Restore env so T4b inherits the same env T3 saw.
+if [[ -n "$_t4_saved_target_repo" ]]; then
+  export TARGET_REPO="$_t4_saved_target_repo"
+else
+  unset TARGET_REPO
+fi
+if [[ -n "$_t4_saved_project_slug" ]]; then
+  export PROJECT_SLUG="$_t4_saved_project_slug"
+else
+  unset PROJECT_SLUG
+fi
+if [[ -n "$_t4_saved_pipeline_dry_run" ]]; then
+  export PIPELINE_DRY_RUN="$_t4_saved_pipeline_dry_run"
+else
+  unset PIPELINE_DRY_RUN
+fi
+if [[ -n "$_t4_saved_linear_api_key" ]]; then
+  export LINEAR_API_KEY="$_t4_saved_linear_api_key"
+else
+  unset LINEAR_API_KEY
+fi
 
 # T4b: extend T3's hostile-env probe loop with a core.bare invariant.
 # For each test_file already exercised in T3, after the test runs the
