@@ -1419,6 +1419,143 @@ test_halt_issue_for_self_leak_rejects_bogus_issue_id() {
 }
 test_halt_issue_for_self_leak_rejects_bogus_issue_id
 
+# ─── ENG-69 #4: cross-issue isolation regression lock ─────────────────────
+#
+# This is the load-bearing regression lock for the 2026-05-05 ENG-63 →
+# ENG-64/65 incident. Pre-ENG-69, a self-leak on ENG-63's reviewing tick
+# called `trip_breaker; exit 1` directly — flipping orchestrator.paused=true
+# on the FIRST occurrence and freezing every other issue's poll. ENG-64
+# and ENG-65 (both stage:implementing with no halt of their own) were
+# silently blocked across 63 launchd ticks until manual intervention.
+#
+# With the new lane separation in place:
+#   - halt_issue_for_self_leak halts only the affected issue via
+#     classify_failure (skip-until-human-acts policy)
+#   - clean ticks on OTHER issues do not see the halted issue's state
+#   - the global breaker stays at false across the entire sequence
+#
+# Three subshell-ticks simulate three independent launchd fires:
+#   Tick 1: ENG-A reviewing self-leaks → per-issue halt
+#   Tick 2: ENG-B implementing clean run → no global state touched
+#   Tick 3: ENG-C reviewing clean run → no global state touched
+# Per-tick assertion: is_orchestrator_paused returns false. End-of-suite
+# assertion: ENG-B and ENG-C have no per-issue counter files.
+test_cross_issue_isolation_self_leak_does_not_block_other_issues() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-isolation.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  # Tick 1: ENG-A self-leaks → per-issue halt; global breaker untouched.
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-941 reviewing aabbccdd1122 >/dev/null 2>&1
+    # In-tick assertion: breaker NOT tripped.
+    pause_state="$(is_orchestrator_paused)"
+    if [[ "$pause_state" != "false" ]]; then
+      printf 'TICK1 FAIL: breaker tripped after self-leak\n' >&2
+      exit 1
+    fi
+  ) || report_fail "ENG-69#4 tick1 keeps orchestrator.paused=false" "false" "true (tripped)"
+
+  # ENG-A should be the ONLY issue captured by classify_failure so far.
+  local n_calls_after_tick1; n_calls_after_tick1="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#4 tick1 halts exactly one issue" "1" "$n_calls_after_tick1"
+  local halted_issue; halted_issue="$(awk -F'|' '{print $1}' "$classify_log")"
+  assert_eq "ENG-69#4 tick1 halts ENG-941 only" "ENG-941" "$halted_issue"
+  # Global breaker is still false at the test-shell level too.
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69#4 after-tick1 global breaker stays false" "false" "$pause_state"
+
+  # Tick 2: ENG-B clean run → no global state touched, no per-issue counter
+  # for ENG-B (rc=0 clears both, but ENG-B never had a counter to clear).
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    route_run_stage_exit ENG-942 implementing 0 >/dev/null 2>&1
+    pause_state="$(is_orchestrator_paused)"
+    if [[ "$pause_state" != "false" ]]; then
+      printf 'TICK2 FAIL: breaker tripped during clean ENG-B tick\n' >&2
+      exit 1
+    fi
+  ) || report_fail "ENG-69#4 tick2 keeps orchestrator.paused=false on clean ENG-B run" "false" "true (tripped)"
+
+  # Tick 3: ENG-C clean run → same as tick2.
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    route_run_stage_exit ENG-943 reviewing 0 >/dev/null 2>&1
+    pause_state="$(is_orchestrator_paused)"
+    if [[ "$pause_state" != "false" ]]; then
+      printf 'TICK3 FAIL: breaker tripped during clean ENG-C tick\n' >&2
+      exit 1
+    fi
+  ) || report_fail "ENG-69#4 tick3 keeps orchestrator.paused=false on clean ENG-C run" "false" "true (tripped)"
+
+  # End-of-sequence: ENG-B and ENG-C have no per-issue counter files
+  # (clean runs on issues that never accumulated state should not write
+  # any counter).
+  if [[ -f "$tdir/state/ENG-942/.consecutive-failures" ]]; then
+    report_fail "ENG-69#4 tick2 leaves ENG-B with no per-issue counter" \
+      "no $tdir/state/ENG-942/.consecutive-failures" "exists"
+  else
+    report_ok "ENG-69#4 tick2 leaves ENG-B with no per-issue counter"
+  fi
+  if [[ -f "$tdir/state/ENG-943/.consecutive-failures" ]]; then
+    report_fail "ENG-69#4 tick3 leaves ENG-C with no per-issue counter" \
+      "no $tdir/state/ENG-943/.consecutive-failures" "exists"
+  else
+    report_ok "ENG-69#4 tick3 leaves ENG-C with no per-issue counter"
+  fi
+
+  # Global counter file never created across all three ticks (the regression
+  # lock — pre-ENG-69 the self-leak on tick1 would have written this).
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#4 global counter never written across all 3 ticks" \
+      "no $tdir/state/.consecutive-failures" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#4 global counter never written across all 3 ticks"
+  fi
+
+  # Final classify_failure call count: still exactly 1 (the tick1 self-leak).
+  # Ticks 2 and 3 are clean runs and must NOT emit any classify_failure.
+  local final_n_calls; final_n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#4 only the self-leak tick invokes classify_failure" \
+    "1" "$final_n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_cross_issue_isolation_self_leak_does_not_block_other_issues
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
