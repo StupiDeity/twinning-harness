@@ -1515,6 +1515,121 @@ else
 fi
 rm -f "$VIOLATION_AT7_BUILD" "$VIOLATION_AT7_QA"
 
+# ─── ENG-71 QA-authored adversarial fixtures (AT8-AT11) ───────────────
+# AS7-AS12 + AT6-AT7 cover the FM-Map. AT8-AT11 close the gaps a cold
+# sub-agent (general-purpose, May-2026 invocation) flagged as untested:
+#   AT8  — `tool_use` for a non-Bash tool with `.input.command`
+#          starting with the pattern must NOT match (the helper's
+#          `.name == "Bash"` discriminator is the contract).
+#   AT9  — assistant `.message.content[]` mixing `text` blocks AND
+#          `tool_use` blocks must still scan the tool_use entries
+#          (regression guard: `.message.content[]?` iterator must
+#          not get short-circuited to first element).
+#   AT10 — first-pattern-first-match precedence at the renderer-wrapper
+#          level: when the transcript contains BOTH a `git pull` AND a
+#          `git checkout` tool_use (in either NDJSON order), the loop's
+#          declared pattern order (`git checkout` first) determines the
+#          violation reported in the sidecar. This is loop-order, not
+#          transcript-order — operators reading the violation see the
+#          loop-order winner, NOT necessarily the temporally-first
+#          forbidden command. Pinning this prevents a refactor that
+#          re-orders the `for _pat in …` loop from silently changing
+#          the operator-facing diagnostic.
+#   AT11 — null/missing `.input.command` (`{"input":{}}` with no
+#          `command` field) must NOT crash the matcher and must NOT
+#          spuriously match (the `// ""` defaults to empty, which
+#          startswith($p) returns true for ANY non-empty pattern by
+#          jq's startswith definition? — actually startswith on empty
+#          string returns false except when $p is also empty, but the
+#          contract is "no false positive on missing command"; this
+#          fixture pins that contract end-to-end).
+printf '\n--- ENG-71: QA-authored adversarial AT8-AT11 ---\n'
+
+# AT8 — non-Bash tool with `.input.command` starting with the pattern → NO MATCH.
+TX_AT8="$_TEST_STUB_DIR/tx-at8.ndjson"
+cat > "$TX_AT8" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at8","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"command":"git checkout main"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"command":"git switch feature"}}]}}
+NDJSON
+at8_failures=0
+for _pat in 'git checkout' 'git switch' 'git pull' 'git reset'; do
+  out_at8="$(assert_no_tool_invocation "$TX_AT8" "$_pat")" && rc_at8=0 || rc_at8=$?
+  if [[ "$rc_at8" != "0" || -n "$out_at8" ]]; then
+    at8_failures=$((at8_failures+1))
+    fail_at "AT8 ($_pat non-Bash discriminator)" "rc=$rc_at8 out=$out_at8 (expected rc=0; tool_use was Read/Edit, not Bash)"
+  fi
+done
+if [[ "$at8_failures" == "0" ]]; then
+  pass_at "AT8: non-Bash tool_use with .input.command matching pattern → rc=0 (the .name == \"Bash\" discriminator holds)"
+fi
+
+# AT9 — assistant.message.content array mixes text + tool_use; the matcher
+# must still find the tool_use match when text blocks share the array.
+TX_AT9="$_TEST_STUB_DIR/tx-at9.ndjson"
+cat > "$TX_AT9" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at9","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I will sync main now."},{"type":"tool_use","name":"Bash","input":{"command":"git checkout main"}},{"type":"text","text":"Done."}]}}
+NDJSON
+out_at9="$(assert_no_tool_invocation "$TX_AT9" "git checkout")" && rc_at9=0 || rc_at9=$?
+if [[ "$rc_at9" == "1" && "$out_at9" == "git checkout main" ]]; then
+  pass_at "AT9: text+tool_use mixed in same content[] → matcher finds tool_use match (rc=1)"
+else
+  fail_at "AT9 mixed content[] iteration" "rc=$rc_at9 out=$out_at9 (expected rc=1, out='git checkout main' — content[]? must iterate all members regardless of type)"
+fi
+
+# AT10 — renderer-wrapper integration with two distinct forbidden patterns
+# in the SAME transcript. NDJSON has `git pull` BEFORE `git checkout`, but
+# the for-loop in dispatch.sh iterates patterns in order
+# `git checkout, git switch, git pull, git reset` — so `git checkout` is
+# tested first and short-circuits via `return 26` before `git pull` is
+# checked. Pin loop-order-first-match: violation_file holds the
+# `git checkout` command, NOT the temporally-first `git pull` command.
+USAGE_AT10="$ISSUE_DIR/usage-building-AT10.json"
+VIOLATION_AT10="$ISSUE_DIR/.transcript-violation-building"
+rm -f "$USAGE_AT10" "$ISSUE_DIR/.raw-stream.ndjson.tmp" "$VIOLATION_AT10"
+
+at10_rc=0
+RENDER_OUT_AT10="$(
+  _render_and_capture_stream "$USAGE_AT10" "$ISSUE_DIR" "building" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at10","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git pull --ff-only origin main"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout main"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || at10_rc=$?
+
+if [[ "$at10_rc" == "26" ]] \
+   && [[ -f "$VIOLATION_AT10" ]] \
+   && [[ "$(cat "$VIOLATION_AT10")" == "git checkout main" ]]; then
+  pass_at "AT10 (loop-order precedence): two forbidden tool_use blocks (git pull then git checkout) → sidecar holds 'git checkout main' (loop iterates git checkout first)"
+else
+  fail_at "AT10 loop-order precedence" "rc=$at10_rc viol_body=$(cat "$VIOLATION_AT10" 2>/dev/null) (expected rc=26, sidecar='git checkout main' regardless of NDJSON order)"
+fi
+rm -f "$VIOLATION_AT10"
+
+# AT11 — tool_use with empty `.input` object (no `.command` field). The
+# `// ""` default in the jq filter must coerce missing command to empty
+# string; startswith($p) on an empty string returns false for any
+# non-empty $p. No match, no crash.
+TX_AT11="$_TEST_STUB_DIR/tx-at11.ndjson"
+cat > "$TX_AT11" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"at11","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":""}}]}}
+NDJSON
+at11_failures=0
+for _pat in 'git checkout' 'git switch' 'git pull' 'git reset'; do
+  out_at11="$(assert_no_tool_invocation "$TX_AT11" "$_pat")" && rc_at11=0 || rc_at11=$?
+  if [[ "$rc_at11" != "0" || -n "$out_at11" ]]; then
+    at11_failures=$((at11_failures+1))
+    fail_at "AT11 ($_pat null/empty command)" "rc=$rc_at11 out=$out_at11 (expected rc=0; missing/empty .input.command must coerce to empty)"
+  fi
+done
+if [[ "$at11_failures" == "0" ]]; then
+  pass_at "AT11: null/missing/empty .input.command on Bash tool_use → rc=0 for all four patterns (no crash, no false positive)"
+fi
+
 # ─── ENG-49 Gap #7: prompt↔allowlist contract ─────────────────────────
 # For each stage, every `gh pr <verb>` token appearing in
 # AGENT_PROMPTS.md §S must be allowlisted in allowed_tools_for(S).

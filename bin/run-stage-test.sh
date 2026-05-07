@@ -3233,6 +3233,105 @@ printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
 SH
 chmod +x "$STUB_DIR/branch-name.sh"
 
+# ─── ENG-71 QA-authored adversarial cases (case-71-q1 / case-71-q2) ────
+# Cases 71-1..71-6 cover the FM-Map. The cold sub-agent (May-2026) flagged
+# two surfaces that exist in the helper body but have no fixture:
+#   case-71-q1 — worktree directory missing entirely. Helper guard:
+#                `[[ -d "$wt/.git" ]] || [[ -f "$wt/.git" ]] || return 0`.
+#                The legitimate path that exercises this is concurrent
+#                cleanup-worktrees.sh nuking the worktree between the
+#                build dispatch and the post-dispatch helper call. The
+#                helper must return 0 silently — no detach attempt, no
+#                metric, no comment, no `git -C` stderr noise to
+#                contaminate the per-stage transcript.
+#   case-71-q2 — branch-name.sh returns trailing whitespace (e.g.,
+#                `feat/foo  \n`, `feat/foo\r\n`). The helper does NO
+#                trimming on `expected_branch` before string-comparing
+#                with `current_branch` (which IS trimmed by `git
+#                rev-parse --abbrev-ref`). A whitespace-padded resolver
+#                output thus reports a spurious mismatch and detaches a
+#                correctly-positioned worktree. This fixture documents
+#                CURRENT BEHAVIOR (spurious detach when branch-name.sh
+#                output has trailing whitespace) so a future fix that
+#                adds trimming makes the assertion flip — at which point
+#                the test name should also flip from "documents
+#                non-trimming" to "trims trailing whitespace".
+
+# ─── Case 71-q1: worktree directory absent (concurrent cleanup) ────────
+reset_capture
+reset_metrics_capture
+ENG_TQ1_WT="$(issue_dir ENG-TQ1)/worktree"
+rm -rf "$(issue_dir ENG-TQ1)"   # simulate cleanup-worktrees.sh having nuked it
+# branch-name.sh stub still resolves successfully — the guard's job is to
+# short-circuit on the worktree-missing condition independently.
+
+t_q1_stderr="$(_post_dispatch_check_worktree_head ENG-TQ1 building 2>&1 >/dev/null || true)"
+
+metric_count_tq1="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_tq1="$(grep -c '^SIG=worktree-mutation/ENG-TQ1$' "$CAPTURE_FILE" 2>/dev/null || true)"
+detach_attempted_tq1="$(grep -cE 'WORKTREE HEAD MUTATED|detaching to unlock' <<<"$t_q1_stderr" || true)"
+
+if (( metric_count_tq1 == 0 )) \
+   && (( comment_count_tq1 == 0 )) \
+   && (( detach_attempted_tq1 == 0 )); then
+  pass_at "case-71-q1 D-003 missing worktree (concurrent cleanup) → silent return 0, no detach, no metric, no comment"
+else
+  fail_at "case-71-q1 D-003 missing worktree" \
+    "metric=$metric_count_tq1 comment=$comment_count_tq1 detach_attempted=$detach_attempted_tq1 stderr='${t_q1_stderr}'"
+fi
+
+# ─── Case 71-q2: branch-name.sh trailing-whitespace output (CURRENT BEHAVIOR) ──
+# Documents that the helper does NOT trim trailing whitespace from
+# branch-name.sh output. With current behavior, the worktree HEAD is on
+# `feat/eng-tq2-mock-slug` and branch-name.sh returns
+# `feat/eng-tq2-mock-slug   ` (three trailing spaces) — string equality
+# fails, helper detaches. If a future commit adds `expected_branch="$(...
+# | tr -d '[:space:]')"` or similar trimming to the helper, this fixture
+# will start FAILING (no detach) and the assertion direction must be
+# inverted. The flip is the contract change being introduced.
+reset_capture
+reset_metrics_capture
+ENG_TQ2_WT="$(issue_dir ENG-TQ2)/worktree"
+rm -rf "$ENG_TQ2_WT"
+mkdir -p "$ENG_TQ2_WT"
+( cd "$ENG_TQ2_WT" \
+  && git init --quiet -b feat/eng-tq2-mock-slug \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+
+# Stub branch-name.sh to return the correct branch BUT with trailing whitespace.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/eng-tq2-mock-slug   \n'
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
+_post_dispatch_check_worktree_head ENG-TQ2 building >/dev/null 2>&1 || true
+
+current_head_tq2="$(git -C "$ENG_TQ2_WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+metric_count_tq2="$(grep -c '^EVENT=worktree-mutated-by-agent$' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
+comment_count_tq2="$(grep -c '^SIG=worktree-mutation/ENG-TQ2$' "$CAPTURE_FILE" 2>/dev/null || true)"
+
+# CURRENT BEHAVIOR: spurious mismatch + detach (the helper does NOT trim).
+# A future fix that adds trimming will require flipping this assertion to
+# `current_head=="feat/eng-tq2-mock-slug" && metric==0 && comment==0`.
+if [[ "$current_head_tq2" == "HEAD" ]] \
+   && (( metric_count_tq2 == 1 )) \
+   && (( comment_count_tq2 == 1 )); then
+  pass_at "case-71-q2 D-003 trailing-whitespace branch-name → spurious detach (CURRENT BEHAVIOR; flip if helper adds trimming)"
+else
+  fail_at "case-71-q2 D-003 trailing-whitespace" \
+    "current_head=$current_head_tq2 metric=$metric_count_tq2 comment=$comment_count_tq2 (expected: spurious detach because helper does not trim)"
+fi
+
+# Restore default branch-name.sh.
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
