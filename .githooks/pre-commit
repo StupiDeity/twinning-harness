@@ -50,8 +50,32 @@ HARNESS_GIT_DIR="$REPO_ROOT/.git"
 if [[ -d "$HARNESS_GIT_DIR" ]]; then
   bare="$(git --git-dir="$HARNESS_GIT_DIR" config --get core.bare 2>/dev/null || printf 'false')"
   if [[ "$bare" == "true" ]]; then
+    # ENG-68 D-001: capture forensic snapshot before heal. Source the
+    # helper under a guard so a fresh-checkout repo (no bin/ pulled yet)
+    # still falls through to the inline heal below.
+    if [[ -f "$REPO_ROOT/bin/run-local-helpers.sh" ]]; then
+      # The helper depends on $HARNESS_ROOT and (optionally) $PROJECT_STATE_DIR /
+      # $HARNESS_STATE_DIR. Provide minimal env so the helper can resolve a
+      # forensic dir; we do NOT source common.sh (too many invariants assumed
+      # under the hook's set -uo pipefail). Inline the env the helper reads.
+      export HARNESS_ROOT="$REPO_ROOT"
+      export HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/twinning-harness}"
+      # PROJECT_STATE_DIR may be empty here; the helper falls back to
+      # $HARNESS_STATE_DIR/_unscoped/forensics/.
+      # log() is referenced by the helper; provide a stderr-printing stub.
+      log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+      # shellcheck disable=SC1091
+      if source "$REPO_ROOT/bin/run-local-helpers.sh" 2>/dev/null; then
+        capture_core_bare_forensic "$HARNESS_GIT_DIR" \
+          || printf '[pre-commit] forensic capture returned non-zero (continuing heal)\n' >&2
+      else
+        printf '[pre-commit] forensic capture skipped (helper source failed)\n' >&2
+      fi
+    else
+      printf '[pre-commit] forensic capture skipped (run-local-helpers.sh missing)\n' >&2
+    fi
     git --git-dir="$HARNESS_GIT_DIR" config core.bare false
-    printf '[pre-commit] WARNING: harness main repo had core.bare=true; reset to false. Investigate (likely test-fixture leak via inherited GIT_DIR).\n' >&2
+    printf '[pre-commit] WARNING: harness main repo had core.bare=true; reset to false. Investigate (likely test-fixture leak via inherited GIT_DIR; forensic dump per ENG-68).\n' >&2
   fi
 fi
 

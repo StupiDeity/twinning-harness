@@ -73,8 +73,9 @@ for _git_dir in "$TARGET_REPO/.git" "$HARNESS_ROOT/.git"; do
   if [[ -d "$_git_dir" ]]; then
     bare="$(git --git-dir="$_git_dir" config --get core.bare 2>/dev/null || printf 'false')"
     if [[ "$bare" == "true" ]]; then
+      capture_core_bare_forensic "$_git_dir"     # ENG-68 D-001: capture before heal
       git --git-dir="$_git_dir" config core.bare false
-      log "WARNING: $_git_dir had core.bare=true; reset to false (test-fixture leak suspected — see ENG-63/64/65)"
+      log "WARNING: $_git_dir had core.bare=true; reset to false (test-fixture leak suspected — see ENG-63/64/65; forensic dump per ENG-68)"
     fi
   fi
 done
