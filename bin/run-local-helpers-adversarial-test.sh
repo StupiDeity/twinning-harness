@@ -1203,6 +1203,202 @@ test_tally_leaked_in_scope_dry_run_skips_fs_write() {
 }
 test_tally_leaked_in_scope_dry_run_skips_fs_write
 
+# ─── ENG-69 #3: route_run_stage_exit splits rc=24 from per-issue lane ─────
+
+# Three sequential rc=24 ticks across DIFFERENT issues should accumulate the
+# global counter and trip the breaker at FAIL_THRESHOLD (the legitimate
+# infrastructure-outage signal). rc=20 (or any other non-24 non-zero) goes
+# to the per-issue counter and never touches the global counter or breaker.
+test_route_run_stage_exit_rc24_increments_global() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rc24.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local issue
+  for issue in ENG-911 ENG-912 ENG-913; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      FAIL_COUNTER="$tdir/state/.consecutive-failures"
+      mkdir -p "$tdir/state"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      route_run_stage_exit "$issue" implementing 24 >/dev/null 2>&1
+    ) || true
+  done
+
+  # Global counter at 3.
+  local fc; fc="$(cat "$tdir/state/.consecutive-failures" 2>/dev/null | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=24 increments global counter to 3" "3" "$fc"
+
+  # Breaker tripped (orchestrator.paused=true).
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=24 at threshold trips global breaker" "true" "$pause_state"
+
+  # No per-issue counter created for any of ENG-911/912/913.
+  local i_no_pic=0
+  for issue in ENG-911 ENG-912 ENG-913; do
+    if [[ -f "$tdir/state/$issue/.consecutive-failures" ]]; then
+      report_fail "ENG-69#3 rc=24 leaves per-issue counters alone ($issue)" \
+        "no $tdir/state/$issue/.consecutive-failures" "exists"
+    else
+      i_no_pic=$((i_no_pic + 1))
+    fi
+  done
+  assert_eq "ENG-69#3 rc=24 leaves all 3 per-issue counters absent" "3" "$i_no_pic"
+
+  # classify_failure NOT called (rc=24 is global lane, not per-issue).
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#3 rc=24 does not invoke classify_failure" "0" "$n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc24_increments_global
+
+# Negative half: rc=20 (dispatch-failed) routes to the per-issue counter.
+test_route_run_stage_exit_rc_other_increments_per_issue() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rcother.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    mkdir -p "$tdir/state"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    route_run_stage_exit ENG-921 implementing 20 >/dev/null 2>&1
+  ) || true
+
+  # Per-issue counter created at 1.
+  local pic; pic="$(cat "$tdir/state/ENG-921/.consecutive-failures" 2>/dev/null | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=20 increments per-issue counter to 1" "1" "$pic"
+
+  # Global counter NOT created.
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#3 rc=20 leaves global counter alone" \
+      "no $tdir/state/.consecutive-failures" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#3 rc=20 leaves global counter alone"
+  fi
+
+  # No breaker trip.
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=20 does not trip global breaker" "false" "$pause_state"
+
+  # classify_failure NOT called below threshold.
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#3 rc=20 single tick does not invoke classify_failure" "0" "$n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc_other_increments_per_issue
+
+# Per-issue rc!=24 at threshold escalates to classify_failure with the
+# original rc passed through unchanged (so the existing taxonomy entries
+# — 21=scope-violation, 124=dispatch-timeout, etc. — survive into the
+# retrospective's bucketing).
+test_route_run_stage_exit_rc_other_escalates_at_threshold() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-escalate.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local i
+  for i in 1 2 3; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      FAIL_COUNTER="$tdir/state/.consecutive-failures"
+      mkdir -p "$tdir/state"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      route_run_stage_exit ENG-922 implementing 21 >/dev/null 2>&1
+    ) || true
+  done
+
+  # classify_failure invoked exactly once at threshold, with rc=21 passed through.
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#3 escalation invokes classify_failure exactly once" "1" "$n_calls"
+
+  local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
+  assert_eq "ENG-69#3 escalation passes rc through unchanged (21=scope-violation)" \
+    "issue=ENG-922 stage=implementing policy=skip-until-human-acts exit=21" \
+    "$got_call"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc_other_escalates_at_threshold
+
+# rc=0 clears BOTH counters (clean tick on an issue resets that issue's
+# per-issue counter AND the global counter).
+test_route_run_stage_exit_rc0_clears_both_counters() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rc0.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  # Pre-seed both counters.
+  mkdir -p "$tdir/state/ENG-931"
+  printf '2\n' > "$tdir/state/.consecutive-failures"
+  printf '1\n' > "$tdir/state/ENG-931/.consecutive-failures"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    set_orchestrator_paused() { :; }
+    classify_failure() { :; }
+    route_run_stage_exit ENG-931 implementing 0 >/dev/null 2>&1
+  ) || true
+
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#3 rc=0 clears global counter" \
+      "no .consecutive-failures" "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#3 rc=0 clears global counter"
+  fi
+  if [[ -f "$tdir/state/ENG-931/.consecutive-failures" ]]; then
+    report_fail "ENG-69#3 rc=0 clears per-issue counter" \
+      "no ENG-931/.consecutive-failures" "exists"
+  else
+    report_ok "ENG-69#3 rc=0 clears per-issue counter"
+  fi
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc0_clears_both_counters
+
 # Issue-id validation: bogus issue id must die() before any side effect.
 test_halt_issue_for_self_leak_rejects_bogus_issue_id() {
   local tdir; tdir="$(mktemp -d -t twinning-eng69-bogus.XXXXXX)"
