@@ -374,5 +374,302 @@ else
   fail_at "T5d" "pipeline-events.json: $src_has, vocabulary doc lists forensic: $doc_has"
 fi
 
+# ─── QA adversarial coverage (ENG-68; not in plan's Failure Mode → Test Map) ─
+# Q1-Q2 pin documented residual gaps so a future widening of the assertion
+# pattern set is intentional (test breaks loud) rather than incidental.
+# Q3-Q6 fill gaps in the helper's boundary + concurrency budget.
+
+# Re-source run-local-helpers.sh and dispatch.sh so these tests can be reordered
+# / split out without breaking. (Sourcing is idempotent via the sentinel.)
+# common.sh's TARGET_REPO check has already been satisfied by T4a's seeded
+# config above; its env was restored back to T3's, so we re-seed here.
+_qa_saved_target_repo="${TARGET_REPO-}"
+_qa_saved_project_slug="${PROJECT_SLUG-}"
+_qa_saved_pipeline_dry_run="${PIPELINE_DRY_RUN-}"
+_qa_saved_linear_api_key="${LINEAR_API_KEY-}"
+QA_TARGET="$(mktemp -d -t qa-target.XXXXXX)"
+mkdir -p "$QA_TARGET/.pipeline-config/schemas"
+cat > "$QA_TARGET/.pipeline-config/config.json" <<'JSON'
+{
+  "project": {"slug": "qa68"},
+  "linear": {
+    "team_id": "x",
+    "project_id": "x",
+    "stage_label_prefix": "stage:",
+    "native_states": {"inbox": "Todo", "active": "In Progress", "done": "Done"},
+    "workflow_stages": ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]
+  },
+  "orchestrator": {"paused": false}
+}
+JSON
+printf '{"labels":{},"states":{}}\n' > "$QA_TARGET/.pipeline-config/schemas/linear-ids.json"
+export TARGET_REPO="$QA_TARGET"
+export PROJECT_SLUG="qa68"
+export PIPELINE_DRY_RUN=1
+: "${LINEAR_API_KEY:=test-mock-key}"; export LINEAR_API_KEY
+# shellcheck source=dispatch.sh
+source "$HARNESS_ROOT/bin/dispatch.sh" 2>/dev/null || true
+# shellcheck source=run-local-helpers.sh
+source "$HARNESS_ROOT/bin/run-local-helpers.sh" 2>/dev/null || true
+
+# ─── Q1: chained `-c` form bypasses the assertion (documented residual gap) ─
+# Plan OQ-3 acknowledges compound-shell escape; review iter-2 minor-3 noted
+# `git -c init.defaultBranch=main -c core.bare=true config foo bar` doesn't
+# start with `git -c core.bare=` and slips through. Decision: accepted as a
+# known limitation (qa stage's residual surface; CB1-CB5 cover the canonical
+# H1 trigger). Pin the limitation: if a future PR adds chained-`-c` matching,
+# this test breaks loud, and the maintainer must update plan/runbook docs.
+if declare -f assert_no_tool_invocation >/dev/null 2>&1; then
+  q1_tmp="$(mktemp -t q1-tx.XXXXXX)"
+  printf '%s\n' \
+    '{"type":"system","subtype":"init","session_id":"q1","model":"test"}' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git -c init.defaultBranch=main -c core.bare=true config foo bar"}}]}}' \
+    > "$q1_tmp"
+  q1_matched=""
+  for _hp in "git config core.bare" "git init --bare" "git --bare" \
+             "git config --add core.bare" "git -c core.bare="; do
+    _o="$(assert_no_tool_invocation "$q1_tmp" "$_hp")" && _r=0 || _r=$?
+    if (( _r == 1 )); then q1_matched="$_hp"; break; fi
+  done
+  if [[ -z "$q1_matched" ]]; then
+    pass_at "Q1: chained -c form (\"git -c init.defaultBranch=… -c core.bare=…\") is NOT matched (documented residual gap; plan OQ-3-class)"
+  else
+    fail_at "Q1: chained -c form unexpectedly matched" \
+      "harness pattern '$q1_matched' matched — if intentional, update plan OQ-3 and remove this Q1 pin"
+  fi
+  rm -f "$q1_tmp"
+else
+  fail_at "Q1 precondition" "assert_no_tool_invocation undefined; cannot run Q1"
+fi
+
+# ─── Q2: leading-whitespace prefix bypasses the assertion (residual gap) ────
+# `assert_no_tool_invocation` uses jq's startswith() — literal-leading match.
+# A tool_use command of "  git config core.bare true" (two leading spaces, as
+# might appear if an agent indents a one-line script) is not matched. Accepted
+# as residual gap: agent transcripts are emitted by `claude -p` which strips
+# leading whitespace from Bash commands by convention. Pin in case a future
+# transcript shape change leaks indented commands.
+if declare -f assert_no_tool_invocation >/dev/null 2>&1; then
+  q2_tmp="$(mktemp -t q2-tx.XXXXXX)"
+  printf '%s\n' \
+    '{"type":"system","subtype":"init","session_id":"q2","model":"test"}' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"  git config core.bare true"}}]}}' \
+    > "$q2_tmp"
+  q2_matched=""
+  for _hp in "git config core.bare" "git init --bare" "git --bare" \
+             "git config --add core.bare" "git -c core.bare="; do
+    _o="$(assert_no_tool_invocation "$q2_tmp" "$_hp")" && _r=0 || _r=$?
+    if (( _r == 1 )); then q2_matched="$_hp"; break; fi
+  done
+  if [[ -z "$q2_matched" ]]; then
+    pass_at "Q2: leading-whitespace prefix (\"  git config core.bare true\") is NOT matched (residual gap; transcript shape contract)"
+  else
+    fail_at "Q2: leading-whitespace prefix unexpectedly matched" \
+      "harness pattern '$q2_matched' matched — review whether the transcript shape contract changed"
+  fi
+  rm -f "$q2_tmp"
+else
+  fail_at "Q2 precondition" "assert_no_tool_invocation undefined"
+fi
+
+# ─── Q3: concurrent helper invocations on the same UTC second do not deadlock ─
+# Helper backgrounds 9 captures with `&` then `wait`. Two simultaneous calls
+# that resolve to the same `core-bare-flip-<ts>` dir (same UTC second) race-
+# share the dir. Test: both calls return 0; the dir exists; at least one full
+# artifact set lands. The bash `wait` builtin is documented to return when
+# ALL backgrounded children have exited — in bash 3.2 the loop must not
+# deadlock or return non-zero on a backgrounded subshell exiting with 1.
+if declare -f capture_core_bare_forensic >/dev/null 2>&1; then
+  Q3_STATE="$(mktemp -d -t q3-state.XXXXXX)"
+  q3_probe="$(build_probe)"
+  _q3_had_log=0; declare -f log >/dev/null 2>&1 && _q3_had_log=1
+  log() { :; }
+  _q3_saved_state="${HARNESS_STATE_DIR-}"
+  _q3_saved_proj="${PROJECT_STATE_DIR-}"
+  _q3_saved_lkey="${LINEAR_API_KEY-}"
+  _q3_saved_iss="${PIPELINE_ISSUE_ID-}"
+  _q3_saved_fal="${PIPELINE_FORENSIC_FALLBACK_ISSUE-}"
+  unset PROJECT_STATE_DIR LINEAR_API_KEY PIPELINE_ISSUE_ID PIPELINE_FORENSIC_FALLBACK_ISSUE
+  export HARNESS_STATE_DIR="$Q3_STATE"
+  # Fire two parallel helper invocations on the same probe; wait for both.
+  (capture_core_bare_forensic "$q3_probe/.git" >/dev/null 2>&1) &
+  q3_pid_a=$!
+  (capture_core_bare_forensic "$q3_probe/.git" >/dev/null 2>&1) &
+  q3_pid_b=$!
+  q3_rc_a=0; q3_rc_b=0
+  wait "$q3_pid_a" || q3_rc_a=$?
+  wait "$q3_pid_b" || q3_rc_b=$?
+  shopt -s nullglob
+  q3_dirs=("$Q3_STATE/_unscoped/forensics/core-bare-flip-"*)
+  shopt -u nullglob
+  # The helper must return 0 in both subshells; at least one artifact file must
+  # exist somewhere under the forensic root. Same-second collisions produce
+  # one shared dir (mkdir -p is idempotent) so we accept >= 1 dirs.
+  q3_dir_count="${#q3_dirs[@]}"
+  q3_artifacts_present=0
+  if (( q3_dir_count >= 1 )); then
+    for _d in "${q3_dirs[@]}"; do
+      if [[ -e "$_d/config.before" || -e "$_d/config.before.error" \
+            || -e "$_d/branches" || -e "$_d/branches.error" ]]; then
+        q3_artifacts_present=1; break
+      fi
+    done
+  fi
+  if (( q3_rc_a == 0 && q3_rc_b == 0 && q3_dir_count >= 1 && q3_artifacts_present == 1 )); then
+    pass_at "Q3: parallel helper invocations on same probe both return 0 with no deadlock; ${q3_dir_count} forensic dir(s), artifacts present"
+  else
+    fail_at "Q3: parallel helper invocations" \
+      "rc_a=$q3_rc_a rc_b=$q3_rc_b dirs=$q3_dir_count artifacts_present=$q3_artifacts_present"
+  fi
+  rm -rf "$q3_probe" "$Q3_STATE"
+  if [[ -n "$_q3_saved_state" ]]; then export HARNESS_STATE_DIR="$_q3_saved_state"; else unset HARNESS_STATE_DIR; fi
+  if [[ -n "$_q3_saved_proj"  ]]; then export PROJECT_STATE_DIR="$_q3_saved_proj"; fi
+  if [[ -n "$_q3_saved_lkey"  ]]; then export LINEAR_API_KEY="$_q3_saved_lkey"; fi
+  if [[ -n "$_q3_saved_iss"   ]]; then export PIPELINE_ISSUE_ID="$_q3_saved_iss"; fi
+  if [[ -n "$_q3_saved_fal"   ]]; then export PIPELINE_FORENSIC_FALLBACK_ISSUE="$_q3_saved_fal"; fi
+  if (( _q3_had_log == 0 )); then unset -f log 2>/dev/null || true; fi
+else
+  fail_at "Q3 precondition" "capture_core_bare_forensic undefined"
+fi
+
+# ─── Q4: LINEAR_API_KEY=""  set-empty short-circuits the Linear post ───────
+# Helper guards Linear post with `[[ -n "${LINEAR_API_KEY-}" ... ]]`. The
+# `${VAR-}` (single-dash) substitution returns "" for both unset and set-
+# empty, and `-n ""` is false — so the guard correctly skips. ENG-46 secret-
+# handling rule says NEVER use `${VAR:-X}` against secret-named env vars.
+# Pin the short-circuit: a future refactor that switches to `${VAR:+set}`
+# would invert the semantics and (with LINEAR_API_KEY exported empty in CI)
+# silently start posting Linear comments when LINEAR_API_KEY is set-empty.
+if declare -f capture_core_bare_forensic >/dev/null 2>&1; then
+  Q4_STATE="$(mktemp -d -t q4-state.XXXXXX)"
+  Q4_FAKE_HARNESS="$(mktemp -d -t q4-harness.XXXXXX)"
+  mkdir -p "$Q4_FAKE_HARNESS/bin"
+  # Stub linear.sh that fails loudly if invoked.
+  cat > "$Q4_FAKE_HARNESS/bin/linear.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'STUB linear.sh INVOKED with: %s\n' "$*" > "${Q4_INVOKE_SENTINEL:-/dev/stderr}"
+exit 0
+STUB
+  chmod +x "$Q4_FAKE_HARNESS/bin/linear.sh"
+  q4_probe="$(build_probe)"
+  _q4_had_log=0; declare -f log >/dev/null 2>&1 && _q4_had_log=1
+  log() { :; }
+  _q4_saved_hr="${HARNESS_ROOT-}"
+  _q4_saved_state="${HARNESS_STATE_DIR-}"
+  _q4_saved_proj="${PROJECT_STATE_DIR-}"
+  _q4_saved_lkey="${LINEAR_API_KEY-}"
+  _q4_saved_iss="${PIPELINE_ISSUE_ID-}"
+  _q4_saved_fal="${PIPELINE_FORENSIC_FALLBACK_ISSUE-}"
+  unset PROJECT_STATE_DIR
+  export HARNESS_ROOT="$Q4_FAKE_HARNESS"
+  export HARNESS_STATE_DIR="$Q4_STATE"
+  export Q4_INVOKE_SENTINEL="$Q4_STATE/.linear-invoked"
+  export LINEAR_API_KEY=""    # set but empty
+  export PIPELINE_FORENSIC_FALLBACK_ISSUE="ENG-68"
+  q4_rc=0
+  capture_core_bare_forensic "$q4_probe/.git" >/dev/null 2>&1 || q4_rc=$?
+  if (( q4_rc == 0 )) && [[ ! -f "$Q4_INVOKE_SENTINEL" ]]; then
+    pass_at "Q4: LINEAR_API_KEY=\"\" (set-empty) short-circuits the Linear post (helper still returns 0; stub linear.sh not invoked)"
+  else
+    fail_at "Q4: LINEAR_API_KEY set-empty short-circuit" \
+      "rc=$q4_rc sentinel_present=$([[ -f $Q4_INVOKE_SENTINEL ]] && echo y || echo n) sentinel=$(cat "$Q4_INVOKE_SENTINEL" 2>/dev/null)"
+  fi
+  unset Q4_INVOKE_SENTINEL
+  rm -rf "$q4_probe" "$Q4_STATE" "$Q4_FAKE_HARNESS"
+  if [[ -n "$_q4_saved_hr"   ]]; then export HARNESS_ROOT="$_q4_saved_hr"; else unset HARNESS_ROOT; fi
+  if [[ -n "$_q4_saved_state" ]]; then export HARNESS_STATE_DIR="$_q4_saved_state"; else unset HARNESS_STATE_DIR; fi
+  if [[ -n "$_q4_saved_proj"  ]]; then export PROJECT_STATE_DIR="$_q4_saved_proj"; fi
+  if [[ -n "$_q4_saved_lkey"  ]]; then export LINEAR_API_KEY="$_q4_saved_lkey"; else unset LINEAR_API_KEY; fi
+  if [[ -n "$_q4_saved_iss"   ]]; then export PIPELINE_ISSUE_ID="$_q4_saved_iss"; fi
+  if [[ -n "$_q4_saved_fal"   ]]; then export PIPELINE_FORENSIC_FALLBACK_ISSUE="$_q4_saved_fal"; else unset PIPELINE_FORENSIC_FALLBACK_ISSUE; fi
+  if (( _q4_had_log == 0 )); then unset -f log 2>/dev/null || true; fi
+else
+  fail_at "Q4 precondition" "capture_core_bare_forensic undefined"
+fi
+
+# ─── Q5: git_dir is a regular file (not a directory) → helper rc=0, no dir ─
+# The helper's first guard is `[[ -n "$git_dir" && -d "$git_dir" ]] || return 0`.
+# A regular file fails the `-d` check; helper returns 0 without creating the
+# forensic dir. T5b/c cover empty-string and non-existent-path; a regular-file
+# path is the third boundary case (operator misconfiguring with a file path).
+if declare -f capture_core_bare_forensic >/dev/null 2>&1; then
+  Q5_STATE="$(mktemp -d -t q5-state.XXXXXX)"
+  q5_file="$(mktemp -t q5-file.XXXXXX)"
+  printf 'not a directory\n' > "$q5_file"
+  _q5_had_log=0; declare -f log >/dev/null 2>&1 && _q5_had_log=1
+  log() { :; }
+  _q5_saved_state="${HARNESS_STATE_DIR-}"
+  _q5_saved_proj="${PROJECT_STATE_DIR-}"
+  unset PROJECT_STATE_DIR
+  export HARNESS_STATE_DIR="$Q5_STATE"
+  q5_rc=0
+  capture_core_bare_forensic "$q5_file" >/dev/null 2>&1 || q5_rc=$?
+  if (( q5_rc == 0 )) && [[ ! -d "$Q5_STATE/_unscoped/forensics" ]]; then
+    pass_at "Q5: regular-file git_dir returns 0 with no forensic dir created (boundary)"
+  else
+    fail_at "Q5: regular-file boundary" \
+      "rc=$q5_rc forensics_dir=$([[ -d $Q5_STATE/_unscoped/forensics ]] && echo present || echo absent)"
+  fi
+  rm -f "$q5_file"
+  rm -rf "$Q5_STATE"
+  if [[ -n "$_q5_saved_state" ]]; then export HARNESS_STATE_DIR="$_q5_saved_state"; else unset HARNESS_STATE_DIR; fi
+  if [[ -n "$_q5_saved_proj"  ]]; then export PROJECT_STATE_DIR="$_q5_saved_proj"; fi
+  if (( _q5_had_log == 0 )); then unset -f log 2>/dev/null || true; fi
+else
+  fail_at "Q5 precondition" "capture_core_bare_forensic undefined"
+fi
+
+# ─── Q6: git_dir is a non-git dir (passes -d, but git subcommands fail) ────
+# Operator misconfiguring TARGET_REPO=/tmp would pass `[[ -d ]]` but every
+# git subcommand inside the helper would error. The helper still returns 0;
+# `.error` siblings appear for the git-issuing captures; non-git captures
+# (env-snapshot, ps-snapshot) succeed. Pin the partial-failure invariant
+# from a different angle than T5e/iter-2 minor-5 (which the latest review
+# accepted as deferred).
+if declare -f capture_core_bare_forensic >/dev/null 2>&1; then
+  Q6_STATE="$(mktemp -d -t q6-state.XXXXXX)"
+  Q6_NONGIT="$(mktemp -d -t q6-nongit.XXXXXX)"
+  # Q6_NONGIT is a directory but has no .git/, no objects, no refs.
+  _q6_had_log=0; declare -f log >/dev/null 2>&1 && _q6_had_log=1
+  log() { :; }
+  _q6_saved_state="${HARNESS_STATE_DIR-}"
+  _q6_saved_proj="${PROJECT_STATE_DIR-}"
+  unset PROJECT_STATE_DIR
+  export HARNESS_STATE_DIR="$Q6_STATE"
+  q6_rc=0
+  capture_core_bare_forensic "$Q6_NONGIT" >/dev/null 2>&1 || q6_rc=$?
+  shopt -s nullglob
+  q6_dirs=("$Q6_STATE/_unscoped/forensics/core-bare-flip-"*)
+  shopt -u nullglob
+  q6_dir="${q6_dirs[0]:-}"
+  # Helper must rc=0; forensic dir must exist; env-snapshot (non-git) must
+  # exist as a real file. The git-using captures may produce either the
+  # primary file (with non-zero git stderr inside) or the .error sibling —
+  # both are acceptable per the partial-failure contract.
+  q6_env_present=0
+  q6_dir_present=0
+  [[ -n "$q6_dir" && -d "$q6_dir" ]] && q6_dir_present=1
+  [[ -e "$q6_dir/env-snapshot" || -e "$q6_dir/env-snapshot.error" ]] && q6_env_present=1
+  if (( q6_rc == 0 && q6_dir_present == 1 && q6_env_present == 1 )); then
+    pass_at "Q6: non-git dir passes -d but git captures fail gracefully; helper rc=0; env-snapshot still lands"
+  else
+    fail_at "Q6: non-git dir boundary" \
+      "rc=$q6_rc dir_present=$q6_dir_present env_present=$q6_env_present dir=$q6_dir"
+  fi
+  rm -rf "$Q6_NONGIT" "$Q6_STATE"
+  if [[ -n "$_q6_saved_state" ]]; then export HARNESS_STATE_DIR="$_q6_saved_state"; else unset HARNESS_STATE_DIR; fi
+  if [[ -n "$_q6_saved_proj"  ]]; then export PROJECT_STATE_DIR="$_q6_saved_proj"; fi
+  if (( _q6_had_log == 0 )); then unset -f log 2>/dev/null || true; fi
+else
+  fail_at "Q6 precondition" "capture_core_bare_forensic undefined"
+fi
+
+# Restore env so any subsequent use of TARGET_REPO sees the saved value.
+rm -rf "$QA_TARGET"
+if [[ -n "$_qa_saved_target_repo" ]]; then export TARGET_REPO="$_qa_saved_target_repo"; else unset TARGET_REPO; fi
+if [[ -n "$_qa_saved_project_slug" ]]; then export PROJECT_SLUG="$_qa_saved_project_slug"; else unset PROJECT_SLUG; fi
+if [[ -n "$_qa_saved_pipeline_dry_run" ]]; then export PIPELINE_DRY_RUN="$_qa_saved_pipeline_dry_run"; else unset PIPELINE_DRY_RUN; fi
+if [[ -n "$_qa_saved_linear_api_key" ]]; then export LINEAR_API_KEY="$_qa_saved_linear_api_key"; else unset LINEAR_API_KEY; fi
+
 printf '\ntest-isolation: passed=%d failed=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1
