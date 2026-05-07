@@ -767,10 +767,172 @@ back to D-001's iteration-2 review.
 
 ## 10. Persona review
 
-This section will be populated during persona-review iteration(s)
-below. Each persona records its verdict (PASS / CONCERN / FAIL)
-and a one-paragraph summary of resolved findings.
+Personas run in canonical order: design → security → scope →
+coherence → product → feasibility (gating). All findings recorded;
+no P0 remained at the end of iteration 1.
 
 ### Iteration 1
 
-(populated by document-review skill below)
+#### Persona 1 — Design (PASS, 0 P0)
+
+The fix is the smallest static-prompt change that closes the
+behaviour gap. The choice between §7-only and the universal "Tool
+allowlist & probing" paragraph is justified explicitly in D-001's
+rejected-alternative block (alt A) plus §1.3 (the matcher gotcha is
+stage-agnostic; build is the empirical hit). Test pin (D-002) uses
+the existing per-stage iteration loop pattern — minimum new
+infrastructure.
+
+P2 (suggestion only, not gating): the patched paragraph is now ~150
+words and growing on each ENG-N gotcha addition; risk of agents
+skimming. Mitigation: D-001's sentence uses the same `**Do NOT ...**`
+visual shape as the existing ENG-57 sentence in the same paragraph,
+preserving the high-priority-callout rhythm. If paragraph length
+becomes its own problem, factor into a dedicated "Sandbox allowlist
+gotchas" subsection — flagged in §8.1 as out-of-scope here.
+
+#### Persona 2 — Security (PASS, 0 P0)
+
+D-001 leaves the `bin/linear.sh::_check_lane` enforcement at lines
+120–145 unchanged; the `lane=agent` attribution flows through the
+inherited env from `bin/dispatch.sh:361`. No new privilege escalation
+surface. The rejected alternative C ("extend the allowlist to bless
+the prefix") is correctly rejected on multiple grounds, including
+that institutionalising leading `env VAR=val` tokens in patterns
+opens a class of evasion vectors (an agent could probe for which
+prefixes are allowed; the prompt-text rule forecloses the question).
+
+The new sentence is restrictive (forbids an extra shell construct),
+not expansive. No new env vars introduced. The rule explicitly
+scopes itself to the agent's dispatch context, so the operator-side
+`PIPELINE_WRITER=human bash bin/linear.sh ...` usage in
+`docs/runbooks/recovery.md` is unaffected.
+
+#### Persona 3 — Scope (PASS, 0 P0)
+
+Issue scope items 1, 2, 3 are addressed: 1 is kept and broadened
+(rationale documented at §1.3 / §8.2 alt A / §9); 2 is kept; 3 is
+deferred (D-003 / §9). No new helpers, no schema migration, no
+orchestrator change, no learned-rules edit, no ADR file change
+(harness has none). Two-file diff: `AGENT_PROMPTS.md` plus
+`bin/agent-prompts-content-test.sh`.
+
+P2 (already flagged by author): broadening from §7-only to the
+universal-paragraph form is technically *outside* the issue's
+literal proposal. Rationale documented in §9. The broadening is no
+more code than the §7-only version and is strictly more durable.
+Reverting to §7-only during planning is trivial if the operator
+disagrees.
+
+#### Persona 4 — Coherence (PASS, 0 P0)
+
+The fix composes with ENG-45 (wait-exit contract preserved verbatim),
+ENG-56 (orchestrator-managed `pipeline:halted` carve-out at
+`bin/run-stage.sh:380-383` still fires correctly when the wait
+verdict lands), ENG-41 (lane fence intact), ENG-62 (P0 merge-state
+precheck unchanged), ENG-65 (sister allowlist-disconnect bug
+addressed analogously). No conflicting rules introduced.
+
+The test-pin shape mirrors `bin/agent-prompts-content-test.sh:216-249`
+(ENG-53 #11 probe-rule loop), `:259-281` (ENG-56 absence loop), and
+`:294-325` (ENG-57 same-sig loop) exactly — same `for stage_section
+in ... do` iteration, same `section_body` helper, same positive-phrase
++ canonical-name pattern. Naming and location choices are consistent
+with the precedent set across the existing universal-rule families.
+
+#### Persona 5 — Product (PASS, 0 P0)
+
+User-facing impact: every issue that reaches build without a
+pre-existing non-bot Code Owner approval no longer halts spuriously
+on the agent's invocation shape. Removes one halt cycle + one
+`--action continue` per issue per build pre-approval window.
+Aligned with the harness's CLAUDE.md "Failure-mode quick reference"
+principle that every halt should be a cheap escape ramp; this fix
+preempts a halt class that didn't need to fire in the first place.
+
+The breaker-trip risk on bursts (3+ consecutive build halts on
+different issues during a pre-approval window) is real and
+disproportionate to the underlying defect. Shipping this fix is
+strictly better than letting the breaker tripping become an
+operator workflow.
+
+#### Persona 6 — Feasibility (gating, PASS, 0 P0)
+
+Codebase-fact verification (every named code artifact in the doc):
+
+- `bin/dispatch.sh:361` `local cmd=(env PIPELINE_WRITER=agent ...)`
+  — **verified by Read**.
+- `bin/dispatch.sh:252` `building` allowlist line containing
+  `Bash(bash bin/pipeline.sh:*)` plus the `.pipeline/` symlink twin
+  — **verified**.
+- `bin/common.sh:293-294` PIPELINE_WRITER default + export
+  — **verified**.
+- `bin/pipeline.sh:124-131` lane-mismatch warning in
+  `cmd_event_verdict`; line 138 calls `linear.sh add-comment`
+  unconditionally — **verified**.
+- `bin/pipeline.sh::_validate_registry` calls at lines 91 / 105 /
+  107 / 109 / 111 / 112 — **verified**.
+- `bin/linear.sh:120-145` `_check_lane` reads
+  `${PIPELINE_WRITER:-orchestrator}` — **verified**.
+- `bin/linear.sh:109` `add other_comment` row allows
+  `orchestrator,agent,classify,scope-check,human` — **verified**.
+- `bin/run-stage.sh:376-388` `_post_dispatch_apply_halt` with
+  wait-shape carve-out — **verified**.
+- `bin/run-stage.sh:397-399` `_handle_wait` orchestrator-lane
+  assignment — **verified**.
+- `bin/run-stage.sh:306-360` `_fresh_wait_reason` build-only
+  allow-list — **verified**.
+- `bin/run-stage.sh:846-857` no-output detector (the agent-contract
+  validator that classified ENG-64's silent rc=0 as `agent-failure`,
+  exit 25, with the literal message `"agent dispatch returned 0 but
+  emitted no stage-summary file and no verdict marker"`) —
+  **verified**.
+- `AGENT_PROMPTS.md:47-93` shared "Verdict-marker protocol" section
+  — **verified**.
+- `AGENT_PROMPTS.md:101-114` lane-aware write matrix — **verified**.
+- `AGENT_PROMPTS.md:1225` §7 Build Agent header — **verified**.
+- `AGENT_PROMPTS.md:1281-1302` §7 P2 wait-exit instructions
+  — **verified**.
+- `AGENT_PROMPTS.md` 9 occurrences of "Tool allowlist & probing"
+  paragraph at lines 246, 361, 567, 714, 855, 1068, 1232, 1483, 1595
+  — **verified by grep** (all 9 confirmed).
+- `bin/agent-prompts-content-test.sh:216-249` ENG-53 #11
+  multi-stage probe-rule loop; `:259-281` ENG-56 absence loop;
+  `:294-325` ENG-57 same-sig loop; `:337-353` ENG-55 stdin-heredoc
+  pin (stages 1-7); `:417-451` branch-name-convention block
+  — **verified**.
+- `bin/agent-prompts-content-test.sh:20-28` `section_body` helper
+  — **verified**.
+- `bin/run-local-helpers.sh:133-198` `partition_dirty_paths`;
+  specifically `:140-141` (`apply_d004=0` then `case "$stage" in
+  brainstorming|planning) apply_d004=1`) and `:182` (the
+  case-insensitive issue-id basename check
+  `if [[ "$base_lower" =~ (^|[^a-z0-9])${issue_lower_re}([^a-z0-9]|$) ]]`)
+  — **verified**.
+- `bin/pipeline-events.json` registry: `verdict_results` (5 values),
+  `halt_reasons` (8), `wait_reasons` (`awaiting-approval`,
+  `awaiting-ci`), `stages` (8) — **verified by Read**.
+- Doc basename `2026-05-07-eng-74-...-design.md` contains `eng-74`
+  (case-insensitive); satisfies `partition_dirty_paths` D-004 — see
+  `:182` regex match — **verified**.
+
+Implementation cost: ~5 lines × 9 sections ≈ 45 lines in
+`AGENT_PROMPTS.md` plus ~15 lines of test (one iteration loop with
+two assertions per stage). No new helpers, no schema change, no
+orchestrator change. The change is reversible by deleting the
+inserted sentence at all 9 sites. CI gate (`.githooks/pre-commit`
+running the full `bin/*-test.sh` suite) catches regressions in
+≤30 s.
+
+The one assumption listed as "assumed" in §8.3 — Claude Code's
+allowlist matcher anchors on the first whitespace-separated token
+of the command line — is consistent with the ENG-64 incident
+evidence and the analogous ENG-65 disconnect. Even under a relaxed
+matcher rule (which would be silently more permissive), D-001 is
+also a valid no-op cleanup. Either way the fix is correct.
+
+No P0; no P1; no P2.
+
+### Persona-review summary
+
+Personas: 6/6 PASS · gate P0: 0 · proceeding to planning.
