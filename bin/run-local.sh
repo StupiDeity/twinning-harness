@@ -228,11 +228,14 @@ if [[ "$reconcile_decision" == "proceed" ]]; then
   ensure_worktree "$branch" "$worktree_path"
 fi
 
-# Dispatch run-stage.sh from the worktree if one was resolved, else from main.
-dispatch_cwd="$TARGET_REPO"
-if [[ -n "$worktree_path" ]]; then
-  dispatch_cwd="$worktree_path"
-fi
+# After ENG-67, every reconcile_decision=="proceed" tick resolves a
+# per-issue worktree_path; the link:/human reconcile branches `exit 0`
+# at lines 177-205 before reaching here. So the previous fallback
+# `dispatch_cwd=$TARGET_REPO` is unreachable by construction. Surface
+# any future regression that lets worktree_path stay empty as a loud
+# failure rather than a silent dispatch into the operator's checkout.
+[[ -n "$worktree_path" ]] || die "internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from \$TARGET_REPO"
+dispatch_cwd="$worktree_path"
 
 # Tick-start dirty-path snapshot for self-leak detection (ENG-14 D-4).
 # Any out-of-scope path present at end-of-tick that is NOT in this
