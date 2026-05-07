@@ -1337,14 +1337,14 @@ else
   fail_at "AS12 chained-command bypass" "rc=$rc_as12 out=$out_as12 (expected rc=0 because the chained command starts with 'git fetch', not 'git checkout')"
 fi
 
-# ─── Group 7 cont'd: core.bare transcript-pattern fixtures (ENG-68, CB1-CB6) ───
+# ─── Group 7 cont'd: core.bare transcript-pattern fixtures (ENG-68, CB1-CB8) ───
 # Pin the five forbidden core.bare-touching git command shapes that
 # _render_and_capture_stream's Task-5 loop scans for. Each fixture writes a
 # self-contained NDJSON transcript, calls assert_no_tool_invocation directly
 # with one of the five harness patterns, and asserts (rc=1, stdout=<full
 # command>). The sixth fixture (CB6) covers the multi-tool_use ordering case
 # — match in second position, helper still finds it via head -1.
-printf '\n--- assert_no_tool_invocation fixtures (CB1-CB6, ENG-68 core.bare patterns) ---\n'
+printf '\n--- assert_no_tool_invocation fixtures (CB1-CB8, ENG-68 core.bare patterns + renderer integration) ---\n'
 
 # CB1 — `git config core.bare true` matches "git config core.bare"
 TX_CB1="$_TEST_STUB_DIR/tx-cb1.ndjson"
@@ -1424,6 +1424,62 @@ if [[ "$rc_cb6" == "1" && "$out_cb6" == "git config core.bare true" ]]; then
 else
   fail_at "CB6" "rc=$rc_cb6 out=$out_cb6"
 fi
+
+# CB7 — _render_and_capture_stream end-to-end (addresses review iteration 2
+# major-b: "rc=13 routing untested"). CB1-CB6 cover assert_no_tool_invocation
+# directly. None exercise the renderer wrapper that, on a transcript matching
+# one of the five core.bare patterns, writes the sidecar at
+# $ISSUE_DIR/.transcript-violation-<stage> and returns 13 — the contract
+# bin/run-stage.sh::main's rc==13 branch reads. This pins the dispatch-side
+# wiring of D-003 end-to-end, mirroring AT1's role for D-002 (gh pr create →
+# rc=22).
+USAGE_CB7="$ISSUE_DIR/usage-implementing-CB7.json"
+RAW_CB7="$ISSUE_DIR/.raw-stream.ndjson.tmp"
+VIOLATION_CB7="$ISSUE_DIR/.transcript-violation-implementing"
+rm -f "$USAGE_CB7" "$RAW_CB7" "$VIOLATION_CB7"
+
+cb7_rc=0
+RENDER_OUT_CB7="$(
+  _render_and_capture_stream "$USAGE_CB7" "$ISSUE_DIR" "implementing" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"cb7","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git config core.bare true"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || cb7_rc=$?
+
+if [[ "$cb7_rc" == "13" ]] \
+   && [[ -f "$VIOLATION_CB7" ]] \
+   && [[ "$(cat "$VIOLATION_CB7")" == "git config core.bare true" ]] \
+   && grep -q '\[assert\] stage=implementing transcript invoked forbidden git form: git config core.bare true' <<<"$RENDER_OUT_CB7"; then
+  pass_at "CB7 (renderer integration): core.bare in transcript → rc=13, sidecar written, log line emitted"
+else
+  fail_at "CB7 renderer integration" "rc=$cb7_rc viol_exists=$([[ -f $VIOLATION_CB7 ]] && echo y || echo n) viol_body=$(cat "$VIOLATION_CB7" 2>/dev/null) out=$RENDER_OUT_CB7"
+fi
+rm -f "$VIOLATION_CB7"
+
+# CB8 — pre-clean idempotency on stale sidecar from a prior run. The renderer's
+# rm -f "$violation_file" at function entry covers BOTH the existing rc=22
+# branch AND the new rc=13 branch (single sidecar path per stage; ENG-43 D-008).
+# A stale .transcript-violation-implementing from a prior dispatch must not
+# leak into a clean current dispatch and falsely halt run-stage.sh's rc-branch
+# reader.
+USAGE_CB8="$ISSUE_DIR/usage-implementing-CB8.json"
+VIOLATION_CB8="$ISSUE_DIR/.transcript-violation-implementing"
+rm -f "$USAGE_CB8" "$ISSUE_DIR/.raw-stream.ndjson.tmp"
+printf 'stale\n' > "$VIOLATION_CB8"
+cb8_rc=0
+_render_and_capture_stream "$USAGE_CB8" "$ISSUE_DIR" "implementing" >/dev/null 2>&1 <<'NDJSON' || cb8_rc=$?
+{"type":"system","subtype":"init","session_id":"cb8","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"clean dispatch — no forbidden tool"}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+
+if [[ "$cb8_rc" == "0" ]] && [[ ! -f "$VIOLATION_CB8" ]]; then
+  pass_at "CB8 (sidecar pre-clean): clean dispatch removes stale sidecar from prior run"
+else
+  fail_at "CB8 sidecar pre-clean" "rc=$cb8_rc viol_after=$([[ -f $VIOLATION_CB8 ]] && echo present || echo absent)"
+fi
+rm -f "$VIOLATION_CB8"
 
 # ─── QA-authored adversarial fixtures (AT1-AT5; ENG-43 not in Failure Mode → Test Map) ─
 # AS1-AS6 cover the helper in isolation. AT1-AT5 cover gaps the plan
