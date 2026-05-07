@@ -419,7 +419,7 @@ capture_core_bare_forensic() {
   # (heal site at run-local.sh:72-80 fires BEFORE secrets sourcing at
   # line 84) or if no fallback issue is configured.
   local _post_issue="${PIPELINE_ISSUE_ID:-${PIPELINE_FORENSIC_FALLBACK_ISSUE:-}}"
-  if [[ -n "${LINEAR_API_KEY:-}" && -n "$_post_issue" && -n "${HARNESS_ROOT:-}" \
+  if [[ -n "${LINEAR_API_KEY-}" && -n "$_post_issue" && -n "${HARNESS_ROOT:-}" \
         && -x "$HARNESS_ROOT/bin/linear.sh" ]]; then
     local _utc_day; _utc_day="$(date -u +%Y-%m-%d)"
     bash "$HARNESS_ROOT/bin/linear.sh" add-or-update-comment \
