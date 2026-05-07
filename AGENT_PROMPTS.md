@@ -1025,7 +1025,18 @@ Output:
 - Consolidated Linear review summary as a `completion/reviewing/{issue_id}`
   add-or-update-comment.
 - Stage-summary file at {stage_summary_path} (per the Stage summary comment
-  format contract).
+  format contract). **MANDATORY — overwrite on every dispatch.** Use `Write`
+  with the full report content; do not read-then-conditionally-skip. The
+  file's contents at exit time are your authoritative report — the
+  orchestrator reads it verbatim and posts it as the Linear
+  `completion/reviewing/{issue_id}` summary. If your findings are unchanged
+  from a prior iter (rare on a re-dispatched review-loopback), re-write the
+  same content; the orchestrator's footer-only re-apply path covers
+  visibility. ENG-71 (May 2026) cycled 9 review-implement loops because
+  iters 6-9 emitted fresh `verdict fail` markers but never updated this
+  file — the orchestrator kept posting the iter-5 stale body to Linear,
+  the implement agent kept reading the stale body, and no new feedback
+  reached the next iteration. Do not repeat.
 - Verdict per Decision path (A premise-failure → fail to brainstorming,
   B changes-requested → fail to implementing, C clean → pass advancing to qa).
 - Do NOT submit a GitHub PR review in the APPROVED state or in the

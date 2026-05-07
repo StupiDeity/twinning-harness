@@ -194,6 +194,46 @@ if printf '%s\n' "$s5" | grep -qF 'pipeline-wait' | grep -vqF 'Do NOT emit'; the
   : # any remaining occurrences should be in negative contexts; not asserting strictly here
 fi
 
+# ─── ENG-71 followup: §5 mandates overwriting the stage-summary file ───
+# ENG-71 (May 2026) cycled 9 review-implement loops because iters 6-9
+# emitted fresh `verdict fail` markers but never updated their
+# stage-summary file. The orchestrator's post-dispatch hook reads the
+# file verbatim and posts it as the Linear `completion/reviewing/<issue>`
+# summary; with a stale file, the same iter-5 body landed on Linear every
+# iter, and the implement agent on each loopback read that stale body,
+# fixed everything in it, and reported done — never seeing the new
+# findings the reviewer was actually generating each iter. Pin the
+# overwrite-every-dispatch rule in §5 so a future prompt edit can't
+# silently drop the contract.
+
+# §5 must say "overwrite on every dispatch" (case-insensitive on
+# "overwrite" since "overwritten" / "overwrite" are both reasonable).
+if printf '%s\n' "$s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+  ok "§5 mandates 'overwrite on every dispatch' for the stage-summary file"
+else
+  nope "§5 mandates 'overwrite on every dispatch' for the stage-summary file" \
+    "without this rule, the reviewer can re-emit verdicts without a fresh file write — orchestrator posts stale body, implement-loopback gets no new feedback (ENG-71 May 2026 cycle)"
+fi
+
+# §5 must explicitly reject the "read-then-conditionally-skip" misreading
+# (the way ENG-71's iters 6-9 actually behaved — agent read existing file,
+# decided findings unchanged, didn't re-write).
+if printf '%s\n' "$s5" | grep -qF 'read-then-conditionally-skip'; then
+  ok "§5 explicitly bans 'read-then-conditionally-skip' on the stage-summary file"
+else
+  nope "§5 explicitly bans 'read-then-conditionally-skip' on the stage-summary file" \
+    "the carve-out names the exact ENG-71 misreading; without it, agents may re-derive the same wrong behavior"
+fi
+
+# §5 must cite the ENG-71 incident as precedent so the rule's reason is
+# self-documenting.
+if printf '%s\n' "$s5" | grep -qE 'ENG-71.*(May|2026)'; then
+  ok "§5 cites the ENG-71 incident as the reason for the overwrite rule"
+else
+  nope "§5 cites the ENG-71 incident" \
+    "without the precedent, a future prompt-cleanup pass might decide the rule is overcautious and remove it"
+fi
+
 # ─── ENG-53 #11(a): every stage prompt has the no-probe + halt-instead ──
 # Pre-fix: agents routinely posted throwaway Linear comments (`test`,
 # `test ping`) to probe what Bash patterns are allowlisted, plus
