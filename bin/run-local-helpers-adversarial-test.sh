@@ -40,14 +40,6 @@ report_fail() {
   printf '  got:      %s\n' "$got" >&2
   FAIL=$((FAIL + 1))
   FAILED_CASES+=("$name")
-  # ENG-69 debug: temporary write so the failing case details survive the
-  # pre-commit hook's stdout-capture-and-discard behavior. Remove once the
-  # test stabilizes.
-  {
-    printf '%s\n' "FAIL: $name"
-    printf '%s\n' "  expected: $expected"
-    printf '%s\n' "  got:      $got"
-  } >> /tmp/eng69-test-debug.log 2>/dev/null || true
 }
 
 assert_eq() {
