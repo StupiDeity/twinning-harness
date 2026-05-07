@@ -635,6 +635,70 @@ else
   nope "ENG-71 symmetric pin: bin/dispatch.sh exists" "file missing"
 fi
 
+# ─── ENG-74 QA adversarial: symmetric pin on dispatch.sh's env wrapper ──
+# The rule's claim "the orchestrator already exports `PIPELINE_WRITER=agent`
+# into your dispatch via `bin/dispatch.sh::main`" depends on
+# bin/dispatch.sh:361 wrapping the claude -p subprocess with
+# `env PIPELINE_WRITER=agent`. If a future refactor drops the wrapper, the
+# rule lies — agents reading the rule would still avoid the prefix, but
+# bin/pipeline.sh's lane fence would fire (warn today; could be hardened
+# to refuse later) on the now-missing PIPELINE_WRITER. Pin the symmetric
+# invariant so the rule and its prerequisite stay in lockstep
+# (mirrors the ENG-71 §7 ↔ dispatch.sh symmetric-pattern discipline).
+DISPATCH_SH="$HARNESS_ROOT/bin/dispatch.sh"
+if [[ -f "$DISPATCH_SH" ]] && grep -qE '^[[:space:]]*local cmd=\(env PIPELINE_WRITER=agent' "$DISPATCH_SH"; then
+  ok 'ENG-74 symmetric pin: bin/dispatch.sh wraps dispatch with `env PIPELINE_WRITER=agent`'
+else
+  nope 'ENG-74 symmetric pin: bin/dispatch.sh wraps dispatch with `env PIPELINE_WRITER=agent`' \
+       'rule claim "orchestrator already exports PIPELINE_WRITER=agent" depends on this — refactor would silently break the rule'
+fi
+
+# ─── ENG-74 QA adversarial: common.sh defaults+exports PIPELINE_WRITER ─
+# The rule's "redundant AND unmatchable" framing depends on
+# PIPELINE_WRITER being available to the agent's child shells WITHOUT
+# the agent prepending it. bin/common.sh:293-294 defaults the value and
+# exports it; if either line is dropped, an unprefixed agent invocation
+# would land at bin/pipeline.sh's lane fence (currently a warn, but a
+# future hardening could escalate to refuse) and the rule's safety net
+# evaporates. Pin both lines.
+COMMON_SH="$HARNESS_ROOT/bin/common.sh"
+if [[ -f "$COMMON_SH" ]] \
+   && grep -qF 'PIPELINE_WRITER="${PIPELINE_WRITER:-orchestrator}"' "$COMMON_SH" \
+   && grep -qE '^export PIPELINE_WRITER$' "$COMMON_SH"; then
+  ok 'ENG-74 symmetric pin: bin/common.sh defaults+exports PIPELINE_WRITER'
+else
+  nope 'ENG-74 symmetric pin: bin/common.sh defaults+exports PIPELINE_WRITER' \
+       'rule "redundant AND unmatchable" claim depends on these two lines — drop them and unprefixed calls would warn (future: refuse) on lane mismatch'
+fi
+
+# ─── ENG-74 QA adversarial: no positive example shows the forbidden
+# `PIPELINE_WRITER=agent bash bin/...` invocation anywhere in
+# AGENT_PROMPTS.md. The rule names the forbidden form as a literal in
+# its prose ("e.g. `PIPELINE_WRITER=agent`") but never as a usable
+# command (no `PIPELINE_WRITER=agent bash bin/<file>.sh ...` shape).
+# A future "wrong way" anti-example paste could trivially re-introduce
+# the shape an agent might copy verbatim. Forbid the shape.
+if grep -qE 'PIPELINE_WRITER=agent[[:space:]]+bash[[:space:]]+(\.pipeline/)?bin/' "$PROMPTS"; then
+  nope 'ENG-74 QA: no PIPELINE_WRITER=agent bash bin/... command shape anywhere in AGENT_PROMPTS.md' \
+       'a "wrong-way" anti-example could be copy-pasted by an agent; the rule must name the forbidden token sequence in prose only, never as a command'
+else
+  ok 'ENG-74 QA: no PIPELINE_WRITER=agent bash bin/... command shape anywhere in AGENT_PROMPTS.md'
+fi
+
+# ─── ENG-74 QA adversarial: §7 wait-exit example invocations stay bare.
+# The empirical ENG-64 hit was on §7's wait-exit running
+# `PIPELINE_WRITER=agent bash bin/pipeline.sh event ... verdict wait
+# --reason awaiting-approval`. Pin that §7's actual example commands
+# (P2 awaiting-approval at line 1283, P5 awaiting-ci at line 1324) stay
+# unprefixed even if the universal rule paragraph drifts. The grep
+# anchors on a leading VAR=val token before `bash bin/pipeline.sh event`.
+if printf '%s\n' "$s7" | grep -qE '^[[:space:]]*[A-Z_]+=[A-Za-z0-9_-]+[[:space:]]+bash[[:space:]]+(\.pipeline/)?bin/pipeline\.sh[[:space:]]+event'; then
+  nope '§7 wait-exit examples are bare (no env-var prefix on `bash bin/pipeline.sh event ...`)' \
+       'a future prompt edit reintroduced the forbidden prefix shape on a §7 wait-exit example — would re-trigger the ENG-64 sandbox denial'
+else
+  ok '§7 wait-exit examples are bare (no env-var prefix on `bash bin/pipeline.sh event ...`)'
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
