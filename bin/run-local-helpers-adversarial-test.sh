@@ -1021,6 +1021,188 @@ test_halt_issue_for_self_leak_dry_run_skips_classify() {
 }
 test_halt_issue_for_self_leak_dry_run_skips_classify
 
+# ─── ENG-69 #2: tally_leaked_in_scope_failure increments per-issue ────────
+
+# Three sequential ticks on the same issue at FAIL_THRESHOLD=3:
+#   - tick 1: counter = 1, no halt
+#   - tick 2: counter = 2, no halt
+#   - tick 3: counter = 3, classify_failure invoked with policy=skip-until-
+#             human-acts, exit_code=27 (leaked-in-scope-threshold)
+# The global counter file MUST NOT be created across all three ticks
+# (that's the regression lock for the breaker-tripped-on-first-leak bug).
+test_tally_leaked_in_scope_increments_per_issue_counter() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-leakcount.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local i
+  for i in 1 2 3; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      mkdir -p "$PROJECT_STATE_DIR"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      tally_leaked_in_scope_failure ENG-902 implementing 1 abcdef012345 \
+        >/dev/null 2>&1
+    ) || true
+  done
+
+  # Per-issue counter file ends at 3.
+  local pic_file="$tdir/state/ENG-902/.consecutive-failures"
+  local pic_count="missing"
+  [[ -f "$pic_file" ]] && pic_count="$(cat "$pic_file" | tr -d ' \n')"
+  assert_eq "ENG-69#2 per-issue counter increments to 3" "3" "$pic_count"
+
+  # Global counter NEVER written.
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#2 global counter NOT written across 3 ticks" \
+      "no .consecutive-failures at PROJECT_STATE_DIR root" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#2 global counter NOT written across 3 ticks"
+  fi
+
+  # classify_failure invoked exactly ONCE (on the threshold tick).
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#2 classify_failure called once at threshold" "1" "$n_calls"
+
+  # The single call uses skip-until-human-acts policy + exit_code=27.
+  local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
+  assert_eq "ENG-69#2 threshold halt routes per-issue (exit 27)" \
+    "issue=ENG-902 stage=implementing policy=skip-until-human-acts exit=27" \
+    "$got_call"
+
+  # Global breaker NOT tripped.
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused")"
+  assert_eq "ENG-69#2 leaked-in-scope threshold does not trip global breaker" \
+    "false" "$pause_state"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_increments_per_issue_counter
+
+# Counter-file corruption sub-case: write garbage, sanitizer collapses it.
+# Expected behavior: pic="${pic//[^0-9]/}"; pic="${pic:-0}"; pic=$((pic+1))
+# So a corrupted file resumes at 1 on the next tick.
+test_tally_leaked_in_scope_recovers_from_corrupt_counter() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-corrupt.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  # Pre-seed a corrupt counter so the helper observes the cleanup in action.
+  mkdir -p "$tdir/state/ENG-903"
+  printf 'garbage-not-a-number' > "$tdir/state/ENG-903/.consecutive-failures"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    tally_leaked_in_scope_failure ENG-903 implementing 1 abcdef012345 \
+      >/dev/null 2>&1
+  ) || true
+
+  # Counter resumes at 1 (sanitizer collapses non-digits, then increments).
+  local pic_count; pic_count="$(cat "$tdir/state/ENG-903/.consecutive-failures" | tr -d ' \n')"
+  assert_eq "ENG-69#2 corrupt counter resumes at 1 after sanitizer" "1" "$pic_count"
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_recovers_from_corrupt_counter
+
+# Brand-new issue with no prior issue_dir on disk.
+test_tally_leaked_in_scope_creates_issue_dir() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-newdir.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    classify_failure() { :; }
+    set_orchestrator_paused() { :; }
+    # No mkdir -p PROJECT_STATE_DIR — let the helper create the per-issue dir.
+    tally_leaked_in_scope_failure ENG-904 implementing 2 deadbeef0123,cafebabe5678 \
+      >/dev/null 2>&1
+  ) || true
+
+  if [[ -f "$tdir/state/ENG-904/.consecutive-failures" ]]; then
+    report_ok "ENG-69#2 helper creates per-issue dir on first call"
+  else
+    report_fail "ENG-69#2 helper creates per-issue dir on first call" \
+      "$tdir/state/ENG-904/.consecutive-failures exists" \
+      "(missing)"
+  fi
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_creates_issue_dir
+
+# DRY-RUN sub-case: no FS write, no classify_failure.
+test_tally_leaked_in_scope_dry_run_skips_fs_write() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-tally-dryrun.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    PIPELINE_DRY_RUN=1
+    FAIL_THRESHOLD=3
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    set_orchestrator_paused() { :; }
+    tally_leaked_in_scope_failure ENG-905 implementing 1 abcdef012345 \
+      >/dev/null 2>&1
+  ) || true
+
+  # No counter file written.
+  if [[ -f "$tdir/state/ENG-905/.consecutive-failures" ]]; then
+    report_fail "ENG-69#2 dry-run skips per-issue counter write" \
+      "no counter file" \
+      "exists"
+  else
+    report_ok "ENG-69#2 dry-run skips per-issue counter write"
+  fi
+  # classify_failure not called.
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#2 dry-run skips classify_failure" "0" "$n_calls"
+  # Metric STILL emitted (audit trail).
+  case "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" in
+    *sweep-leaked-in-scope*) report_ok "ENG-69#2 dry-run still emits metric" ;;
+    *) report_fail "ENG-69#2 dry-run still emits metric" \
+         "sweep-leaked-in-scope" "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" ;;
+  esac
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_dry_run_skips_fs_write
+
 # Issue-id validation: bogus issue id must die() before any side effect.
 test_halt_issue_for_self_leak_rejects_bogus_issue_id() {
   local tdir; tdir="$(mktemp -d -t twinning-eng69-bogus.XXXXXX)"
