@@ -418,29 +418,54 @@ _post_dispatch_check_worktree_head() {
 
   # Resolve expected branch via branch-name.sh (the canonical derivation;
   # mirrors run-local.sh:220). Soft-fail on Linear API outage so we don't
-  # detach on a wrong expected value.
+  # detach on a wrong expected value. ENG-71 m2 (review iter-2): emit a
+  # log line on the silent-skip path so operators can distinguish "no
+  # mismatch" from "branch-name.sh returned empty" in the per-stage
+  # transcript.
   local expected_branch current_branch
   expected_branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident" 2>/dev/null || printf '')"
   current_branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '')"
-  [[ -n "$expected_branch" && -n "$current_branch" ]] || return 0
+  if [[ -z "$expected_branch" || -z "$current_branch" ]]; then
+    log "post-dispatch worktree-HEAD check: skipping ($ident, $stage) — expected_branch='$expected_branch' current_branch='$current_branch' (one or both empty; branch-name.sh outage or git unavailable). No detach attempted."
+    return 0
+  fi
   [[ "$current_branch" == "$expected_branch" ]] && return 0
 
   log "post-dispatch: WORKTREE HEAD MUTATED — expected=$expected_branch current=$current_branch; detaching to unlock parent ref"
-  git -C "$wt" checkout --detach 2>&1 | sed 's/^/  detach: /' >&2 || true
+  # ENG-71 m1 (review iter-2): capture the detach exit code via PIPESTATUS
+  # so the operator-visibility comment body and the metric notes can both
+  # describe the actual detach outcome. Pre-iter-6 the body unconditionally
+  # claimed "Orchestrator detached HEAD" even when `git checkout --detach`
+  # silently failed (the `|| true` swallowed the rc), which mis-led
+  # operators into believing main was unlocked when in fact it was still
+  # locked by a failed detach.
+  git -C "$wt" checkout --detach 2>&1 | sed 's/^/  detach: /' >&2
+  local _detach_rc=${PIPESTATUS[0]}
   bash "$SCRIPT_DIR/metrics.sh" worktree-mutated-by-agent "$ident" "$stage" \
-    "warn" 0 "expected=$expected_branch current=$current_branch" \
+    "warn" 0 "expected=$expected_branch current=$current_branch detach_rc=$_detach_rc" \
     || log "metrics.sh worktree-mutated-by-agent emission failed (non-blocking)"
 
   # Operator-visibility: post a non-halting Linear comment so an operator
   # skimming the issue thread sees the detach without grepping events.jsonl
   # or per-stage transcripts. Sig-deduped via add-or-update-comment so
-  # re-fires on retry collapse to one comment per issue.
+  # re-fires on retry collapse to one comment per issue. ENG-71 m5 (review
+  # iter-2): sig prefix `worktree-mutation/<issue>` is functionally named
+  # (mirrors the existing `completion/<stage>/<issue>` and
+  # `protocol-violation/<reason>/<issue>` patterns: <category>/<issue>)
+  # rather than the prior severity-adjective `warn/<topic>/<issue>` which
+  # had no precedent in the codebase.
+  local _detach_status
+  if (( _detach_rc == 0 )); then
+    _detach_status='Orchestrator detached HEAD to unlock `main` globally. The merged feature commit is preserved as a detached-HEAD reflog entry; `cleanup-worktrees.sh` will remove the worktree on the next post-merge tick. No operator action required.'
+  else
+    _detach_status="Orchestrator attempted to detach HEAD but \`git checkout --detach\` failed (rc=$_detach_rc); \`main\` may STILL be globally locked. Operator action required: from a sibling shell run \`git -C $wt checkout --detach\` (or \`git worktree remove --force $wt\` if the worktree is otherwise corrupt)."
+  fi
   local _body
-  _body="$(printf '<!-- meta: metric name=worktree-mutated-by-agent -->\n\nBuild agent left this worktree on `%s` (expected `%s`) post-dispatch. Orchestrator detached HEAD to unlock `main` globally. The merged feature commit is preserved as a detached-HEAD reflog entry; `cleanup-worktrees.sh` will remove the worktree on the next post-merge tick. No operator action required.' \
-    "$current_branch" "$expected_branch")"
+  _body="$(printf '<!-- meta: metric name=worktree-mutated-by-agent -->\n\nBuild agent left this worktree on `%s` (expected `%s`) post-dispatch. %s' \
+    "$current_branch" "$expected_branch" "$_detach_status")"
   bash "$SCRIPT_DIR/linear.sh" add-or-update-comment \
-    "warn/worktree-mutated/$ident" "$ident" "$_body" \
-    || log "linear.sh add-or-update-comment failed for warn/worktree-mutated/$ident (non-blocking)"
+    "worktree-mutation/$ident" "$ident" "$_body" \
+    || log "linear.sh add-or-update-comment failed for worktree-mutation/$ident (non-blocking)"
 }
 
 # Idempotent counter mutation + budget check for wait exits. All Linear writes
