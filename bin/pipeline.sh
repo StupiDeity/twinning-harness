@@ -347,6 +347,15 @@ cmd_decide() {
       # breaker isn't tripped.
       breaker_was="$(_pipeline_clear_breaker)"
 
+      # ENG-69: clear the per-issue consecutive-failures counter, sibling of
+      # the global counter cleared by _pipeline_clear_breaker above. The
+      # per-issue lane (route_run_stage_exit, tally_leaked_in_scope_failure)
+      # writes to $(issue_dir)/.consecutive-failures; the atomic-resume
+      # promise has to clear it too or the next escalation re-fires
+      # immediately. rm -f is idempotent (no-op when missing). $issue is
+      # already validated against ^ENG-[0-9]+$ at L324-325.
+      rm -f "$(issue_dir "$issue")/.consecutive-failures" 2>/dev/null || true
+
       # Auto-commit any in-scope dirty paths in the worktree that the
       # tick-end sweep suppressed (typical: brainstorm doc / plan doc the
       # agent wrote but the breaker prevented from landing on origin).
@@ -355,7 +364,7 @@ cmd_decide() {
 
       _pipeline_post_operator_transition "$issue" "$current_stage"
       _pipeline_emit_resume_metric "$issue" "$current_stage" "$wf" "$sl" "$sf" "1" "$breaker_was" "$autocommit_n"
-      log "pipeline-decide: $issue action=continue (side state reset: wait_files=$wf skip_labels=$sl state_file=$sf breaker_was_paused=$breaker_was auto_commit_paths=$autocommit_n; operator-transition posted)"
+      log "pipeline-decide: $issue action=continue (side state reset: wait_files=$wf skip_labels=$sl state_file=$sf breaker_was_paused=$breaker_was per_issue_counter_cleared=true auto_commit_paths=$autocommit_n; operator-transition posted)"
     else
       log "pipeline-decide: $issue action=continue (dry-run — atomic reset suppressed)"
     fi
