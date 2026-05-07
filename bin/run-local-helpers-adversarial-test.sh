@@ -866,8 +866,8 @@ test_halt_issue_for_self_leak_per_issue_routes_correctly() {
 
   # 1a. classify_failure called with the per-issue policy + new exit code.
   local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
-  assert_eq "ENG-69#1 self-leak routes per-issue (skip-until-human-acts, exit 26)" \
-    "issue=ENG-901 stage=reviewing policy=skip-until-human-acts exit=26" \
+  assert_eq "ENG-69#1 self-leak routes per-issue (skip-until-human-acts, exit 27)" \
+    "issue=ENG-901 stage=reviewing policy=skip-until-human-acts exit=27" \
     "$got_call"
 
   # 1b. reason field carries the leak hashes verbatim and contains no
@@ -1027,7 +1027,7 @@ test_halt_issue_for_self_leak_dry_run_skips_classify
 #   - tick 1: counter = 1, no halt
 #   - tick 2: counter = 2, no halt
 #   - tick 3: counter = 3, classify_failure invoked with policy=skip-until-
-#             human-acts, exit_code=27 (leaked-in-scope-threshold)
+#             human-acts, exit_code=28 (leaked-in-scope-threshold)
 # The global counter file MUST NOT be created across all three ticks
 # (that's the regression lock for the breaker-tripped-on-first-leak bug).
 test_tally_leaked_in_scope_increments_per_issue_counter() {
@@ -1074,10 +1074,10 @@ test_tally_leaked_in_scope_increments_per_issue_counter() {
   local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
   assert_eq "ENG-69#2 classify_failure called once at threshold" "1" "$n_calls"
 
-  # The single call uses skip-until-human-acts policy + exit_code=27.
+  # The single call uses skip-until-human-acts policy + exit_code=28.
   local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
-  assert_eq "ENG-69#2 threshold halt routes per-issue (exit 27)" \
-    "issue=ENG-902 stage=implementing policy=skip-until-human-acts exit=27" \
+  assert_eq "ENG-69#2 threshold halt routes per-issue (exit 28)" \
+    "issue=ENG-902 stage=implementing policy=skip-until-human-acts exit=28" \
     "$got_call"
 
   # Global breaker NOT tripped.

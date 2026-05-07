@@ -88,7 +88,7 @@ halt_issue_for_self_leak() {
   (( count > 5 )) && suffix=" (and $((count - 5)) more)"
   classify_failure "$issue" "$stage" "skip-until-human-acts" \
     "self-leak: ${count} bot-introduced out-of-scope path(s); leaked hashes: ${hash_lines}${suffix}" \
-    26
+    27
 }
 
 # tally_leaked_in_scope_failure <issue> <stage> <leaked_count> <leaked_hashes_csv>  (ENG-69)
@@ -128,7 +128,7 @@ tally_leaked_in_scope_failure() {
   if (( pic >= ${FAIL_THRESHOLD:-3} )); then
     classify_failure "$issue" "$stage" "skip-until-human-acts" \
       "leaked-in-scope at threshold: ${pic} consecutive failures (last leak: ${leaked_count} path(s))" \
-      27
+      28
   fi
 }
 

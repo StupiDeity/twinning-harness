@@ -324,28 +324,28 @@ else
   fail_at "case-10b" "got $outcome"
 fi
 
-# ─── Case 10c (ENG-69): exit 26 → self-leak outcome ────────────────────
+# ─── Case 10c (ENG-69): exit 27 → self-leak outcome ────────────────────
 # halt_issue_for_self_leak (run-local-helpers.sh) calls classify_failure
-# with exit_code=26 to halt the affected issue without tripping the
+# with exit_code=27 to halt the affected issue without tripping the
 # global breaker. The retrospective's §1 filter and status.sh's red/yellow
 # predicate need this typed-outcome string to bucket the new lane
 # distinct from the existing exit codes.
-outcome=$(failure_outcome_for_exit 26 "")
+outcome=$(failure_outcome_for_exit 27 "")
 if [[ "$outcome" == "self-leak" ]]; then
-  pass_at "case-10c failure_outcome_for_exit(26,'') → self-leak"
+  pass_at "case-10c failure_outcome_for_exit(27,'') → self-leak"
 else
   fail_at "case-10c" "got $outcome"
 fi
 
-# ─── Case 10d (ENG-69): exit 27 → leaked-in-scope-threshold outcome ────
+# ─── Case 10d (ENG-69): exit 28 → leaked-in-scope-threshold outcome ────
 # tally_leaked_in_scope_failure escalates to classify_failure with
-# exit_code=27 once the per-issue counter reaches FAIL_THRESHOLD. Symmetric
+# exit_code=28 once the per-issue counter reaches FAIL_THRESHOLD. Symmetric
 # rationale to case-10c — the retrospective needs a distinct outcome
 # string to separate the threshold-escalation path from a single-tick
-# self-leak (26) and from infrastructure outage (24).
-outcome=$(failure_outcome_for_exit 27 "")
+# self-leak (27) and from infrastructure outage (24).
+outcome=$(failure_outcome_for_exit 28 "")
 if [[ "$outcome" == "leaked-in-scope-threshold" ]]; then
-  pass_at "case-10d failure_outcome_for_exit(27,'') → leaked-in-scope-threshold"
+  pass_at "case-10d failure_outcome_for_exit(28,'') → leaked-in-scope-threshold"
 else
   fail_at "case-10d" "got $outcome"
 fi
