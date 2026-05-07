@@ -26,6 +26,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 # shellcheck source=run-local-helpers.sh
 source "$SCRIPT_DIR/run-local-helpers.sh"
+# shellcheck source=classify-failure.sh
+# ENG-69: helpers (halt_issue_for_self_leak, tally_leaked_in_scope_failure,
+# route_run_stage_exit) call classify_failure to halt a single issue
+# without tripping the global breaker.
+source "$SCRIPT_DIR/classify-failure.sh"
 
 LOCK_DIR="$PROJECT_STATE_DIR/.run-local.lock"
 ENV_FILE="$TARGET_CONFIG_DIR/.env.local"
@@ -253,18 +258,13 @@ set +e
 rc=$?
 set -e
 
-if [[ $rc -ne 0 ]]; then
-  count="$(cat "$FAIL_COUNTER" 2>/dev/null || echo 0)"
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$FAIL_COUNTER"
-  log "run-stage.sh exited $rc; consecutive failures = $count"
-  if (( count >= FAIL_THRESHOLD )); then
-    trip_breaker
-  fi
-  exit $rc
-fi
-
-rm -f "$FAIL_COUNTER"
+# ENG-69: route the run-stage exit through the per-issue/global lane
+# split. rc=24 (linear-post-failed) accumulates against the global
+# counter and trips the breaker at threshold; every other non-zero rc
+# accumulates against the issue's per-issue counter and halts only that
+# issue at threshold. rc=0 clears both counters.
+route_run_stage_exit "$issue_id" "$stage" "$rc"
+[[ $rc -ne 0 ]] && exit $rc
 
 # 3-stream partition sweep (ENG-14 D-3).
 in_scope_file="$(mktemp -t twinning-inscope.XXXXXX)"
@@ -308,43 +308,27 @@ fi
 # Precedence: self-leak (hard-fail) > leaked-in-scope (counter+conditional
 # trip) > in-scope commit > observed bucketed (info only). Brainstorm OQ-4.
 
-# 1. Self-leak has highest severity. Emit metric, trip breaker, exit.
+# 1. Self-leak has highest severity. Halt the affected issue via
+#    classify_failure (skip-until-human-acts); the global breaker stays
+#    untouched so other issues keep polling. (ENG-69 lane separation —
+#    helper owns metric emit, hash truncation, and reason rendering.)
 if (( ${#self_leak_hashes[@]} > 0 )); then
-  leak_csv=""
-  for h in "${self_leak_hashes[@]}"; do
-    leak_csv="${leak_csv:+${leak_csv},}${h}"
-  done
-  bash "$SCRIPT_DIR/metrics.sh" sweep-self-leak-out-of-scope "$issue_id" "$stage" \
-    "self-leak" 0 "count=${#self_leak_hashes[@]} hashes=${leak_csv}" \
-    || log "metrics.sh sweep-self-leak-out-of-scope emission failed (non-blocking)"
-  log "SELF-LEAK: ${#self_leak_hashes[@]} bot-introduced out-of-scope path(s); tripping breaker (in-scope paths NOT committed)"
-  if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
-    trip_breaker
-    exit 1
-  fi
+  halt_issue_for_self_leak "$issue_id" "$stage" "${self_leak_hashes[@]}"
+  [[ "$PIPELINE_DRY_RUN" != "1" ]] && exit 1
 fi
 
-# 2. Leaked-in-scope: soft failure. Emit metric, increment counter, trip
-#    breaker only at threshold, exit. Leaves in-scope paths un-committed.
+# 2. Leaked-in-scope: soft failure. Tally against the per-issue counter
+#    and escalate to a per-issue halt at threshold. The global breaker
+#    is no longer touched on this lane (ENG-69). Leaves in-scope paths
+#    un-committed regardless of escalation.
 if (( leaked_count > 0 )); then
   leaked_hashes=""
   while IFS= read -r -d '' p; do
     h="$(sha12 "$p")"
     leaked_hashes="${leaked_hashes:+${leaked_hashes},}${h}"
   done < "$leaked_file"
-  bash "$SCRIPT_DIR/metrics.sh" sweep-leaked-in-scope "$issue_id" "$stage" \
-    "leak" 0 "count=${leaked_count} hashes=${leaked_hashes}" \
-    || log "metrics.sh sweep-leaked-in-scope emission failed (non-blocking)"
-  if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
-    fc="$(cat "$FAIL_COUNTER" 2>/dev/null || echo 0)"
-    fc=$((fc + 1))
-    printf '%s\n' "$fc" > "$FAIL_COUNTER"
-    log "sweep-leaked-in-scope: $leaked_count path(s); consecutive failures = $fc (in-scope paths NOT committed)"
-    if (( fc >= FAIL_THRESHOLD )); then
-      trip_breaker
-    fi
-    exit 1
-  fi
+  tally_leaked_in_scope_failure "$issue_id" "$stage" "$leaked_count" "$leaked_hashes"
+  [[ "$PIPELINE_DRY_RUN" != "1" ]] && exit 1
 fi
 
 # 3. Clean tick: commit in-scope artifacts if any.
