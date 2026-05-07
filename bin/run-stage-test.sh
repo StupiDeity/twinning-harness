@@ -3127,10 +3127,12 @@ _post_dispatch_check_worktree_head ENG-T75 building >/dev/null 2>&1 || true
 chmod -R u+w "$ENG_T75_WT/.git" 2>/dev/null || true
 
 body_t75="$(awk '/^BODY_BEGIN$/{flag=1; next} /^BODY_END$/{flag=0} flag' "$CAPTURE_FILE")"
-metric_notes_t75="$(awk -F= '/^NOTES=/ {print $2}' "$STUB_DIR/metrics.capture" | tail -1)"
 body_claims_success_t75="$(grep -cF 'detached HEAD' <<<"$body_t75" || true)"
 body_says_failed_t75="$(grep -ciE 'detach.*failed|failed.*detach' <<<"$body_t75" || true)"
-notes_has_detach_rc_nonzero="$(grep -cE 'detach_rc=[1-9]' <<<"$metric_notes_t75" || true)"
+# Match the metric NOTES line directly off metrics.capture rather than
+# awk -F= split (which would lose everything after the first `=` since
+# the notes string itself contains `=` separators between fields).
+notes_has_detach_rc_nonzero="$(grep -cE '^NOTES=.*detach_rc=[1-9]' "$STUB_DIR/metrics.capture" 2>/dev/null || true)"
 
 if (( body_says_failed_t75 >= 1 )) \
    && (( body_claims_success_t75 == 0 )) \
