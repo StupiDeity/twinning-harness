@@ -46,5 +46,17 @@ else
   ok 'no "using old flow" log line'
 fi
 
+# After ENG-67 D-003, dispatch_cwd assignment must always derive from a
+# resolved worktree_path — never default to $TARGET_REPO as a soft
+# fallback. Anchored ERE so a benign assignment like
+# `dispatch_cwd="$TARGET_REPO_FOO"` does NOT trip the test — only the
+# exact pre-D-003 fallback shape matches.
+if printf '%s\n' "$non_comment" | grep -qE 'dispatch_cwd="\$TARGET_REPO"'; then
+  nope 'dispatch_cwd never silently falls back to $TARGET_REPO' \
+    'soft fallback re-introduced; see ENG-67 D-003'
+else
+  ok 'dispatch_cwd does not silently fall back to $TARGET_REPO'
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 exit $(( FAIL > 0 ? 1 : 0 ))
