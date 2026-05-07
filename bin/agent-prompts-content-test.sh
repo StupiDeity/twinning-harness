@@ -364,6 +364,43 @@ for stage_section in \
   fi
 done
 
+# ─── ENG-74: env-var-prefix rule ──────────────────────────────────────
+# PIPELINE_WRITER=agent (or any leading VAR=val) must NOT be prepended
+# to `bash bin/...` invocations from inside the agent sandbox. The
+# Claude allowlist matcher anchors on the first token; an env-var
+# assignment is not `bash`, so the Bash(bash bin/pipeline.sh:*) pattern
+# fails to match a `PIPELINE_WRITER=agent bash bin/pipeline.sh ...`
+# invocation. ENG-64's build dispatch on 2026-05-05 hit this exact case
+# — agent silently exited rc=0, no-output detector applied
+# pipeline:halted. Pin the rule per-stage so a future prompt edit can't
+# drop it from one stage and silently regress.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent" \
+  "## 8. Release Agent" \
+  "## 9. Retrospective Agent (Scheduled)"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  if printf '%s\n' "$body" | grep -qF 'Do NOT prepend env-var assignments'; then
+    ok "$short contains env-var-prefix rule (ENG-74)"
+  else
+    nope "$short contains env-var-prefix rule (ENG-74)" "phrase missing"
+  fi
+
+  if printf '%s\n' "$body" | grep -qF 'PIPELINE_WRITER=agent'; then
+    ok "$short names canonical forbidden prefix PIPELINE_WRITER=agent (ENG-74)"
+  else
+    nope "$short names canonical forbidden prefix PIPELINE_WRITER=agent (ENG-74)" \
+         "agent must see the exact forbidden form, not just a prose hint"
+  fi
+done
+
 # ─── ENG-55: stdin heredoc pattern for multi-line bodies ────────────────
 # Pre-fix, agents wrote scratch `.md` files at the worktree root to feed
 # `--body-file <path>` (and then couldn't `rm` them — no stage allow-lists
