@@ -349,6 +349,76 @@ on-disk `partial: true` field is the discriminator the retrospective uses to
 distinguish SIGTERM-captured runs from genuine zero-cost dispatches; the flag
 stream emitted by `_cost_flags_for` shows `--cost-usd 0` (jq `// 0` coercion).
 
+## Orchestrator entry-conditions (ENG-86)
+
+`bin/run-stage.sh::_entry_conditions_gate` is a config-driven pre-dispatch
+gate that runs after `_pre_dispatch_merge_gate` and before render-prompt +
+agent dispatch. It shells out to `bin/entry-conditions.sh::should_dispatch`,
+which reads a per-stage check list from
+`.pipeline-config/config.json::orchestrator.entry_conditions[<stage>]`, runs
+each named check in declaration order, AND-gates the results, and prints
+exactly one of `proceed`, `skip:<reason>`, or `error:<check-name>` on stdout.
+
+Phase 1 ships exactly one check, `pr-approved-by-non-bot`, mirroring the
+agent-side P2 at `AGENT_PROMPTS.md:1287-1289`. The orchestrator skips the
+build-agent dispatch entirely (~100 ms vs ~2 min) when the PR has zero
+non-bot APPROVED reviews — saving ~$0.5–0.7 per tick and freeing the
+ENG-81 K=2 slot for other ready work. New checks land in
+`_entry_check_handler_for` without schema migration.
+
+```json
+{
+  "orchestrator": {
+    "entry_conditions": {
+      "building": [
+        {
+          "name": "pr-approved-by-non-bot",
+          "type": "github-pr-review"
+        }
+      ]
+    }
+  }
+}
+```
+
+Validation:
+- Each entry's `name` MUST resolve in `_entry_check_handler_for`. An
+  unknown name is logged via `log` and the entry is skipped (treated as
+  a no-op, NOT a hard error) so a typo cannot lock the orchestrator out
+  of dispatching forever.
+- Empty/null/absent `entry_conditions` → `proceed` (back-compat — the
+  pre-ENG-86 dispatch path is unchanged).
+- Stage keys are gerund form (`building`, `implementing`, …). An
+  unknown key (e.g. `build` missing `-ing`) silently falls through —
+  `// []` returns the empty array, so `should_dispatch` prints
+  `proceed`. Same trade-off as ENG-65 per-stage timeouts; no warning
+  is emitted.
+- On skip, the gate calls `_handle_wait` so the ENG-45
+  `external_signal_budget` escalation still applies — a buggy predicate
+  halts the issue within `max_attempts` ticks rather than spinning
+  forever.
+- On `gh`/`jq` outage, the check returns rc=2 and `should_dispatch`
+  prints `error:<check-name>`; the orchestrator falls through to
+  dispatch (D-010 fail-open). The agent's P2 (unchanged) is the
+  defense-in-depth fallback when the orchestrator gate cannot
+  evaluate.
+
+The skip path emits paired `stage-start` + `stage-end` metric events
+with outcome `dispatch-skipped` (mirrors the `merged-pre-dispatch`
+pairing template), so the retrospective's §1 event-pairing pass does
+not see an orphaned terminal event.
+
+`.pipeline-config/` is gitignored — each operator opts in
+independently. For the harness-self target, regenerate the local
+`.pipeline-config/config.json` with the stanza above (the
+`## Per-target dispatch.tools extras` section's regen one-liner already
+covers the test-list enumeration; the `entry_conditions` stanza is a
+one-time manual add). Operator visibility is via the per-stage
+transcript (the `entry-conditions: skip` log line) and
+`$PROJECT_STATE_DIR/<ident>/wait-building.json`'s `attempts` field — NOT
+via Linear comments (D-003 trade-off: cost-recovery vs Linear-thread
+silence).
+
 ## When wiring a new script
 
 - `source "$SCRIPT_DIR/common.sh"` first, before anything else. It enforces `TARGET_REPO`
@@ -433,6 +503,7 @@ inspect each surface.
 | Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
 | Brainstorm halts at iteration 2 with `iteration-exhausted` (was: resolved on iteration 3) | New ENG-65 behavior: brainstorm voluntarily halts after 2 persona-review iterations with unresolved P0 instead of starting iteration 3. Inspect `$PROJECT_STATE_DIR/<ident>/worktree/docs/brainstorms/`; resume via `--action continue` or fix the underlying P0 in the plan. Bounded worst-case spend, costs one extra operator touch on slow-converging brainstorms. |
 | scope-check halts an issue with files belonging to a recent upstream merge | Pre-ENG-59 bug: scope-check diffed against the host's local `main`, which lags upstream merges until the operator runs `git pull`. Post-ENG-59 (`bin/scope-check.sh:155-…`) fetches `origin main` per run and diffs against `origin/main`. If you still see this symptom, check the per-stage transcript for `scope-check: fetch origin main failed` — fetch unreachable + no prior `refs/remotes/origin/main` falls back to local `main` (the pre-ENG-59 behaviour, preserved as a warning-emitting degraded mode). |
+| Issue at `stage:building` idles with `dispatch-skipped` events and no halt label | inspect `$PROJECT_STATE_DIR/<ident>/wait-building.json`'s `attempts` field — the ENG-86 entry-conditions gate is firing skip per `gh pr view`. If the PR has been approved by a non-bot Code Owner, check whether `gh` is on PATH for launchd's environment (the stale-predicate fail-mode that the `external_signal_budget` halts after `max_attempts` ticks). If not approved, the operator's action is the underlying remedy. |
 
 **What `--action continue` clears (atomic, ENG-58 ported to ENG-60; ENG-69 added per-issue counter clear):**
 
