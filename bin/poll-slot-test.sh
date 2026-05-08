@@ -714,6 +714,152 @@ else
   fail_at "ENG-50: stage:implementing default branch" "got adv=$adv"
 fi
 
+# ─── ENG-78 D-003: retry-immediately state preserved across orphan cleanup ──
+# Setup: a state file with policy=retry-immediately, labels set without
+# either skip-until-* label.
+reset_fixtures
+mkdir -p "$(issue_dir ENG-925)"
+printf '{"policy":"retry-immediately","retry_count":1,"evidence":{"pipeline_content_hash":"h1","branch_head_sha":"s1"},"branch":"feat/eng-925"}' \
+  > "$(issue_dir ENG-925)/issue-state.json"
+
+labels='["stage:implementing"]'
+# _poll_evaluate_skip returns 0 (include); we don't read its stdout here —
+# we only verify the side effect on the state file.
+if _poll_evaluate_skip "ENG-925" "$labels" >/dev/null 2>&1; then
+  if [[ -f "$(issue_dir ENG-925)/issue-state.json" ]]; then
+    pass_at "ENG-78 D-003: retry-immediately state preserved when no skip label"
+  else
+    fail_at "ENG-78 D-003: retry-immediately state was deleted (orphan-cleanup overreach)" \
+      "$(issue_dir ENG-925)/issue-state.json missing after _poll_evaluate_skip"
+  fi
+else
+  fail_at "ENG-78 D-003: _poll_evaluate_skip should return 0 (include) for retry-immediately" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-925"
+
+# ─── ENG-78 D-003 adversarial: orphan skip-until-* state still cleaned up ──
+# A state file with policy=skip-until-code-changes BUT no skip label is
+# still treated as orphan (pre-ENG-78 orphan-cleanup behavior preserved).
+reset_fixtures
+mkdir -p "$(issue_dir ENG-926)"
+printf '{"policy":"skip-until-code-changes","retry_count":2,"evidence":{"pipeline_content_hash":"h2","branch_head_sha":"s2"},"branch":"feat/eng-926"}' \
+  > "$(issue_dir ENG-926)/issue-state.json"
+labels='["stage:implementing"]'
+if _poll_evaluate_skip "ENG-926" "$labels" >/dev/null 2>&1; then
+  if [[ ! -f "$(issue_dir ENG-926)/issue-state.json" ]]; then
+    pass_at "ENG-78 D-003 adversarial: orphan skip-until-code-changes state cleaned up"
+  else
+    fail_at "ENG-78 D-003 adversarial: skip-until-code-changes orphan was preserved (overreach)" \
+      "state file still exists after _poll_evaluate_skip"
+  fi
+else
+  fail_at "ENG-78 D-003 adversarial: _poll_evaluate_skip should return 0 for orphan" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-926"
+
+# ─── QA adversarial (ENG-78 D-003): malformed-JSON state file is treated
+#     as orphan. The new policy-aware branch reads `.policy` via
+#     `jq -r '.policy // ""' "$state_file" 2>/dev/null || true`; on
+#     malformed JSON, jq exits non-zero, the `2>/dev/null` swallows the
+#     error, the `|| true` keeps the assignment empty → cur_policy="" →
+#     orphan branch fires and rm -f's the file. Without this pin, a
+#     future refactor that drops the `2>/dev/null || true` guard would
+#     crash _poll_evaluate_skip under set -e for any operator who
+#     manually edits issue-state.json. ────────────────────────────────
+reset_fixtures
+mkdir -p "$(issue_dir ENG-927)"
+printf '{ this is not valid json' > "$(issue_dir ENG-927)/issue-state.json"
+labels='["stage:implementing"]'
+if _poll_evaluate_skip "ENG-927" "$labels" >/dev/null 2>&1; then
+  if [[ ! -f "$(issue_dir ENG-927)/issue-state.json" ]]; then
+    pass_at "QA adversarial (ENG-78 D-003): malformed-JSON state file orphan-cleaned"
+  else
+    fail_at "QA adversarial (ENG-78 D-003): malformed-JSON state file should be cleaned up" \
+      "state file still present"
+  fi
+else
+  fail_at "QA adversarial (ENG-78 D-003): _poll_evaluate_skip should not crash on malformed JSON" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-927"
+
+# ─── QA adversarial (ENG-78 D-003): state file with `.policy = null` JSON
+#     literal (NOT missing key) is treated as orphan. jq's `// ""`
+#     alternative-default operator returns "" for null, so the new branch
+#     correctly reads cur_policy="" and routes to the orphan-cleanup arm.
+#     Pre-ENG-78 state files that pre-date the `.policy` field share this
+#     fate via the missing-key path; this case pins the explicit-null
+#     equivalent so a future move from `// ""` to `// "default"` doesn't
+#     silently change semantics. ───────────────────────────────────────
+reset_fixtures
+mkdir -p "$(issue_dir ENG-928)"
+printf '{"policy":null,"retry_count":0,"evidence":{"pipeline_content_hash":"h3","branch_head_sha":"s3"},"branch":"feat/eng-928"}' \
+  > "$(issue_dir ENG-928)/issue-state.json"
+labels='["stage:implementing"]'
+if _poll_evaluate_skip "ENG-928" "$labels" >/dev/null 2>&1; then
+  if [[ ! -f "$(issue_dir ENG-928)/issue-state.json" ]]; then
+    pass_at "QA adversarial (ENG-78 D-003): policy=null JSON literal treated as orphan"
+  else
+    fail_at "QA adversarial (ENG-78 D-003): policy=null state file should be cleaned up" \
+      "state file still present"
+  fi
+else
+  fail_at "QA adversarial (ENG-78 D-003): _poll_evaluate_skip should return 0 for policy=null" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-928"
+
+# ─── QA adversarial (ENG-78 D-003): empty (zero-byte) state file is
+#     orphan. Same path as malformed JSON (jq fails on empty input) but
+#     a distinct failure shape — pin both so no future filesystem-level
+#     edge case sneaks past the policy check. ─────────────────────────
+reset_fixtures
+mkdir -p "$(issue_dir ENG-929)"
+: > "$(issue_dir ENG-929)/issue-state.json"
+labels='["stage:implementing"]'
+if _poll_evaluate_skip "ENG-929" "$labels" >/dev/null 2>&1; then
+  if [[ ! -f "$(issue_dir ENG-929)/issue-state.json" ]]; then
+    pass_at "QA adversarial (ENG-78 D-003): zero-byte state file orphan-cleaned"
+  else
+    fail_at "QA adversarial (ENG-78 D-003): zero-byte state file should be cleaned up" \
+      "state file still present"
+  fi
+else
+  fail_at "QA adversarial (ENG-78 D-003): _poll_evaluate_skip should not crash on zero-byte file" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-929"
+
+# ─── QA adversarial (ENG-78 D-003): retry-immediately state with retry_count
+#     near the escalation cap is preserved (the escalation cap is enforced
+#     by classify_failure, NOT by poll's orphan cleanup). Without this,
+#     a future "preserve only when retry_count < N" pre-filter in poll
+#     would silently break the auto-escalation flow. ─────────────────
+reset_fixtures
+mkdir -p "$(issue_dir ENG-930)"
+printf '{"policy":"retry-immediately","retry_count":1,"evidence":{"pipeline_content_hash":"h4","branch_head_sha":"s4"},"branch":"feat/eng-930"}' \
+  > "$(issue_dir ENG-930)/issue-state.json"
+labels='["stage:implementing"]'
+if _poll_evaluate_skip "ENG-930" "$labels" >/dev/null 2>&1; then
+  if [[ -f "$(issue_dir ENG-930)/issue-state.json" ]]; then
+    rc="$(jq -r '.retry_count' "$(issue_dir ENG-930)/issue-state.json")"
+    if [[ "$rc" == "1" ]]; then
+      pass_at "QA adversarial (ENG-78 D-003): retry-immediately state with retry_count=1 preserved verbatim"
+    else
+      fail_at "QA adversarial (ENG-78 D-003): retry_count was mutated by poll" "got rc=$rc"
+    fi
+  else
+    fail_at "QA adversarial (ENG-78 D-003): retry-immediately state with retry_count=1 was deleted" \
+      "$(issue_dir ENG-930)/issue-state.json missing"
+  fi
+else
+  fail_at "QA adversarial (ENG-78 D-003): _poll_evaluate_skip should return 0 for active retry tracking" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-930"
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
