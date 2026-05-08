@@ -19,13 +19,25 @@ STUB_DIR="$(mktemp -d)"
 trap 'rm -rf "$STUB_DIR"' EXIT
 METRICS_CAPTURE="$STUB_DIR/metrics.capture"
 : > "$METRICS_CAPTURE"
-for cmd in linear.sh slack.sh; do
-  cat > "$STUB_DIR/$cmd" <<'SH'
+
+# Capture-stub for linear.sh (ENG-78). Records every invocation as a
+# single line in $LINEAR_CAPTURE for assertions. Mirrors the
+# metrics.sh capture pattern below.
+LINEAR_CAPTURE="$STUB_DIR/linear.capture"
+: > "$LINEAR_CAPTURE"
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$LINEAR_CAPTURE"
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# slack.sh stays a no-op stub (no test asserts on slack invocations).
+cat > "$STUB_DIR/slack.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
-  chmod +x "$STUB_DIR/$cmd"
-done
+chmod +x "$STUB_DIR/slack.sh"
 # metrics.sh as a capture stub so cases 9-14 can inspect the emitted
 # outcome/notes (ENG-10). Args: event issue_id stage outcome duration_ms notes.
 cat > "$STUB_DIR/metrics.sh" <<SH
@@ -66,6 +78,11 @@ reset_state() {
 latest_outcome() { awk -F= '/^OUTCOME=/ {out=$2} /^---$/ {} END{print out}' "$METRICS_CAPTURE"; }
 latest_notes()   { awk -F= '/^NOTES=/   {n=substr($0,7)} END{print n}' "$METRICS_CAPTURE"; }
 reset_metrics()  { : > "$METRICS_CAPTURE"; }
+
+# ENG-78 linear-capture helpers. linear_calls returns one line per
+# `bash linear.sh <args>` invocation made inside classify_failure.
+reset_linear()   { : > "$LINEAR_CAPTURE"; }
+linear_calls()   { cat "$LINEAR_CAPTURE"; }
 
 read_state() {
   cat "$(issue_dir "$1")/issue-state.json"
@@ -213,6 +230,59 @@ outcome=$(latest_outcome)
 [[ "$outcome" == "worktree-mutation-forbidden" ]] \
   && pass_at "case-15 exit 26 → worktree-mutation-forbidden" \
   || fail_at "case-15" "outcome=$outcome"
+
+# ─── Test 16 (ENG-78 D-001): retry-immediately fresh hit no halt label ────
+reset_state; reset_linear
+MOCK_PIPELINE_HASH="hashG" MOCK_BRANCH_SHA="shaG" \
+  classify_failure "ENG-920" "implement" "retry-immediately" "API-529" 20 ""
+if linear_calls | grep -q '^add-label ENG-920 pipeline:halted$'; then
+  fail_at "case-16 retry-immediately fresh hit must NOT apply pipeline:halted (ENG-78 D-001)" \
+    "got: $(linear_calls | grep pipeline:halted)"
+else
+  pass_at "case-16 retry-immediately fresh hit does NOT apply pipeline:halted (ENG-78 D-001)"
+fi
+
+# ─── Test 17 (ENG-78 D-001): retry-immediately auto-escalation applies halt ─
+reset_state
+MOCK_PIPELINE_HASH="hashH" MOCK_BRANCH_SHA="shaH" \
+  classify_failure "ENG-921" "implement" "retry-immediately" "r1" 20 ""
+MOCK_PIPELINE_HASH="hashH" MOCK_BRANCH_SHA="shaH" \
+  classify_failure "ENG-921" "implement" "retry-immediately" "r2" 20 ""
+reset_linear
+MOCK_PIPELINE_HASH="hashH" MOCK_BRANCH_SHA="shaH" \
+  classify_failure "ENG-921" "implement" "retry-immediately" "r3" 20 ""
+if linear_calls | grep -q '^add-label ENG-921 pipeline:halted$'; then
+  pass_at "case-17 auto-escalated retry-immediately applies pipeline:halted (ENG-78 G-2)"
+else
+  fail_at "case-17 auto-escalated retry-immediately should apply pipeline:halted" \
+    "got: $(linear_calls)"
+fi
+
+# ─── Test 18 (ENG-78 G-3): skip-until-human-acts applies halt verbatim ────
+reset_state; reset_linear
+MOCK_PIPELINE_HASH="hashI" MOCK_BRANCH_SHA="shaI" \
+  classify_failure "ENG-922" "implement" "skip-until-human-acts" "severe" 21 3
+if linear_calls | grep -q '^add-label ENG-922 pipeline:halted$'; then
+  pass_at "case-18 skip-until-human-acts applies pipeline:halted (ENG-78 G-3)"
+else
+  fail_at "case-18 skip-until-human-acts should apply pipeline:halted" \
+    "got: $(linear_calls)"
+fi
+
+# ─── Test 19 (ENG-78 D-002): retry-immediately uses retry-pending meta-shape ─
+reset_state; reset_linear
+MOCK_PIPELINE_HASH="hashJ" MOCK_BRANCH_SHA="shaJ" \
+  classify_failure "ENG-923" "implement" "retry-immediately" "API-529" 20 ""
+last_aoc="$(linear_calls | grep '^add-or-update-comment' | tail -1)"
+# Sig must contain retry-pending/, body must NOT contain halt verdict marker,
+# body must contain meta:metric transient-retry header.
+if [[ "$last_aoc" == *"retry-pending/implement/ENG-923"* ]] \
+   && [[ "$last_aoc" != *"<!-- pipeline: verdict result=halt"* ]] \
+   && [[ "$last_aoc" == *"<!-- meta: metric name=transient-retry"* ]]; then
+  pass_at "case-19 retry-immediately uses retry-pending sig + meta-shape body (ENG-78 D-002)"
+else
+  fail_at "case-19 retry-immediately marker shape" "got: $last_aoc"
+fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
