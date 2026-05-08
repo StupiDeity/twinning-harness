@@ -714,6 +714,51 @@ else
   fail_at "ENG-50: stage:implementing default branch" "got adv=$adv"
 fi
 
+# ─── ENG-78 D-003: retry-immediately state preserved across orphan cleanup ──
+# Setup: a state file with policy=retry-immediately, labels set without
+# either skip-until-* label.
+reset_fixtures
+mkdir -p "$(issue_dir ENG-925)"
+printf '{"policy":"retry-immediately","retry_count":1,"evidence":{"pipeline_content_hash":"h1","branch_head_sha":"s1"},"branch":"feat/eng-925"}' \
+  > "$(issue_dir ENG-925)/issue-state.json"
+
+labels='["stage:implementing"]'
+# _poll_evaluate_skip returns 0 (include); we don't read its stdout here —
+# we only verify the side effect on the state file.
+if _poll_evaluate_skip "ENG-925" "$labels" >/dev/null 2>&1; then
+  if [[ -f "$(issue_dir ENG-925)/issue-state.json" ]]; then
+    pass_at "ENG-78 D-003: retry-immediately state preserved when no skip label"
+  else
+    fail_at "ENG-78 D-003: retry-immediately state was deleted (orphan-cleanup overreach)" \
+      "$(issue_dir ENG-925)/issue-state.json missing after _poll_evaluate_skip"
+  fi
+else
+  fail_at "ENG-78 D-003: _poll_evaluate_skip should return 0 (include) for retry-immediately" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-925"
+
+# ─── ENG-78 D-003 adversarial: orphan skip-until-* state still cleaned up ──
+# A state file with policy=skip-until-code-changes BUT no skip label is
+# still treated as orphan (pre-ENG-78 orphan-cleanup behavior preserved).
+reset_fixtures
+mkdir -p "$(issue_dir ENG-926)"
+printf '{"policy":"skip-until-code-changes","retry_count":2,"evidence":{"pipeline_content_hash":"h2","branch_head_sha":"s2"},"branch":"feat/eng-926"}' \
+  > "$(issue_dir ENG-926)/issue-state.json"
+labels='["stage:implementing"]'
+if _poll_evaluate_skip "ENG-926" "$labels" >/dev/null 2>&1; then
+  if [[ ! -f "$(issue_dir ENG-926)/issue-state.json" ]]; then
+    pass_at "ENG-78 D-003 adversarial: orphan skip-until-code-changes state cleaned up"
+  else
+    fail_at "ENG-78 D-003 adversarial: skip-until-code-changes orphan was preserved (overreach)" \
+      "state file still exists after _poll_evaluate_skip"
+  fi
+else
+  fail_at "ENG-78 D-003 adversarial: _poll_evaluate_skip should return 0 for orphan" \
+    "non-zero exit"
+fi
+rm -rf "$PROJECT_STATE_DIR/ENG-926"
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
