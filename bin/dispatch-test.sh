@@ -1481,6 +1481,164 @@ else
 fi
 rm -f "$VIOLATION_CB8"
 
+# ─── Group 7 cont'd: branch-creation transcript-pattern fixtures (ENG-66, BC1-BC8) ───
+# AGENT_PROMPTS.md §3 rule 2 lists exactly four banned branch-creation
+# forms. _render_and_capture_stream's ENG-66 cross-stage loop scans for
+# these four prefixes on every dispatched stage (no stage gate; mirrors
+# the ENG-68 cross-stage core.bare block). BC1-BC4 pin each of the four
+# positives; BC5 pins the canonical-checkout negative; BC6 pins the
+# inherited startswith blind spot on chained commands (mirror of AS12);
+# BC7 pins renderer integration end-to-end on stage=implementing
+# (mirror of CB7); BC8 pins cross-stage gating by firing on stage=qa.
+printf '\n--- assert_no_tool_invocation fixtures (BC1-BC8, ENG-66 branch-creation patterns + renderer integration + cross-stage gating) ---\n'
+
+# BC1 — `git checkout -b feature/eng-99-foo` matches "git checkout -b"
+TX_BC1="$_TEST_STUB_DIR/tx-bc1.ndjson"
+cat > "$TX_BC1" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc1","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout -b feature/eng-99-foo"}}]}}
+NDJSON
+out_bc1="$(assert_no_tool_invocation "$TX_BC1" "git checkout -b")" && rc_bc1=0 || rc_bc1=$?
+if [[ "$rc_bc1" == "1" && "$out_bc1" == "git checkout -b feature/eng-99-foo" ]]; then
+  pass_at "BC1: 'git checkout -b feature/eng-99-foo' matches 'git checkout -b' pattern"
+else
+  fail_at "BC1" "rc=$rc_bc1 out=$out_bc1"
+fi
+
+# BC2 — `git checkout -B feature/eng-99-foo` matches "git checkout -B" (issue AC3)
+TX_BC2="$_TEST_STUB_DIR/tx-bc2.ndjson"
+cat > "$TX_BC2" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc2","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout -B feature/eng-99-foo"}}]}}
+NDJSON
+out_bc2="$(assert_no_tool_invocation "$TX_BC2" "git checkout -B")" && rc_bc2=0 || rc_bc2=$?
+if [[ "$rc_bc2" == "1" && "$out_bc2" == "git checkout -B feature/eng-99-foo" ]]; then
+  pass_at "BC2: 'git checkout -B feature/eng-99-foo' matches 'git checkout -B' pattern (issue AC3)"
+else
+  fail_at "BC2" "rc=$rc_bc2 out=$out_bc2"
+fi
+
+# BC3 — `git branch -m feature-eng-99` matches "git branch -m"
+TX_BC3="$_TEST_STUB_DIR/tx-bc3.ndjson"
+cat > "$TX_BC3" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc3","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git branch -m feature-eng-99"}}]}}
+NDJSON
+out_bc3="$(assert_no_tool_invocation "$TX_BC3" "git branch -m")" && rc_bc3=0 || rc_bc3=$?
+if [[ "$rc_bc3" == "1" && "$out_bc3" == "git branch -m feature-eng-99" ]]; then
+  pass_at "BC3: 'git branch -m feature-eng-99' matches 'git branch -m' pattern"
+else
+  fail_at "BC3" "rc=$rc_bc3 out=$out_bc3"
+fi
+
+# BC4 — `git switch -c feature/eng-99-foo` matches "git switch -c"
+TX_BC4="$_TEST_STUB_DIR/tx-bc4.ndjson"
+cat > "$TX_BC4" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc4","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git switch -c feature/eng-99-foo"}}]}}
+NDJSON
+out_bc4="$(assert_no_tool_invocation "$TX_BC4" "git switch -c")" && rc_bc4=0 || rc_bc4=$?
+if [[ "$rc_bc4" == "1" && "$out_bc4" == "git switch -c feature/eng-99-foo" ]]; then
+  pass_at "BC4: 'git switch -c feature/eng-99-foo' matches 'git switch -c' pattern"
+else
+  fail_at "BC4" "rc=$rc_bc4 out=$out_bc4"
+fi
+
+# BC5 — passthrough: `git checkout {canonical-branch}` (no -b/-B) does NOT
+# match any of the four forbidden patterns (issue AC4). Loop over each
+# pattern; each must return rc=0 with empty stdout.
+TX_BC5="$_TEST_STUB_DIR/tx-bc5.ndjson"
+cat > "$TX_BC5" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc5","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout feat/eng-66-add-transcript-based-runtime-defense"}}]}}
+NDJSON
+bc5_failures=0
+for _pat in 'git checkout -b' 'git checkout -B' 'git branch -m' 'git switch -c'; do
+  out_bc5="$(assert_no_tool_invocation "$TX_BC5" "$_pat")" && rc_bc5=0 || rc_bc5=$?
+  if [[ "$rc_bc5" != "0" || -n "$out_bc5" ]]; then
+    bc5_failures=$((bc5_failures+1))
+    fail_at "BC5 ($_pat passthrough)" "rc=$rc_bc5 out=$out_bc5"
+  fi
+done
+if [[ "$bc5_failures" == "0" ]]; then
+  pass_at "BC5: 'git checkout feat/eng-66-...' (no -b/-B) does NOT match any of the four forbidden patterns (issue AC4)"
+fi
+
+# BC6 — chained-command bypass: `git status && git checkout -b feature/foo`
+# starts with `git status`, not `git checkout -b`. Inherited startswith
+# blind spot per brainstorm O-2; mirrors AS12 / CB6's startswith semantics.
+# Documents the limitation so a future refactor doesn't accidentally fix
+# it without an audit.
+TX_BC6="$_TEST_STUB_DIR/tx-bc6.ndjson"
+cat > "$TX_BC6" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc6","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status && git checkout -b feature/foo"}}]}}
+NDJSON
+out_bc6="$(assert_no_tool_invocation "$TX_BC6" "git checkout -b")" && rc_bc6=0 || rc_bc6=$?
+if [[ "$rc_bc6" == "0" && -z "$out_bc6" ]]; then
+  pass_at "BC6: chained-command bypass — 'git status && git checkout -b feature/foo' does NOT match (startswith blind spot; brainstorm O-2)"
+else
+  fail_at "BC6 chained-command bypass" "rc=$rc_bc6 out=$out_bc6 (expected rc=0; the chained command starts with 'git status', not 'git checkout -b')"
+fi
+
+# BC7 — _render_and_capture_stream end-to-end on stage="implementing"
+# (mirror of CB7 for ENG-68). Pin the dispatch-side wiring of D-001/D-002
+# end-to-end: gating absence (cross-stage), sidecar write at
+# ${issue_dir}/.transcript-violation-implementing, log-line emission,
+# rc=23.
+USAGE_BC7="$ISSUE_DIR/usage-implementing-BC7.json"
+RAW_BC7="$ISSUE_DIR/.raw-stream.ndjson.tmp"
+VIOLATION_BC7="$ISSUE_DIR/.transcript-violation-implementing"
+rm -f "$USAGE_BC7" "$RAW_BC7" "$VIOLATION_BC7"
+
+bc7_rc=0
+RENDER_OUT_BC7="$(
+  _render_and_capture_stream "$USAGE_BC7" "$ISSUE_DIR" "implementing" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc7","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout -B feature/eng-66-foo"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || bc7_rc=$?
+
+if [[ "$bc7_rc" == "23" ]] \
+   && [[ -f "$VIOLATION_BC7" ]] \
+   && [[ "$(cat "$VIOLATION_BC7")" == "git checkout -B feature/eng-66-foo" ]] \
+   && grep -q '\[assert\] stage=implementing transcript invoked forbidden branch-creation form: git checkout -B feature/eng-66-foo' <<<"$RENDER_OUT_BC7"; then
+  pass_at "BC7 (renderer integration): branch-creation form on stage=implementing → rc=23, sidecar written, log line emitted"
+else
+  fail_at "BC7 renderer integration" "rc=$bc7_rc viol_exists=$([[ -f $VIOLATION_BC7 ]] && echo y || echo n) viol_body=$(cat "$VIOLATION_BC7" 2>/dev/null) out=$RENDER_OUT_BC7"
+fi
+rm -f "$VIOLATION_BC7"
+
+# BC8 — cross-stage scan fires on stage="qa" (verifies D-002 has no
+# stage gate). Mirror of BC7 with stage="qa" and the violation file
+# at .transcript-violation-qa. Confirms the ENG-66 loop is NOT gated
+# to a specific stage (in contrast to ENG-43 implementing-only and
+# ENG-71 building-only).
+USAGE_BC8="$ISSUE_DIR/usage-qa-BC8.json"
+RAW_BC8="$ISSUE_DIR/.raw-stream.ndjson.tmp"
+VIOLATION_BC8="$ISSUE_DIR/.transcript-violation-qa"
+rm -f "$USAGE_BC8" "$RAW_BC8" "$VIOLATION_BC8"
+
+bc8_rc=0
+RENDER_OUT_BC8="$(
+  _render_and_capture_stream "$USAGE_BC8" "$ISSUE_DIR" "qa" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc8","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git switch -c feature/eng-66-qa"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || bc8_rc=$?
+
+if [[ "$bc8_rc" == "23" ]] \
+   && [[ -f "$VIOLATION_BC8" ]] \
+   && [[ "$(cat "$VIOLATION_BC8")" == "git switch -c feature/eng-66-qa" ]] \
+   && grep -q '\[assert\] stage=qa transcript invoked forbidden branch-creation form: git switch -c feature/eng-66-qa' <<<"$RENDER_OUT_BC8"; then
+  pass_at "BC8 (cross-stage gating): branch-creation form on stage=qa → rc=23 (D-002 no-stage-gate verified)"
+else
+  fail_at "BC8 cross-stage gating" "rc=$bc8_rc viol_exists=$([[ -f $VIOLATION_BC8 ]] && echo y || echo n) viol_body=$(cat "$VIOLATION_BC8" 2>/dev/null) out=$RENDER_OUT_BC8"
+fi
+rm -f "$VIOLATION_BC8"
+
 # ─── QA-authored adversarial fixtures (AT1-AT5; ENG-43 not in Failure Mode → Test Map) ─
 # AS1-AS6 cover the helper in isolation. AT1-AT5 cover gaps the plan
 # explicitly accepted as "implicit" or didn't enumerate — most importantly
@@ -1772,6 +1930,156 @@ for _pat in 'git checkout' 'git switch' 'git pull' 'git reset'; do
 done
 if [[ "$at11_failures" == "0" ]]; then
   pass_at "AT11: null/missing/empty .input.command on Bash tool_use → rc=0 for all four patterns (no crash, no false positive)"
+fi
+
+# ─── ENG-66 QA-authored adversarial fixtures (BC9-BC13) ──────────────
+# BC1-BC8 cover each banned form, the canonical-checkout passthrough,
+# the chained-command blind spot, and renderer integration on two
+# stages. BC9-BC13 close the gaps a cold sub-agent flagged as worth
+# pinning that the plan's Failure Mode → Test Map handled implicitly:
+#
+#   BC9  — multi-pattern transcript: TWO ENG-66 banned forms in the
+#          same NDJSON. Pattern loop iterates `-b → -B → -m → -c`;
+#          pin sidecar holds the FIRST-iterated-pattern winner, NOT
+#          the temporally-first violation. Mirror of AT10 for the
+#          ENG-66 loop.
+#   BC10 — cross-loop interaction with ENG-68: transcript contains
+#          both `git checkout -b foo` AND `git config core.bare true`.
+#          ENG-66 loop is positioned BEFORE the ENG-68 block in
+#          _render_and_capture_stream, so rc=23 fires first; ENG-68's
+#          rc=13 is never evaluated. Sidecar reflects branch-creation
+#          violation only. Pin to prevent reorder regression.
+#   BC11 — leading-whitespace bypass: `.input.command = "  git
+#          checkout -b foo"`. startswith("git checkout -b") is false
+#          on a leading-space input — pin the inherited startswith
+#          blind spot for the negative case (rc=0). Documents the
+#          gap so a future jq `ltrimstr` upgrade is intentional.
+#   BC12 — case-sensitivity: `.input.command = "GIT CHECKOUT -B foo"`
+#          and `Git checkout -b bar`. startswith is byte-literal so
+#          neither matches; rc=0 for all four patterns. Pin negative
+#          behavior; macOS HFS+ is case-insensitive at the FS layer
+#          but the matcher is at the string layer.
+#   BC13 — non-Bash tool name: `.name = "bash"` (lowercase) carrying
+#          a banned command. The jq filter requires `.name == "Bash"`
+#          (capital-B); lowercase is dropped silently. Pin rc=0 for
+#          all four patterns. Mirror of AT8 (which pins this for the
+#          ENG-71 patterns).
+printf '\n--- ENG-66: QA-authored adversarial BC9-BC13 ---\n'
+
+# BC9 — multi-pattern transcript: `git switch -c foo` BEFORE `git checkout -b bar`
+# in NDJSON order, but loop iterates `-b → -B → -m → -c` so `git checkout -b`
+# is checked first. Sidecar must hold `git checkout -b bar` (loop-first
+# winner), not `git switch -c foo` (temporally-first violation).
+USAGE_BC9="$ISSUE_DIR/usage-implementing-BC9.json"
+VIOLATION_BC9="$ISSUE_DIR/.transcript-violation-implementing"
+rm -f "$USAGE_BC9" "$ISSUE_DIR/.raw-stream.ndjson.tmp" "$VIOLATION_BC9"
+
+bc9_rc=0
+RENDER_OUT_BC9="$(
+  _render_and_capture_stream "$USAGE_BC9" "$ISSUE_DIR" "implementing" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc9","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git switch -c feature/eng-66-foo"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout -b feature/eng-66-bar"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || bc9_rc=$?
+
+if [[ "$bc9_rc" == "23" ]] \
+   && [[ -f "$VIOLATION_BC9" ]] \
+   && [[ "$(cat "$VIOLATION_BC9")" == "git checkout -b feature/eng-66-bar" ]]; then
+  pass_at "BC9 (multi-pattern loop-order): two ENG-66 violations in transcript → sidecar holds 'git checkout -b ...' (loop-first winner, not NDJSON-first)"
+else
+  fail_at "BC9 multi-pattern loop-order" "rc=$bc9_rc viol_body=$(cat "$VIOLATION_BC9" 2>/dev/null) (expected rc=23, sidecar='git checkout -b feature/eng-66-bar' regardless of NDJSON order)"
+fi
+rm -f "$VIOLATION_BC9"
+
+# BC10 — cross-loop interaction: ENG-66 fires before ENG-68. Transcript
+# carries BOTH `git checkout -b foo` (ENG-66 violation) AND `git config
+# core.bare true` (ENG-68 violation). _render_and_capture_stream's
+# ENG-66 block sits BEFORE ENG-68 in source order; rc=23 must short-
+# circuit before rc=13 has a chance to fire.
+USAGE_BC10="$ISSUE_DIR/usage-implementing-BC10.json"
+VIOLATION_BC10="$ISSUE_DIR/.transcript-violation-implementing"
+rm -f "$USAGE_BC10" "$ISSUE_DIR/.raw-stream.ndjson.tmp" "$VIOLATION_BC10"
+
+bc10_rc=0
+RENDER_OUT_BC10="$(
+  _render_and_capture_stream "$USAGE_BC10" "$ISSUE_DIR" "implementing" 2>&1 <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc10","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git config core.bare true"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git checkout -b feature/eng-66-x"}}]}}
+{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-opus-4-7":{}}}
+NDJSON
+)" || bc10_rc=$?
+
+if [[ "$bc10_rc" == "23" ]] \
+   && [[ -f "$VIOLATION_BC10" ]] \
+   && [[ "$(cat "$VIOLATION_BC10")" == "git checkout -b feature/eng-66-x" ]]; then
+  pass_at "BC10 (ENG-66 ↑ ENG-68 ordering): transcript with both violations → rc=23 fires first, sidecar reflects branch-creation"
+else
+  fail_at "BC10 ENG-66/ENG-68 ordering" "rc=$bc10_rc viol_body=$(cat "$VIOLATION_BC10" 2>/dev/null) (expected rc=23, ENG-66 must short-circuit before ENG-68's rc=13)"
+fi
+rm -f "$VIOLATION_BC10"
+
+# BC11 — leading-whitespace bypass. `.input.command = "  git checkout -b foo"`
+# starts with two spaces; jq's startswith("git checkout -b") returns false.
+# Pin the inherited startswith blind spot — same family as BC6 (chained
+# commands). Documents the gap so a future ltrimstr/normalization
+# upgrade does not silently flip behavior without an audit.
+TX_BC11="$_TEST_STUB_DIR/tx-bc11.ndjson"
+cat > "$TX_BC11" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc11","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"  git checkout -b feature/eng-99-foo"}}]}}
+NDJSON
+out_bc11="$(assert_no_tool_invocation "$TX_BC11" "git checkout -b")" && rc_bc11=0 || rc_bc11=$?
+if [[ "$rc_bc11" == "0" && -z "$out_bc11" ]]; then
+  pass_at "BC11: leading-whitespace bypass — '  git checkout -b feature/eng-99-foo' does NOT match (startswith blind spot, negative pin)"
+else
+  fail_at "BC11 leading-whitespace bypass" "rc=$rc_bc11 out=$out_bc11 (expected rc=0; startswith is byte-literal — leading whitespace must NOT match)"
+fi
+
+# BC12 — case-sensitivity. startswith is a byte-literal compare; uppercase
+# `GIT CHECKOUT -B foo` and mixed-case `Git checkout -b bar` must NOT match.
+# Pin negative behavior so a future case-fold upgrade is intentional.
+TX_BC12="$_TEST_STUB_DIR/tx-bc12.ndjson"
+cat > "$TX_BC12" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc12","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"GIT CHECKOUT -B feature/eng-99-foo"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"Git checkout -b feature/eng-99-bar"}}]}}
+NDJSON
+bc12_failures=0
+for _pat in 'git checkout -b' 'git checkout -B' 'git branch -m' 'git switch -c'; do
+  out_bc12="$(assert_no_tool_invocation "$TX_BC12" "$_pat")" && rc_bc12=0 || rc_bc12=$?
+  if [[ "$rc_bc12" != "0" || -n "$out_bc12" ]]; then
+    bc12_failures=$((bc12_failures+1))
+    fail_at "BC12 ($_pat case-variant)" "rc=$rc_bc12 out=$out_bc12 (expected rc=0; startswith is case-sensitive)"
+  fi
+done
+if [[ "$bc12_failures" == "0" ]]; then
+  pass_at "BC12: case-variant — 'GIT CHECKOUT -B …' and 'Git checkout -b …' do NOT match any of the four patterns (startswith is byte-literal)"
+fi
+
+# BC13 — non-Bash tool name: `.name = "bash"` (lowercase) with a banned
+# command. The jq filter at bin/dispatch.sh:56 requires `.name == "Bash"`;
+# lowercase variants are silently filtered out before pattern matching.
+# Pin rc=0 to surface the contract that the discriminator is strict-equals
+# on the canonical capital-B name. Mirror of AT8 for ENG-66 patterns.
+TX_BC13="$_TEST_STUB_DIR/tx-bc13.ndjson"
+cat > "$TX_BC13" <<'NDJSON'
+{"type":"system","subtype":"init","session_id":"bc13","model":"test"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"bash","input":{"command":"git checkout -b feature/eng-99-foo"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"git switch -c feature/eng-99-bar"}}]}}
+NDJSON
+bc13_failures=0
+for _pat in 'git checkout -b' 'git checkout -B' 'git branch -m' 'git switch -c'; do
+  out_bc13="$(assert_no_tool_invocation "$TX_BC13" "$_pat")" && rc_bc13=0 || rc_bc13=$?
+  if [[ "$rc_bc13" != "0" || -n "$out_bc13" ]]; then
+    bc13_failures=$((bc13_failures+1))
+    fail_at "BC13 ($_pat non-Bash tool name)" "rc=$rc_bc13 out=$out_bc13 (expected rc=0; .name == \"Bash\" discriminator excludes lowercase 'bash' and 'Shell')"
+  fi
+done
+if [[ "$bc13_failures" == "0" ]]; then
+  pass_at "BC13: tool_use with .name=\"bash\" (lowercase) or \"Shell\" carrying banned commands → rc=0 for all four patterns (.name == \"Bash\" discriminator holds)"
 fi
 
 # ─── ENG-49 Gap #7: prompt↔allowlist contract ─────────────────────────

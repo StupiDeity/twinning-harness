@@ -3358,6 +3358,91 @@ printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
 SH
 chmod +x "$STUB_DIR/branch-name.sh"
 
+# ─── ENG-66 QA adversarial: rc=23 arm structural shape ─────────────
+# The plan explicitly skipped wiring a behavioral fixture for the
+# rc=23 arm in run-stage.sh::main on the rationale that stubbing
+# dispatch.sh to return 23 with a sidecar adds material complexity
+# and the addition is "a copy-paste from the existing rc=22 / rc=26
+# / rc=13 branches" (plan §"Test Strategy / Integration"). Mirror
+# of case-71-4 (rc=26 structural pin): assert the rc=23 arm's
+# load-bearing tokens are present so a future refactor that
+# accidentally drops one is caught.
+#
+# Without these structural pins, a copy-paste regression that swaps
+# the policy from "skip-until-human-acts" → "retry-immediately",
+# drops the `rm -f "$_viol_file_23"` cleanup, omits the sidecar-read,
+# or routes to `exit 0` would silently neutralise the runtime defense.
+# The dispatch-test BC1-BC8/BC9-BC13 fixtures pin the renderer side;
+# this is the run-stage.sh side.
+RC23_ARM_BLOCK="$(awk '/elif \(\( dispatch_rc == 23 \)\); then/,/exit 23/' "$HARNESS_DIR/run-stage.sh")"
+if [[ -z "$RC23_ARM_BLOCK" ]]; then
+  fail_at "case-66-1 rc=23 arm absent in run-stage.sh::main" \
+    "expected an `elif (( dispatch_rc == 23 )); then ... exit 23` arm; ENG-66 D-004 routing missing"
+else
+  rc23_arm_failures=0
+  # Token a: classify_failure call with skip-until-human-acts policy
+  if ! printf '%s\n' "$RC23_ARM_BLOCK" | grep -qF 'classify_failure'; then
+    rc23_arm_failures=$((rc23_arm_failures+1))
+    fail_at "case-66-1a rc=23 arm missing classify_failure call" "block did not contain classify_failure"
+  fi
+  if ! printf '%s\n' "$RC23_ARM_BLOCK" | grep -qF 'skip-until-human-acts'; then
+    rc23_arm_failures=$((rc23_arm_failures+1))
+    fail_at "case-66-1b rc=23 arm missing skip-until-human-acts policy" "block did not contain skip-until-human-acts (must NOT be retry-immediately)"
+  fi
+  # Token b: sidecar-read for the matched command
+  if ! printf '%s\n' "$RC23_ARM_BLOCK" | grep -qF 'transcript-violation-'; then
+    rc23_arm_failures=$((rc23_arm_failures+1))
+    fail_at "case-66-1c rc=23 arm missing sidecar read" "block did not reference .transcript-violation-<stage>"
+  fi
+  # Token c: classify_failure third arg includes the matched-command preamble
+  if ! printf '%s\n' "$RC23_ARM_BLOCK" | grep -qF 'forbidden branch-creation form'; then
+    rc23_arm_failures=$((rc23_arm_failures+1))
+    fail_at "case-66-1d rc=23 arm missing operator-facing message" "block did not contain 'forbidden branch-creation form'"
+  fi
+  # Token d: sidecar removal AND prompt_file removal (cleanup parity with rc=22 arm)
+  if ! printf '%s\n' "$RC23_ARM_BLOCK" | grep -qE 'rm -f.*_viol_file_23.*prompt_file|rm -f.*prompt_file.*_viol_file_23'; then
+    rc23_arm_failures=$((rc23_arm_failures+1))
+    fail_at "case-66-1e rc=23 arm missing sidecar+prompt_file cleanup" "block did not 'rm -f \"\$_viol_file_23\" \"\$prompt_file\"'"
+  fi
+  if (( rc23_arm_failures == 0 )); then
+    pass_at "case-66-1 rc=23 arm present in run-stage.sh::main with skip-until-human-acts policy, sidecar read, operator-facing message, and cleanup"
+  fi
+fi
+
+# ─── ENG-66 QA adversarial: rc=23 arm sits BETWEEN rc=22 and rc=26 ───
+# Plan A-N4: "inserted between the rc=22 arm and the rc=26 arm".
+# Source ordering matters because each arm is `elif`; if rc=23 sits
+# AFTER rc=26 the file is still syntactically valid but a future
+# refactor that flips rc=26 → unconditional fall-through would skip
+# rc=23. Pin the source-order invariant.
+LINE_RC22="$(grep -n 'elif (( dispatch_rc == 22 )); then' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1)"
+LINE_RC23="$(grep -n 'elif (( dispatch_rc == 23 )); then' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1)"
+LINE_RC26="$(grep -n 'elif (( dispatch_rc == 26 )); then' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1)"
+if [[ -n "$LINE_RC22" && -n "$LINE_RC23" && -n "$LINE_RC26" ]] \
+   && (( LINE_RC22 < LINE_RC23 )) && (( LINE_RC23 < LINE_RC26 )); then
+  pass_at "case-66-2 rc=23 arm sits between rc=22 and rc=26 in source order (rc22:$LINE_RC22 < rc23:$LINE_RC23 < rc26:$LINE_RC26)"
+else
+  fail_at "case-66-2 rc=23 arm source-order invariant" \
+    "rc22:${LINE_RC22:-MISSING} rc23:${LINE_RC23:-MISSING} rc26:${LINE_RC26:-MISSING} (plan A-N4 requires rc22 < rc23 < rc26)"
+fi
+
+# ─── ENG-66 QA adversarial: dispatch.sh ENG-66 loop sits BEFORE ENG-68 loop ──
+# Mirror of case-66-2 for dispatch.sh. The plan inserted the ENG-66
+# four-pattern loop between the ENG-71 building-stage block and the
+# ENG-68 cross-stage core.bare block; if a future refactor reordered
+# them, BC10's "ENG-66 fires first" property would silently flip and
+# transcripts that violate BOTH would surface as rc=13 (worktree-
+# config) instead of rc=23 (branch-creation). Pin the source-order.
+LINE_ENG66_LOOP="$(grep -n 'ENG-66: forbid agent-side branch-creation' "$HARNESS_DIR/dispatch.sh" | head -1 | cut -d: -f1)"
+LINE_ENG68_LOOP="$(grep -n 'ENG-68 D-003: forbid `core.bare`' "$HARNESS_DIR/dispatch.sh" | head -1 | cut -d: -f1)"
+if [[ -n "$LINE_ENG66_LOOP" && -n "$LINE_ENG68_LOOP" ]] \
+   && (( LINE_ENG66_LOOP < LINE_ENG68_LOOP )); then
+  pass_at "case-66-3 ENG-66 branch-creation loop sits BEFORE ENG-68 core.bare loop in dispatch.sh (eng66:$LINE_ENG66_LOOP < eng68:$LINE_ENG68_LOOP)"
+else
+  fail_at "case-66-3 dispatch.sh loop source-order invariant" \
+    "eng66:${LINE_ENG66_LOOP:-MISSING} eng68:${LINE_ENG68_LOOP:-MISSING} (plan A-N1 inserts ENG-66 between :218 ENG-71-fi and :219 ENG-68-comment; expected eng66 < eng68)"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

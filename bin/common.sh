@@ -125,6 +125,7 @@ failure_outcome_for_exit() {
     20) printf 'dispatch-failed' ;;
     21) printf 'scope-violation' ;;
     22) printf 'pr-opened-too-early' ;;
+    23) printf 'branch-creation-forbidden' ;;
     24) printf 'linear-post-failed' ;;
     25) printf 'agent-contract-missing' ;;
     26) printf 'worktree-mutation-forbidden' ;;

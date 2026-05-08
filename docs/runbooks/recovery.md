@@ -344,6 +344,84 @@ After `--action continue`:
 
 ---
 
+## 7. Halted issue with `branch-creation-forbidden` exit code
+
+An issue carries `pipeline:halted` after any-stage dispatch with the
+halt comment body referencing "agent transcript invoked forbidden
+branch-creation form" and an `events.jsonl` row with
+`outcome=branch-creation-forbidden`.
+
+### Symptom
+
+- `bash bin/linear.sh has-label ENG-N pipeline:halted` returns 0.
+- The most-recent `<!-- pipeline: verdict result=halt reason=agent-blocked -->`
+  halt comment body contains: `agent transcript invoked forbidden
+  branch-creation form: <command>`, where `<command>` starts with one
+  of `git checkout -b`, `git checkout -B`, `git branch -m`, or
+  `git switch -c`.
+- `events.jsonl` shows a `stage-end` event with
+  `outcome=branch-creation-forbidden` for the offending stage.
+
+### Authoritative signal
+
+`AGENT_PROMPTS.md` §3 rule 2 explicitly forbids these four
+branch-creation forms; the orchestrator has already created the
+canonical `feat/eng-N-…` (or `fix/eng-N-…`) branch and checked it out
+in the per-issue worktree before the agent's dispatch. An agent that
+ran one of the four forbidden forms has likely created an off-canon
+branch (e.g. `feature/eng-N-…`); the worktree's HEAD may now be on
+that wrong branch. ENG-66's cross-stage runtime defense
+(`bin/dispatch.sh::_render_and_capture_stream`) is the runtime tripwire
+on top of the prompt rule and the
+`bin/agent-prompts-content-test.sh:505` content pin.
+
+### Recovery
+
+1. Inspect the matched command in the halt comment body. Confirm it
+   starts with one of the four banned forms.
+2. Inspect the worktree HEAD:
+   ```bash
+   git -C "$PROJECT_STATE_DIR/<slug>/ENG-N/worktree" status
+   ```
+3. If the worktree's HEAD is on a wrong-named branch (e.g.
+   `feature/eng-N-…`):
+   1. Switch back to the canonical branch (use
+      `bash bin/branch-name.sh ENG-N` to derive the canonical name):
+      ```bash
+      git -C <wt> checkout feat/eng-N-<slug>
+      ```
+   2. Delete the wrong-named branch:
+      ```bash
+      git -C <wt> branch -D <wrong-branch>
+      ```
+   3. Confirm `git -C <wt> status` shows `On branch feat/eng-N-…`.
+4. Resume the issue:
+   ```bash
+   bash bin/pipeline.sh decide ENG-N --action continue
+   ```
+
+### Build-stage collision note
+
+On the build stage, an `rc=26` halt with
+`outcome=worktree-mutation-forbidden` whose sidecar shows a
+`-b`/`-B`/`-c` form is the same underlying branch-creation drift
+surfaced via the ENG-71 ordering (D-006 collision case). Apply the
+same recovery recipe — the operator-facing recovery is identical
+regardless of which exit code fired.
+
+### Verify
+
+After `--action continue`:
+
+1. `bash bin/linear.sh has-label ENG-N pipeline:halted || echo "not halted"`
+   returns `not halted`.
+2. The next 5-minute poll tick re-dispatches the offending stage.
+   Inspect the new dispatch's transcript at
+   `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log` to confirm the
+   re-dispatch is clean (no rc=23 in the log).
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
