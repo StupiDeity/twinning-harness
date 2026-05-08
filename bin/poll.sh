@@ -57,8 +57,22 @@ _poll_evaluate_skip() {
   # No skip label AND no state file → normal eligible candidate.
   if [[ "$has_code_label" != "true" && "$has_human_label" != "true" ]]; then
     if [[ -f "$state_file" ]]; then
-      log "poll: orphan state file for $ident (no skip label); removing"
-      rm -f "$state_file"
+      # ENG-78: a state file with policy=retry-immediately is NOT
+      # orphan — it's the durable retry-tracking record that
+      # classify_failure's auto-escalation guard reads on every tick
+      # to compute retry_count. Removing it would reset the counter
+      # to 0 each tick and break the 2-retry escalation cap. Only
+      # delete state files whose policy is genuinely orphaned (the
+      # original use case: human removed a skip label without
+      # removing the file, or pre-ENG-78 leftover).
+      local cur_policy
+      cur_policy="$(jq -r '.policy // ""' "$state_file" 2>/dev/null || true)"
+      if [[ "$cur_policy" == "retry-immediately" ]]; then
+        log "poll: keeping retry-immediately state for $ident (active retry tracking, ENG-78)"
+      else
+        log "poll: orphan state file for $ident (no skip label, policy=$cur_policy); removing"
+        rm -f "$state_file"
+      fi
     fi
     return 0
   fi
