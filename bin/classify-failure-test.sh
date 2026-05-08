@@ -353,6 +353,21 @@ else
   fail_at "case-22 (QA adversarial) attempt-counter shape" "got: $full_capture"
 fi
 
+# ─── Test 23: exit 23 → outcome=branch-creation-forbidden (ENG-66) ────
+# Pin the new cross-stage exit code added in ENG-66. Without this
+# fixture, a regression that drops the `23)` arm in
+# failure_outcome_for_exit routes silently to `unknown-exit-23` and
+# the retrospective's §1 outcome filter misses it (CLAUDE.md: "adding
+# a new exit code without updating that switch routes it to
+# `unknown-exit-N` and the retrospective's §1 filter will not classify
+# it"). Mirror of Test 15 (ENG-71 exit-26 entry pin).
+reset_state; reset_metrics
+classify_failure "ENG-914" "implementing" "skip-until-human-acts" "br" 23 ""
+outcome=$(latest_outcome)
+[[ "$outcome" == "branch-creation-forbidden" ]] \
+  && pass_at "case-23 exit 23 → branch-creation-forbidden" \
+  || fail_at "case-23" "outcome=$outcome"
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
