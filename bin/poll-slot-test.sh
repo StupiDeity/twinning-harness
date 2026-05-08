@@ -446,13 +446,13 @@ else
     "extra_halt_clear=$extra_halt_clear extra_resume_post=$extra_resume_post"
 fi
 
-# ─── ENG-45: stage:building + only pipeline-wait fresh → hold,advanceable=true
-# Asserts the load-bearing claim from plan A-004: _poll_classify_labels' else
-# branch (the soft-redispatch path) classifies an issue with stage:building, no
-# halt label, no skip labels, and only a pipeline-wait fresh comment as
-# slot=hold,advanceable=true. This is the path the new wait flow exploits to
-# get the orchestrator to re-dispatch build on the next tick without operator
-# intervention.
+# ─── AC-WAIT-1 (ENG-85): stage:building + only pipeline-wait fresh
+#     → slot=vacate, advanceable=false, wait_recall=true. Replaces the
+#     pre-ENG-85 ENG-45 fixture (which asserted hold/advanceable=true
+#     via the catch-all else branch). The pre-ENG-85 hold/true
+#     classification was the load-bearing starvation surface this
+#     ticket fixes; AC-WAIT-3 covers the "wait still progresses
+#     eventually" contract that the prior ENG-45 fixture pinned.
 reset_fixtures
 write_comments_fixture "ENG-45-WAIT" \
   '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
@@ -460,11 +460,17 @@ write_comments_fixture "ENG-45-WAIT" \
 
 out="$(_poll_classify_labels "ENG-45-WAIT" '["stage:building"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
-adv="$(jq -r '.advanceable // ""'  <<<"$out")"
-if [[ "$slot" == "hold" && "$adv" == "true" ]]; then
-  pass_at "ENG-45 poll-slot: pipeline-wait re-dispatches via else branch (hold,advanceable=true)"
+# Use `tostring` rather than `// ""` because jq's `//` treats boolean false
+# as null and falls through to the default — which would emit "" not "false".
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recall | tostring' <<<"$out")"
+ts="$(jq -r '.wait_progress_ts // ""' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "true" \
+      && "$ts" == "2026-04-28T08:17:00Z" ]]; then
+  pass_at "AC-WAIT-1 (ENG-85): wait verdict on stage:building → vacate/false/wait_recall=true"
 else
-  fail_at "ENG-45 poll-slot wait re-dispatch" "got slot=$slot adv=$adv (want hold/true) full=$out"
+  fail_at "AC-WAIT-1 (ENG-85): wait verdict classification" \
+    "got slot=$slot adv=$adv recall=$recall ts=$ts (want vacate/false/true/2026-04-28T08:17:00Z) full=$out"
 fi
 
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──

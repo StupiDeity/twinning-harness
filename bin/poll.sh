@@ -222,7 +222,7 @@ _poll_classify_labels() {
     jq -r --arg n "$1" '[.[] | select(. == $n)] | length > 0' <<<"$labels_json"
   }
 
-  local class
+  local class fresh_wait=""
   if [[ "$(_has_label pipeline:abandoned)" == "true" ]]; then
     class='{"slot":"terminal","advanceable":false}'
   elif [[ "$(_has_label pipeline:paused)" == "true" ]] \
@@ -245,6 +245,15 @@ _poll_classify_labels() {
           class='{"slot":"hold","advanceable":false}' ;;
       esac
     fi
+  elif fresh_wait="$(find_fresh_wait_verdict "$ident" 2>/dev/null)"; [[ -n "$fresh_wait" ]]; then
+    # ENG-85: a wait verdict newer than the most recent transition vacates
+    # the slot. Symmetric with the pipeline-halt arm above — both express
+    # agent-idle-on-external-signal. Pass 6 in main() picks wait-recallable
+    # issues only when no held / inbox work is ready.
+    local _wait_ts
+    _wait_ts="$(jq -r '.created_at' <<<"$fresh_wait")"
+    class="$(jq -nc --arg ts "$_wait_ts" \
+      '{slot:"vacate", advanceable:false, wait_recall:true, wait_progress_ts:$ts}')"
   elif [[ "$(_has_label stage:reviewing)" == "true" ]]; then
     # ENG-50: gate review dispatch on observable PR state.
     # ENG-53 #12: derive the branch via bin/branch-name.sh (same convention
