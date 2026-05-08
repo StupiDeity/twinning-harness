@@ -1556,6 +1556,158 @@ test_cross_issue_isolation_self_leak_does_not_block_other_issues() {
 }
 test_cross_issue_isolation_self_leak_does_not_block_other_issues
 
+# ─── ENG-69 QA adversarial coverage (post-review) ─────────────────────────
+#
+# Plug three gaps surfaced in the review-stage minor findings:
+#   - rc=24 below threshold (symmetric to the leaked-in-scope below/at-threshold
+#     pair). Locks the negative case for the breaker — accidentally tripping
+#     on FIRST occurrence is exactly the ENG-69 incident shape, just on a
+#     different lane.
+#   - tally_leaked_in_scope_failure with bogus issue id. Symmetric to the
+#     halt_issue_for_self_leak test; both helpers share the same regex
+#     guard, but only one was tested.
+#   - halt_issue_for_self_leak with EXACTLY 5 hashes. Boundary between the
+#     "all hashes shown, no suffix" case and the "(and N more)" case. The
+#     existing tests cover 2 and 7 hashes, leaving the boundary unasserted.
+
+# Below-threshold rc=24: 1 and 2 ticks must NOT trip the breaker, even
+# though the global counter increments.
+test_route_run_stage_exit_rc24_below_threshold() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rc24below.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local i
+  for i in 1 2; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      FAIL_COUNTER="$tdir/state/.consecutive-failures"
+      mkdir -p "$tdir/state"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      route_run_stage_exit ENG-951 implementing 24 >/dev/null 2>&1
+    ) || true
+  done
+
+  local fc; fc="$(cat "$tdir/state/.consecutive-failures" 2>/dev/null | tr -d ' \n')"
+  assert_eq "ENG-69 QA-adv rc=24 below threshold: global counter increments to 2" "2" "$fc"
+
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69 QA-adv rc=24 below threshold does NOT trip breaker" "false" "$pause_state"
+
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69 QA-adv rc=24 below threshold does not invoke classify_failure" "0" "$n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc24_below_threshold
+
+# Bogus-id regex guard: tally_leaked_in_scope_failure rejects '../../etc/passwd'
+# before any side effect (metric emit, counter write, or classify_failure call).
+# Symmetric to test_halt_issue_for_self_leak_rejects_bogus_issue_id.
+test_tally_leaked_in_scope_failure_rejects_bogus_issue_id() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-tallybogus.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+  local rc=0
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    mkdir -p "$PROJECT_STATE_DIR"
+    classify_failure() { :; }
+    tally_leaked_in_scope_failure '../../etc/passwd' implementing 1 abcdef012345 \
+      >/dev/null 2>&1
+  ) || rc=$?
+  if (( rc != 0 )); then
+    report_ok "ENG-69 QA-adv tally bogus issue id is rejected (die)"
+  else
+    report_fail "ENG-69 QA-adv tally bogus issue id is rejected (die)" "non-zero exit" "rc=$rc"
+  fi
+  # Metric MUST NOT have been emitted before the validation check.
+  local got_metric; got_metric="$(cat "$STUB_METRICS_LOG" 2>/dev/null || true)"
+  assert_eq "ENG-69 QA-adv tally bogus issue id emits no metric" "" "$got_metric"
+  # No counter written under any path containing 'passwd'.
+  if find "$tdir/state" -name '.consecutive-failures' 2>/dev/null | grep -q .; then
+    report_fail "ENG-69 QA-adv tally bogus issue id writes no counter file" \
+      "no .consecutive-failures under state/" "found"
+  else
+    report_ok "ENG-69 QA-adv tally bogus issue id writes no counter file"
+  fi
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_failure_rejects_bogus_issue_id
+
+# Boundary at exactly 5 hashes: all 5 appear in order, NO "(and N more)" suffix.
+# The truncation logic uses `(( h_count >= 5 )) && break`; off-by-one would
+# either truncate to 4 (suffix "(and 1 more)" appears) or leak a 6th hash.
+test_halt_issue_for_self_leak_at_exactly_5_hashes() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-exactly5.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { :; }
+    is_orchestrator_paused()  { printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-961 reviewing \
+      000011112222 333344445555 666677778888 9999aaaabbbb ccccddddeeee \
+      >/dev/null 2>&1
+  ) || true
+
+  local reason; reason="$(awk -F'|' '{print $4}' "$classify_log")"
+  # No suffix at boundary.
+  case "$reason" in
+    *"(and "*"more)"*)
+      report_fail "ENG-69 QA-adv exactly-5: no '(and N more)' suffix at boundary" \
+        "no (and N more)" "$reason" ;;
+    *)
+      report_ok "ENG-69 QA-adv exactly-5: no '(and N more)' suffix at boundary" ;;
+  esac
+  # All 5 hashes present in order.
+  case "$reason" in
+    *000011112222*333344445555*666677778888*9999aaaabbbb*ccccddddeeee*)
+      report_ok "ENG-69 QA-adv exactly-5: all 5 hashes present in order" ;;
+    *)
+      report_fail "ENG-69 QA-adv exactly-5: all 5 hashes present in order" \
+        "all 5 hashes in order" "$reason" ;;
+  esac
+  # Reason field's hash slice matches the canonical regex.
+  local hash_slice="${reason#*leaked hashes: }"
+  if printf '%s' "$hash_slice" | grep -qE '^[0-9a-f]{12}(, [0-9a-f]{12}){4}$'; then
+    report_ok "ENG-69 QA-adv exactly-5: hash slice matches ^[0-9a-f]{12}(, [0-9a-f]{12}){4}\$"
+  else
+    report_fail "ENG-69 QA-adv exactly-5: hash slice matches ^[0-9a-f]{12}(, [0-9a-f]{12}){4}\$" \
+      "5 hex-only sha12 entries" "$hash_slice"
+  fi
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_at_exactly_5_hashes
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
