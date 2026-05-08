@@ -391,6 +391,14 @@ transitions to QA. Issues at any other stage are unaffected.
 
 ## Failure-mode quick reference
 
+For "this looks weird and I'm not sure why" mental-model gaps (slot
+accounting surprises, disk vs Linear divergence, sig-dedup invisibility,
+branch shape invariants, per-target setup gaps), see
+[`docs/runbooks/operator-mental-model.md`](docs/runbooks/operator-mental-model.md)
+— it catalogs the silently load-bearing assumptions that have repeatedly
+cost operator time, with `grep` / `cat` / `bin/linear.sh` commands to
+inspect each surface.
+
 | Symptom | Where to look |
 |---|---|
 | Tick is silent | `$PROJECT_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
