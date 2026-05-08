@@ -114,36 +114,62 @@ classify_failure() {
       ;;
   esac
 
-  # ENG-18: every policy outcome is a halt surface from the Verdict
-  # Handler's perspective; apply the sentinel label unconditionally.
-  bash "$_CFS_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
-
-  # Halt comment (edit-in-place via sig). Leading marker line lets the
-  # Verdict Handler's find_fresh_verdict treat this as a halt-for-human
-  # verdict. Marker reason depends on policy.
-  local sig="halt/$stage/$issue"
-  local marker_reason
+  # ENG-78: only the halt-policy branches apply pipeline:halted.
+  # retry-immediately is the explicit non-halt failure path — poll.sh
+  # re-dispatches automatically on the next tick. The auto-escalation
+  # guard at lines 67-77 will flip effective_policy to
+  # skip-until-code-changes after retry_count >= 2 same-evidence
+  # retries; that branch DOES apply the halt label below.
   case "$effective_policy" in
-    skip-until-human-acts) marker_reason="agent-blocked" ;;
-    *)                     marker_reason="agent-failure" ;;
-  esac
-  local comment_body
-  comment_body="$(printf '<!-- pipeline: verdict result=halt reason=%s -->\n\nPipeline: `%s` stage halted — %s\n\n**Policy:** %s\n**Recorded at:** %s\n**Branch:** %s\n**Retry count:** %d\n\n**Resume:** ' \
-    "$marker_reason" "$stage" "$effective_reason" "$effective_policy" "$recorded_at" "${branch:-none}" "$retry_count")"
-  case "$effective_policy" in
-    skip-until-code-changes)
-      comment_body+="$(printf 'auto-resumes when `.pipeline/{bin,config.json,AGENT_PROMPTS.md}` content hash OR `origin/%s` HEAD changes, OR when `pipeline:skip-until-code-changes` label is removed.' "${branch:-<branch>}")"
-      ;;
-    skip-until-human-acts)
-      comment_body+="remove the \`pipeline:skip-until-human-acts\` label when the underlying issue is resolved."
+    skip-until-code-changes|skip-until-human-acts)
+      bash "$_CFS_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
       ;;
     retry-immediately)
-      comment_body+="pipeline will retry automatically on the next tick."
+      : # no halt; orchestrator re-dispatches next tick (ENG-78)
       ;;
   esac
-  comment_body+="$(printf '\n\n**Evidence:**\n- pipeline_content_hash: `%s`\n- branch_head_sha: `%s`\n' "$current_hash" "${current_sha:-<none>}")"
 
-  bash "$_CFS_SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body" || true
+  # ENG-78: split comment shape on effective_policy.
+  # Halt-policy arms post the same halt-shape verdict marker as today
+  # (preserves verdict-handler / find_fresh_verdict / status.sh behavior).
+  # retry-immediately posts a meta-shape transient-retry comment under a
+  # distinct sig so an auto-escalation tick later (effective_policy →
+  # skip-until-code-changes) creates a NEW halt comment with its OWN
+  # createdAt rather than overwriting in place. find_fresh_verdict
+  # excludes meta-shape (event != "verdict" filter at
+  # verdict-handler.sh:111), so the retry-pending comment never registers
+  # as a halt verdict and never trips the halt-sprawl threshold.
+  case "$effective_policy" in
+    skip-until-code-changes|skip-until-human-acts)
+      local sig="halt/$stage/$issue"
+      local marker_reason
+      case "$effective_policy" in
+        skip-until-human-acts) marker_reason="agent-blocked" ;;
+        *)                     marker_reason="agent-failure" ;;
+      esac
+      local comment_body
+      comment_body="$(printf '<!-- pipeline: verdict result=halt reason=%s -->\n\nPipeline: `%s` stage halted — %s\n\n**Policy:** %s\n**Recorded at:** %s\n**Branch:** %s\n**Retry count:** %d\n\n**Resume:** ' \
+        "$marker_reason" "$stage" "$effective_reason" "$effective_policy" "$recorded_at" "${branch:-none}" "$retry_count")"
+      case "$effective_policy" in
+        skip-until-code-changes)
+          comment_body+="$(printf 'auto-resumes when `.pipeline/{bin,config.json,AGENT_PROMPTS.md}` content hash OR `origin/%s` HEAD changes, OR when `pipeline:skip-until-code-changes` label is removed.' "${branch:-<branch>}")"
+          ;;
+        skip-until-human-acts)
+          comment_body+="remove the \`pipeline:skip-until-human-acts\` label when the underlying issue is resolved."
+          ;;
+      esac
+      comment_body+="$(printf '\n\n**Evidence:**\n- pipeline_content_hash: `%s`\n- branch_head_sha: `%s`\n' "$current_hash" "${current_sha:-<none>}")"
+      bash "$_CFS_SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body" || true
+      ;;
+    retry-immediately)
+      local sig="retry-pending/$stage/$issue"
+      local remaining=$((2 - retry_count))
+      local comment_body
+      comment_body="$(printf '<!-- meta: metric name=transient-retry stage=%s attempt=%d -->\n\nPipeline: transient `%s`-stage failure — %s\n\n**Status:** retry-pending (attempt %d of 2 before auto-escalation to `skip-until-code-changes`).\n**Recorded at:** %s\n**Branch:** %s\n\nThe pipeline will re-dispatch this stage on the next tick. If the same evidence reproduces this failure %d more time(s), the orchestrator will halt the issue with `pipeline:skip-until-code-changes` for operator visibility.\n\n**Evidence:**\n- pipeline_content_hash: `%s`\n- branch_head_sha: `%s`\n' \
+        "$stage" "$retry_count" "$stage" "$effective_reason" "$retry_count" "$recorded_at" "${branch:-none}" "$remaining" "$current_hash" "${current_sha:-<none>}")"
+      bash "$_CFS_SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body" || true
+      ;;
+  esac
 
   # Slack.
   bash "$_CFS_SCRIPT_DIR/slack.sh" warn "Stage $stage on $issue → $effective_policy (exit=$exit_code, retry=$retry_count)" || true
