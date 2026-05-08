@@ -561,6 +561,31 @@ else
   fail_at "AC-WAIT-5 (ENG-85): Pass 6 priority" "got issue_id=$issue_id (want ENG-WAIT-G) full=$out"
 fi
 
+# ─── AC-WAIT-6 (ENG-85, ENG-45 hand-off): when budget exhausts,
+#     _handle_wait writes a halt verdict + applies pipeline:halted.
+#     find_fresh_wait_verdict returns empty (latest verdict is halt,
+#     not wait — supersession rule). The existing pipeline-halt arm
+#     fires (slot=vacate, advanceable=false, no wait_recall). Pins the
+#     brainstorm §"Acceptance" §4 hand-off:
+#     "ENG-45 external_signal_budget escalation path still works
+#     (wait → halt-for-budget-exhausted → existing halt vacate)."
+reset_fixtures
+write_comments_fixture "ENG-WAIT-H" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z' \
+  '<!-- pipeline: verdict result=halt reason=external-signal-budget-exhausted -->|2026-04-28T10:30:00Z'
+
+out="$(_poll_classify_labels "ENG-WAIT-H" '["stage:building","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recall // false | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "false" ]]; then
+  pass_at "AC-WAIT-6 (ENG-85): budget-exhausted halt routes through halted arm, NOT wait arm"
+else
+  fail_at "AC-WAIT-6 (ENG-85): halt-handoff" \
+    "got slot=$slot adv=$adv recall=$recall (want vacate/false/false) full=$out"
+fi
+
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
 # A Todo issue carrying only pipeline:skip-until-human-acts (no state
 # file, no stage:* label) must be skipped by Pass 5's inbox jq filter.
