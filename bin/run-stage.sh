@@ -653,6 +653,64 @@ _pre_dispatch_merge_gate() {
   return 0
 }
 
+# ENG-86: orchestrator-side entry-condition gate. Runs AFTER
+# _pre_dispatch_merge_gate (handles MERGED) and BEFORE render-prompt +
+# dispatch. Shells out to bin/entry-conditions.sh::should_dispatch which
+# reads a per-stage check list from CONFIG and prints `proceed`,
+# `skip:<reason>`, or `error:<check-name>` on stdout.
+#
+# When the gate prints `skip:`, this helper bumps the existing ENG-45
+# wait counter via _handle_wait so external_signal_budget escalation
+# still applies — a buggy predicate that permanently skips dispatch
+# halts the issue within max_attempts ticks.
+#
+# Returns 0 = gate did NOT fire (caller proceeds to dispatch — note
+#             inversion vs _pre_dispatch_merge_gate).
+# Returns 1 = gate fired skip; caller MUST exit 0 (caller emits
+#             paired dispatch-skipped metric events).
+#
+# Fail-open on subprocess failure / unexpected outcome (D-010): the
+# agent-side P2 (AGENT_PROMPTS.md:1287-1289) is the defense-in-depth
+# fallback when an operator opts out of the config or when `gh` errors.
+_entry_conditions_gate() {
+  # Lane attribution mirrors _pre_dispatch_merge_gate at lines 618-619
+  # and _handle_wait at lines 490-491: file-scope inheritance is correct
+  # today, but explicit assignment prevents silent lane-violation if a
+  # future caller invokes this helper from an agent sub-shell.
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+
+  local ident="$1" stage="$2"
+  local outcome
+  outcome="$(bash "$SCRIPT_DIR/entry-conditions.sh" should_dispatch \
+              "$stage" "$ident" 2>/dev/null || printf 'error:invocation')"
+
+  case "$outcome" in
+    proceed)
+      return 0
+      ;;
+    skip:*)
+      local reason="${outcome#skip:}"
+      log "entry-conditions: skip ($ident, $stage) — reason=$reason"
+      # Reuse _handle_wait so external_signal_budget escalation still
+      # applies. Within budget → returns 0; budget exhausted → returns
+      # 1 (halt already applied). Either way the caller exits clean;
+      # the halt label is the durable signal.
+      _handle_wait "$ident" "$stage" "$reason" || true
+      return 1
+      ;;
+    error:*)
+      local check="${outcome#error:}"
+      log "entry-conditions: WARNING — check '$check' errored for $ident/$stage; falling through to dispatch"
+      return 0
+      ;;
+    *)
+      log "entry-conditions: unexpected outcome '$outcome'; falling through to dispatch"
+      return 0
+      ;;
+  esac
+}
+
 main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
@@ -718,6 +776,22 @@ main() {
       "merged-pre-dispatch" 0 || true
     bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" \
       "merged-pre-dispatch" "$duration" || true
+    exit 0
+  fi
+
+  # ENG-86: orchestrator-side entry-condition gate. If the configured
+  # check(s) for this stage are unmet, skip the agent dispatch entirely
+  # (~100ms vs ~2 min full dispatch). The gate bumps the ENG-45 wait
+  # counter via _handle_wait so external_signal_budget still escalates a
+  # stale predicate. The `if !` inversion is intentional: the helper
+  # returns 0 (proceed) on the pass-through path; we negate to enter the
+  # exit-block only on `return 1` (gate fired skip).
+  if ! _entry_conditions_gate "$ident" "$stage"; then
+    t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+    bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" \
+      "dispatch-skipped" 0 || true
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" \
+      "dispatch-skipped" "$duration" || true
     exit 0
   fi
 
