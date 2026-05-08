@@ -258,8 +258,9 @@ in this branch's history.
   EC-5 carve-out (Read is allowed; the *decision* to skip Write is
   what's banned) relies on this.**
   - **Status:** verified per brainstorm §12 "Codebase-fact
-    verification" — `bin/dispatch.sh:284-285` (the `reviewing` line
-    of `allowed_tools_for`).
+    verification" — `bin/dispatch.sh:303` (the `reviewing` line of
+    `allowed_tools_for`; the case-arm sibling of `brainstorming)` at
+    `:299`, `implementing)` at `:301`, `ui)` at `:302`).
 
 - **A-015 — `bin/verdict-handler.sh::_VH_LOOPBACK_TRANSITIONS` (lines
   32-38) lists `reviewing|implementing` as a direct loopback row;
@@ -272,11 +273,18 @@ in this branch's history.
     paragraph.
 
 - **A-016 — `bin/common.sh::issue_dir` resolves to
-  `$PROJECT_STATE_DIR/<ident>` and validates `ident =~
-  ^[A-Z]+-[0-9]+$`. The brainstorm's D-004 security precondition
-  (validate `$ident` at the un-deferral mtime callsite) leans on
-  the validator already existing at `bin/common.sh:67-72`.**
-  - **Status:** verified. No callsite changes in this plan.
+  `$PROJECT_STATE_DIR/<ident>` and requires non-empty input only;
+  it does NOT validate the `^ENG-[0-9]+$` shape. Brainstorm §4
+  D-004 (lines 521-525) correctly identifies this as a security
+  precondition for the un-deferral PR — the deferred mtime work
+  must add `^ENG-[0-9]+$` validation at the mtime callsite, or
+  harden `issue_dir` itself, before it ships (an unsanitized
+  `$ident` containing `../` would otherwise resolve outside
+  `$PROJECT_STATE_DIR`). Today this is benign because all callers
+  validate upstream.**
+  - **Status:** verified by direct read of `bin/common.sh:68-72`
+    (`[[ -n "$issue" ]] || die …` is the only check). No callsite
+    changes in this plan.
 
 - **A-017 — Linear has no comment-delete mechanism; this is what
   forces sigs to be append-only-or-upsert. The brainstorm's

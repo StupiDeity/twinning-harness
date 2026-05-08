@@ -226,7 +226,7 @@ mandate.
   at` strip → either dedup-equivalence path appending a footer OR
   straight overwrite with same content" is consistent with this
   function's behavior).
-- The Review Agent's `Decision path B` at `AGENT_PROMPTS.md:986-1004`
+- The Review Agent's `Decision path B` at `AGENT_PROMPTS.md:979-995`
   is the loopback-emitting path: it posts the gh pr review summary
   + Linear summary, bumps the rejection counter, and runs
   `bash bin/pipeline.sh event {issue_id} verdict fail --target
@@ -662,7 +662,7 @@ if all of:
   `implementing|ui` after review-loopback dispatches implementing.
   Verified.
 - `bin/common.sh::parse_pipeline_marker` (verified at
-  `bin/common.sh:185-260`) returns event:`meta` for `<!-- meta:
+  `bin/common.sh:191-241`) returns event:`meta` for `<!-- meta:
   ... -->` shapes; adding a `findings` kind would be parser-
   compatible without code change to the parser itself, but the
   closed-vocabulary check at the validator (orchestrator pipeline
@@ -889,7 +889,7 @@ on the next loopback obeys D-001 normally.
 
 **EC-5. The agent calls `Read` on the existing stage-summary file
 (not `Write`).** §5's allowed_tools_for at
-`bin/dispatch.sh:284-285` includes `Read`; nothing forbids reading
+`bin/dispatch.sh:303` includes `Read`; nothing forbids reading
 the prior file. The prompt's "do not read-then-conditionally-skip"
 clause forbids the *decision* to skip the Write, not the Read
 itself. An agent that reads the prior file for context AND then
@@ -1068,8 +1068,8 @@ bullet — coherent placement within the Output section's existing
 order (verdict marker → file → file follow-on). The named-
 incident citation (`ENG-71 May 2026`) is consistent with how
 §5 already cites `ENG-54` and `ENG-71` elsewhere (verified at
-`AGENT_PROMPTS.md:856` (ENG-54) and `AGENT_PROMPTS.md:1027-1039`
-(ENG-71)).
+`AGENT_PROMPTS.md:865` ("No human-approval gate at this stage
+(ENG-54)") and `AGENT_PROMPTS.md:1027-1039` (ENG-71)).
 
 D-002's three asserts land inside the §5 invariants block in
 `bin/agent-prompts-content-test.sh`, after the existing ENG-50/
@@ -1377,8 +1377,8 @@ For each major decision, a rejected alternative was documented in
 | `bin/linear.sh::add_or_update_comment` advances `updatedAt` on identical-body re-apply via the `<!-- meta: reapplied at=… -->` footer (ENG-63 fix) | verified | `bin/linear.sh:582-606` |
 | `bin/pipeline-events.json:11-19` enumerates 8 halt reasons; `stale-stage-summary` is not among them | verified | direct read of `bin/pipeline-events.json:11-19` |
 | `bin/pipeline-events.json:42-48` enumerates 5 meta-kinds; `findings` is not among them | verified | direct read of `bin/pipeline-events.json:42-48` |
-| `bin/dispatch.sh::allowed_tools_for "reviewing"` includes `Read,Write` (so the agent CAN invoke either) | verified | `bin/dispatch.sh:284-285` (reviewing line) |
-| `bin/common.sh::parse_pipeline_marker` handles `<!-- meta: ... -->` shapes (event:`meta`) | verified | `bin/common.sh:185-260` |
+| `bin/dispatch.sh::allowed_tools_for "reviewing"` includes `Read,Write` (so the agent CAN invoke either) | verified | `bin/dispatch.sh:303` (reviewing case-arm) |
+| `bin/common.sh::parse_pipeline_marker` handles `<!-- meta: ... -->` shapes (event:`meta`) | verified | `bin/common.sh:191-241` |
 | `bin/verdict-handler.sh::_vh_lookup_loopback` is the loopback routing layer (review→implement target via fail target) | verified | `bin/verdict-handler.sh:46` |
 | `AGENT_PROMPTS.md:665` (§3 Implement Output bullet) and `AGENT_PROMPTS.md:810` (§4 UI Output bullet) carry minimal "Write the stage summary file at `{stage_summary_path}` — follow the Stage summary comment format contract" language without overwrite mandate | verified | direct read |
 | `learned-rules/harness/` contains only `build.md` and `project-profile.md` (no `review.md`) at composition time | verified | `ls learned-rules/harness/` |
