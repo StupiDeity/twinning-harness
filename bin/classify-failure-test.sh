@@ -284,6 +284,75 @@ else
   fail_at "case-19 retry-immediately marker shape" "got: $last_aoc"
 fi
 
+# ─── Test 20 (QA adversarial, ENG-78): malformed issue-state.json must not
+#     crash classify_failure; the corrupt prior state must be ignored and
+#     the call must complete with a fresh retry_count=0. Pin: silent/no-op
+#     behavior on a corrupted state file is what the `2>/dev/null || true`
+#     guards in the prior_* reads at lines 60-65 promise — without this
+#     test, a future refactor that drops those guards would crash the
+#     classifier (and SIGTERM the dispatch under set -euo pipefail). ──
+reset_state; reset_linear
+mkdir -p "$(issue_dir ENG-924)"
+printf '{ this is not valid json' > "$(issue_dir ENG-924)/issue-state.json"
+if MOCK_PIPELINE_HASH="hashK" MOCK_BRANCH_SHA="shaK" \
+     classify_failure "ENG-924" "implement" "retry-immediately" "API-529" 20 ""; then
+  rc=$(read_state ENG-924 | jq -r .retry_count)
+  policy=$(read_state ENG-924 | jq -r .policy)
+  if [[ "$rc" == "0" && "$policy" == "retry-immediately" ]]; then
+    pass_at "case-20 (QA adversarial) malformed prior state file does not crash; treated as fresh"
+  else
+    fail_at "case-20 (QA adversarial) state was not rewritten cleanly" "rc=$rc policy=$policy"
+  fi
+else
+  fail_at "case-20 (QA adversarial) classify_failure crashed on malformed prior state" "non-zero exit"
+fi
+
+# ─── Test 21 (QA adversarial, ENG-78 D-002): meta-shape comment body must
+#     parse via parse_pipeline_marker as event=meta, kind=metric — proves
+#     find_fresh_verdict's `event != "verdict"` filter at
+#     verdict-handler.sh:111 will exclude it. This pins the contract end-
+#     to-end (writer → parser), so a future change to either side cannot
+#     silently re-introduce the dead-end retry bug. ────────────────────
+reset_state; reset_linear
+MOCK_PIPELINE_HASH="hashL" MOCK_BRANCH_SHA="shaL" \
+  classify_failure "ENG-924b" "implement" "retry-immediately" "API-529" 20 ""
+last_aoc="$(linear_calls | grep '^add-or-update-comment' | tail -1)"
+# Strip the leading `add-or-update-comment <sig> <ident> ` to recover body.
+# The body is the remaining args concatenated with single spaces (linear
+# capture-stub uses `$*`). parse_pipeline_marker only needs the marker
+# substring, which survives whitespace re-collapse.
+body="${last_aoc#add-or-update-comment retry-pending/implement/ENG-924b ENG-924b }"
+ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+ev_event="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
+ev_kind="$(jq -r '.kind // ""'  <<<"$ev" 2>/dev/null || printf '')"
+ev_name="$(jq -r '.name // ""'  <<<"$ev" 2>/dev/null || printf '')"
+if [[ "$ev_event" == "meta" && "$ev_kind" == "metric" && "$ev_name" == "transient-retry" ]]; then
+  pass_at "case-21 (QA adversarial) meta-shape body parses as {event:meta,kind:metric,name:transient-retry}"
+else
+  fail_at "case-21 (QA adversarial) meta-shape parse round-trip" \
+    "ev_event=$ev_event ev_kind=$ev_kind ev_name=$ev_name body=$body"
+fi
+
+# ─── Test 22 (QA adversarial, ENG-78 G-4): retry-immediately fresh-hit
+#     comment body advertises the right attempt counter (`attempt=0`,
+#     `attempt 0 of 2`, `2 more time(s)`). Without this, a future refactor
+#     that off-by-ones the counter would silently mislead operators about
+#     when escalation will fire — the brainstorm's G-4 explicitly calls
+#     out "attempt N of 2" as load-bearing operator-visible text. The
+#     body spans multiple lines (printf with embedded \n), so we read the
+#     full capture, not just the first line. ──
+reset_state; reset_linear
+MOCK_PIPELINE_HASH="hashM" MOCK_BRANCH_SHA="shaM" \
+  classify_failure "ENG-924c" "implement" "retry-immediately" "API-529" 20 ""
+full_capture="$(linear_calls)"
+if [[ "$full_capture" == *"attempt=0"* ]] \
+   && [[ "$full_capture" == *"attempt 0 of 2"* ]] \
+   && [[ "$full_capture" == *"2 more time(s)"* ]]; then
+  pass_at "case-22 (QA adversarial) fresh retry-immediately comment shows attempt=0 / 2 remaining"
+else
+  fail_at "case-22 (QA adversarial) attempt-counter shape" "got: $full_capture"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
