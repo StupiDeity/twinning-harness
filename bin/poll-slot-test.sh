@@ -447,8 +447,8 @@ else
 fi
 
 # ─── AC-WAIT-1 (ENG-85): stage:building + only pipeline-wait fresh
-#     → slot=vacate, advanceable=false, wait_recall=true. Replaces the
-#     pre-ENG-85 ENG-45 fixture (which asserted hold/advanceable=true
+#     → slot=vacate, advanceable=false, wait_recallable=true. Replaces
+#     the pre-ENG-85 ENG-45 fixture (which asserted hold/advanceable=true
 #     via the catch-all else branch). The pre-ENG-85 hold/true
 #     classification was the load-bearing starvation surface this
 #     ticket fixes; AC-WAIT-3 covers the "wait still progresses
@@ -463,11 +463,11 @@ slot="$(jq -r '.slot // ""' <<<"$out")"
 # Use `tostring` rather than `// ""` because jq's `//` treats boolean false
 # as null and falls through to the default — which would emit "" not "false".
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-recall="$(jq -r '.wait_recall | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable | tostring' <<<"$out")"
 ts="$(jq -r '.wait_progress_ts // ""' <<<"$out")"
 if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "true" \
       && "$ts" == "2026-04-28T08:17:00Z" ]]; then
-  pass_at "AC-WAIT-1 (ENG-85): wait verdict on stage:building → vacate/false/wait_recall=true"
+  pass_at "AC-WAIT-1 (ENG-85): wait verdict on stage:building → vacate/false/wait_recallable=true"
 else
   fail_at "AC-WAIT-1 (ENG-85): wait verdict classification" \
     "got slot=$slot adv=$adv recall=$recall ts=$ts (want vacate/false/true/2026-04-28T08:17:00Z) full=$out"
@@ -565,8 +565,8 @@ fi
 #     fires BEFORE the new wait arm (branch-ordering invariant).
 #     Setup plants both pipeline:halted AND a halt verdict; the halted
 #     arm short-circuits at the case='pipeline-halt' branch and emits
-#     slot=vacate, advanceable=false (no wait_recall key set). Does NOT
-#     exercise find_fresh_wait_verdict's `fresh_result != "wait"`
+#     slot=vacate, advanceable=false (no wait_recallable key set). Does
+#     NOT exercise find_fresh_wait_verdict's `fresh_result != "wait"`
 #     supersession short-circuit — that path is exercised by AC-WAIT-7.
 #     Pins the brainstorm §"Acceptance" §4 hand-off:
 #     "ENG-45 external_signal_budget escalation path still works
@@ -580,7 +580,7 @@ write_comments_fixture "ENG-WAIT-H" \
 out="$(_poll_classify_labels "ENG-WAIT-H" '["stage:building","pipeline:halted"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-recall="$(jq -r '.wait_recall // false | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable // false | tostring' <<<"$out")"
 if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "false" ]]; then
   pass_at "AC-WAIT-6 (ENG-85): budget-exhausted halt routes through halted arm, NOT wait arm"
 else
@@ -606,7 +606,7 @@ write_comments_fixture "ENG-WAIT-I" \
 out="$(_poll_classify_labels "ENG-WAIT-I" '["stage:building"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-recall="$(jq -r '.wait_recall // false | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable // false | tostring' <<<"$out")"
 if [[ "$slot" == "hold" && "$adv" == "true" && "$recall" == "false" ]]; then
   pass_at "AC-WAIT-7 (ENG-85): fail-supersedes-wait routes through else, NOT wait arm"
 else

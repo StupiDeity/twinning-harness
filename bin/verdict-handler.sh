@@ -147,7 +147,7 @@ find_fresh_verdict() {
 # recent transition AND is itself the latest verdict in that window.
 # If a later pass/fail/halt exists, the wait has been superseded
 # and this returns empty (matching `_fresh_wait_reason`'s ENG-61 Bug B
-# rule at bin/run-stage.sh:332-356). No stage gate — caller decides.
+# rule in bin/run-stage.sh). No stage gate — caller decides.
 #
 # Output JSON: {"reason": "...", "comment_id": "...", "created_at": "..."}
 #              OR empty string when no fresh wait qualifies.

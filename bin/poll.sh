@@ -222,7 +222,7 @@ _poll_classify_labels() {
     jq -r --arg n "$1" '[.[] | select(. == $n)] | length > 0' <<<"$labels_json"
   }
 
-  local class fresh_wait=""
+  local class fresh_wait
   if [[ "$(_has_label pipeline:abandoned)" == "true" ]]; then
     class='{"slot":"terminal","advanceable":false}'
   elif [[ "$(_has_label pipeline:paused)" == "true" ]] \
@@ -253,7 +253,7 @@ _poll_classify_labels() {
     local _wait_ts
     _wait_ts="$(jq -r '.created_at' <<<"$fresh_wait")"
     class="$(jq -nc --arg ts "$_wait_ts" \
-      '{slot:"vacate", advanceable:false, wait_recall:true, wait_progress_ts:$ts}')"
+      '{slot:"vacate", advanceable:false, wait_recallable:true, wait_progress_ts:$ts}')"
   elif [[ "$(_has_label stage:reviewing)" == "true" ]]; then
     # ENG-50: gate review dispatch on observable PR state.
     # ENG-53 #12: derive the branch via bin/branch-name.sh (same convention
@@ -351,8 +351,13 @@ _poll_emit_halt_sprawl_alert() {
     return 0
   fi
 
+  # ENG-85: exclude wait-recallable vacates from the halt-sprawl count.
+  # An issue awaiting a build approval/CI signal is agent-idle-on-external-signal,
+  # not a halt — including them would skew the operator-facing alert toward
+  # false positives (a fleet of long-running awaiting-approval builds would
+  # cross the halt-sprawl threshold without any halts actually present).
   local count
-  count="$(jq '[.[] | select(.slot == "vacate")] | length' <<<"$classified_json")"
+  count="$(jq '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true)] | length' <<<"$classified_json")"
 
   if ! (( count > threshold )); then
     return 0
@@ -380,7 +385,7 @@ _poll_emit_halt_sprawl_alert() {
 
   if (( now_epoch - last_epoch > 86400 )); then
     local top3
-    top3="$(jq -rc '[.[] | select(.slot == "vacate") | .identifier] | .[:3] | join(", ")' \
+    top3="$(jq -rc '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true) | .identifier] | .[:3] | join(", ")' \
              <<<"$classified_json")"
     local suffix=""
     if (( count > 3 )); then
@@ -514,7 +519,7 @@ main() {
   if (( held_count < max_concurrent )); then
     local wait_pick
     wait_pick="$(jq -c '
-      [.[] | select(.slot == "vacate" and (.wait_recall // false) == true)]
+      [.[] | select(.slot == "vacate" and (.wait_recallable // false) == true)]
       | sort_by([-(.priority_sort_rank), .wait_progress_ts])
       | .[0] // empty' <<<"$classified")"
     if [[ -n "$wait_pick" && "$wait_pick" != "null" ]]; then
