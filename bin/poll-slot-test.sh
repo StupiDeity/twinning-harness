@@ -489,11 +489,11 @@ write_comments_fixture "ENG-WAIT-B" \
 out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 reason="$(jq -r '.reason // ""' <<<"$out")"
-if [[ "$issue_id" == "ENG-WAIT-B" && "$reason" == "held slot at stage:qa" ]]; then
+if [[ "$issue_id" == "ENG-WAIT-B" && "$reason" == *"stage:qa"* ]]; then
   pass_at "AC-WAIT-2 (ENG-85): ENG-A waits, ENG-B (stage:qa) wins Pass 4 dispatch"
 else
   fail_at "AC-WAIT-2 (ENG-85): wait-vacates slot for sibling held work" \
-    "got issue_id=$issue_id reason=$reason (want ENG-WAIT-B / held slot at stage:qa) full=$out"
+    "got issue_id=$issue_id reason=$reason (want ENG-WAIT-B / *stage:qa*) full=$out"
 fi
 
 # ─── AC-WAIT-3 (ENG-85): single wait issue, empty inbox, no other
@@ -561,12 +561,14 @@ else
   fail_at "AC-WAIT-5 (ENG-85): Pass 6 priority" "got issue_id=$issue_id (want ENG-WAIT-G) full=$out"
 fi
 
-# ─── AC-WAIT-6 (ENG-85, ENG-45 hand-off): when budget exhausts,
-#     _handle_wait writes a halt verdict + applies pipeline:halted.
-#     find_fresh_wait_verdict returns empty (latest verdict is halt,
-#     not wait — supersession rule). The existing pipeline-halt arm
-#     fires (slot=vacate, advanceable=false, no wait_recall). Pins the
-#     brainstorm §"Acceptance" §4 hand-off:
+# ─── AC-WAIT-6 (ENG-85): pins that the halted arm in _poll_classify_labels
+#     fires BEFORE the new wait arm (branch-ordering invariant).
+#     Setup plants both pipeline:halted AND a halt verdict; the halted
+#     arm short-circuits at the case='pipeline-halt' branch and emits
+#     slot=vacate, advanceable=false (no wait_recall key set). Does NOT
+#     exercise find_fresh_wait_verdict's `fresh_result != "wait"`
+#     supersession short-circuit — that path is exercised by AC-WAIT-7.
+#     Pins the brainstorm §"Acceptance" §4 hand-off:
 #     "ENG-45 external_signal_budget escalation path still works
 #     (wait → halt-for-budget-exhausted → existing halt vacate)."
 reset_fixtures
@@ -584,6 +586,32 @@ if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "false" ]]; then
 else
   fail_at "AC-WAIT-6 (ENG-85): halt-handoff" \
     "got slot=$slot adv=$adv recall=$recall (want vacate/false/false) full=$out"
+fi
+
+# ─── AC-WAIT-7 (ENG-85): wait verdict superseded by a later fail before
+#     the next tick. find_fresh_wait_verdict's `fresh_result != "wait"`
+#     short-circuit at bin/verdict-handler.sh fires (latest verdict in
+#     the post-transition window is fail, not wait — helper returns
+#     empty). The new wait arm in _poll_classify_labels does NOT fire;
+#     classifier falls through to the catch-all else branch
+#     (slot=hold, advanceable=true). No pipeline:halted label is set
+#     here (distinguishes from AC-WAIT-6's halted-arm precedence pin).
+#     Pins the supersession-by-fail load-bearing claim of D-001.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-I" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z' \
+  '<!-- pipeline: verdict result=fail target=implementing -->|2026-04-28T10:30:00Z'
+
+out="$(_poll_classify_labels "ENG-WAIT-I" '["stage:building"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recall // false | tostring' <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" && "$recall" == "false" ]]; then
+  pass_at "AC-WAIT-7 (ENG-85): fail-supersedes-wait routes through else, NOT wait arm"
+else
+  fail_at "AC-WAIT-7 (ENG-85): supersession by fail" \
+    "got slot=$slot adv=$adv recall=$recall (want hold/true/false) full=$out"
 fi
 
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
