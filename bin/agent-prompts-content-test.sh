@@ -234,6 +234,67 @@ else
     "without the precedent, a future prompt-cleanup pass might decide the rule is overcautious and remove it"
 fi
 
+# ─── ENG-77 QA-adversarial: §5 invariant deepening (QA round) ──────────
+# Background: the existing three D-002 asserts (lines 211, 221, 230)
+# run against the entire §5 body. `section_body()` includes pre-fence
+# intro and post-fence trailing prose; if a future edit moves the
+# MANDATORY paragraph out of §5's fenced block while leaving the
+# literal phrase elsewhere in §5, all three D-002 asserts still pass —
+# but `bin/render-prompt.sh::extract_block` only emits content BETWEEN
+# the two column-0 fences, so the rule never reaches the agent. Pin
+# the rendered-prompt-body subset and the negative-example evasion
+# vector the brainstorm §7 E-6 considered implausible.
+
+# Extract §5's fenced block — same content extract_block emits.
+in_fence_s5="$(awk '
+  /^## 5\. Review Agent/ { in_s = 1; next }
+  /^## [0-9]+\./ && in_s { exit }
+  in_s && /^```/ { in_f = !in_f; next }
+  in_s && in_f { print }
+' "$PROMPTS")"
+
+# QA-A: MANDATORY phrase falls INSIDE the rendered fenced block.
+# Catches a future cleanup that demotes the rule out of what the
+# agent sees (intro/outro prose) while leaving the literal phrase in
+# §5 — D-002 line 211's section-wide regex false-passes.
+if printf '%s\n' "$in_fence_s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+  ok "§5 (QA-A): 'overwrite on every dispatch' falls INSIDE the rendered fenced block"
+else
+  nope "§5 (QA-A): 'overwrite on every dispatch' falls INSIDE the rendered fenced block" \
+    "phrase exists in §5 (D-002 line 211 still passes) but outside the fenced block — render-prompt.sh::extract_block does not deliver it to the agent"
+fi
+
+# QA-B: 'read-then-conditionally-skip' carve-out lands inside the
+# fenced block (companion check to QA-A on D-002 assert 2).
+if printf '%s\n' "$in_fence_s5" | grep -qF 'read-then-conditionally-skip'; then
+  ok "§5 (QA-B): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block"
+else
+  nope "§5 (QA-B): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block" \
+    "phrase exists in §5 (D-002 line 221 still passes) but outside the fenced block"
+fi
+
+# QA-C: ENG-71 citation lands inside the fenced block.
+if printf '%s\n' "$in_fence_s5" | grep -qE 'ENG-71.*(May|2026)'; then
+  ok "§5 (QA-C): ENG-71 citation falls INSIDE the rendered fenced block"
+else
+  nope "§5 (QA-C): ENG-71 citation falls INSIDE the rendered fenced block" \
+    "citation exists in §5 (D-002 line 230 still passes) but outside the fenced block"
+fi
+
+# QA-D: MANDATORY phrase NOT introduced by a same-line negation. The
+# brainstorm §7 E-6 considered "DO NOT overwrite on every dispatch —
+# that wastes tokens" implausible because all three pinned phrases
+# would need to coexist with negative-context wording. Promote that
+# implausibility to enforcement. Per-line regex avoids false-positive
+# on the sibling 'do not read-then-conditionally-skip' clause that
+# legitimately sits one line below the MANDATORY phrase.
+if printf '%s\n' "$in_fence_s5" | grep -qiE '\b(do not|don'\''t|never)[^.]*overwrite[ d]+on every dispatch'; then
+  nope "§5 (QA-D): MANDATORY phrase not in same-line negative-example context" \
+    "found a negation (do not/don't/never) on the same line preceding 'overwrite on every dispatch' — D-002 line 211's literal-presence regex would false-pass against an anti-instruction"
+else
+  ok "§5 (QA-D): MANDATORY phrase not in same-line negative-example context"
+fi
+
 # ─── ENG-53 #11(a): every stage prompt has the no-probe + halt-instead ──
 # Pre-fix: agents routinely posted throwaway Linear comments (`test`,
 # `test ping`) to probe what Bash patterns are allowlisted, plus
