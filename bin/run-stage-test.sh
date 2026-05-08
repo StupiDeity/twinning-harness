@@ -3443,6 +3443,165 @@ else
     "eng66:${LINE_ENG66_LOOP:-MISSING} eng68:${LINE_ENG68_LOOP:-MISSING} (plan A-N1 inserts ENG-66 between :218 ENG-71-fi and :219 ENG-68-comment; expected eng66 < eng68)"
 fi
 
+# ─── ENG-86: orchestrator-side entry-conditions gate ───────────────────
+# Plan §3.5 case G: orchestrator-skip increments the same wait counter
+# the agent-side wait path uses (ENG-45 budget integration). The
+# assertion is on _handle_wait's side effect inside _entry_conditions_gate,
+# NOT on bin/entry-conditions.sh in isolation (that is covered by
+# bin/entry-conditions-test.sh cases A-F). The runtime composition lives
+# in run-stage.sh, so the integration test lives in its sibling.
+#
+# Replace bin/entry-conditions.sh in $STUB_DIR with a deterministic stub
+# so the gate's outcome is decoupled from the real `gh pr view` query.
+# $TOGGLE_FILE is read by the stub on each invocation so a single test
+# block can exercise both `skip` and `proceed` outcomes without
+# rewriting the script between cases.
+TOGGLE_FILE="$STUB_DIR/eng86-toggle"
+printf 'skip:awaiting-approval' > "$TOGGLE_FILE"
+cat > "$STUB_DIR/entry-conditions.sh" <<SH
+#!/usr/bin/env bash
+# Deterministic stub for ENG-86 case G/G2/G3. Reads its outcome from
+# \$TOGGLE_FILE so cases can flip skip/proceed without re-writing the
+# stub script. Always exits 0 (caller parses stdout).
+cat "$TOGGLE_FILE" 2>/dev/null
+printf '\n'
+exit 0
+SH
+chmod +x "$STUB_DIR/entry-conditions.sh"
+
+printf '\n--- ENG-86 _entry_conditions_gate cases ---\n'
+
+# ─── ENG-86 case G: orchestrator-skip increments wait counter (ENG-45) ──
+# No budget configured → _handle_wait always returns 0 (within budget).
+# Three back-to-back gate calls bump attempts to 3, mirroring ENG-45
+# case G/H assertion shape at lines 1041-1059.
+printf 'skip:awaiting-approval' > "$TOGGLE_FILE"
+ENG_86_TMP_CFG="$(mktemp)"
+printf '{"orchestrator":{}}' > "$ENG_86_TMP_CFG"
+ENG_86_CFG_SAVED="${CONFIG:-}"
+CONFIG="$ENG_86_TMP_CFG"
+mkdir -p "$(issue_dir ENG-86G)"
+rm -f "$(issue_dir ENG-86G)/wait-building.json"
+g_rc1=0; _entry_conditions_gate ENG-86G building || g_rc1=$?
+g_rc2=0; _entry_conditions_gate ENG-86G building || g_rc2=$?
+g_rc3=0; _entry_conditions_gate ENG-86G building || g_rc3=$?
+if (( g_rc1 == 1 && g_rc2 == 1 && g_rc3 == 1 )) \
+   && jq -e '.attempts == 3 and .reason == "awaiting-approval" and .stage == "building" and .issue == "ENG-86G"' \
+        "$(issue_dir ENG-86G)/wait-building.json" >/dev/null 2>&1; then
+  pass_at "ENG-86 case G: orchestrator-skip increments wait counter to 3 (returns 1 each time, _handle_wait within budget)"
+else
+  fail_at "ENG-86 case G" \
+    "rcs=($g_rc1,$g_rc2,$g_rc3) json=$(cat "$(issue_dir ENG-86G)/wait-building.json" 2>/dev/null)"
+fi
+
+# ─── ENG-86 case G2: orchestrator-skip respects budget exhaust ──────────
+# max_attempts=2 → 2nd call is the exhaust call: wait file deleted, halt
+# comment posted with external-signal-budget-exhausted body, pipeline:halted
+# applied. Mirrors ENG-45 case I shape (lines 1062-1083) but driven through
+# the orchestrator-skip path instead of the agent-side wait path.
+printf 'skip:awaiting-approval' > "$TOGGLE_FILE"
+printf '{"orchestrator":{"external_signal_budget":{"max_attempts":2}}}' > "$ENG_86_TMP_CFG"
+mkdir -p "$(issue_dir ENG-86G2)"
+rm -f "$(issue_dir ENG-86G2)/wait-building.json"
+# First call returns 1 (gate fired skip, within budget). `|| true`
+# absorbs the nonzero so set -e doesn't kill the test.
+_entry_conditions_gate ENG-86G2 building >/dev/null || true
+reset_capture                                          # only capture exhaust call
+g2_rc=0; _entry_conditions_gate ENG-86G2 building >/dev/null || g2_rc=$?
+# _entry_conditions_gate always returns 1 on skip path (it ran _handle_wait
+# already; budget exhaust is _handle_wait's concern, not the gate's caller).
+# The exhaust signal lives in the side effects: wait file deleted +
+# halt comment + pipeline:halted label (all asserted below).
+if (( g2_rc != 1 )); then
+  fail_at "ENG-86 case G2" "expected gate rc=1 on skip path (got $g2_rc)"
+elif [[ -e "$(issue_dir ENG-86G2)/wait-building.json" ]]; then
+  fail_at "ENG-86 case G2" "wait file should have been deleted: $(cat "$(issue_dir ENG-86G2)/wait-building.json" 2>/dev/null)"
+elif ! grep -q '^SUBCMD=add-comment$' "$CAPTURE_FILE" \
+   || ! grep -q 'external-signal-budget-exhausted' "$CAPTURE_FILE"; then
+  fail_at "ENG-86 case G2" "missing add-comment with external-signal-budget-exhausted body: $(cat "$CAPTURE_FILE")"
+elif ! grep -qE '^SUBCMD=add-label$' "$CAPTURE_FILE" \
+   || ! grep -q 'pipeline:halted' "$CAPTURE_FILE"; then
+  fail_at "ENG-86 case G2" "missing add-label pipeline:halted: $(cat "$CAPTURE_FILE")"
+else
+  pass_at "ENG-86 case G2: orchestrator-skip respects external_signal_budget exhaust → halt comment + pipeline:halted + wait file deleted"
+fi
+
+# ─── ENG-86 case G3: proceed outcome does NOT touch wait counter ───────
+# Stub returns `proceed` → _entry_conditions_gate falls through (returns 0)
+# without invoking _handle_wait. wait-building.json must NOT be created.
+printf 'proceed' > "$TOGGLE_FILE"
+printf '{"orchestrator":{}}' > "$ENG_86_TMP_CFG"
+mkdir -p "$(issue_dir ENG-86G3)"
+rm -f "$(issue_dir ENG-86G3)/wait-building.json"
+g3_rc=0; _entry_conditions_gate ENG-86G3 building || g3_rc=$?
+if (( g3_rc == 0 )) && [[ ! -e "$(issue_dir ENG-86G3)/wait-building.json" ]]; then
+  pass_at "ENG-86 case G3: proceed outcome falls through (rc=0); wait counter not touched"
+else
+  fail_at "ENG-86 case G3" \
+    "rc=$g3_rc wait-file-exists=$([[ -e "$(issue_dir ENG-86G3)/wait-building.json" ]] && printf yes || printf no)"
+fi
+
+# ─── ENG-86 case G4: error outcome falls through (D-010 fail-open) ─────
+# Stub returns `error:pr-approved-by-non-bot` → caller proceeds to
+# dispatch (rc=0). wait-building.json must NOT be created. The agent's
+# P2 (unchanged) is the defense-in-depth fallback.
+printf 'error:pr-approved-by-non-bot' > "$TOGGLE_FILE"
+mkdir -p "$(issue_dir ENG-86G4)"
+rm -f "$(issue_dir ENG-86G4)/wait-building.json"
+g4_rc=0; _entry_conditions_gate ENG-86G4 building || g4_rc=$?
+if (( g4_rc == 0 )) && [[ ! -e "$(issue_dir ENG-86G4)/wait-building.json" ]]; then
+  pass_at "ENG-86 case G4: error outcome falls through (D-010 fail-open); wait counter not touched"
+else
+  fail_at "ENG-86 case G4" \
+    "rc=$g4_rc wait-file-exists=$([[ -e "$(issue_dir ENG-86G4)/wait-building.json" ]] && printf yes || printf no)"
+fi
+
+# ─── ENG-86 case G5: gate-firing block in main() emits dispatch-skipped ─
+# Source-order assertion on bin/run-stage.sh. The gate-firing block must
+# (a) exist, (b) sit before the `mkdir -p "$(issue_dir "$ident")"` line
+# (plan A-001), and (c) emit paired stage-start + stage-end with
+# outcome=dispatch-skipped (mirrors the merged-pre-dispatch pairing at
+# lines 717-720, required so the retrospective §1 filter can pair the
+# events).
+LINE_MKDIR_ISSUEDIR="$(grep -nF 'mkdir -p "$(issue_dir "$ident")"' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1 || printf '')"
+LINE_GATE_CALL="$(grep -nF 'if ! _entry_conditions_gate' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1 || printf '')"
+# Two literal "dispatch-skipped" occurrences in main() — the first follows
+# stage-start, the second follows stage-end (the metrics.sh args span two
+# lines via backslash continuation, so a same-line regex won't catch them).
+DS_LINES="$(grep -nF '"dispatch-skipped"' "$HARNESS_DIR/run-stage.sh" | cut -d: -f1)"
+LINE_DS_START="$(printf '%s\n' "$DS_LINES" | head -1 || printf '')"
+LINE_DS_END="$(printf '%s\n' "$DS_LINES" | sed -n '2p' || printf '')"
+if [[ -n "$LINE_GATE_CALL" && -n "$LINE_MKDIR_ISSUEDIR" && -n "$LINE_DS_START" && -n "$LINE_DS_END" ]] \
+   && (( LINE_GATE_CALL < LINE_MKDIR_ISSUEDIR )) \
+   && (( LINE_DS_START < LINE_DS_END )) \
+   && (( LINE_DS_END   < LINE_MKDIR_ISSUEDIR )); then
+  pass_at "ENG-86 case G5: gate-firing block sits before mkdir issue_dir, emits paired dispatch-skipped events (gate:$LINE_GATE_CALL < ds-start:$LINE_DS_START < ds-end:$LINE_DS_END < mkdir:$LINE_MKDIR_ISSUEDIR)"
+else
+  fail_at "ENG-86 case G5: gate-firing block source-order/pairing invariant" \
+    "gate:${LINE_GATE_CALL:-MISSING} ds-start:${LINE_DS_START:-MISSING} ds-end:${LINE_DS_END:-MISSING} mkdir:${LINE_MKDIR_ISSUEDIR:-MISSING} (plan A-001 requires gate < ds-start < ds-end < mkdir)"
+fi
+
+# ─── ENG-86 case G6: _entry_conditions_gate sits in source after _pre_dispatch_merge_gate ─
+# Plan Task 2 requires the helper land "immediately after
+# _pre_dispatch_merge_gate's closing }" for grep-ability. Pin the
+# source-order so a future refactor doesn't bury _entry_conditions_gate
+# elsewhere.
+LINE_PRE_GATE_DEF="$(grep -n '^_pre_dispatch_merge_gate() {' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1)"
+LINE_ENTRY_GATE_DEF="$(grep -n '^_entry_conditions_gate() {' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1)"
+LINE_MAIN_DEF="$(grep -n '^main() {' "$HARNESS_DIR/run-stage.sh" | head -1 | cut -d: -f1)"
+if [[ -n "$LINE_PRE_GATE_DEF" && -n "$LINE_ENTRY_GATE_DEF" && -n "$LINE_MAIN_DEF" ]] \
+   && (( LINE_PRE_GATE_DEF < LINE_ENTRY_GATE_DEF )) \
+   && (( LINE_ENTRY_GATE_DEF < LINE_MAIN_DEF )); then
+  pass_at "ENG-86 case G6: _entry_conditions_gate defined between _pre_dispatch_merge_gate and main() (pre:$LINE_PRE_GATE_DEF < entry:$LINE_ENTRY_GATE_DEF < main:$LINE_MAIN_DEF)"
+else
+  fail_at "ENG-86 case G6: _entry_conditions_gate source-order invariant" \
+    "pre:${LINE_PRE_GATE_DEF:-MISSING} entry:${LINE_ENTRY_GATE_DEF:-MISSING} main:${LINE_MAIN_DEF:-MISSING}"
+fi
+
+# Restore CONFIG, clean up.
+CONFIG="$ENG_86_CFG_SAVED"
+rm -f "$ENG_86_TMP_CFG"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
