@@ -185,6 +185,65 @@ else
 fi
 rm -rf "$sandbox5"
 
+# ─── Case 6: stale local main ─── ENG-59 ─────────────────────────────
+# Repro for the false-positive halt where scope-check.sh's diff against
+# the local main ref includes commits already merged on origin/main but
+# not yet pulled to the host's local main. Fixture sets local main to
+# SHA X, simulates origin/main at SHA Y (Y is X plus an out-of-scope
+# file), branches off Y, modifies only an in-scope file, and asserts
+# the post-fix diff resolves to origin/main...test-branch (clean) and
+# scope-check exits 0.
+sandbox6="$(mktemp -d -t scope-check-test6-XXXXXX)"
+(
+  cd "$sandbox6"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-08-eng-test-59.md <<'PLAN'
+---
+linear: ENG-T59
+---
+## File Structure
+- `IN_SCOPE.md` — the only file this plan declares.
+PLAN
+  printf 'baseline\n' > IN_SCOPE.md
+  printf 'baseline\n' > OUT_OF_SCOPE.md
+  git add -A
+  git commit -qm "initial (SHA X)"
+  git branch -m main
+  sha_x="$(git rev-parse HEAD)"
+
+  # Side-branch commit Y: modifies OUT_OF_SCOPE.md (the file the upstream
+  # merge will touch). After this commit, sha_y is X's child via this
+  # side branch — the same shape as a real upstream merge that hasn't
+  # reached the host's local main.
+  git checkout -qb upstream-merge
+  printf '+upstream change\n' >> OUT_OF_SCOPE.md
+  git commit -aqm "upstream merge touches OUT_OF_SCOPE.md (SHA Y)"
+  sha_y="$(git rev-parse HEAD)"
+
+  # Simulate origin/main at Y without configuring a remote: write the
+  # remote-tracking ref directly. (See plan A-013.)
+  git update-ref refs/remotes/origin/main "$sha_y"
+
+  # Roll local main back to X (the operator's stale local main).
+  git update-ref refs/heads/main "$sha_x"
+
+  # Agent's branch: off Y, modifies only IN_SCOPE.md (the in-plan file).
+  git checkout -qb test-branch "$sha_y"
+  printf '+agent change\n' >> IN_SCOPE.md
+  git commit -aqm "agent change on IN_SCOPE.md (SHA Z)"
+)
+
+if (cd "$sandbox6" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T59 test-branch) >/dev/null 2>&1; then
+  pass_at "case-6 stale local main: scope-check resolves diff against origin/main, ignoring upstream-merge files (ENG-59)"
+else
+  rc=$?
+  fail_at "case-6 stale local main: scope-check should pass (rc=0) when only IN_SCOPE.md changes on the agent's branch" "rc=$rc"
+fi
+rm -rf "$sandbox6"
+
 # ─── Group: has_scope_approval new-shape detection (ENG-60 Phase 1) ─────
 
 printf '\n--- has_scope_approval accepts new-shape decision ---\n'
