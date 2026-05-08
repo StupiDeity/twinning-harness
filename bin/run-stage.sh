@@ -5,6 +5,8 @@
 #             stage label changed during run; no halt re-applied), 13=lane-violation
 #             (linear.sh write rejected for caller's PIPELINE_WRITER lane),
 #             20=dispatch-failed, 21=scope-violation, 22=pr-opened-too-early,
+#             23=branch-creation-forbidden (any-stage transcript invoked
+#             git checkout -b/-B/branch -m/switch -c; ENG-66),
 #             24=linear-post-failed, 25=agent-contract-missing (agent exited clean
 #             but emitted neither the stage-summary file nor a verdict-marker comment),
 #             26=worktree-mutation-forbidden (build-stage transcript invoked
@@ -769,6 +771,22 @@ main() {
         "implement-stage transcript invoked forbidden tool: $_viol_cmd" 22
       rm -f "$_viol_file" "$prompt_file"
       exit 22
+    elif (( dispatch_rc == 23 )); then
+      # ENG-66: agent transcript invoked one of the four banned
+      # branch-creation forms (git checkout -b/-B, git branch -m,
+      # git switch -c). The orchestrator owns the worktree's branch;
+      # this is a hard halt — the operator must investigate before
+      # the next dispatch. Cross-stage by design (the renderer's
+      # ENG-66 loop has no stage gate); fires on any stage whose
+      # transcript matched. Recovery recipe is documented in
+      # docs/runbooks/recovery.md §7.
+      local _viol_file_23 _viol_cmd_23
+      _viol_file_23="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_cmd_23="$(cat "$_viol_file_23" 2>/dev/null || printf '<command-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "agent transcript invoked forbidden branch-creation form: $_viol_cmd_23" 23
+      rm -f "$_viol_file_23" "$prompt_file"
+      exit 23
     elif (( dispatch_rc == 26 )); then
       # ENG-71: build-stage transcript invoked one of `git checkout`,
       # `git switch`, `git pull`, `git reset` — the four worktree-HEAD-

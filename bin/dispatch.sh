@@ -216,6 +216,29 @@ _render_and_capture_stream() {
       fi
     done
   fi
+  # ENG-66: forbid agent-side branch-creation across ALL stages.
+  # AGENT_PROMPTS.md §3 rule 2 lists exactly these four banned forms.
+  # The orchestrator has already created and checked out {branch_name}
+  # in the per-issue worktree; an agent that creates a new branch is
+  # forking off the canonical path and will (a) push to a wrong-named
+  # remote ref, (b) trip the legacy feature/* coexistence path in
+  # run-local.sh (ENG-67), (c) make scope-check evaluate against the
+  # wrong worktree. Cross-stage by design (mirrors ENG-68's shape).
+  # Inherits the `startswith` chained-command blind spot (BC6 fixture).
+  local _branch_pattern _matched_branch
+  for _branch_pattern in \
+      "git checkout -b" \
+      "git checkout -B" \
+      "git branch -m" \
+      "git switch -c"; do
+    if _matched_branch="$(assert_no_tool_invocation "$raw_capture" "$_branch_pattern")"; then
+      :   # rc 0: no match, fall through to next pattern
+    else
+      printf '%s\n' "$_matched_branch" > "$violation_file"
+      log "[assert] stage=$stage transcript invoked forbidden branch-creation form: ${_matched_branch}"
+      return 23
+    fi
+  done
   # ENG-68 D-003: forbid `core.bare`-touching git forms across ALL stages.
   # Defense-in-depth on top of D-002 (the implementing/ui base allowlist
   # no longer carries Bash(git:*)). Catches future allowlist drift on any
