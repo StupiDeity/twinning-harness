@@ -244,6 +244,162 @@ else
 fi
 rm -rf "$sandbox6"
 
+# ─── QA-Adv-1 (ENG-59): scope-check still SEVERE-flags an undeclared file
+# even when the diff base is origin/main rather than local main.
+# Pins that the fix does NOT disable scope-check semantics — it only
+# changes the merge base. Same fixture shape as case-6 but the agent
+# also writes OUT_OF_SCOPE.md (undeclared in plan). Expected rc=3.
+sandbox_qa1="$(mktemp -d -t scope-check-qa1-XXXXXX)"
+(
+  cd "$sandbox_qa1"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-08-eng-test-59-qa1.md <<'PLAN'
+---
+linear: ENG-T59Q1
+---
+## File Structure
+- `IN_SCOPE.md` — the only file this plan declares.
+PLAN
+  printf 'baseline\n' > IN_SCOPE.md
+  printf 'baseline\n' > OUT_OF_SCOPE.md
+  git add -A
+  git commit -qm "initial (SHA X)"
+  git branch -m main
+  sha_x="$(git rev-parse HEAD)"
+  git checkout -qb upstream-merge
+  printf '+upstream noise\n' >> IN_SCOPE.md
+  git commit -aqm "upstream merge (SHA Y)"
+  sha_y="$(git rev-parse HEAD)"
+  git update-ref refs/remotes/origin/main "$sha_y"
+  git update-ref refs/heads/main "$sha_x"
+  git checkout -qb test-branch "$sha_y"
+  printf '+agent in-scope\n' >> IN_SCOPE.md
+  printf '+agent OUT-OF-SCOPE\n' >> OUT_OF_SCOPE.md
+  git commit -aqm "agent touches IN_SCOPE.md AND OUT_OF_SCOPE.md (SHA Z)"
+)
+qa1_rc=0
+(cd "$sandbox_qa1" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T59Q1 test-branch) >/dev/null 2>&1 || qa1_rc=$?
+[[ "$qa1_rc" == "3" ]] \
+  && pass_at "QA-adv-1: stale-local-main + undeclared file → still SEVERE (rc=3); fix preserves scope semantics" \
+  || fail_at "QA-adv-1: stale-local-main + undeclared file" "rc=$qa1_rc (expected 3)"
+rm -rf "$sandbox_qa1"
+
+# ─── QA-Adv-2 (ENG-59): pins fetch-failure warning text on stderr.
+# Without this, a typo / accidental deletion of the log line would
+# silently degrade observability — operators rely on this string when
+# diagnosing the residual offline-degraded mode (per CLAUDE.md row).
+sandbox_qa2="$(mktemp -d -t scope-check-qa2-XXXXXX)"
+(
+  cd "$sandbox_qa2"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-08-eng-test-59-qa2.md <<'PLAN'
+---
+linear: ENG-T59Q2
+---
+## File Structure
+- `IN_SCOPE.md` — declared.
+PLAN
+  printf 'baseline\n' > IN_SCOPE.md
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf '+agent change\n' >> IN_SCOPE.md
+  git commit -aqm "agent change"
+)
+qa2_stderr="$(cd "$sandbox_qa2" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T59Q2 test-branch 2>&1 1>/dev/null || true)"
+if grep -q 'scope-check: fetch origin main failed' <<<"$qa2_stderr" \
+   && grep -q 'scope-check: origin/main ref absent' <<<"$qa2_stderr"; then
+  pass_at "QA-adv-2: both warning lines emitted on fetch fail + no remote ref (observability pin)"
+else
+  fail_at "QA-adv-2: fetch-failure warning text" "stderr=$(tr '\n' '|' <<<"$qa2_stderr")"
+fi
+rm -rf "$sandbox_qa2"
+
+# ─── QA-Adv-3 (ENG-59): real bare-repo origin → fetch SUCCESS arm.
+# Plan claims case-6 implicitly covers the online happy path, but
+# case-6's fixture has no `origin` remote so its fetch always fails.
+# This case configures a real bare repo as origin; fetch actually
+# updates refs/remotes/origin/main, exercising the fetch-success arm
+# the plan's Failure Mode → Test Map row 4 claims to cover.
+sandbox_qa3_origin="$(mktemp -d -t scope-check-qa3-origin-XXXXXX)"
+sandbox_qa3="$(mktemp -d -t scope-check-qa3-XXXXXX)"
+(
+  cd "$sandbox_qa3_origin"
+  git init -q --bare
+)
+(
+  cd "$sandbox_qa3"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  git remote add origin "$sandbox_qa3_origin"
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-08-eng-test-59-qa3.md <<'PLAN'
+---
+linear: ENG-T59Q3
+---
+## File Structure
+- `IN_SCOPE.md` — declared.
+PLAN
+  printf 'baseline\n' > IN_SCOPE.md
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git push -q origin main
+  git checkout -qb test-branch
+  printf '+agent change\n' >> IN_SCOPE.md
+  git commit -aqm "agent change"
+)
+# After scope-check runs, refs/remotes/origin/main should be populated
+# by the fetch (even if it wasn't before — we never set it manually).
+(cd "$sandbox_qa3" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T59Q3 test-branch) >/dev/null 2>&1
+qa3_rc=$?
+qa3_origin_sha="$(cd "$sandbox_qa3" && git rev-parse --verify --quiet refs/remotes/origin/main 2>/dev/null || true)"
+if [[ "$qa3_rc" == "0" && -n "$qa3_origin_sha" ]]; then
+  pass_at "QA-adv-3: real fetch arm — origin remote present, fetch populates refs/remotes/origin/main, scope-check passes (rc=0)"
+else
+  fail_at "QA-adv-3: real fetch arm" "rc=$qa3_rc origin_sha=$qa3_origin_sha"
+fi
+rm -rf "$sandbox_qa3" "$sandbox_qa3_origin"
+
+# ─── QA-Adv-4 (ENG-59): branch == "main" produces empty diff → rc=0.
+# Edge case: if a stage somehow runs with branch="main" (post-ENG-67
+# this should not occur, but worth pinning as inherent to the
+# three-dot syntax: origin/main...main is empty when refs match).
+sandbox_qa4="$(mktemp -d -t scope-check-qa4-XXXXXX)"
+(
+  cd "$sandbox_qa4"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-08-eng-test-59-qa4.md <<'PLAN'
+---
+linear: ENG-T59Q4
+---
+## File Structure
+- `IN_SCOPE.md` — declared.
+PLAN
+  printf 'baseline\n' > IN_SCOPE.md
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git update-ref refs/remotes/origin/main "$(git rev-parse HEAD)"
+)
+qa4_rc=0
+(cd "$sandbox_qa4" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T59Q4 main) >/dev/null 2>&1 || qa4_rc=$?
+[[ "$qa4_rc" == "0" ]] \
+  && pass_at "QA-adv-4: branch=main with origin/main at same SHA → empty diff → rc=0 (no false positive)" \
+  || fail_at "QA-adv-4: branch=main edge case" "rc=$qa4_rc (expected 0)"
+rm -rf "$sandbox_qa4"
+
 # ─── Group: has_scope_approval new-shape detection (ENG-60 Phase 1) ─────
 
 printf '\n--- has_scope_approval accepts new-shape decision ---\n'
