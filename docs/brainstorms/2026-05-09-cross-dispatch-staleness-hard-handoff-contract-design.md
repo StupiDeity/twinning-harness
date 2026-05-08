@@ -667,6 +667,23 @@ project; config is the wrong granularity.
    `classify_failure`, not a hand-off contract issue. Either order
    works; ship whichever is in flight first.
 
+7. **GitHub-side artifacts (review's per-finding `gh pr review
+   --comment` posts; build's PR description; QA's `gh pr comment`)
+   are outside `bin/linear.sh`'s auto-injection — they have no
+   dispatch_id marker.** Two consequences: (a) freshness on these
+   surfaces is not stamped by the contract; (b) a future agent that
+   posts ONLY to GitHub (no Linear) bypasses the envelope validator's
+   sig-completeness check. **Working answer:** GitHub PR comments
+   are not in scope for this contract — they are the human-facing
+   review surface and are auto-fresh by virtue of being attached to
+   the PR's diff (no cross-dispatch staleness possible because git
+   is the source of truth for what's reviewed). The transcript scan
+   in §5.3 catches the second concern: any agent that emits ONLY
+   GitHub-side artifacts and no Linear-side comment (no completion-
+   summary, no verdict marker) trips rc=25 (no stage-summary file)
+   OR fails the envelope validator's "verdict marker present this
+   dispatch" check. The GitHub-side surface stays unstamped by intent.
+
 ## 10. Assumption inventory
 
 | ID | Assumption | Verification |
@@ -747,3 +764,595 @@ dispatch_id-first, labels-second).
   `dispatch.sh` (with stub claude) emits comments through `linear.sh`
   and the markers are present. Higher cost than the unit-level tests
   in §5.5; defer until empirical evidence the unit tests miss something.
+
+## 13. Per-stage data shapes
+
+The freshness contract (§§4–6) specifies WHEN data is current. This
+section specifies WHAT data flows through the contract at each stage.
+Three deliverables: (a) the cross-stage uniform shapes (state files,
+sig table, marker grammar), (b) per-stage I/O specifications for
+§§1–7, (c) Linear label transitions per stage (orchestrator-side,
+lane-fenced).
+
+### 13.1 Cross-stage uniform shapes
+
+Three on-disk artifacts, written-and-read uniformly across every
+stage. None are agent-readable except as documented; the agent's
+sole on-disk write surface is the stage-summary file.
+
+#### 13.1.1 `issue-state.json` — per-issue durable state
+
+Owner: orchestrator (lanes `orchestrator`, `classify`).
+Path: `$(issue_dir <issue>)/issue-state.json`.
+Lifecycle: written on dispatch failure (by `classify_failure`) AND
+on every dispatch start (by the new `allocate_dispatch_id` — adds the
+counter without disturbing failure fields). Removed only by
+`pipeline.sh decide --action continue` AND only when `policy ==
+"skip-until-human-acts"` (per existing semantics at
+`bin/pipeline.sh:208–214`). Atomic writes via `tmpfile + mv`.
+
+```jsonc
+{
+  // ── existing fields (classify_failure writes; preserved) ──────────
+  "issue":          "ENG-71",
+  "stage":          "reviewing",          // last stage that wrote this record
+  "policy":         "retry-immediately",  // | skip-until-code-changes | skip-until-human-acts | (null when only dispatch_id allocator wrote)
+  "reason":         "linear-post-failed", // free-prose for halt comments
+  "exit_code":      24,
+  "exit_subcode":   null,
+  "recorded_at":    "2026-05-09T12:14:33Z",
+  "retry_count":    0,
+  "branch":         "feat/eng-71-…",
+  "evidence": {
+    "pipeline_content_hash": "sha256:…",  // bin/** + config.json + AGENT_PROMPTS.md hash at failure time
+    "branch_head_sha":       "4899db98…"
+  },
+
+  // ── NEW fields (dispatch_id glue) ─────────────────────────────────
+  "current_dispatch_seq": 14,             // monotonic counter; allocate_dispatch_id increments
+  "current_dispatch_id":  "ENG-71-d014",  // derived; stamped on every artifact this dispatch
+  "current_stage":        "reviewing"     // the stage that owns the running dispatch
+}
+```
+
+The dispatch_id allocator's increment + write is the ONLY write to
+this file outside `classify_failure`. Atomicity is via flock or
+tmpfile+mv; the existing `_cf_write_state` (`bin/classify-failure.sh`)
+already implements tmpfile+mv and is reused.
+
+#### 13.1.2 `dispatch_history.jsonl` — append-only audit (NEW)
+
+Owner: orchestrator only.
+Path: `$(issue_dir <issue>)/dispatch_history.jsonl`.
+Lifecycle: appended at dispatch START (after `allocate_dispatch_id`)
+and at dispatch END (after `_validate_dispatch_envelope` returns).
+Never cleared; never edited; never read at runtime by any decision-
+making code. Read only by retrospective + status.sh + manual triage.
+
+Two shapes (one start, one end):
+
+```jsonc
+// Dispatch start (one line, JSON-encoded):
+{
+  "dispatch_id":  "ENG-71-d014",
+  "stage":        "reviewing",
+  "started_at":   "2026-05-09T12:14:33Z",
+  "trigger":      "transition|loopback|retry|inbox-pickup",  // why this dispatch is happening
+  "predecessor_dispatch_id": "ENG-71-d013",  // null on the first dispatch ever
+  "branch":                  "feat/eng-71-…",
+  "pipeline_content_hash":   "sha256:…"      // captured at dispatch start
+}
+```
+
+```jsonc
+// Dispatch end (one line, JSON-encoded):
+{
+  "dispatch_id":   "ENG-71-d014",
+  "stage":         "reviewing",
+  "exit_at":       "2026-05-09T12:21:42Z",
+  "exit_code":     0,
+  "policy":        null,           // populated only on classify_failure paths
+  "verdict_emitted": "fail|pass|halt|wait|null",  // parsed from the agent's pipeline.sh event call
+  "verdict_target":  "implementing",              // for fail; null otherwise
+  "duration_ms":    429000,
+  "envelope":  {                   // §5.3 detective output, summarized
+    "stage_summary_present": true,
+    "comments_stamped":      ["completion/reviewing/ENG-71"],  // sigs touched this dispatch
+    "transcript_clean":      true   // no Linear writes outside bin/linear.sh
+  }
+}
+```
+
+The two-row shape lets retrospective + status.sh pair start with end
+on `dispatch_id` (durable join key); a missing end row indicates a
+mid-dispatch crash. Schema-validated by a new helper in
+`bin/metrics.sh` (alongside the existing events.jsonl writer).
+
+#### 13.1.3 `stage-summary-<stage>.md` — agent's hand-off file
+
+Owner: agent.
+Path: `$(issue_dir <issue>)/stage-summary-<stage>.md`.
+Lifecycle: cleared by orchestrator at `_clear_current_stage_slots`
+(dispatch start of THIS stage); rewritten by agent during dispatch;
+read by orchestrator's `post_completion_comment`; persists across
+dispatches of OTHER stages (so loopback can read it).
+
+Content: free prose per the existing `Stage summary comment format
+(ALL stages)` contract at `AGENT_PROMPTS.md:164–209`. NOT typed JSON
+(per D-008 — this design stays freshness-only). Each per-stage
+subsection in §13.2 below names the slots that contract requires for
+that stage.
+
+The post-fix file's first line is added by the orchestrator
+post-dispatch (NOT by the agent — agents must not manually write
+dispatch-id markers, per D-003): a `<!-- dispatch: <id> -->` line
+prepended atomically before `post_completion_comment` reads. This
+serves the forensic role only — readers don't filter files by id
+(clear-at-start makes existence sufficient); the line is for human
+operators reading the file in `$PROJECT_STATE_DIR`.
+
+#### 13.1.4 `wait-<stage>.json` — wait-budget state (build only today)
+
+Owner: orchestrator.
+Path: `$(issue_dir <issue>)/wait-<stage>.json`.
+Lifecycle: written by `_handle_wait` (`bin/run-stage.sh:484–500`) on
+wait-shape exits; cleared by `_clear_current_stage_slots` at the
+next dispatch start of the same stage. Today only build (§7) emits
+wait verdicts; the file is a no-op for other stages but is uniformly
+cleared per the contract.
+
+```jsonc
+{
+  "issue":         "ENG-71",
+  "stage":         "building",
+  "reason":        "awaiting-approval",   // | awaiting-ci
+  "first_seen":    "2026-05-09T10:02:18Z",
+  "last_seen":     "2026-05-09T12:14:33Z",
+  "ticks":         13,
+  "budget_remaining_ticks": 7,
+  "current_dispatch_id": "ENG-71-d014"    // NEW — id at last write
+}
+```
+
+The `current_dispatch_id` field lets the orchestrator distinguish
+"this wait was authored by THIS dispatch" from "stale wait from a
+prior dispatch we missed clearing"; cross-checked at envelope-
+validation time.
+
+#### 13.1.5 Linear comment sig table
+
+The harness comments-on-Linear vocabulary, post-fix. Sigs are the
+dedup key (`<class>/<stage>/<issue>` per `AGENT_PROMPTS.md:34`); each
+add-or-update-comment under a sig overwrites in place. Append-only
+comments (no sig) are used for verdict markers — Linear has no
+delete, so each verdict is a fresh comment.
+
+| Sig | Writer lane | Frequency | Body shape |
+|---|---|---|---|
+| `completion/<stage>/<issue>` | orchestrator (post_completion_comment) | once per dispatch on success | wraps stage-summary file + adds dispatch-id meta marker |
+| `tdd-evidence/implement/<issue>` | agent (implement only) | once per implement dispatch | full commit log + per-task SHA mapping + test results |
+| `last-review-state/<issue>` | orchestrator (review-poll.sh) | once per review dispatch | last reviewed PR HEAD SHA (used to gate re-dispatch) |
+| `worktree-mutation/<issue>` | orchestrator (run-stage.sh:477) | per worktree-mutation event | sweep result; partition_dirty_paths output |
+| `halt/<stage>/<issue>` | classify-failure | per failure exit (skip-policies only) | verdict halt marker + policy + reason |
+| `retry-pending/<stage>/<issue>` | classify-failure (ENG-78) | per retry-immediately exit | meta-shape "will retry" notice; not a verdict |
+| `scope-approval/<stage>/<issue>` | scope-check | when leaked-in-scope detected | scope-approval request body |
+| (no sig — append-only) | agent or orchestrator | per pipeline.sh event call | `<!-- pipeline: verdict|transition|... -->` markers |
+
+Every comment under any sig (and every append-only marker comment),
+post-fix, carries the auto-injected `<!-- meta: dispatch id=… stage=… -->`
+marker per §4.2. Agent-authored append-only comments (gh-pr-review
+summary not under any sig, escalation comments) are also auto-stamped
+because they go through `linear.sh add-comment`.
+
+#### 13.1.6 Pipeline marker grammar (post-fix)
+
+State-driving markers stay in `<!-- pipeline: <event> ... -->` shape
+per CLAUDE.md "Pipeline vocabulary" §. Bookkeeping markers stay in
+`<!-- meta: <kind> ... -->` shape. The new auto-injection adds ONE
+new bookkeeping marker on every comment:
+
+```
+<!-- meta: dispatch id=ENG-71-d014 stage=reviewing -->
+```
+
+Coexists with existing meta markers on the same comment:
+
+```
+<!-- pipeline: verdict result=fail target=implementing -->
+<!-- meta: dispatch id=ENG-71-d014 stage=reviewing -->
+<!-- meta: dedup key=verdict-fail-implementing -->
+```
+
+The marker order does not matter; readers parse by kind. The
+auto-injection appends if not already present (idempotent on
+re-applies — `add_or_update_comment`'s footer-only re-apply path
+preserves existing markers and appends a new `<!-- meta: reapplied
+at=… -->` per ENG-63).
+
+### 13.2 Per-stage I/O specifications
+
+Each stage's hand-off has six slots. The shape below repeats per
+stage with stage-specific content. Loopback semantics noted only on
+stages reachable by loopback (per ENG-77 D-003 verified table at
+`bin/verdict-handler.sh:32–38`: `planning|brainstorming` via
+supersede, `reviewing|brainstorming` via supersede,
+`reviewing|implementing`, `qa|implementing`, `building|implementing`).
+
+#### 13.2.1 Brainstorm (§1)
+
+**Inputs (in read order):**
+1. `docs/brainstorms/<existing-doc>.md` if present — reconcile.sh's
+   YAML-frontmatter-by-issue match (CLAUDE.md "Doc-to-issue ownership"
+   §). Existing-doc gate: if found, agent runs in "amend" mode.
+2. Linear issue body (description) — full text.
+3. `learned-rules/<project>/brainstorm.md` — appended to base prompt
+   by `render-prompt.sh`.
+4. **Loopback inputs** (from planning/reviewing → brainstorming via
+   supersede): the most recent comment under sig
+   `completion/<from-stage>/<issue>` carrying the supersede-trigger
+   findings. Reader filters by current dispatch_id post-fix; today
+   filters by timestamp window. The supersede label
+   (`pipeline:supersede`) is consumed by the brainstorm agent (per
+   ENG-41 §11 open question 3 — agent removes after consumption,
+   orchestrator-also-removes-on-completion is the working answer).
+
+**Stage-summary file slots** (`stage-summary-brainstorming.md`):
+- Artifact link: `[docs/brainstorms/<doc>.md](<github-blob-url>)`.
+- TL;DR: 1–2 sentences on the design's load-bearing call.
+- Status line (clean): `Personas: 6/6 PASS · gate P0: 0 · proceeding to planning`
+- Notes (only on iteration / blocker).
+- Escalation line (if iteration-exhausted).
+
+**Linear writes during dispatch:**
+- Agent-authored append-only comments via `linear.sh add-comment`:
+  per-iteration progress notes (free shape; no sig).
+- Agent-authored verdict marker via `bin/pipeline.sh event`:
+  - `verdict pass --stage brainstorming` (clean exit)
+  - `verdict halt --reason iteration-exhausted` (P0 not resolved at iter 2 per ENG-65 D-001)
+  - `verdict halt --reason agent-blocked`
+
+**Orchestrator writes (post-dispatch):**
+- `add-or-update-comment completion/brainstorming/<issue>` — wraps
+  stage-summary file, auto-injects dispatch_id marker.
+- Label transition (lane=orchestrator, ENG-41): on pass, removes
+  `stage:brainstorming`, adds `stage:planning`, removes
+  `pipeline:halted` (was added by run-stage.sh:431-436 post-dispatch).
+
+**State writes:**
+- `dispatch_history.jsonl`: start row; end row.
+- `issue-state.json` (only on failure): policy + reason + retry_count.
+- `stage-summary-brainstorming.md`: agent writes; cleared at next
+  brainstorm dispatch (e.g., on supersede loopback).
+
+**Loopback target-from-this-stage outputs:** brainstorm's stage-summary
+file becomes the "what changed" artifact for planning's loopback re-read.
+Planning's first read on a re-dispatch is `stage-summary-brainstorming.md`
+written by the brainstorm dispatch that just emitted pass.
+
+#### 13.2.2 Plan (§2)
+
+**Inputs:**
+1. `docs/brainstorms/<doc>.md` (canonical brainstorm artifact).
+2. `stage-summary-brainstorming.md` (latest brainstorm dispatch's TL;DR).
+3. Linear thread: `completion/brainstorming/<issue>` (current via sig dedup).
+4. `learned-rules/<project>/plan.md`.
+5. **Loopback** (from reviewing → brainstorming → re-planning via
+   supersede pathway): see §13.2.1.
+
+**Stage-summary file slots** (`stage-summary-planning.md`):
+- Artifact link: `[docs/plans/<doc>.md](<github-blob-url>)`.
+- TL;DR: 1–2 sentences on the plan's load-bearing decision.
+- Status line: `Personas: 5/5 PASS · gate P0: 0 · proceeding to implementing`
+- Notes (only on iteration / known-flaky gate).
+
+**Linear writes during dispatch:**
+- Agent-authored verdict via `pipeline.sh event`:
+  - `verdict pass --stage planning`
+  - `verdict fail --target brainstorming` (premise failure; supersede)
+  - `verdict halt --reason <reason>`
+
+**Orchestrator writes (post-dispatch):**
+- `add-or-update-comment completion/planning/<issue>` — wraps file.
+- Label transition: plan-pass → adds `stage:implementing`, removes `stage:planning`.
+
+**State writes:** dispatch_history.jsonl + (failure-only) issue-state.json + agent-written stage-summary file.
+
+#### 13.2.3 Implement (§3)
+
+The most loopback-targeted stage. Reads the most artifacts.
+
+**Inputs (loopback-aware):**
+1. `docs/brainstorms/<doc>.md`, `docs/plans/<doc>.md`.
+2. `stage-summary-implementing.md` — IF present (only on retry-immediately
+   re-dispatch within the same loopback cycle; otherwise cleared by
+   `_clear_current_stage_slots`).
+3. **Loopback inputs** (from reviewing/qa/building → implementing):
+   - `stage-summary-reviewing.md` (post-fix: stamped with reviewing's
+     latest dispatch_id; persists across implement's clear since
+     clear-at-start scopes to current stage only).
+   - `stage-summary-qa.md` (when loopback came from qa).
+   - `stage-summary-building.md` (when loopback came from build).
+   - Linear thread: `completion/<source-stage>/<issue>` carrying the
+     same content as the file (sig-deduped to current).
+   - Verdict marker that triggered the loopback — read for routing
+     context only; filtered post-fix by dispatch_id == predecessor
+     (recorded in dispatch_history.jsonl::predecessor_dispatch_id).
+4. Worktree state: branch HEAD, working tree, prior commit log.
+5. `learned-rules/<project>/implement.md`.
+
+**Stage-summary file slots** (`stage-summary-implementing.md`):
+- Artifact link: branch-compare URL
+  `https://github.com/<owner>/<repo>/compare/main...<branch>`
+  AND plan doc link.
+- TL;DR: 1–2 sentences on backend change + biggest load-bearing choice.
+- Status line: `N commits · +M test / +K src · api-contract: pass · gates green · proceeding to ui`
+- Notes (only on plan deviation / known-flaky gate).
+- Full commit log: NOT here. Lives in `tdd-evidence/implement/<issue>`.
+
+**Linear writes during dispatch:**
+- Agent: `add-or-update-comment tdd-evidence/implement/<issue>` — full
+  commit-by-commit TDD evidence + per-task SHA mapping + test results
+  per `AGENT_PROMPTS.md:660`.
+- Agent: progress notes via `add-comment` (free shape).
+- Agent: verdict via `pipeline.sh event`:
+  - `verdict pass --stage implementing`
+  - `verdict fail --target planning` (rare — plan-needs-rework)
+  - `verdict halt --reason <reason>`
+
+**Orchestrator writes:**
+- `add-or-update-comment completion/implementing/<issue>` (wraps file).
+- Push `<branch_name>` to origin (the agent already pushed too;
+  orchestrator's push is idempotent re-push).
+- Label transition: implement-pass → `stage:ui`.
+
+**State writes:** dispatch_history.jsonl + agent's stage-summary file.
+
+**Loopback semantics:** when implement is re-entered (loopback from
+review/qa/build), the previous implement dispatch's stage-summary IS
+cleared at start. The new dispatch reads the SOURCE stage's summary
+to know what to fix; it does NOT inherit its own prior state. `tdd-
+evidence/implement/<issue>` stays sig-deduped to the latest implement
+dispatch — overwritten in place each loopback iter.
+
+#### 13.2.4 UI (§4)
+
+**Inputs:**
+1. `docs/plans/<doc>.md` — frontend tasks section.
+2. `stage-summary-implementing.md` — what backend just shipped.
+3. Worktree state.
+4. `learned-rules/<project>/ui.md`.
+
+If the project has no frontend (per `Project profile`), UI is a
+pass-through: skip implementation, write a "no-op" stage-summary,
+emit `verdict pass --stage ui`, exit.
+
+**Stage-summary file slots** (`stage-summary-ui.md`):
+- Artifact link: branch-compare URL (PR URL not yet available — orchestrator opens PR after this stage).
+- TL;DR.
+- Status line: `K components · second-review: approve · proceeding to reviewing`
+- Notes (per-component checklist misses; second-reviewer request-changes).
+
+**Linear writes during dispatch:**
+- Agent verdict via `pipeline.sh event`:
+  - `verdict pass --stage ui`
+  - `verdict fail --target implementing` (contract gap requiring backend re-work)
+  - `verdict halt --reason <reason>`
+
+**Orchestrator writes:**
+- Opens the PR (POST-dispatch — `gh pr create`); PR body is constructed
+  from concatenated stage-summary files (implement + ui). PR URL
+  posted as `add-or-update-comment completion/ui/<issue>`.
+- Label transition: ui-pass → `stage:reviewing`.
+
+**State writes:** dispatch_history.jsonl + agent's stage-summary file.
+
+**Not a loopback target** per the loopback table — forward-only edges
+into UI. UI's stage-summary file is read by review on the first
+review dispatch and on every review-loopback re-entry of the cycle.
+
+#### 13.2.5 Review (§5)
+
+The stage where ENG-77's incident fired. Tightest loopback in the pipeline.
+
+**Inputs:**
+1. PR diff (full): `gh pr diff` (no Linear comment carries this).
+2. `docs/brainstorms/<doc>.md`, `docs/plans/<doc>.md`.
+3. `docs/knowledge/{gotchas,decisions,conventions}.md` if present.
+4. `learned-rules/<project>/review.md`.
+5. `last-review-state/<issue>` Linear comment — orchestrator's
+   `review-poll.sh::review_should_dispatch` reads PR HEAD SHA from
+   here vs. current; gates re-dispatch (no re-review unless SHA
+   changed).
+6. **Loopback inputs** (review re-dispatched after implement→ui→review):
+   - `stage-summary-implementing.md` (latest implement dispatch's report).
+   - `stage-summary-ui.md` (latest ui dispatch's report).
+   - PR diff (auto-fresh — git is the source of truth, no dispatch_id
+     needed for diff content).
+
+**Stage-summary file slots** (`stage-summary-reviewing.md`):
+- Artifact link: PR URL.
+- TL;DR.
+- Status line (path C — clean): `Approved · 0 P0 findings · proceeding to qa`
+- Status line (path B — changes requested): `Changes requested · M findings (P0:N P1:K) · loopback to implementing`
+- Status line (path A — premise): `Premise mismatch · loopback to brainstorming`
+- Notes: per-finding entries with severity, file:line, suggestion, why.
+
+**Linear writes during dispatch:**
+- Agent: per-finding PR review comments via `gh pr review --comment`.
+  These are GitHub PR comments, NOT Linear comments — outside the
+  dispatch_id auto-injection. (Open question — see §9 #6 after this
+  section.)
+- Agent: `add-or-update-comment completion/reviewing/<issue>` —
+  Linear-side consolidated review summary. Per ENG-77 D-001's
+  shipped rule, MUST be rewritten on every dispatch (D-006 here
+  generalizes to all stages, but review's specific historical
+  failure is preserved in the prompt).
+- Agent: verdict via `pipeline.sh event`:
+  - `verdict pass --stage reviewing` (path C)
+  - `verdict fail --target implementing` (path B)
+  - `verdict fail --target brainstorming` (path A)
+  - `verdict halt --reason agent-blocked`
+
+**Orchestrator writes:**
+- `add-or-update-comment last-review-state/<issue>` — records PR HEAD
+  SHA after a successful review (gate for next re-dispatch).
+- Label transitions per verdict: pass → `stage:qa`; fail-implementing
+  → `stage:implementing`; fail-brainstorming → `stage:brainstorming` +
+  `pipeline:supersede`.
+
+**State writes:** dispatch_history.jsonl + agent's stage-summary file.
+
+**Loopback re-entry behavior:** review's stage-summary file is cleared
+at the start of EVERY review dispatch (post-fix). The implement agent
+on subsequent loopback reads the LATEST review's findings — guaranteed
+fresh because the file existed only because review wrote it this iter.
+ENG-71's 9-iteration cycle becomes structurally impossible.
+
+#### 13.2.6 QA (§6)
+
+**Inputs:**
+1. PR diff (full).
+2. `docs/brainstorms/<doc>.md`, `docs/plans/<doc>.md`.
+3. `stage-summary-reviewing.md` — review's findings (clean review path).
+4. `qa-patterns.md` (if present, project-specific).
+5. `learned-rules/<project>/qa.md`.
+6. **Loopback inputs** (when re-dispatched after build→implementing
+   loopback returns to qa via the standard forward sequence): same
+   inputs; the loopback is implementing-targeted, qa is just re-run.
+
+**Stage-summary file slots** (`stage-summary-qa.md`):
+- Artifact link: PR URL.
+- TL;DR.
+- Status line (clean): `All gates green · 6 adversarial tests added · proceeding to building`
+- Notes: any failing gate name + reason.
+
+**Linear writes during dispatch:**
+- Agent: PR summary comment (gh pr comment, GitHub-side).
+- Agent: `add-or-update-comment completion/qa/<issue>` — Linear-side
+  QA summary.
+- Agent: candidate-pattern marker comment if proposing additions to
+  qa-patterns.md (a meta-shape comment; not a verdict).
+- Agent: verdict via `pipeline.sh event`:
+  - `verdict pass --stage qa` (all gates green)
+  - `verdict fail --target implementing` (genuine test failure)
+  - `verdict halt --reason <reason>`
+
+**Orchestrator writes:**
+- Label transition per verdict.
+
+**State writes:** dispatch_history.jsonl + agent's stage-summary file.
+
+#### 13.2.7 Build (§7)
+
+The only stage that emits wait-shape verdicts. Has a P2 hard gate
+(human approval) and a P5 hard gate (CI green) that idle the dispatch
+without halting.
+
+**Inputs:**
+1. PR (full state via `gh pr view --json`).
+2. CI status (gh checks).
+3. Human-approved review state (gh pr view reviews; orchestrator-side
+   verifies via P2 preflight).
+4. `stage-summary-qa.md` — last clean QA state.
+5. `learned-rules/<project>/build.md`.
+6. `wait-building.json` (if present — own state from prior tick's
+   wait-exit).
+
+**Stage-summary file slots** (`stage-summary-building.md`):
+- Artifact link: merged commit SHA (post-merge) or PR URL (pre-merge).
+- TL;DR.
+- Status line: `Merged SHA abc1234 · release workflow green · proceeding to released`
+- Notes: P2/P5 wait reasons; merge-conflict resolution; CI failure cause.
+
+**Linear writes during dispatch:**
+- Agent: `add-or-update-comment completion/building/<issue>` — Linear-side build report.
+- Agent: post-merge SHA recorded in Linear (free comment).
+- Agent: verdict via `pipeline.sh event`:
+  - `verdict pass --stage building` (merged + CI green)
+  - `verdict fail --target implementing` (blocked-by-conflict OR CI red post-merge)
+  - `verdict halt --reason agent-blocked` (WIP/blocked label, malformed PR title)
+  - `verdict wait --reason awaiting-approval` (P2 preflight failed — no human approval yet)
+  - `verdict wait --reason awaiting-ci` (P5 preflight failed — CI still running)
+
+**Orchestrator writes:**
+- `wait-building.json` — written on every wait-shape exit, includes
+  `current_dispatch_id` for envelope-validation freshness check.
+- Label transition per verdict.
+
+**State writes:** dispatch_history.jsonl + agent's stage-summary file
+(except on wait-shape exits — wait does NOT write a stage-summary
+per `AGENT_PROMPTS.md:1481` — handled by orchestrator's clear, no
+agent action needed).
+
+**Wait-exit semantics:** when the agent emits `verdict wait`, the
+orchestrator does NOT clear stage-summary file at the next dispatch
+start (the file was never written this tick); it DOES clear and
+rewrite `wait-building.json` with fresh `current_dispatch_id`. The
+re-dispatch happens on the next tick if budget remains, or transitions
+to halt-for-human if budget exhausted.
+
+### 13.3 Linear label transitions per stage (orchestrator-only, lane-fenced)
+
+This table is the post-ENG-41 label-write inventory: which labels
+each stage's transition can change. All label writes go through
+`bin/linear.sh add-label / remove-label` with `PIPELINE_WRITER=
+orchestrator`. The agent lane (`PIPELINE_WRITER=agent`) cannot write
+any of these — verified by the lane fence in `bin/linear.sh`.
+
+| Stage transition (verdict result) | Labels added | Labels removed |
+|---|---|---|
+| brainstorming → planning (pass) | `stage:planning` | `stage:brainstorming`, `pipeline:halted`, `pipeline:supersede` |
+| brainstorming → halted (halt) | `pipeline:halted`, `pipeline:skip-until-human-acts` (classify-failure path; skip-policy only) | `stage:brainstorming` (kept on retry-immediately) |
+| planning → implementing (pass) | `stage:implementing` | `stage:planning`, `pipeline:halted` |
+| planning → brainstorming (fail) | `stage:brainstorming`, `pipeline:supersede` | `stage:planning`, `pipeline:halted` |
+| implementing → ui (pass) | `stage:ui` | `stage:implementing`, `pipeline:halted` |
+| implementing → planning (fail) | `stage:planning`, `pipeline:supersede` | `stage:implementing`, `pipeline:halted` |
+| ui → reviewing (pass) | `stage:reviewing` | `stage:ui`, `pipeline:halted` |
+| ui → implementing (fail) | `stage:implementing` | `stage:ui`, `pipeline:halted` |
+| reviewing → qa (pass) | `stage:qa` | `stage:reviewing`, `pipeline:halted` |
+| reviewing → implementing (fail B) | `stage:implementing` | `stage:reviewing`, `pipeline:halted` |
+| reviewing → brainstorming (fail A — premise) | `stage:brainstorming`, `pipeline:supersede` | `stage:reviewing`, `pipeline:halted` |
+| qa → building (pass) | `stage:building` | `stage:qa`, `pipeline:halted` |
+| qa → implementing (fail) | `stage:implementing` | `stage:qa`, `pipeline:halted` |
+| building → released (pass) | `stage:released` | `stage:building`, `pipeline:halted` |
+| building → implementing (fail) | `stage:implementing` | `stage:building`, `pipeline:halted` |
+| building → wait (wait) | (none — wait does not change stage) | (none) |
+| (any) → halt (skip-until-code-changes) | `pipeline:halted`, `pipeline:skip-until-code-changes` | `pipeline:skip-until-human-acts` |
+| (any) → halt (skip-until-human-acts) | `pipeline:halted`, `pipeline:skip-until-human-acts` | `pipeline:skip-until-code-changes` |
+| operator-resume (`decide --action continue`) | (none) | `pipeline:halted`, `pipeline:skip-until-code-changes`, `pipeline:skip-until-human-acts` |
+
+**Drift-prevention.** The table is enforced by `bin/verdict-handler.sh::
+apply_transition` at the orchestrator side. The new envelope validator
+asserts post-dispatch that the issue's label state is consistent with
+the dispatch's verdict (e.g., on `verdict pass --stage X`, current
+labels include `stage:Y` where Y is the next stage). Mismatch → halt
+with `dispatch-envelope-violation`.
+
+### 13.4 What CHANGES vs. what's the SAME
+
+To make the diff against the current implementation crisp, here's
+the per-artifact delta. "Same" means no change vs. today; "New"
+means added by this design; "Stamped" means existing artifact gains
+the dispatch_id meta-marker.
+
+| Artifact | Today | Post-fix |
+|---|---|---|
+| `issue-state.json` | written by classify_failure on failure exits | + 3 fields (`current_dispatch_seq`, `current_dispatch_id`, `current_stage`) added by allocator on EVERY dispatch start |
+| `dispatch_history.jsonl` | does not exist | NEW — append-only, two rows per dispatch (start + end) |
+| `stage-summary-<stage>.md` | persisted across dispatches; agent may read-and-skip-write | cleared at start of OWN stage's dispatch; agent must rewrite; first line stamped by orchestrator post-dispatch |
+| `wait-<stage>.json` | written on wait-exit; cleared on next dispatch start of same stage | + `current_dispatch_id` field for envelope-validation freshness |
+| `completion/<stage>/<issue>` Linear comment | sig-deduped; current state is "latest" | Stamped with dispatch_id meta-marker (auto-injected by linear.sh) |
+| `tdd-evidence/implement/<issue>` Linear comment | sig-deduped | Stamped |
+| `last-review-state/<issue>` Linear comment | sig-deduped | Stamped |
+| `halt/<stage>/<issue>` Linear comment | sig-deduped | Stamped |
+| `worktree-mutation/<issue>` Linear comment | sig-deduped | Stamped |
+| `scope-approval/<stage>/<issue>` Linear comment | sig-deduped | Stamped |
+| `<!-- pipeline: verdict ... -->` markers | append-only; freshness via timestamp window | Stamped; freshness via dispatch_id (timestamp fallback for legacy) |
+| `<!-- pipeline: transition ... -->` markers | append-only; freshness via timestamp window | Stamped; freshness via dispatch_id |
+| `stage:*` labels | mutated by orchestrator+agent (today) | mutated only by orchestrator (post-ENG-41 lane fence) |
+| `pipeline:halted` label | applied by orchestrator on most failures + retry-immediately (today's bug) | applied only on skip-policies (post-ENG-78 fix) |
+
+The only NEW persistent artifact is `dispatch_history.jsonl`.
+Everything else is either an additive field on an existing JSON file
+or a meta-marker injection on existing comments. No data migration.
+
