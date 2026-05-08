@@ -245,32 +245,56 @@ Anything writing files outside the per-stage allowlist must update the partition
 
 `dispatch.sh::allowed_tools_for` ships a Tauri-shaped base allowlist for each stage. To grant
 extra Bash patterns for a non-Tauri target (e.g., `pytest` for Python, `go test` for Go,
-`bash bin/*-test.sh` for harness-self), populate the target's `.pipeline-config/config.json`:
+the test-runner suite for harness-self), populate the target's `.pipeline-config/config.json`.
+
+**Wildcard pitfall.** Claude's `--allowed-tools` matcher does NOT expand `*` inside a
+`Bash(<prefix>:*)` prefix as a shell glob — the `*` is treated literally. So
+`Bash(bash bin/*-test.sh:*)` matches *only* the literal string `bash bin/*-test.sh ...`,
+not any actual test script. Patterns must enumerate each script with a fully-literal prefix:
 
 ```json
 {
   "dispatch": {
     "tools": {
-      "implement": ["Bash(bash bin/*-test.sh:*)"],
-      "qa":        ["Bash(bash bin/*-test.sh:*)"]
+      "implementing": [
+        "Bash(bash .githooks/pre-commit:*)",
+        "Bash(bash bin/secret-probe-lint.sh:*)",
+        "Bash(bash bin/agent-prompts-content-test.sh:*)",
+        "Bash(bash bin/classify-failure-test.sh:*)",
+        "...one literal entry per bin/*-test.sh..."
+      ],
+      "qa": [
+        "...same enumerated list..."
+      ]
     }
   }
 }
 ```
 
-The entries are appended to the per-stage hardcoded base. `.pipeline-config/` is
-gitignored, so each operator applies this on their own copy. For the harness-self target
-specifically (the one driving this repo), this is required: without it, the implement and
-qa agents have no allowlisted way to invoke `bash bin/<name>-test.sh` and ship without
-running tests (the failure mode that drove ENG-53). Apply with:
+Stage keys are the gerund form (`implementing`, `qa`) — they must match
+`dispatch.sh::allowed_tools_for`'s case-arm names. The entries are appended to the
+per-stage hardcoded base. `.pipeline-config/` is gitignored, so each operator applies this
+on their own copy. For the harness-self target specifically (the one driving this repo),
+this is required: without it, the implement and qa agents have no allowlisted way to
+invoke `bash bin/<name>-test.sh` and ship without running tests (the failure mode that
+drove ENG-53; the wildcard incarnation drove ENG-77's QA halt cascade in May 2026).
+
+Regenerate the list whenever a new `bin/*-test.sh` is added:
 
 ```bash
-jq '.dispatch.tools = {"implement":["Bash(bash bin/*-test.sh:*)"],"qa":["Bash(bash bin/*-test.sh:*)"]}' \
+TESTS=$(ls bin/*-test.sh | sort | sed 's|^|Bash(bash |; s|$|:*)|')
+LIST=$(printf '%s\n' \
+  "Bash(bash .githooks/pre-commit:*)" \
+  "Bash(bash bin/secret-probe-lint.sh:*)" \
+  "$TESTS" | jq -R . | jq -s .)
+jq --argjson l "$LIST" '.dispatch.tools = {"implementing": $l, "qa": $l}' \
   .pipeline-config/config.json > /tmp/c && mv /tmp/c .pipeline-config/config.json
 ```
 
-`bin/dispatch-test.sh` warns if the harness-self config exists locally but is missing
-these entries (skipped silently when the config is absent — CI or non-harness operators).
+`bin/dispatch-test.sh` asserts (a) no broken wildcard `Bash(bash bin/*-test.sh:*)` is
+present, and (b) the enumerated count covers every `bin/*-test.sh` on disk — catches
+drift when a new test is added but not allowlisted (skipped silently when
+`.pipeline-config/config.json` is absent — CI or non-harness operators).
 
 ## Per-stage dispatch timeouts (ENG-65)
 
