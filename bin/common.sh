@@ -100,7 +100,11 @@ compute_pipeline_content_hash() {
 # classify_failure emissions), run-stage.sh (paused — exit 11; lane-violation — exit 13).
 # Reconcile-human (run-local.sh) does NOT call this helper: it emits the
 # direct string "reconcile-human" per D-004 because exit_code=0
-# subcode="" would route to unknown-exit-0.
+# subcode="" would route to unknown-exit-0. ENG-69: self-leak (exit 26)
+# and leaked-in-scope-threshold (exit 27) are emitted by classify_failure
+# calls from run-local.sh's tick-end sweep (via halt_issue_for_self_leak
+# and tally_leaked_in_scope_failure in run-local-helpers.sh), not from
+# run-stage.sh.
 #
 # Usage: failure_outcome_for_exit <exit_code> <subcode>
 #   subcode may be "" (empty). Case matching is exact.
@@ -124,6 +128,8 @@ failure_outcome_for_exit() {
     24) printf 'linear-post-failed' ;;
     25) printf 'agent-contract-missing' ;;
     26) printf 'worktree-mutation-forbidden' ;;
+    27) printf 'self-leak' ;;
+    28) printf 'leaked-in-scope-threshold' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac

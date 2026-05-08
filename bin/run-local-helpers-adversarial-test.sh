@@ -798,6 +798,916 @@ MD
 }
 test_frontmatter_d004_basename_match_unchanged
 
+# ─── ENG-69: per-issue halt vs. global breaker ────────────────────────────
+# Regression lock for the 2026-05-05 ENG-63 incident: a stray test fixture
+# left behind by a review-stage agent's run was classified as self-leak by
+# the tick-end sweep and unconditionally tripped the GLOBAL
+# orchestrator.paused breaker on first occurrence. ENG-64 and ENG-65 (both
+# stage:implementing with no halt of their own) were silently blocked across
+# 63 launchd ticks until manual intervention. The tests below verify the
+# new lane separation:
+#   1. self-leak halts only the affected issue (per-issue lane via
+#      classify_failure with skip-until-human-acts)
+#   2. leaked-in-scope at threshold halts only the affected issue
+#   3. rc=24 (linear-post-failed) still trips the global breaker; any
+#      other non-zero rc routes per-issue
+#   4. cross-issue isolation regression lock — multi-tick sequence where
+#      ENG-A's halt does not block ENG-B/ENG-C clean runs
+
+# Build a stubs dir with a no-op metrics.sh that logs args to
+# $STUB_METRICS_LOG. _eng69_make_stubs always writes the script body fresh
+# so repeated calls are safe in-suite.
+_eng69_make_stubs() {
+  local sd="$1"
+  mkdir -p "$sd"
+  cat > "$sd/metrics.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_METRICS_LOG"
+STUB
+  chmod +x "$sd/metrics.sh"
+}
+
+# ─── ENG-69 #1: halt_issue_for_self_leak routes per-issue ─────────────────
+
+test_halt_issue_for_self_leak_per_issue_routes_correctly() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-selfleak.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  # `|| true` so a non-zero rc from the helper does not propagate set -e
+  # to the parent shell (which would abort the test script before we
+  # reach the assertion block below).
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    # Pipe-separated capture so the reason field's spaces don't collide with
+    # field boundaries when assertions parse it back out.
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-901 reviewing aabbccdd1122 ddeeff334455 \
+      >/dev/null 2>&1
+  ) || true
+
+  # 1a. classify_failure called with the per-issue policy + new exit code.
+  local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
+  assert_eq "ENG-69#1 self-leak routes per-issue (skip-until-human-acts, exit 27)" \
+    "issue=ENG-901 stage=reviewing policy=skip-until-human-acts exit=27" \
+    "$got_call"
+
+  # 1b. reason field carries the leak hashes verbatim and contains no
+  #     raw filesystem paths (security P1-1).
+  local got_reason; got_reason="$(awk -F'|' '{print $4}' "$classify_log")"
+  case "$got_reason" in
+    *aabbccdd1122*ddeeff334455*) report_ok "ENG-69#1 self-leak reason carries both hashes" ;;
+    *) report_fail "ENG-69#1 self-leak reason carries both hashes" \
+         "contains aabbccdd1122 and ddeeff334455" "$got_reason" ;;
+  esac
+  case "$got_reason" in
+    */*) report_fail "ENG-69#1 self-leak reason has no raw paths" \
+         "no '/' in reason" "$got_reason" ;;
+    *)   report_ok "ENG-69#1 self-leak reason has no raw paths" ;;
+  esac
+
+  # 1c. hash-list slice matches the hex-only regex (no positional swaps,
+  #     no zeros/constants). Use grep -E for portability — bash 3.2's `=~`
+  #     accepts `\,` and `\ ` in undefined-behavior territory and the
+  #     backslash escapes are not needed (neither is a metachar in ERE).
+  local hash_slice="${got_reason#*leaked hashes: }"
+  hash_slice="${hash_slice%% (and*}"
+  if printf '%s' "$hash_slice" | grep -qE '^[0-9a-f]{12}(, [0-9a-f]{12})*$'; then
+    report_ok "ENG-69#1 self-leak hash list matches ^[0-9a-f]{12}(, [0-9a-f]{12})*$"
+  else
+    report_fail "ENG-69#1 self-leak hash list matches ^[0-9a-f]{12}(, [0-9a-f]{12})*$" \
+      "hex-only sha12 list" "$hash_slice"
+  fi
+
+  # 1d. global breaker NOT tripped (set_orchestrator_paused never invoked).
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused")"
+  assert_eq "ENG-69#1 self-leak does not trip global breaker" "false" "$pause_state"
+
+  # 1e. global per-project counter file does NOT exist (the bug it locks down).
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#1 self-leak does not write global counter" \
+      "no .consecutive-failures" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#1 self-leak does not write global counter"
+  fi
+
+  # 1f. metric event shape preserved (sweep-self-leak-out-of-scope) so the
+  #     retrospective's §1 filter does not need to relearn the event name.
+  local metric_line; metric_line="$(cat "$STUB_METRICS_LOG" 2>/dev/null || true)"
+  case "$metric_line" in
+    *sweep-self-leak-out-of-scope*ENG-901*reviewing*self-leak*count=2*aabbccdd1122*ddeeff334455*)
+      report_ok "ENG-69#1 self-leak metric event shape preserved" ;;
+    *)
+      report_fail "ENG-69#1 self-leak metric event shape preserved" \
+        "sweep-self-leak-out-of-scope ENG-901 reviewing self-leak ... count=2 hashes=...,..." \
+        "$metric_line" ;;
+  esac
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_per_issue_routes_correctly
+
+# Truncation sub-case: more than 5 hashes → reason carries 5 + "(and N more)".
+test_halt_issue_for_self_leak_truncation_at_5() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-trunc.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-901 reviewing \
+      000011112222 333344445555 666677778888 9999aaaabbbb ccccddddeeee \
+      ffff00001111 222233334444 >/dev/null 2>&1
+  ) || true
+
+  local reason; reason="$(awk -F'|' '{print $4}' "$classify_log")"
+  case "$reason" in
+    *"(and 2 more)"*)
+      report_ok "ENG-69#1 truncation: reason ends with '(and 2 more)'" ;;
+    *)
+      report_fail "ENG-69#1 truncation: reason ends with '(and 2 more)'" \
+        "(and 2 more)" "$reason" ;;
+  esac
+  # The 6th and 7th hashes must NOT appear in the reason (truncation).
+  case "$reason" in
+    *ffff00001111*|*222233334444*)
+      report_fail "ENG-69#1 truncation: hashes 6+ omitted from reason" \
+        "no ffff00001111 or 222233334444" "$reason" ;;
+    *)
+      report_ok "ENG-69#1 truncation: hashes 6+ omitted from reason" ;;
+  esac
+  # The first 5 hashes MUST appear (no positional swap regression).
+  case "$reason" in
+    *000011112222*333344445555*666677778888*9999aaaabbbb*ccccddddeeee*)
+      report_ok "ENG-69#1 truncation: first 5 hashes present in order" ;;
+    *)
+      report_fail "ENG-69#1 truncation: first 5 hashes present in order" \
+        "all 5 leading hashes in order" "$reason" ;;
+  esac
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_truncation_at_5
+
+# DRY-RUN sub-case: PIPELINE_DRY_RUN=1 must skip classify_failure (the FS
+# state-file write is the irreversible side effect we suppress on dry-run
+# ticks).
+test_halt_issue_for_self_leak_dry_run_skips_classify() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-dryrun.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    PIPELINE_DRY_RUN=1
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-901 reviewing aabbccdd1122 >/dev/null 2>&1
+  ) || true
+
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#1 dry-run skips classify_failure" "0" "$n_calls"
+  # But the metric IS emitted (audit trail for dry-run inspection).
+  case "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" in
+    *sweep-self-leak-out-of-scope*) report_ok "ENG-69#1 dry-run still emits metric" ;;
+    *) report_fail "ENG-69#1 dry-run still emits metric" \
+         "sweep-self-leak-out-of-scope" "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" ;;
+  esac
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_dry_run_skips_classify
+
+# ─── ENG-69 #2: tally_leaked_in_scope_failure increments per-issue ────────
+
+# Three sequential ticks on the same issue at FAIL_THRESHOLD=3:
+#   - tick 1: counter = 1, no halt
+#   - tick 2: counter = 2, no halt
+#   - tick 3: counter = 3, classify_failure invoked with policy=skip-until-
+#             human-acts, exit_code=28 (leaked-in-scope-threshold)
+# The global counter file MUST NOT be created across all three ticks
+# (that's the regression lock for the breaker-tripped-on-first-leak bug).
+test_tally_leaked_in_scope_increments_per_issue_counter() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-leakcount.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local i
+  for i in 1 2 3; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      mkdir -p "$PROJECT_STATE_DIR"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      tally_leaked_in_scope_failure ENG-902 implementing 1 abcdef012345 \
+        >/dev/null 2>&1
+    ) || true
+  done
+
+  # Per-issue counter file ends at 3.
+  local pic_file="$tdir/state/ENG-902/.consecutive-failures"
+  local pic_count="missing"
+  [[ -f "$pic_file" ]] && pic_count="$(cat "$pic_file" | tr -d ' \n')"
+  assert_eq "ENG-69#2 per-issue counter increments to 3" "3" "$pic_count"
+
+  # Global counter NEVER written.
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#2 global counter NOT written across 3 ticks" \
+      "no .consecutive-failures at PROJECT_STATE_DIR root" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#2 global counter NOT written across 3 ticks"
+  fi
+
+  # classify_failure invoked exactly ONCE (on the threshold tick).
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#2 classify_failure called once at threshold" "1" "$n_calls"
+
+  # The single call uses skip-until-human-acts policy + exit_code=28.
+  local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
+  assert_eq "ENG-69#2 threshold halt routes per-issue (exit 28)" \
+    "issue=ENG-902 stage=implementing policy=skip-until-human-acts exit=28" \
+    "$got_call"
+
+  # Global breaker NOT tripped.
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused")"
+  assert_eq "ENG-69#2 leaked-in-scope threshold does not trip global breaker" \
+    "false" "$pause_state"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_increments_per_issue_counter
+
+# Counter-file corruption sub-case: write garbage, sanitizer collapses it.
+# Expected behavior: pic="${pic//[^0-9]/}"; pic="${pic:-0}"; pic=$((pic+1))
+# So a corrupted file resumes at 1 on the next tick.
+test_tally_leaked_in_scope_recovers_from_corrupt_counter() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-corrupt.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  # Pre-seed a corrupt counter so the helper observes the cleanup in action.
+  mkdir -p "$tdir/state/ENG-903"
+  printf 'garbage-not-a-number' > "$tdir/state/ENG-903/.consecutive-failures"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    tally_leaked_in_scope_failure ENG-903 implementing 1 abcdef012345 \
+      >/dev/null 2>&1
+  ) || true
+
+  # Counter resumes at 1 (sanitizer collapses non-digits, then increments).
+  local pic_count; pic_count="$(cat "$tdir/state/ENG-903/.consecutive-failures" | tr -d ' \n')"
+  assert_eq "ENG-69#2 corrupt counter resumes at 1 after sanitizer" "1" "$pic_count"
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_recovers_from_corrupt_counter
+
+# Brand-new issue with no prior issue_dir on disk.
+test_tally_leaked_in_scope_creates_issue_dir() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-newdir.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    classify_failure() { :; }
+    set_orchestrator_paused() { :; }
+    # No mkdir -p PROJECT_STATE_DIR — let the helper create the per-issue dir.
+    tally_leaked_in_scope_failure ENG-904 implementing 2 deadbeef0123,cafebabe5678 \
+      >/dev/null 2>&1
+  ) || true
+
+  if [[ -f "$tdir/state/ENG-904/.consecutive-failures" ]]; then
+    report_ok "ENG-69#2 helper creates per-issue dir on first call"
+  else
+    report_fail "ENG-69#2 helper creates per-issue dir on first call" \
+      "$tdir/state/ENG-904/.consecutive-failures exists" \
+      "(missing)"
+  fi
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_creates_issue_dir
+
+# DRY-RUN sub-case: no FS write, no classify_failure.
+test_tally_leaked_in_scope_dry_run_skips_fs_write() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-tally-dryrun.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    PIPELINE_DRY_RUN=1
+    FAIL_THRESHOLD=3
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    set_orchestrator_paused() { :; }
+    tally_leaked_in_scope_failure ENG-905 implementing 1 abcdef012345 \
+      >/dev/null 2>&1
+  ) || true
+
+  # No counter file written.
+  if [[ -f "$tdir/state/ENG-905/.consecutive-failures" ]]; then
+    report_fail "ENG-69#2 dry-run skips per-issue counter write" \
+      "no counter file" \
+      "exists"
+  else
+    report_ok "ENG-69#2 dry-run skips per-issue counter write"
+  fi
+  # classify_failure not called.
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#2 dry-run skips classify_failure" "0" "$n_calls"
+  # Metric STILL emitted (audit trail).
+  case "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" in
+    *sweep-leaked-in-scope*) report_ok "ENG-69#2 dry-run still emits metric" ;;
+    *) report_fail "ENG-69#2 dry-run still emits metric" \
+         "sweep-leaked-in-scope" "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" ;;
+  esac
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_dry_run_skips_fs_write
+
+# ─── ENG-69 #3: route_run_stage_exit splits rc=24 from per-issue lane ─────
+
+# Three sequential rc=24 ticks across DIFFERENT issues should accumulate the
+# global counter and trip the breaker at FAIL_THRESHOLD (the legitimate
+# infrastructure-outage signal). rc=20 (or any other non-24 non-zero) goes
+# to the per-issue counter and never touches the global counter or breaker.
+test_route_run_stage_exit_rc24_increments_global() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rc24.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local issue
+  for issue in ENG-911 ENG-912 ENG-913; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      FAIL_COUNTER="$tdir/state/.consecutive-failures"
+      mkdir -p "$tdir/state"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      route_run_stage_exit "$issue" implementing 24 >/dev/null 2>&1
+    ) || true
+  done
+
+  # Global counter at 3.
+  local fc; fc="$(cat "$tdir/state/.consecutive-failures" 2>/dev/null | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=24 increments global counter to 3" "3" "$fc"
+
+  # Breaker tripped (orchestrator.paused=true).
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=24 at threshold trips global breaker" "true" "$pause_state"
+
+  # No per-issue counter created for any of ENG-911/912/913.
+  local i_no_pic=0
+  for issue in ENG-911 ENG-912 ENG-913; do
+    if [[ -f "$tdir/state/$issue/.consecutive-failures" ]]; then
+      report_fail "ENG-69#3 rc=24 leaves per-issue counters alone ($issue)" \
+        "no $tdir/state/$issue/.consecutive-failures" "exists"
+    else
+      i_no_pic=$((i_no_pic + 1))
+    fi
+  done
+  assert_eq "ENG-69#3 rc=24 leaves all 3 per-issue counters absent" "3" "$i_no_pic"
+
+  # classify_failure NOT called (rc=24 is global lane, not per-issue).
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#3 rc=24 does not invoke classify_failure" "0" "$n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc24_increments_global
+
+# Negative half: rc=20 (dispatch-failed) routes to the per-issue counter.
+test_route_run_stage_exit_rc_other_increments_per_issue() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rcother.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    mkdir -p "$tdir/state"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    route_run_stage_exit ENG-921 implementing 20 >/dev/null 2>&1
+  ) || true
+
+  # Per-issue counter created at 1.
+  local pic; pic="$(cat "$tdir/state/ENG-921/.consecutive-failures" 2>/dev/null | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=20 increments per-issue counter to 1" "1" "$pic"
+
+  # Global counter NOT created.
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#3 rc=20 leaves global counter alone" \
+      "no $tdir/state/.consecutive-failures" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#3 rc=20 leaves global counter alone"
+  fi
+
+  # No breaker trip.
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69#3 rc=20 does not trip global breaker" "false" "$pause_state"
+
+  # classify_failure NOT called below threshold.
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#3 rc=20 single tick does not invoke classify_failure" "0" "$n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc_other_increments_per_issue
+
+# Per-issue rc!=24 at threshold escalates to classify_failure with the
+# original rc passed through unchanged (so the existing taxonomy entries
+# — 21=scope-violation, 124=dispatch-timeout, etc. — survive into the
+# retrospective's bucketing).
+test_route_run_stage_exit_rc_other_escalates_at_threshold() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-escalate.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local i
+  for i in 1 2 3; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      FAIL_COUNTER="$tdir/state/.consecutive-failures"
+      mkdir -p "$tdir/state"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      route_run_stage_exit ENG-922 implementing 21 >/dev/null 2>&1
+    ) || true
+  done
+
+  # classify_failure invoked exactly once at threshold, with rc=21 passed through.
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#3 escalation invokes classify_failure exactly once" "1" "$n_calls"
+
+  local got_call; got_call="$(awk -F'|' '{printf "issue=%s stage=%s policy=%s exit=%s",$1,$2,$3,$5}' "$classify_log")"
+  assert_eq "ENG-69#3 escalation passes rc through unchanged (21=scope-violation)" \
+    "issue=ENG-922 stage=implementing policy=skip-until-human-acts exit=21" \
+    "$got_call"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc_other_escalates_at_threshold
+
+# rc=0 clears BOTH counters (clean tick on an issue resets that issue's
+# per-issue counter AND the global counter).
+test_route_run_stage_exit_rc0_clears_both_counters() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rc0.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  # Pre-seed both counters.
+  mkdir -p "$tdir/state/ENG-931"
+  printf '2\n' > "$tdir/state/.consecutive-failures"
+  printf '1\n' > "$tdir/state/ENG-931/.consecutive-failures"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    set_orchestrator_paused() { :; }
+    classify_failure() { :; }
+    route_run_stage_exit ENG-931 implementing 0 >/dev/null 2>&1
+  ) || true
+
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#3 rc=0 clears global counter" \
+      "no .consecutive-failures" "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#3 rc=0 clears global counter"
+  fi
+  if [[ -f "$tdir/state/ENG-931/.consecutive-failures" ]]; then
+    report_fail "ENG-69#3 rc=0 clears per-issue counter" \
+      "no ENG-931/.consecutive-failures" "exists"
+  else
+    report_ok "ENG-69#3 rc=0 clears per-issue counter"
+  fi
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc0_clears_both_counters
+
+# Issue-id validation: bogus issue id must die() before any side effect.
+test_halt_issue_for_self_leak_rejects_bogus_issue_id() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-bogus.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+  local rc=0
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    halt_issue_for_self_leak '../../etc/passwd' reviewing aabbccdd1122 \
+      >/dev/null 2>&1
+  ) || rc=$?
+  if (( rc != 0 )); then
+    report_ok "ENG-69#1 bogus issue id is rejected (die)"
+  else
+    report_fail "ENG-69#1 bogus issue id is rejected (die)" "non-zero exit" "rc=$rc"
+  fi
+  # Metric MUST NOT have been emitted before the validation check.
+  local got_metric; got_metric="$(cat "$STUB_METRICS_LOG" 2>/dev/null || true)"
+  assert_eq "ENG-69#1 bogus issue id emits no metric" "" "$got_metric"
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_rejects_bogus_issue_id
+
+# ─── ENG-69 #4: cross-issue isolation regression lock ─────────────────────
+#
+# This is the load-bearing regression lock for the 2026-05-05 ENG-63 →
+# ENG-64/65 incident. Pre-ENG-69, a self-leak on ENG-63's reviewing tick
+# called `trip_breaker; exit 1` directly — flipping orchestrator.paused=true
+# on the FIRST occurrence and freezing every other issue's poll. ENG-64
+# and ENG-65 (both stage:implementing with no halt of their own) were
+# silently blocked across 63 launchd ticks until manual intervention.
+#
+# With the new lane separation in place:
+#   - halt_issue_for_self_leak halts only the affected issue via
+#     classify_failure (skip-until-human-acts policy)
+#   - clean ticks on OTHER issues do not see the halted issue's state
+#   - the global breaker stays at false across the entire sequence
+#
+# Three subshell-ticks simulate three independent launchd fires:
+#   Tick 1: ENG-A reviewing self-leaks → per-issue halt
+#   Tick 2: ENG-B implementing clean run → no global state touched
+#   Tick 3: ENG-C reviewing clean run → no global state touched
+# Per-tick assertion: is_orchestrator_paused returns false. End-of-suite
+# assertion: ENG-B and ENG-C have no per-issue counter files.
+test_cross_issue_isolation_self_leak_does_not_block_other_issues() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-isolation.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  # Tick 1: ENG-A self-leaks → per-issue halt; global breaker untouched.
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-941 reviewing aabbccdd1122 >/dev/null 2>&1
+    # In-tick assertion: breaker NOT tripped.
+    pause_state="$(is_orchestrator_paused)"
+    if [[ "$pause_state" != "false" ]]; then
+      printf 'TICK1 FAIL: breaker tripped after self-leak\n' >&2
+      exit 1
+    fi
+  ) || report_fail "ENG-69#4 tick1 keeps orchestrator.paused=false" "false" "true (tripped)"
+
+  # ENG-A should be the ONLY issue captured by classify_failure so far.
+  local n_calls_after_tick1; n_calls_after_tick1="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#4 tick1 halts exactly one issue" "1" "$n_calls_after_tick1"
+  local halted_issue; halted_issue="$(awk -F'|' '{print $1}' "$classify_log")"
+  assert_eq "ENG-69#4 tick1 halts ENG-941 only" "ENG-941" "$halted_issue"
+  # Global breaker is still false at the test-shell level too.
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69#4 after-tick1 global breaker stays false" "false" "$pause_state"
+
+  # Tick 2: ENG-B clean run → no global state touched, no per-issue counter
+  # for ENG-B (rc=0 clears both, but ENG-B never had a counter to clear).
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    route_run_stage_exit ENG-942 implementing 0 >/dev/null 2>&1
+    pause_state="$(is_orchestrator_paused)"
+    if [[ "$pause_state" != "false" ]]; then
+      printf 'TICK2 FAIL: breaker tripped during clean ENG-B tick\n' >&2
+      exit 1
+    fi
+  ) || report_fail "ENG-69#4 tick2 keeps orchestrator.paused=false on clean ENG-B run" "false" "true (tripped)"
+
+  # Tick 3: ENG-C clean run → same as tick2.
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_THRESHOLD=3
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+    is_orchestrator_paused()  { cat "$tdir/paused" 2>/dev/null || printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    route_run_stage_exit ENG-943 reviewing 0 >/dev/null 2>&1
+    pause_state="$(is_orchestrator_paused)"
+    if [[ "$pause_state" != "false" ]]; then
+      printf 'TICK3 FAIL: breaker tripped during clean ENG-C tick\n' >&2
+      exit 1
+    fi
+  ) || report_fail "ENG-69#4 tick3 keeps orchestrator.paused=false on clean ENG-C run" "false" "true (tripped)"
+
+  # End-of-sequence: ENG-B and ENG-C have no per-issue counter files
+  # (clean runs on issues that never accumulated state should not write
+  # any counter).
+  if [[ -f "$tdir/state/ENG-942/.consecutive-failures" ]]; then
+    report_fail "ENG-69#4 tick2 leaves ENG-B with no per-issue counter" \
+      "no $tdir/state/ENG-942/.consecutive-failures" "exists"
+  else
+    report_ok "ENG-69#4 tick2 leaves ENG-B with no per-issue counter"
+  fi
+  if [[ -f "$tdir/state/ENG-943/.consecutive-failures" ]]; then
+    report_fail "ENG-69#4 tick3 leaves ENG-C with no per-issue counter" \
+      "no $tdir/state/ENG-943/.consecutive-failures" "exists"
+  else
+    report_ok "ENG-69#4 tick3 leaves ENG-C with no per-issue counter"
+  fi
+
+  # Global counter file never created across all three ticks (the regression
+  # lock — pre-ENG-69 the self-leak on tick1 would have written this).
+  if [[ -f "$tdir/state/.consecutive-failures" ]]; then
+    report_fail "ENG-69#4 global counter never written across all 3 ticks" \
+      "no $tdir/state/.consecutive-failures" \
+      "exists with $(cat "$tdir/state/.consecutive-failures")"
+  else
+    report_ok "ENG-69#4 global counter never written across all 3 ticks"
+  fi
+
+  # Final classify_failure call count: still exactly 1 (the tick1 self-leak).
+  # Ticks 2 and 3 are clean runs and must NOT emit any classify_failure.
+  local final_n_calls; final_n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69#4 only the self-leak tick invokes classify_failure" \
+    "1" "$final_n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_cross_issue_isolation_self_leak_does_not_block_other_issues
+
+# ─── ENG-69 QA adversarial coverage (post-review) ─────────────────────────
+#
+# Plug three gaps surfaced in the review-stage minor findings:
+#   - rc=24 below threshold (symmetric to the leaked-in-scope below/at-threshold
+#     pair). Locks the negative case for the breaker — accidentally tripping
+#     on FIRST occurrence is exactly the ENG-69 incident shape, just on a
+#     different lane.
+#   - tally_leaked_in_scope_failure with bogus issue id. Symmetric to the
+#     halt_issue_for_self_leak test; both helpers share the same regex
+#     guard, but only one was tested.
+#   - halt_issue_for_self_leak with EXACTLY 5 hashes. Boundary between the
+#     "all hashes shown, no suffix" case and the "(and N more)" case. The
+#     existing tests cover 2 and 7 hashes, leaving the boundary unasserted.
+
+# Below-threshold rc=24: 1 and 2 ticks must NOT trip the breaker, even
+# though the global counter increments.
+test_route_run_stage_exit_rc24_below_threshold() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-rc24below.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  local i
+  for i in 1 2; do
+    (
+      SCRIPT_DIR="$stub_dir"
+      PROJECT_STATE_DIR="$tdir/state"
+      FAIL_THRESHOLD=3
+      FAIL_COUNTER="$tdir/state/.consecutive-failures"
+      mkdir -p "$tdir/state"
+      set_orchestrator_paused() { printf '%s\n' "$1" > "$tdir/paused"; }
+      classify_failure() {
+        printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+      }
+      route_run_stage_exit ENG-951 implementing 24 >/dev/null 2>&1
+    ) || true
+  done
+
+  local fc; fc="$(cat "$tdir/state/.consecutive-failures" 2>/dev/null | tr -d ' \n')"
+  assert_eq "ENG-69 QA-adv rc=24 below threshold: global counter increments to 2" "2" "$fc"
+
+  local pause_state="false"
+  [[ -f "$tdir/paused" ]] && pause_state="$(cat "$tdir/paused" | tr -d ' \n')"
+  assert_eq "ENG-69 QA-adv rc=24 below threshold does NOT trip breaker" "false" "$pause_state"
+
+  local n_calls; n_calls="$(wc -l < "$classify_log" | tr -d ' ')"
+  assert_eq "ENG-69 QA-adv rc=24 below threshold does not invoke classify_failure" "0" "$n_calls"
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_route_run_stage_exit_rc24_below_threshold
+
+# Bogus-id regex guard: tally_leaked_in_scope_failure rejects '../../etc/passwd'
+# before any side effect (metric emit, counter write, or classify_failure call).
+# Symmetric to test_halt_issue_for_self_leak_rejects_bogus_issue_id.
+test_tally_leaked_in_scope_failure_rejects_bogus_issue_id() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-tallybogus.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+  local rc=0
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    FAIL_COUNTER="$tdir/state/.consecutive-failures"
+    mkdir -p "$PROJECT_STATE_DIR"
+    classify_failure() { :; }
+    tally_leaked_in_scope_failure '../../etc/passwd' implementing 1 abcdef012345 \
+      >/dev/null 2>&1
+  ) || rc=$?
+  if (( rc != 0 )); then
+    report_ok "ENG-69 QA-adv tally bogus issue id is rejected (die)"
+  else
+    report_fail "ENG-69 QA-adv tally bogus issue id is rejected (die)" "non-zero exit" "rc=$rc"
+  fi
+  # Metric MUST NOT have been emitted before the validation check.
+  local got_metric; got_metric="$(cat "$STUB_METRICS_LOG" 2>/dev/null || true)"
+  assert_eq "ENG-69 QA-adv tally bogus issue id emits no metric" "" "$got_metric"
+  # No counter written under any path containing 'passwd'.
+  if find "$tdir/state" -name '.consecutive-failures' 2>/dev/null | grep -q .; then
+    report_fail "ENG-69 QA-adv tally bogus issue id writes no counter file" \
+      "no .consecutive-failures under state/" "found"
+  else
+    report_ok "ENG-69 QA-adv tally bogus issue id writes no counter file"
+  fi
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_tally_leaked_in_scope_failure_rejects_bogus_issue_id
+
+# Boundary at exactly 5 hashes: all 5 appear in order, NO "(and N more)" suffix.
+# The truncation logic uses `(( h_count >= 5 )) && break`; off-by-one would
+# either truncate to 4 (suffix "(and 1 more)" appears) or leak a 6th hash.
+test_halt_issue_for_self_leak_at_exactly_5_hashes() {
+  local tdir; tdir="$(mktemp -d -t twinning-eng69-exactly5.XXXXXX)"
+  local stub_dir="$tdir/stubs"
+  _eng69_make_stubs "$stub_dir"
+  local classify_log="$tdir/classify.log"
+  : > "$classify_log"
+  export STUB_METRICS_LOG="$tdir/metrics.log"
+  : > "$STUB_METRICS_LOG"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$tdir/state"
+    mkdir -p "$PROJECT_STATE_DIR"
+    set_orchestrator_paused() { :; }
+    is_orchestrator_paused()  { printf 'false'; }
+    classify_failure() {
+      printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$classify_log"
+    }
+    halt_issue_for_self_leak ENG-961 reviewing \
+      000011112222 333344445555 666677778888 9999aaaabbbb ccccddddeeee \
+      >/dev/null 2>&1
+  ) || true
+
+  local reason; reason="$(awk -F'|' '{print $4}' "$classify_log")"
+  # No suffix at boundary.
+  case "$reason" in
+    *"(and "*"more)"*)
+      report_fail "ENG-69 QA-adv exactly-5: no '(and N more)' suffix at boundary" \
+        "no (and N more)" "$reason" ;;
+    *)
+      report_ok "ENG-69 QA-adv exactly-5: no '(and N more)' suffix at boundary" ;;
+  esac
+  # All 5 hashes present in order.
+  case "$reason" in
+    *000011112222*333344445555*666677778888*9999aaaabbbb*ccccddddeeee*)
+      report_ok "ENG-69 QA-adv exactly-5: all 5 hashes present in order" ;;
+    *)
+      report_fail "ENG-69 QA-adv exactly-5: all 5 hashes present in order" \
+        "all 5 hashes in order" "$reason" ;;
+  esac
+  # Reason field's hash slice matches the canonical regex.
+  local hash_slice="${reason#*leaked hashes: }"
+  if printf '%s' "$hash_slice" | grep -qE '^[0-9a-f]{12}(, [0-9a-f]{12}){4}$'; then
+    report_ok "ENG-69 QA-adv exactly-5: hash slice matches ^[0-9a-f]{12}(, [0-9a-f]{12}){4}\$"
+  else
+    report_fail "ENG-69 QA-adv exactly-5: hash slice matches ^[0-9a-f]{12}(, [0-9a-f]{12}){4}\$" \
+      "5 hex-only sha12 entries" "$hash_slice"
+  fi
+
+  rm -rf "$tdir"
+  unset STUB_METRICS_LOG
+}
+test_halt_issue_for_self_leak_at_exactly_5_hashes
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then

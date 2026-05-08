@@ -44,6 +44,161 @@ trip_breaker() {
   set_orchestrator_paused true
 }
 
+# halt_issue_for_self_leak <issue> <stage> <hash1> [<hash2> ...]  (ENG-69)
+# Halts a single issue for self-leak via classify_failure with
+# skip-until-human-acts policy. Does NOT trip the global breaker.
+#
+# Pre-ENG-69, run-local.sh's tick-end sweep called trip_breaker on the
+# FIRST occurrence of a self-leak — collapsing a per-issue agent failure
+# into a harness-wide pause that froze every other issue's poll until
+# manual intervention (the 2026-05-05 ENG-63 → ENG-64/65 incident). The
+# new lane keeps the global breaker for genuinely cross-issue
+# infrastructure outages (rc=24, linear-post-failed) and routes
+# bot-introduced out-of-scope leaks through classify_failure against
+# the affected issue only.
+#
+# The reason string passed to classify_failure carries ONLY sha12 hashes
+# (max 5, with "(and N more)" suffix when count > 5); no raw filesystem
+# paths flow into the halt-comment body via this entrypoint (security
+# P1-1 — adversarial filenames cannot inject HTML markers, Unicode
+# direction overrides, or shell metacharacters). The leak metric still
+# carries the full hash list for retrospective audit.
+halt_issue_for_self_leak() {
+  local issue="$1" stage="$2"
+  shift 2
+  [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+    || die "halt_issue_for_self_leak: invalid issue id '$issue'"
+  local hashes=("$@") count=$#
+  local leak_csv="" h
+  for h in "${hashes[@]}"; do
+    leak_csv="${leak_csv:+${leak_csv},}${h}"
+  done
+  bash "$SCRIPT_DIR/metrics.sh" sweep-self-leak-out-of-scope "$issue" "$stage" \
+    "self-leak" 0 "count=${count} hashes=${leak_csv}" \
+    || log "metrics.sh sweep-self-leak-out-of-scope emission failed (non-blocking)"
+  log "SELF-LEAK: ${count} bot-introduced out-of-scope path(s) on $issue; halting issue (in-scope paths NOT committed)"
+  [[ "${PIPELINE_DRY_RUN:-}" == "1" ]] && return 0
+  local hash_lines="" h_count=0
+  for h in "${hashes[@]}"; do
+    (( h_count >= 5 )) && break
+    hash_lines="${hash_lines}${hash_lines:+, }${h}"
+    h_count=$((h_count + 1))
+  done
+  local suffix=""
+  (( count > 5 )) && suffix=" (and $((count - 5)) more)"
+  classify_failure "$issue" "$stage" "skip-until-human-acts" \
+    "self-leak: ${count} bot-introduced out-of-scope path(s); leaked hashes: ${hash_lines}${suffix}" \
+    27
+}
+
+# tally_leaked_in_scope_failure <issue> <stage> <leaked_count> <leaked_hashes_csv>  (ENG-69)
+# Increments the per-issue consecutive-failures counter at
+# $(issue_dir <issue>)/.consecutive-failures and escalates to a
+# skip-until-human-acts halt at FAIL_THRESHOLD. Does NOT touch the global
+# counter or trip the breaker.
+#
+# Pre-ENG-69, leaked-in-scope counted against the GLOBAL FAIL_COUNTER and
+# tripped the breaker at threshold. That collapses three independent
+# leak events on three different issues into a harness-wide pause.
+# Now each issue gets its own counter; only same-issue accumulation
+# escalates, and only against THAT issue.
+#
+# Counter-file integrity: the file is read with a non-digit sanitizer
+# (pic="${pic//[^0-9]/}"; pic="${pic:-0}") so a corrupt body resumes at
+# 0+1=1 rather than tripping arithmetic errors under set -e. The write
+# is atomic: tmp file + mv -f, so a crash mid-tick cannot leave a torn
+# counter (security P1-3 — tampering reverts to a clean integer).
+tally_leaked_in_scope_failure() {
+  local issue="$1" stage="$2" leaked_count="$3" leaked_hashes="$4"
+  [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+    || die "tally_leaked_in_scope_failure: invalid issue id '$issue'"
+  bash "$SCRIPT_DIR/metrics.sh" sweep-leaked-in-scope "$issue" "$stage" \
+    "leak" 0 "count=${leaked_count} hashes=${leaked_hashes}" \
+    || log "metrics.sh sweep-leaked-in-scope emission failed (non-blocking)"
+  [[ "${PIPELINE_DRY_RUN:-}" == "1" ]] && return 0
+  local pic_file pic
+  pic_file="$(issue_dir "$issue")/.consecutive-failures"
+  mkdir -p "$(dirname "$pic_file")"
+  pic="$(cat "$pic_file" 2>/dev/null || printf '0')"
+  pic="${pic//[^0-9]/}"; pic="${pic:-0}"
+  pic=$((pic + 1))
+  printf '%s\n' "$pic" > "${pic_file}.tmp.$$"
+  mv -f "${pic_file}.tmp.$$" "$pic_file"
+  log "sweep-leaked-in-scope: ${leaked_count} path(s) on $issue; per-issue consecutive failures = $pic (in-scope paths NOT committed)"
+  if (( pic >= ${FAIL_THRESHOLD:-3} )); then
+    classify_failure "$issue" "$stage" "skip-until-human-acts" \
+      "leaked-in-scope at threshold: ${pic} consecutive failures (last leak: ${leaked_count} path(s))" \
+      28
+  fi
+}
+
+# route_run_stage_exit <issue> <stage> <rc>  (ENG-69)
+# Routes a run-stage exit to the appropriate counter lane:
+#   rc==0  → clear both global and per-issue counters; return 0.
+#   rc==24 → global counter += 1; trip breaker at FAIL_THRESHOLD.
+#   else   → per-issue counter += 1; classify_failure halt at threshold,
+#            with the original rc passed through unchanged so the existing
+#            failure_outcome_for_exit taxonomy entries (21=scope-violation,
+#            124=dispatch-timeout, etc.) survive into the retrospective.
+#
+# Pre-ENG-69, every non-zero run-stage rc accumulated into the GLOBAL
+# .consecutive-failures counter, so three independent agent failures on
+# three different issues tripped the breaker and froze every other
+# issue's poll. rc=24 (linear-post-failed) is the one infrastructure
+# failure that GENUINELY portends "the next dispatch on ANY issue will
+# also fail" — it stays in the global lane. Everything else is per-issue.
+#
+# Counter-file integrity: same sanitizer pattern as
+# tally_leaked_in_scope_failure (pic="${pic//[^0-9]/}"; pic="${pic:-0}")
+# so a corrupt body resumes at 1 rather than tripping arithmetic errors
+# under set -e. Atomic write via tmp file + mv -f (security P1-3).
+#
+# Returns 0 in all cases; the caller in run-local.sh still does
+# `[[ $rc -ne 0 ]] && exit $rc` so existing exit semantics are preserved.
+route_run_stage_exit() {
+  local issue="$1" stage="$2" rc="$3"
+  [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+    || die "route_run_stage_exit: invalid issue id '$issue'"
+  local pic_file
+  pic_file="$(issue_dir "$issue")/.consecutive-failures"
+  if (( rc == 0 )); then
+    rm -f "$FAIL_COUNTER" 2>/dev/null || true
+    rm -f "$pic_file" 2>/dev/null || true
+    return 0
+  fi
+  case "$rc" in
+    24)
+      local count
+      count="$(cat "$FAIL_COUNTER" 2>/dev/null || printf '0')"
+      count="${count//[^0-9]/}"; count="${count:-0}"
+      count=$((count + 1))
+      mkdir -p "$(dirname "$FAIL_COUNTER")"
+      printf '%s\n' "$count" > "${FAIL_COUNTER}.tmp.$$"
+      mv -f "${FAIL_COUNTER}.tmp.$$" "$FAIL_COUNTER"
+      log "run-stage.sh exited $rc on $issue (linear-post-failed; infrastructure); global consecutive failures = $count"
+      if (( count >= ${FAIL_THRESHOLD:-3} )); then
+        trip_breaker
+      fi
+      ;;
+    *)
+      mkdir -p "$(dirname "$pic_file")"
+      local pic
+      pic="$(cat "$pic_file" 2>/dev/null || printf '0')"
+      pic="${pic//[^0-9]/}"; pic="${pic:-0}"
+      pic=$((pic + 1))
+      printf '%s\n' "$pic" > "${pic_file}.tmp.$$"
+      mv -f "${pic_file}.tmp.$$" "$pic_file"
+      log "run-stage.sh exited $rc on $issue; per-issue consecutive failures = $pic"
+      if (( pic >= ${FAIL_THRESHOLD:-3} )); then
+        classify_failure "$issue" "$stage" "skip-until-human-acts" \
+          "exceeded ${FAIL_THRESHOLD:-3} consecutive same-issue failures (last exit ${rc})" \
+          "$rc"
+      fi
+      ;;
+  esac
+  return 0
+}
+
 stage_output_paths() {
   local stage="$1"
   case "$stage" in
