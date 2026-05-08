@@ -1831,19 +1831,28 @@ printf '\n--- ENG-53 #8: harness profile populates dispatch.tools test-runner --
 # population. CI / other-target operators (file missing) skip silently.
 HARNESS_CONFIG="$HARNESS_ROOT/.pipeline-config/config.json"
 if [[ -f "$HARNESS_CONFIG" ]]; then
+  expected_count="$(ls "$HARNESS_ROOT"/bin/*-test.sh 2>/dev/null | wc -l | tr -d ' ')"
   for stage in implementing qa; do
-    has_runner="$(jq -r --arg s "$stage" '
+    has_broken_wildcard="$(jq -r --arg s "$stage" '
       (.dispatch.tools[$s] // []) as $arr
       | if ($arr | type) == "array"
         then $arr | any(. == "Bash(bash bin/*-test.sh:*)")
         else false end
     ' "$HARNESS_CONFIG" 2>/dev/null || printf 'false')"
-    if [[ "$has_runner" == "true" ]]; then
-      pass_at "ENG-53#8: harness config.json::dispatch.tools.${stage} includes Bash(bash bin/*-test.sh:*)"
+    actual_count="$(jq -r --arg s "$stage" '
+      (.dispatch.tools[$s] // []) as $arr
+      | if ($arr | type) == "array"
+        then [$arr[] | select(test("^Bash\\(bash bin/[^*]+-test\\.sh:\\*\\)$"))] | length
+        else 0 end
+    ' "$HARNESS_CONFIG" 2>/dev/null || printf '0')"
+    if [[ "$has_broken_wildcard" == "true" ]]; then
+      fail_at "ENG-53#8/ENG-77: harness config.json::dispatch.tools.${stage} contains broken wildcard Bash(bash bin/*-test.sh:*)" \
+        "Claude's permission matcher does not expand the inner '*' as a glob — the pattern matches no actual test script. Replace with one literal Bash(bash bin/<name>-test.sh:*) entry per script. See CLAUDE.md '## Per-target dispatch.tools extras' for the regen one-liner."
+    elif (( actual_count >= expected_count )); then
+      pass_at "ENG-53#8: harness config.json::dispatch.tools.${stage} enumerates ${actual_count} test runners (>= ${expected_count} on disk)"
     else
-      current="$(jq -c --arg s "$stage" '.dispatch.tools[$s] // null' "$HARNESS_CONFIG" 2>/dev/null || printf 'null')"
-      fail_at "ENG-53#8: harness config.json::dispatch.tools.${stage} missing Bash(bash bin/*-test.sh:*)" \
-        "current: ${current} — see CLAUDE.md or run: jq '.dispatch.tools.${stage} = [\"Bash(bash bin/*-test.sh:*)\"]' \$CONFIG > /tmp/c && mv /tmp/c \$CONFIG"
+      fail_at "ENG-53#8: harness config.json::dispatch.tools.${stage} only enumerates ${actual_count} test runners; ${expected_count} bin/*-test.sh files exist on disk" \
+        "see CLAUDE.md '## Per-target dispatch.tools extras' for the regen one-liner."
     fi
   done
 else
