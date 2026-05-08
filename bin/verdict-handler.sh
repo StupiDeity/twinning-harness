@@ -142,6 +142,54 @@ find_fresh_verdict() {
   printf '%s' "$result"
 }
 
+# ─── ENG-85: wait-only sibling of find_fresh_verdict ────────────────
+# Returns the latest wait verdict marker that is newer than the most
+# recent transition AND is itself the latest verdict in that window.
+# If a later pass/fail/halt exists, the wait has been superseded
+# and this returns empty (matching `_fresh_wait_reason`'s ENG-61 Bug B
+# rule at bin/run-stage.sh:332-356). No stage gate — caller decides.
+#
+# Output JSON: {"reason": "...", "comment_id": "...", "created_at": "..."}
+#              OR empty string when no fresh wait qualifies.
+find_fresh_wait_verdict() {
+  local issue="$1"
+  local comments
+  comments="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-comments "$issue" 2>/dev/null)" || { printf ''; return 0; }
+  [[ -z "$comments" || "$comments" == "null" ]] && { printf ''; return 0; }
+
+  local last_transition_ts="" ts body ev
+  while IFS=$'\t' read -r ts body; do
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]]; then
+      [[ "$ts" > "$last_transition_ts" ]] && last_transition_ts="$ts"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+
+  local fresh_ts="" fresh_id="" fresh_result="" fresh_reason="" id
+  while IFS=$'\t' read -r ts id body; do
+    [[ -n "$last_transition_ts" && ! "$ts" > "$last_transition_ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+    if [[ "$ts" > "$fresh_ts" ]]; then
+      fresh_ts="$ts"
+      fresh_id="$id"
+      fresh_result="$(jq -r '.result' <<<"$ev")"
+      fresh_reason="$(jq -r '.reason // ""' <<<"$ev")"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.id)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+
+  [[ "$fresh_result" != "wait" ]] && { printf ''; return 0; }
+  [[ -z "$fresh_reason" ]] && { printf ''; return 0; }
+
+  jq -nc \
+    --arg r "$fresh_reason" \
+    --arg id "$fresh_id" \
+    --arg ts "$fresh_ts" \
+    '{reason:$r, comment_id:$id, created_at:$ts}'
+}
+
 # Atomic transition order (per brainstorm §Atomic transition order):
 #   1. Post <!-- pipeline: transition from=X to=Y --> comment (freshness waypoint).
 #   2. Add stage:<to> label.
@@ -404,4 +452,4 @@ verdict_handler() {
   esac
 }
 
-export -f verdict_handler find_fresh_verdict apply_transition resume_in_progress_transition
+export -f verdict_handler find_fresh_verdict find_fresh_wait_verdict apply_transition resume_in_progress_transition
