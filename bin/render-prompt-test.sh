@@ -125,6 +125,33 @@ else
   pass_at "case-6.5: marker-bearing profile dies"
 fi
 
+# ─── ENG-79: render-prompt.sh sources branch-name.sh; no `feature/` literal ──
+# ENG-74 (May 2026) demonstrated the failure mode: a build-stage agent ran
+# `gh pr list --head feature/eng-74-…` from the prompt's interpolated
+# `{branch_name}` value, got an empty result because the actual branch is
+# `feat/eng-74-…`, and emitted `verdict halt reason=agent-blocked` for P1.
+# Root cause: render-prompt.sh:212 hand-rolled
+# `branch_name="feature/${issue_id_lower}-${slug}"` while the canonical
+# resolver bin/branch-name.sh emits `feat/eng-N-…`.
+#
+# Pin: render-prompt.sh MUST source branch-name.sh to resolve the canonical
+# name, and MUST NOT carry a `feature/${issue_id_lower}` literal.
+RP_SRC="$SCRIPT_DIR/render-prompt.sh"
+
+if grep -qE 'bash[^|]*"\$SCRIPT_DIR/branch-name\.sh"[[:space:]]+"\$issue_id"' "$RP_SRC"; then
+  pass_at 'ENG-79: render-prompt.sh resolves branch_name via bin/branch-name.sh'
+else
+  fail_at 'ENG-79: render-prompt.sh resolves branch_name via bin/branch-name.sh' \
+    'no `bash $SCRIPT_DIR/branch-name.sh "$issue_id"` invocation found'
+fi
+
+if grep -qF 'feature/${issue_id_lower}' "$RP_SRC"; then
+  fail_at 'ENG-79: render-prompt.sh has no `feature/${issue_id_lower}` literal' \
+    'pre-ENG-79 hand-rolled form is back'
+else
+  pass_at 'ENG-79: render-prompt.sh has no `feature/${issue_id_lower}` literal'
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
