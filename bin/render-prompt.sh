@@ -209,7 +209,21 @@ main() {
   # Falls back to sed if python unavailable.
   local issue_id_lower branch_name stage_summary_path learned_rules_dir
   issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
-  branch_name="feature/${issue_id_lower}-${slug}"
+  # ENG-79: source the canonical branch-name resolver instead of hand-rolling
+  # the form `feature/<lower>-<slug>`. The hand-rolled form drifted from
+  # `bin/branch-name.sh:31` (which emits `feat/eng-N-…` for Feature/Improvement
+  # issues and `fix/eng-N-…` for Bug issues, per AGENT_PROMPTS.md "Branch-name
+  # convention"). Pre-ENG-67, the orchestrator's legacy `feature/*` coexistence
+  # path silently accommodated the drift; post-ENG-67 the orchestrator strictly
+  # uses `feat/...`, so the prompt's interpolated `{branch_name}` value
+  # (`feature/...`) cannot match the actual checked-out branch. ENG-74 (May 2026)
+  # demonstrated the failure: a build-stage agent ran
+  # `gh pr list --head feature/eng-74-…` from the prompt interpolation, got an
+  # empty result, and emitted `verdict halt reason=agent-blocked` for P1 even
+  # though PR was open on canonical `feat/eng-74-…`.
+  branch_name="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id" 2>/dev/null || printf '')"
+  [[ -n "$branch_name" ]] \
+    || die "render-prompt: branch-name.sh returned empty for $issue_id (Linear-API outage or bug-label resolution failed). Cannot render prompt without a canonical branch name."
   stage_summary_path="$(issue_dir "$issue_id")/stage-summary-${stage}.md"
   learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
 
