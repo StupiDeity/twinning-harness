@@ -3602,6 +3602,270 @@ fi
 CONFIG="$ENG_86_CFG_SAVED"
 rm -f "$ENG_86_TMP_CFG"
 
+# ─── ENG-86 QA adversarial coverage ─────────────────────────────────────
+# These cases land at function-level (sourced bin/entry-conditions.sh) so
+# they exercise the REAL check function check_pr_approved_by_non_bot, not
+# the deterministic stub used by cases G/G2/G3/G4. Each case targets a
+# concern the plan's Failure Mode → Test Map did NOT cover.
+#
+# Rationale for living in run-stage-test.sh rather than entry-conditions-test.sh:
+# the harness-self target's qa-stage allowlist enumerates this file but
+# (until the operator regenerates .pipeline-config — Task 7) does NOT
+# include bin/entry-conditions-test.sh. Co-locating these adversarial
+# cases here keeps them runnable under the dispatch.tools.qa lane that
+# already ships.
+
+printf '\n--- ENG-86 QA adversarial: check_pr_approved_by_non_bot direct invocation ---\n'
+
+# Replace the gh stub (currently keyed off MOCK_GH_PR_URL/MOCK_GH_PR_STATE
+# for the merge-gate cases) with a flexible variant keyed off
+# MOCK_GH_REVIEWS_JSON. Honors MOCK_GH_RC for fault injection. Falls back
+# to the prior URL/state behavior when --json reviews is not requested,
+# so this stub doesn't break any earlier test (we already past them).
+cat > "$STUB_DIR/gh" <<'SH'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_GH_RC-}" && "${MOCK_GH_RC-}" != "0" ]]; then
+  exit "${MOCK_GH_RC}"
+fi
+json_arg=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--json" ]]; then
+    json_arg="${2-}"
+    break
+  fi
+  shift
+done
+case "$json_arg" in
+  reviews) printf '%s' "${MOCK_GH_REVIEWS_JSON-}" ;;
+  state)   printf '%s' "${MOCK_GH_PR_STATE-}" ;;
+  url|*)   printf '%s' "${MOCK_GH_PR_URL-}" ;;
+esac
+SH
+chmod +x "$STUB_DIR/gh"
+
+# Source entry-conditions.sh so check_pr_approved_by_non_bot is in scope.
+# common.sh + run-stage.sh were sourced earlier (lines 97/101); SCRIPT_DIR
+# was pinned to $STUB_DIR at line 114. entry-conditions.sh's prologue
+# resets SCRIPT_DIR to its own dirname (bin/), which would route the
+# helper's `bash "$SCRIPT_DIR/branch-name.sh"` to the REAL branch-name.sh
+# (Linear API outage in test → empty branch → silent rc=2 across QA-A..QA-F).
+# Re-pin SCRIPT_DIR to $STUB_DIR after the source so `bash "$SCRIPT_DIR/branch-name.sh"`
+# hits the deterministic stub (feat/<lower>-mock-slug).
+# shellcheck source=entry-conditions.sh
+source "$HARNESS_DIR/entry-conditions.sh"
+SCRIPT_DIR="$STUB_DIR"
+
+# ─── QA-A: set -e under `(( count >= 1 )) && return 0` does NOT abort ──
+# ENG-86 hardening: a cold reviewer flagged that `set -euo pipefail` plus
+# the `(( N >= 1 )) && return 0` idiom could (in principle) abort the
+# function with empty stdout when N=0, producing a `skip:` (empty reason)
+# wait file — invisible reason in halt comments. Bash semantics actually
+# carve out failures inside `&&`/`||` lists (they do NOT trip errexit),
+# so the function correctly proceeds to `printf 'awaiting-approval' && return 1`.
+# Pin the behavior with a direct call so a future refactor that drops the
+# `&& return 0` pattern (e.g. adopts a bare `if`) preserves the invariant.
+export MOCK_GH_REVIEWS_JSON='{"reviews":[{"state":"COMMENTED","author":{"login":"alice"}}]}'
+unset MOCK_GH_RC
+qaa_rc=0; qaa_out="$(check_pr_approved_by_non_bot ENG-86QAA 2>/dev/null)" || qaa_rc=$?
+if (( qaa_rc == 1 )) && [[ "$qaa_out" == "awaiting-approval" ]]; then
+  pass_at "ENG-86 QA-A: zero APPROVED reviews → rc=1 + stdout='awaiting-approval' (set -e + arithmetic-and-return idiom verified)"
+else
+  fail_at "ENG-86 QA-A" "expected rc=1 + stdout='awaiting-approval', got rc=$qaa_rc stdout='$qaa_out'"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-B: superseded APPROVED review still counts (P2 mirror) ──────────
+# GitHub's reviews[] is append-only: a reviewer who APPROVES then COMMENTS
+# yields {APPROVED, COMMENTED}. The jq filter does NOT dedupe by author,
+# so the historical APPROVED counts → proceed. This pins the documented
+# trade-off (D-008: filter mirrors AGENT_PROMPTS.md §7 P2) so any future
+# divergence between the gate and P2 fails this test loudly.
+export MOCK_GH_REVIEWS_JSON='{"reviews":[{"state":"APPROVED","author":{"login":"alice"}},{"state":"COMMENTED","author":{"login":"alice"}}]}'
+qab_rc=0; check_pr_approved_by_non_bot ENG-86QAB >/dev/null 2>&1 || qab_rc=$?
+if (( qab_rc == 0 )); then
+  pass_at "ENG-86 QA-B: APPROVED+COMMENTED from same author → rc=0 (P2-mirror trade-off pinned; reviews[] not deduped by author)"
+else
+  fail_at "ENG-86 QA-B" "expected rc=0 (P2 mirror), got rc=$qab_rc — gate has diverged from AGENT_PROMPTS.md §7 P2 filter"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-C: malformed reviews JSON (jq parse error) → rc=2 (fail-open) ──
+# A non-JSON gh response should NOT silently coerce to "0 approvals"
+# (which would mass-skip every dispatch during a gh outage). The jq
+# error → empty approved_count → regex check fails → return 2 → caller's
+# error: outcome → fall-through to dispatch. Pins D-010 fail-open shape.
+export MOCK_GH_REVIEWS_JSON='not json at all'
+qac_rc=0; check_pr_approved_by_non_bot ENG-86QAC >/dev/null 2>&1 || qac_rc=$?
+if (( qac_rc == 2 )); then
+  pass_at "ENG-86 QA-C: malformed reviews JSON → rc=2 (D-010 fail-open: gate emits 'error:', orchestrator falls through to dispatch — agent's P2 is the safety net)"
+else
+  fail_at "ENG-86 QA-C" "expected rc=2 (error), got rc=$qac_rc — malformed JSON would silently mass-skip dispatches"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-D: reviews:null (jq evaluates [.reviews[]|...] on null) → rc=2 ─
+# Pins the same fail-open path for a JSON-valid but semantically-broken
+# response. jq errors on `null[]` → empty approved_count → regex fail →
+# rc=2.
+export MOCK_GH_REVIEWS_JSON='{"reviews":null}'
+qad_rc=0; check_pr_approved_by_non_bot ENG-86QAD >/dev/null 2>&1 || qad_rc=$?
+if (( qad_rc == 2 )); then
+  pass_at "ENG-86 QA-D: {reviews:null} → rc=2 (jq error on null[] → fail-open, NOT silent-skip)"
+else
+  fail_at "ENG-86 QA-D" "expected rc=2, got rc=$qad_rc — null reviews would silently mass-skip"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-E: ghost-user APPROVED review counts (not a bot) ───────────────
+# GitHub returns deleted accounts as login='ghost'; the jq regex
+# `(.author.login | test("\\[bot\\]$") | not)` returns true for ghost
+# (no [bot] suffix). Pins current behavior — same trade-off as P2.
+export MOCK_GH_REVIEWS_JSON='{"reviews":[{"state":"APPROVED","author":{"login":"ghost"}}]}'
+qae_rc=0; check_pr_approved_by_non_bot ENG-86QAE >/dev/null 2>&1 || qae_rc=$?
+if (( qae_rc == 0 )); then
+  pass_at "ENG-86 QA-E: ghost-user APPROVED counts as non-bot review → rc=0 (P2-mirror trade-off pinned)"
+else
+  fail_at "ENG-86 QA-E" "expected rc=0, got rc=$qae_rc — ghost-user behavior diverged from P2"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-F: branch-name.sh empty stdout → rc=2 (Linear-API outage path) ─
+# The brainstorm calls out the branch-derivation outage as a fail-open
+# trigger. Stub the existing branch-name.sh to emit an empty line, then
+# verify check returns rc=2.
+ORIG_BNS="$STUB_DIR/branch-name.sh"
+ORIG_BNS_BAK="$(cat "$ORIG_BNS")"
+cat > "$ORIG_BNS" <<'SH'
+#!/usr/bin/env bash
+printf ''
+SH
+chmod +x "$ORIG_BNS"
+export MOCK_GH_REVIEWS_JSON='{"reviews":[]}'
+qaf_rc=0; check_pr_approved_by_non_bot ENG-86QAF >/dev/null 2>&1 || qaf_rc=$?
+# Restore the canonical stub immediately so subsequent tests aren't perturbed.
+printf '%s' "$ORIG_BNS_BAK" > "$ORIG_BNS"
+chmod +x "$ORIG_BNS"
+if (( qaf_rc == 2 )); then
+  pass_at "ENG-86 QA-F: branch-name.sh empty stdout → rc=2 (Linear-outage / branch-derivation failure path verified)"
+else
+  fail_at "ENG-86 QA-F" "expected rc=2, got rc=$qaf_rc — empty branch would query 'gh pr view ' and silently misbehave"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+printf '\n--- ENG-86 QA adversarial: should_dispatch multi-check semantics ---\n'
+
+# Switch to per-test CONFIG and pin a fixture path. The earlier ENG-86
+# cases used CONFIG="$ENG_86_TMP_CFG"; reuse that pattern here so we
+# don't perturb the post-source CONFIG for any test that may follow.
+QA_TMP_CFG="$(mktemp)"
+QA_CFG_SAVED="${CONFIG:-}"
+CONFIG="$QA_TMP_CFG"
+
+# ─── QA-G: multi-check AND'd, all pass → proceed ────────────────────────
+# Two pr-approved-by-non-bot entries (effectively the same predicate twice).
+# Both met → AND'd loop completes → proceed. Pins the "all pass" leg of
+# multi-check semantics from brainstorm §6.
+printf '%s' '{"orchestrator":{"entry_conditions":{"building":[{"name":"pr-approved-by-non-bot","type":"github-pr-review"},{"name":"pr-approved-by-non-bot","type":"github-pr-review"}]}}}' > "$QA_TMP_CFG"
+export MOCK_GH_REVIEWS_JSON='{"reviews":[{"state":"APPROVED","author":{"login":"alice"}}]}'
+qag_out="$(should_dispatch building ENG-86QAG 2>/dev/null)"
+if [[ "$qag_out" == "proceed" ]]; then
+  pass_at "ENG-86 QA-G: multi-check AND'd, all met → proceed (loop completes both iterations)"
+else
+  fail_at "ENG-86 QA-G" "expected 'proceed', got '$qag_out'"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-H: multi-check AND'd, first unknown second met → proceed ───────
+# First entry has unknown name → logged + skipped (NOT short-circuit
+# error). Second entry passes → proceed. Pins fail-open-on-typo behavior
+# in a multi-entry context (a single bad config row must NOT mask later
+# real checks).
+printf '%s' '{"orchestrator":{"entry_conditions":{"building":[{"name":"made-up-check","type":"unknown"},{"name":"pr-approved-by-non-bot","type":"github-pr-review"}]}}}' > "$QA_TMP_CFG"
+export MOCK_GH_REVIEWS_JSON='{"reviews":[{"state":"APPROVED","author":{"login":"alice"}}]}'
+qah_out="$(should_dispatch building ENG-86QAH 2>/dev/null)"
+if [[ "$qah_out" == "proceed" ]]; then
+  pass_at "ENG-86 QA-H: multi-check first-unknown-second-met → proceed (typo doesn't mask later real checks)"
+else
+  fail_at "ENG-86 QA-H" "expected 'proceed', got '$qah_out'"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-I: multi-check first met second unmet → skip:awaiting-approval ─
+# First entry returns rc=0; loop continues; second entry returns rc=1 with
+# reason 'awaiting-approval' → short-circuits printf skip:. This is the
+# canonical AND-gate path; pin it so a future refactor that swaps to
+# OR semantics fails loudly.
+printf '%s' '{"orchestrator":{"entry_conditions":{"building":[{"name":"pr-approved-by-non-bot","type":"github-pr-review"},{"name":"pr-approved-by-non-bot","type":"github-pr-review"}]}}}' > "$QA_TMP_CFG"
+# Both entries call the same handler — but the handler reads MOCK_GH_REVIEWS_JSON
+# from the env each invocation, so we need the value to be consistent across
+# both calls. Set "unmet" once → both return rc=1; first one short-circuits
+# with skip:awaiting-approval before second runs.
+export MOCK_GH_REVIEWS_JSON='{"reviews":[]}'
+qai_out="$(should_dispatch building ENG-86QAI 2>/dev/null)"
+if [[ "$qai_out" == "skip:awaiting-approval" ]]; then
+  pass_at "ENG-86 QA-I: multi-check first-unmet → skip:awaiting-approval (short-circuit on first rc=1; subsequent checks NOT evaluated)"
+else
+  fail_at "ENG-86 QA-I" "expected 'skip:awaiting-approval', got '$qai_out'"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# ─── QA-J: entry_conditions[building] is an OBJECT (not array) → proceed ─
+# Operator misconfigures: writes a single object instead of [object]. jq
+# `length` on object returns the number of fields; loop iterates with
+# `.[$i].name` returning null on object access → // "" coerces → empty
+# → silently continue. Net: silent fall-through to proceed. This is the
+# documented fail-open trade-off (D-005); pin so anyone tightening
+# validation later catches the previously-silent shape.
+printf '%s' '{"orchestrator":{"entry_conditions":{"building":{"name":"pr-approved-by-non-bot","type":"github-pr-review"}}}}' > "$QA_TMP_CFG"
+qaj_out="$(should_dispatch building ENG-86QAJ 2>/dev/null)"
+if [[ "$qaj_out" == "proceed" ]]; then
+  pass_at "ENG-86 QA-J: entry_conditions[building] as object (not array) → proceed (D-005 silent fail-open trade-off pinned)"
+else
+  fail_at "ENG-86 QA-J" "expected 'proceed', got '$qaj_out' — fail-open shape on misconfig changed"
+fi
+
+# ─── QA-K: malformed JSON CONFIG → proceed (jq parse error fail-open) ──
+# Garbage bytes in CONFIG. jq -c ... 2>/dev/null exits nonzero; the `||
+# printf '[]'` fallback fires → empty array → proceed. Pins back-compat:
+# a corrupt config NEVER blocks dispatch.
+printf 'this is not json {{{ ' > "$QA_TMP_CFG"
+qak_out="$(should_dispatch building ENG-86QAK 2>/dev/null)"
+if [[ "$qak_out" == "proceed" ]]; then
+  pass_at "ENG-86 QA-K: malformed CONFIG JSON → proceed (back-compat fail-open)"
+else
+  fail_at "ENG-86 QA-K" "expected 'proceed', got '$qak_out' — malformed CONFIG should fail-open"
+fi
+
+# ─── QA-L: explicit null at entry_conditions[building] → proceed ────────
+# {"orchestrator":{"entry_conditions":{"building":null}}} — `// []` fires
+# on null → empty array → proceed. Pins null-handling shape.
+printf '%s' '{"orchestrator":{"entry_conditions":{"building":null}}}' > "$QA_TMP_CFG"
+qal_out="$(should_dispatch building ENG-86QAL 2>/dev/null)"
+if [[ "$qal_out" == "proceed" ]]; then
+  pass_at "ENG-86 QA-L: entry_conditions[building]=null → proceed (jq // [] coerces null to empty array)"
+else
+  fail_at "ENG-86 QA-L" "expected 'proceed', got '$qal_out' — null handling diverged from spec"
+fi
+
+# ─── QA-M: empty-name entry skipped, neighbor still evaluated ──────────
+# Config has [{"name":""},{"name":"pr-approved-by-non-bot"}] with met
+# reviews. Empty-name entry is skipped via the [[ -z "$name" ]] guard;
+# the second entry runs and passes → proceed. Pins the empty-name skip
+# does NOT short-circuit the loop.
+printf '%s' '{"orchestrator":{"entry_conditions":{"building":[{"name":""},{"name":"pr-approved-by-non-bot","type":"github-pr-review"}]}}}' > "$QA_TMP_CFG"
+export MOCK_GH_REVIEWS_JSON='{"reviews":[{"state":"APPROVED","author":{"login":"alice"}}]}'
+qam_out="$(should_dispatch building ENG-86QAM 2>/dev/null)"
+if [[ "$qam_out" == "proceed" ]]; then
+  pass_at "ENG-86 QA-M: empty-name entry skipped without short-circuit; subsequent checks still evaluated"
+else
+  fail_at "ENG-86 QA-M" "expected 'proceed', got '$qam_out'"
+fi
+unset MOCK_GH_REVIEWS_JSON
+
+# Restore CONFIG, clean up.
+CONFIG="$QA_CFG_SAVED"
+rm -f "$QA_TMP_CFG"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
