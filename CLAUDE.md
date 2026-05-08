@@ -211,10 +211,10 @@ $HARNESS_STATE_DIR/
         └── stage-summary-<stage>.md
 ```
 
-`issue-state.json` is the durable state for the skip-label dance — `poll.sh` reads it on
-every tick and includes/excludes the issue based on `policy` plus a recomputed
-`pipeline_content_hash` (sha256 over `bin/**`, `config.json`, `AGENT_PROMPTS.md`) and
-branch-head SHA.
+`issue-state.json` is the durable state for the skip-label dance OR retry tracking —
+`poll.sh` reads it on every tick and includes/excludes the issue based on `policy`
+plus a recomputed `pipeline_content_hash` (sha256 over `bin/**`, `config.json`,
+`AGENT_PROMPTS.md`) and branch-head SHA.
 
 The harness orchestrator NEVER dispatches an agent into the operator's `$TARGET_REPO`
 checkout — every dispatch resolves a per-issue worktree first (ENG-67, May 2026). If
