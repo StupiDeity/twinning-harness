@@ -481,34 +481,60 @@ main() {
   done
 
   # Pass 5: inbox pickup, only if a slot is available.
+  if (( held_count < max_concurrent )); then
+    local inbox_state
+    inbox_state="$(config_get '.linear.native_states.inbox')"
+    local inbox_pick
+    inbox_pick="$(bash "$SCRIPT_DIR/linear.sh" list-issues-in-state "$inbox_state" \
+      | jq -r '
+        [.data.issues.nodes[]
+         | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
+         | select([.labels.nodes[].name] | index("pipeline:paused") | not)
+         | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
+         | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
+         | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
+         | {identifier: .identifier,
+            priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
+        | sort_by(-.priority_sort_rank)
+        | .[0].identifier // ""')"
+    if [[ -n "$inbox_pick" ]]; then
+      jq -nc \
+        --arg issue_id "$inbox_pick" \
+        --arg stage "brainstorming" \
+        --arg reason "inbox pickup" \
+        '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
+      exit 0
+    fi
+  fi
+
+  # Pass 6 (ENG-85): wait re-pickup as last resort. Only fires when no
+  # held was dispatched (Pass 4), no inbox issue picked (Pass 5), AND
+  # there is slot capacity. Sort: priority desc, then wait_progress_ts asc
+  # (FIFO fairness — older waits go first).
+  if (( held_count < max_concurrent )); then
+    local wait_pick
+    wait_pick="$(jq -c '
+      [.[] | select(.slot == "vacate" and (.wait_recall // false) == true)]
+      | sort_by([-(.priority_sort_rank), .wait_progress_ts])
+      | .[0] // empty' <<<"$classified")"
+    if [[ -n "$wait_pick" && "$wait_pick" != "null" ]]; then
+      local _wp_ident _wp_stage_label _wp_arg
+      _wp_ident="$(jq -r '.identifier'  <<<"$wait_pick")"
+      _wp_stage_label="$(jq -r '.stage_label' <<<"$wait_pick")"
+      _wp_arg="$(stage_arg_for_label "$_wp_stage_label")"
+      jq -nc \
+        --arg issue_id "$_wp_ident" \
+        --arg stage "$_wp_arg" \
+        --arg reason "wait re-pickup at $_wp_stage_label (no other ready work)" \
+        '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
+      exit 0
+    fi
+  fi
+
+  # Reached here with no work to dispatch.
   if (( held_count >= max_concurrent )); then
     idle "max-concurrent-reached (held=$held_count, limit=$max_concurrent)"
   fi
-
-  local inbox_state
-  inbox_state="$(config_get '.linear.native_states.inbox')"
-  local inbox_pick
-  inbox_pick="$(bash "$SCRIPT_DIR/linear.sh" list-issues-in-state "$inbox_state" \
-    | jq -r '
-      [.data.issues.nodes[]
-       | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
-       | select([.labels.nodes[].name] | index("pipeline:paused") | not)
-       | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
-       | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
-       | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
-       | {identifier: .identifier,
-          priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
-      | sort_by(-.priority_sort_rank)
-      | .[0].identifier // ""')"
-  if [[ -n "$inbox_pick" ]]; then
-    jq -nc \
-      --arg issue_id "$inbox_pick" \
-      --arg stage "brainstorming" \
-      --arg reason "inbox pickup" \
-      '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
-    exit 0
-  fi
-
   idle "no-work"
 }
 

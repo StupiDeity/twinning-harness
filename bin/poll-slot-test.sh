@@ -473,6 +473,94 @@ else
     "got slot=$slot adv=$adv recall=$recall ts=$ts (want vacate/false/true/2026-04-28T08:17:00Z) full=$out"
 fi
 
+# ─── AC-WAIT-2 (ENG-85): two issues, ENG-A waits at stage:building,
+#     ENG-B held at stage:qa, max_concurrent=2. After classify, ENG-A
+#     is vacate; ENG-B is hold. Pass 4 dispatches ENG-B, NOT ENG-A.
+#     This is the literal regression test for the issue body's
+#     "ENG-79 starved 45 min" scenario.
+reset_fixtures
+write_label_fixture "stage:building" "ENG-WAIT-A|In Progress|1|stage:building"
+write_label_fixture "stage:qa"       "ENG-WAIT-B|In Progress|1|stage:qa"
+write_comments_fixture "ENG-WAIT-A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+write_comments_fixture "ENG-WAIT-B" \
+  '<!-- pipeline: transition from=reviewing to=qa -->|2026-04-28T08:05:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-B" && "$reason" == "held slot at stage:qa" ]]; then
+  pass_at "AC-WAIT-2 (ENG-85): ENG-A waits, ENG-B (stage:qa) wins Pass 4 dispatch"
+else
+  fail_at "AC-WAIT-2 (ENG-85): wait-vacates slot for sibling held work" \
+    "got issue_id=$issue_id reason=$reason (want ENG-WAIT-B / held slot at stage:qa) full=$out"
+fi
+
+# ─── AC-WAIT-3 (ENG-85): single wait issue, empty inbox, no other
+#     classified issues → Pass 6 fires with reason
+#     "wait re-pickup at stage:building (no other ready work)".
+reset_fixtures
+write_label_fixture "stage:building" "ENG-WAIT-C|In Progress|1|stage:building"
+write_comments_fixture "ENG-WAIT-C" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+# No inbox fixture written → list-issues-in-state stub returns empty.
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+stage="$(jq -r '.stage // ""' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-C" && "$stage" == "building" \
+      && "$entry" == "run" && "$reason" == *"wait re-pickup at stage:building"* ]]; then
+  pass_at "AC-WAIT-3 (ENG-85): Pass 6 recalls wait issue when no other ready work"
+else
+  fail_at "AC-WAIT-3 (ENG-85): Pass 6 wait recall" \
+    "got issue_id=$issue_id stage=$stage entry=$entry reason=$reason full=$out"
+fi
+
+# ─── AC-WAIT-4 (ENG-85): two wait issues, equal priority. Pass 6
+#     picks the older one (FIFO tiebreak by wait_progress_ts asc).
+reset_fixtures
+write_label_fixture "stage:building" \
+  "ENG-WAIT-D|In Progress|1|stage:building" \
+  "ENG-WAIT-E|In Progress|1|stage:building"
+write_comments_fixture "ENG-WAIT-D" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z'
+write_comments_fixture "ENG-WAIT-E" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:05:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-D" ]]; then
+  pass_at "AC-WAIT-4 (ENG-85): Pass 6 FIFO tiebreak — older wait (ENG-WAIT-D) wins"
+else
+  fail_at "AC-WAIT-4 (ENG-85): Pass 6 FIFO" "got issue_id=$issue_id (want ENG-WAIT-D) full=$out"
+fi
+
+# ─── AC-WAIT-5 (ENG-85): two wait issues, different priority. Pass 6
+#     picks the higher-priority one regardless of wait_progress_ts.
+#     ENG-WAIT-F (priority=Normal=3) wait at 10:00:00Z;
+#     ENG-WAIT-G (priority=Urgent=1) wait at 10:05:00Z.
+#     Urgent wins despite being newer.
+reset_fixtures
+write_label_fixture "stage:building" \
+  "ENG-WAIT-F|In Progress|3|stage:building" \
+  "ENG-WAIT-G|In Progress|1|stage:building"
+write_comments_fixture "ENG-WAIT-F" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z'
+write_comments_fixture "ENG-WAIT-G" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:05:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-G" ]]; then
+  pass_at "AC-WAIT-5 (ENG-85): Pass 6 priority dominates FIFO (Urgent wins over Normal)"
+else
+  fail_at "AC-WAIT-5 (ENG-85): Pass 6 priority" "got issue_id=$issue_id (want ENG-WAIT-G) full=$out"
+fi
+
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
 # A Todo issue carrying only pipeline:skip-until-human-acts (no state
 # file, no stage:* label) must be skipped by Pass 5's inbox jq filter.
