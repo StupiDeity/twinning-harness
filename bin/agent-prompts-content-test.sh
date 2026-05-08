@@ -364,6 +364,43 @@ for stage_section in \
   fi
 done
 
+# ─── ENG-74: env-var-prefix rule ──────────────────────────────────────
+# PIPELINE_WRITER=agent (or any leading VAR=val) must NOT be prepended
+# to `bash bin/...` invocations from inside the agent sandbox. The
+# Claude allowlist matcher anchors on the first token; an env-var
+# assignment is not `bash`, so the Bash(bash bin/pipeline.sh:*) pattern
+# fails to match a `PIPELINE_WRITER=agent bash bin/pipeline.sh ...`
+# invocation. ENG-64's build dispatch on 2026-05-05 hit this exact case
+# — agent silently exited rc=0, no-output detector applied
+# pipeline:halted. Pin the rule per-stage so a future prompt edit can't
+# drop it from one stage and silently regress.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent" \
+  "## 8. Release Agent" \
+  "## 9. Retrospective Agent (Scheduled)"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  if printf '%s\n' "$body" | grep -qF 'Do NOT prepend env-var assignments'; then
+    ok "$short contains env-var-prefix rule (ENG-74)"
+  else
+    nope "$short contains env-var-prefix rule (ENG-74)" "phrase missing"
+  fi
+
+  if printf '%s\n' "$body" | grep -qF 'PIPELINE_WRITER=agent'; then
+    ok "$short names canonical forbidden prefix PIPELINE_WRITER=agent (ENG-74)"
+  else
+    nope "$short names canonical forbidden prefix PIPELINE_WRITER=agent (ENG-74)" \
+         "agent must see the exact forbidden form, not just a prose hint"
+  fi
+done
+
 # ─── ENG-55: stdin heredoc pattern for multi-line bodies ────────────────
 # Pre-fix, agents wrote scratch `.md` files at the worktree root to feed
 # `--body-file <path>` (and then couldn't `rm` them — no stage allow-lists
@@ -596,6 +633,132 @@ if [[ -f "$DISPATCH_SH" ]]; then
   fi
 else
   nope "ENG-71 symmetric pin: bin/dispatch.sh exists" "file missing"
+fi
+
+# ─── ENG-74 QA adversarial: symmetric pin on dispatch.sh's env wrapper ──
+# The rule's claim "the orchestrator already exports `PIPELINE_WRITER=agent`
+# into your dispatch via `bin/dispatch.sh::main`" depends on
+# bin/dispatch.sh:361 wrapping the claude -p subprocess with
+# `env PIPELINE_WRITER=agent`. If a future refactor drops the wrapper, the
+# rule lies — agents reading the rule would still avoid the prefix, but
+# bin/pipeline.sh's lane fence would fire (warn today; could be hardened
+# to refuse later) on the now-missing PIPELINE_WRITER. Pin the symmetric
+# invariant so the rule and its prerequisite stay in lockstep
+# (mirrors the ENG-71 §7 ↔ dispatch.sh symmetric-pattern discipline).
+DISPATCH_SH="$HARNESS_ROOT/bin/dispatch.sh"
+if [[ -f "$DISPATCH_SH" ]] && grep -qE '^[[:space:]]*local cmd=\(env PIPELINE_WRITER=agent' "$DISPATCH_SH"; then
+  ok 'ENG-74 symmetric pin: bin/dispatch.sh wraps dispatch with `env PIPELINE_WRITER=agent`'
+else
+  nope 'ENG-74 symmetric pin: bin/dispatch.sh wraps dispatch with `env PIPELINE_WRITER=agent`' \
+       'rule claim "orchestrator already exports PIPELINE_WRITER=agent" depends on this — refactor would silently break the rule'
+fi
+
+# ─── ENG-74 QA adversarial: common.sh defaults+exports PIPELINE_WRITER ─
+# The rule's "redundant AND unmatchable" framing depends on
+# PIPELINE_WRITER being available to the agent's child shells WITHOUT
+# the agent prepending it. bin/common.sh:293-294 defaults the value and
+# exports it; if either line is dropped, an unprefixed agent invocation
+# would land at bin/pipeline.sh's lane fence (currently a warn, but a
+# future hardening could escalate to refuse) and the rule's safety net
+# evaporates. Pin both lines.
+COMMON_SH="$HARNESS_ROOT/bin/common.sh"
+if [[ -f "$COMMON_SH" ]] \
+   && grep -qF 'PIPELINE_WRITER="${PIPELINE_WRITER:-orchestrator}"' "$COMMON_SH" \
+   && grep -qE '^export PIPELINE_WRITER$' "$COMMON_SH"; then
+  ok 'ENG-74 symmetric pin: bin/common.sh defaults+exports PIPELINE_WRITER'
+else
+  nope 'ENG-74 symmetric pin: bin/common.sh defaults+exports PIPELINE_WRITER' \
+       'rule "redundant AND unmatchable" claim depends on these two lines — drop them and unprefixed calls would warn (future: refuse) on lane mismatch'
+fi
+
+# ─── ENG-74 QA adversarial: no positive example shows the forbidden
+# `PIPELINE_WRITER=agent bash bin/...` invocation anywhere in
+# AGENT_PROMPTS.md. The rule names the forbidden form as a literal in
+# its prose ("e.g. `PIPELINE_WRITER=agent`") but never as a usable
+# command (no `PIPELINE_WRITER=agent bash bin/<file>.sh ...` shape).
+# A future "wrong way" anti-example paste could trivially re-introduce
+# the shape an agent might copy verbatim. Forbid the shape.
+if grep -qE 'PIPELINE_WRITER=agent[[:space:]]+bash[[:space:]]+(\.pipeline/)?bin/' "$PROMPTS"; then
+  nope 'ENG-74 QA: no PIPELINE_WRITER=agent bash bin/... command shape anywhere in AGENT_PROMPTS.md' \
+       'a "wrong-way" anti-example could be copy-pasted by an agent; the rule must name the forbidden token sequence in prose only, never as a command'
+else
+  ok 'ENG-74 QA: no PIPELINE_WRITER=agent bash bin/... command shape anywhere in AGENT_PROMPTS.md'
+fi
+
+# ─── ENG-74 QA adversarial: §7 wait-exit example invocations stay bare.
+# The empirical ENG-64 hit was on §7's wait-exit running
+# `PIPELINE_WRITER=agent bash bin/pipeline.sh event ... verdict wait
+# --reason awaiting-approval`. Pin that §7's actual example commands
+# (P2 awaiting-approval at line 1283, P5 awaiting-ci at line 1324) stay
+# unprefixed even if the universal rule paragraph drifts. The grep
+# anchors on a leading VAR=val token before `bash bin/pipeline.sh event`.
+if printf '%s\n' "$s7" | grep -qE '^[[:space:]]*[A-Z_]+=[A-Za-z0-9_-]+[[:space:]]+bash[[:space:]]+(\.pipeline/)?bin/pipeline\.sh[[:space:]]+event'; then
+  nope '§7 wait-exit examples are bare (no env-var prefix on `bash bin/pipeline.sh event ...`)' \
+       'a future prompt edit reintroduced the forbidden prefix shape on a §7 wait-exit example — would re-trigger the ENG-64 sandbox denial'
+else
+  ok '§7 wait-exit examples are bare (no env-var prefix on `bash bin/pipeline.sh event ...`)'
+fi
+
+# ─── ENG-74 QA adversarial (round 2): per-stage rule-sentence integrity.
+# The plan-loop's two greps (`Do NOT prepend env-var assignments` and
+# `PIPELINE_WRITER=agent`) match independently, so a future rewrite that
+# preserves both literal tokens but loses the load-bearing linkage to
+# `bash bin/...` would slip through — leaving the agent without a clear
+# binding from the warning to the operative command shape. Pin a single
+# regex per stage that the bolded sentence keeps all three anchors in
+# order on the same paragraph line: warning trigger → canonical example →
+# `bash bin/...` invocation target.
+for stage_section in \
+  "## 1. Brainstorm Agent" \
+  "## 2. Plan Agent" \
+  "## 3. Implementation Agent (Backend)" \
+  "## 4. UI Agent (Frontend)" \
+  "## 5. Review Agent" \
+  "## 6. QA Agent" \
+  "## 7. Build Agent" \
+  "## 8. Release Agent" \
+  "## 9. Retrospective Agent (Scheduled)"; do
+  body="$(section_body "$stage_section")"
+  short="${stage_section## }"
+
+  if printf '%s\n' "$body" | grep -qE 'Do NOT prepend env-var assignments.*PIPELINE_WRITER=agent.*bash bin/'; then
+    ok "$short rule sentence keeps trigger→example→target linkage on one line (ENG-74)"
+  else
+    nope "$short rule sentence keeps trigger→example→target linkage on one line (ENG-74)" \
+         "the three anchors must co-occur on a single paragraph line; a rewrite that splits them across lines or loses the linkage breaks the agent's binding"
+  fi
+done
+
+# ─── ENG-74 QA adversarial (round 2): bin/dispatch.sh env wrapper and
+# claude invocation must live in the same `local cmd=(...)` array.
+# The existing symmetric pin (line 649) only checks the prefix
+# `local cmd=(env PIPELINE_WRITER=agent`. A refactor that splits the env
+# wrapper away from the claude invocation (e.g., env wrapper applied to a
+# different command, claude moved to a sibling cmd array without the
+# wrapper) keeps the prefix substring but breaks the rule's premise that
+# `dispatch.sh::main` exports `PIPELINE_WRITER=agent` INTO the agent's
+# claude subprocess. Assert `claude` appears within 10 lines AFTER the
+# env wrapper line so the two stay coupled.
+if [[ -f "$DISPATCH_SH" ]] \
+   && grep -A 10 'local cmd=(env PIPELINE_WRITER=agent' "$DISPATCH_SH" | grep -q 'claude'; then
+  ok 'ENG-74 symmetric pin: bin/dispatch.sh env wrapper reaches claude in the same cmd array'
+else
+  nope 'ENG-74 symmetric pin: bin/dispatch.sh env wrapper reaches claude in the same cmd array' \
+       'the env PIPELINE_WRITER=agent wrapper and claude invocation must share one cmd array; splitting them silently invalidates the rule premise'
+fi
+
+# ─── ENG-74 QA adversarial (round 2): no `env VAR=val bash bin/...`
+# command shape anywhere in AGENT_PROMPTS.md. The rule says "an env-var
+# assignment is not `bash`" but an agent could mis-read this as making
+# `env VAR=val bash bin/...` permissible (it isn't — first token is
+# `env`, not `bash`, so the Bash(bash bin/...) matcher still fails).
+# Forbid the shape globally so a "wrong-way" anti-example or escape-hatch
+# hedge cannot land in any stage's prompt body.
+if grep -qE '\benv[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+bash[[:space:]]+(\.pipeline/)?bin/' "$PROMPTS"; then
+  nope 'ENG-74 QA: no `env VAR=val bash bin/...` command shape anywhere in AGENT_PROMPTS.md' \
+       '`env VAR=val bash bin/...` is also unmatchable (first token is env, not bash); a copy-pasteable example would re-trigger the ENG-64 sandbox denial under a different shape'
+else
+  ok 'ENG-74 QA: no `env VAR=val bash bin/...` command shape anywhere in AGENT_PROMPTS.md'
 fi
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
