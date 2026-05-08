@@ -154,6 +154,20 @@ main() {
   local worktree_root
   worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TARGET_REPO")"
 
+  # ENG-59: refresh the upstream main reference so the diff below resolves
+  # against origin/main rather than a possibly-stale refs/heads/main. The
+  # harness's bot identity ticks every 5 min; the operator's `git pull`
+  # cadence may lag upstream merges by hours, and any merge that lands in
+  # the gap would otherwise be falsely attributed to the agent's diff. On
+  # fetch failure the script proceeds against whatever refs/remotes/origin/main
+  # was left by run-local.sh's worktree-creation fetch, falling back to local
+  # main only if no origin/main ref exists at all.
+  local fetch_ok=1
+  if ! git -C "$worktree_root" fetch --quiet --no-tags origin main 2>/dev/null; then
+    fetch_ok=0
+    log "scope-check: fetch origin main failed; falling back to local refs"
+  fi
+
   local plan
   plan="$(find_canonical_plan "$issue_id" "$worktree_root")" \
     || { log "scope-check: no canonical plan for $issue_id"; exit 2; }
@@ -187,8 +201,22 @@ main() {
     exit 2
   fi
 
+  # ENG-59: prefer origin/main as the diff base. With the fetch above,
+  # refs/remotes/origin/main is fresh on every online tick. On
+  # offline/no-remote ticks, fall back to local main with a warning so
+  # the operator sees the degraded mode in the per-stage transcript.
+  # The two-arm guard is necessary because bin/scope-check-test.sh's
+  # cases 2-5 fixtures don't configure an origin remote — without the
+  # guard those fixtures would hard-fail.
+  local diff_base
+  if git -C "$worktree_root" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+    diff_base="origin/main"
+  else
+    diff_base="main"
+    log "scope-check: origin/main ref absent; using local main (fewer guarantees)"
+  fi
   local changed
-  changed="$(git -C "$worktree_root" diff --name-only "main...${branch}" 2>/dev/null || true)"
+  changed="$(git -C "$worktree_root" diff --name-only "${diff_base}...${branch}" 2>/dev/null || true)"
   [[ -n "$changed" ]] || { log "scope-check: no file changes on $branch"; exit 0; }
 
   local notable="" severe="" benign_count=0
