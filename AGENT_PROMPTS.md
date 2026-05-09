@@ -92,6 +92,35 @@ most recent `<!-- pipeline: transition ... -->` comment, and picks the latest
 verdict-shaped marker among those. Verdict comments are append-only — use
 `linear.sh add-comment`, NOT `add-or-update-comment`.
 
+### Dispatch identifier and freshness contract
+
+The orchestrator allocates a per-dispatch identifier `{dispatch_id}` of the
+form `ENG-N-d<NNNN>` (monotonic per issue) before invoking your `claude -p`
+subprocess. It is rendered into your prompt via `render-prompt.sh` and
+exported as `PIPELINE_DISPATCH_ID` so every `bash bin/linear.sh add-comment`
+or `add-or-update-comment` call you make auto-stamps a
+`<!-- meta: dispatch id={dispatch_id} stage=<your stage> -->` marker on the
+comment body. You do NOT manage this marker; the chokepoint owns it.
+
+Rules:
+
+1. **Do NOT manually emit `<!-- meta: dispatch id=... -->` markers.** The
+   chokepoint at `bin/linear.sh::add_comment` / `add_or_update_comment`
+   auto-injects them when `PIPELINE_DISPATCH_ID` is set. Manual emission
+   is a contract violation; the injector is idempotent and silently
+   de-duplicates, but the convention is "the chokepoint owns this marker."
+2. **Do NOT post Linear comments via `mcp__plugin_linear_*` or
+   `curl https://api.linear.app`.** Both forms bypass the auto-injection.
+   The post-dispatch envelope validator scans your transcript and halts
+   with `verdict halt --reason dispatch-envelope-violation` (exit 29) on
+   either invocation.
+3. **Do NOT read the `dispatch_id` of a previous cycle to "carry forward"
+   any state.** Each dispatch is a fresh slate; loopback inputs come from
+   the SOURCE stage's stage-summary file (which the orchestrator preserves;
+   YOUR stage-summary file is cleared at THIS dispatch's start, so
+   re-emitting it via `Write` with full content is mandatory — see the
+   per-stage Output bullets and the §5 ENG-71/ENG-77 precedent).
+
 ### Label vocabulary — lane-aware write matrix (ENG-41)
 
 Every label/comment write in the harness is gated by `bin/linear.sh`'s lane fence.
@@ -301,6 +330,13 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
 4. **Commit artifacts**: the brainstorm doc, plus any new ADRs appended to
    `docs/knowledge/decisions.md` with status `proposed`.
 5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+   **MANDATORY — overwrite on every dispatch.** Use `Write` with the full report
+   content; do not read-then-conditionally-skip. The orchestrator reads this file
+   verbatim and posts it as the Linear `completion/brainstorm/{issue_id}` summary;
+   a stale file means stale Linear posts and stale loopback inputs to downstream
+   stages. ENG-77 (May 2026) generalised the ENG-71 (May 2026) review-loop incident:
+   any stage-summary file going unwritten on a re-dispatch is a structural staleness
+   hazard, not just a §5 problem.
    Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
    - Artifact link: `[docs/brainstorms/{file}.md](<github-blob-url>)` pointing at the
      brainstorm doc on the feature branch.
@@ -504,6 +540,13 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    knowledge-file changes go through PRs with CODEOWNERS. Do NOT change the Linear stage
    label — the orchestrator swaps it on successful exit.
 5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+   **MANDATORY — overwrite on every dispatch.** Use `Write` with the full report
+   content; do not read-then-conditionally-skip. The orchestrator reads this file
+   verbatim and posts it as the Linear `completion/plan/{issue_id}` summary; a
+   stale file means stale Linear posts and stale loopback inputs to downstream
+   stages. ENG-77 (May 2026) generalised the ENG-71 (May 2026) review-loop
+   incident: every numbered stage's stage-summary file is at risk of going stale
+   across a re-dispatch, not just §5.
    Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
    - Artifact link: `[docs/plans/{plan_file}.md](<github-blob-url>)` pointing at the plan
      doc on the feature branch (reviewers can jump to the plan even before a PR exists).
@@ -643,7 +686,13 @@ Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
 - Post the TDD evidence comment above.
 - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-  comment format contract (preamble). Stage-specific slots:
+  comment format contract (preamble). **MANDATORY — overwrite on every dispatch.**
+  Use `Write` with the full report content; do not read-then-conditionally-skip.
+  The orchestrator reads this file verbatim and posts it as the Linear
+  `completion/implement/{issue_id}` summary; a stale file means stale Linear posts
+  and stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised the
+  ENG-71 (May 2026) review-loop incident: any stage-summary file going unwritten
+  on a re-dispatch is a structural staleness hazard, not just §5. Stage-specific slots:
   - Artifact link: plan doc link (`[docs/plans/{plan_file}.md](<github-blob-url>)`) AND
     the branch-compare link
     (`https://github.com/<owner>/<repo>/compare/main...<branch>`) so the reviewer can
@@ -785,7 +834,13 @@ Do NOT create or edit the pull request. The orchestrator opens it on transition 
 Output:
 - Commit any remaining work on `{branch_name}` and push. Do NOT open the pull request yourself — the orchestrator handles it.
 - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-  comment format contract (preamble). Stage-specific slots:
+  comment format contract (preamble). **MANDATORY — overwrite on every dispatch.**
+  Use `Write` with the full report content; do not read-then-conditionally-skip.
+  The orchestrator reads this file verbatim and posts it as the Linear
+  `completion/ui/{issue_id}` summary; a stale file means stale Linear posts and
+  stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised the
+  ENG-71 (May 2026) review-loop incident: any stage-summary file going unwritten
+  on a re-dispatch is a structural staleness hazard, not just §5. Stage-specific slots:
   - Artifact link: the branch-compare URL (`https://github.com/<owner>/<repo>/compare/main...<branch>`). The orchestrator opens the PR after this stage exits, so the PR URL is not yet available.
   - TL;DR: 1–2 sentences on what the user sees change and the single biggest design
     call (e.g. new view vs. extending an existing one, chart library choice).
@@ -1162,7 +1217,13 @@ Decision path (apply exactly one):
      - Post a QA summary comment on the PR (gate results + coverage-audit table +
        adversarial tests added + dedup results). This is the full audit trail.
      - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-       comment format contract (preamble). Stage-specific slots:
+       comment format contract (preamble). **MANDATORY — overwrite on every dispatch.**
+       Use `Write` with the full report content; do not read-then-conditionally-skip.
+       The orchestrator reads this file verbatim and posts it as the Linear
+       `completion/qa/{issue_id}` summary; a stale file means stale Linear posts and
+       stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised the
+       ENG-71 (May 2026) review-loop incident: any stage-summary file going unwritten
+       on a re-dispatch is a structural staleness hazard, not just §5. Stage-specific slots:
        - Artifact link: the PR URL.
        - TL;DR: 1–2 sentences on QA verdict and whether adversarial tests surfaced
          anything new (usually: "no new issues" + number of tests added).
@@ -1418,7 +1479,14 @@ Decision path (apply exactly one):
      - Merge the PR (squash + auto + delete-branch).
      - Watch post-merge CI to green.
      - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-       comment format contract (preamble). Stage-specific slots:
+       comment format contract (preamble). **MANDATORY — overwrite on every dispatch.**
+       Use `Write` with the full report content; do not read-then-conditionally-skip.
+       The orchestrator reads this file verbatim and posts it as the Linear
+       `completion/build/{issue_id}` summary; a stale file means stale Linear posts
+       and stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised
+       the ENG-71 (May 2026) review-loop incident: any stage-summary file going
+       unwritten on a re-dispatch is a structural staleness hazard, not just §5.
+       Stage-specific slots:
        - Artifact link: the merge commit link
          (`https://github.com/<owner>/<repo>/commit/<merge_sha>`).
        - TL;DR: 1 sentence on what merged (e.g. "Fix: reconcile honors
