@@ -4376,6 +4376,162 @@ MOCK_PIPELINE_HASH="hM1R" MOCK_BRANCH_SHA="sM1R" \
   || fail_at "ENG-87 M1' (review-iter-2 M1): retry-immediately should leave verdict_emitted empty" \
        "got: '$_END_ROW_VERDICT_EMITTED' (expected '')"
 
+# ─── ENG-87 review-iter-3 M1: dispatch_history.jsonl envelope schema completeness ──
+# Plan §13.1.2 mandates `envelope: {stage_summary_present, comments_stamped,
+# transcript_clean}` (3 sub-fields). Pre-fix the writer emitted only
+# stage_summary_present + a hardcoded transcript_clean=true literal, missing
+# comments_stamped entirely AND failing to reflect _validate_dispatch_envelope's
+# rc=29 outcome. Forensic readers cannot distinguish clean from violation rows.
+printf '\n--- ENG-87 review-iter-3 M1: envelope schema completeness ---\n'
+
+# M1-iter3-A: end-row carries `envelope.comments_stamped`. Empty-array
+# baseline acceptable per the iter-3 reviewer's first option (full
+# accumulator deferred to a follow-up); the fixture asserts the field
+# is PRESENT in some shape, not that it has elements.
+mkdir -p "$(issue_dir ENG-87M1I3A)"
+_eng87_m1i3a_hist="$(issue_dir ENG-87M1I3A)/dispatch_history.jsonl"
+: > "$_eng87_m1i3a_hist"
+_END_ROW_HIST_FILE="$_eng87_m1i3a_hist"
+_END_ROW_DISPATCH_ID="ENG-87M1I3A-d0001"
+_END_ROW_STAGE="implementing"
+_END_ROW_T0="$(date +%s)"
+_END_ROW_ISSUE="ENG-87M1I3A"
+_END_ROW_VERDICT_EMITTED=""
+_END_ROW_VERDICT_TARGET=""
+_END_ROW_POLICY=""
+# Seed the new global at its default (true). Fix lands the global; the
+# test asserts the field flows through.
+_END_ROW_TRANSCRIPT_CLEAN=true
+_append_dispatch_end_row 0 2>/dev/null || true
+_eng87_m1i3a_line="$(tail -1 "$_eng87_m1i3a_hist" 2>/dev/null || printf '')"
+if [[ -n "$_eng87_m1i3a_line" ]] \
+   && jq -e '.envelope | has("comments_stamped")' <<<"$_eng87_m1i3a_line" >/dev/null 2>&1; then
+  pass_at "ENG-87 M1-iter3-A: end-row carries envelope.comments_stamped"
+else
+  fail_at "ENG-87 M1-iter3-A: envelope.comments_stamped missing" \
+    "row=$_eng87_m1i3a_line — plan §13.1.2 mandates 3 envelope sub-fields"
+fi
+
+# M1-iter3-B: transcript_clean=true when global=true (clean envelope).
+got_tc_a="$(jq -r '.envelope.transcript_clean // ""' <<<"$_eng87_m1i3a_line")"
+[[ "$got_tc_a" == "true" ]] \
+  && pass_at "ENG-87 M1-iter3-B: envelope.transcript_clean=true reflects clean global" \
+  || fail_at "ENG-87 M1-iter3-B: transcript_clean clean case" "got=$got_tc_a (expected true)"
+
+# M1-iter3-C: transcript_clean=false when global=false (violation envelope).
+# Drives the writer with the global flipped — proves the literal `true`
+# regression cannot recur.
+mkdir -p "$(issue_dir ENG-87M1I3C)"
+_eng87_m1i3c_hist="$(issue_dir ENG-87M1I3C)/dispatch_history.jsonl"
+: > "$_eng87_m1i3c_hist"
+_END_ROW_HIST_FILE="$_eng87_m1i3c_hist"
+_END_ROW_DISPATCH_ID="ENG-87M1I3C-d0001"
+_END_ROW_STAGE="implementing"
+_END_ROW_T0="$(date +%s)"
+_END_ROW_ISSUE="ENG-87M1I3C"
+_END_ROW_VERDICT_EMITTED="halt"
+_END_ROW_VERDICT_TARGET=""
+_END_ROW_POLICY="skip-until-human-acts"
+_END_ROW_TRANSCRIPT_CLEAN=false
+_append_dispatch_end_row 29 2>/dev/null || true
+_eng87_m1i3c_line="$(tail -1 "$_eng87_m1i3c_hist" 2>/dev/null || printf '')"
+got_tc_c="$(jq -r '.envelope.transcript_clean // ""' <<<"$_eng87_m1i3c_line")"
+[[ "$got_tc_c" == "false" ]] \
+  && pass_at "ENG-87 M1-iter3-C: envelope.transcript_clean=false reflects violation global" \
+  || fail_at "ENG-87 M1-iter3-C: transcript_clean violation case" \
+       "got=$got_tc_c (expected false); row=$_eng87_m1i3c_line"
+
+# M1-iter3-D: _validate_dispatch_envelope rc=29 path sets
+# _END_ROW_TRANSCRIPT_CLEAN=false. Proves the validator wires the
+# envelope outcome through to the trap global (the missing link
+# pre-fix that left transcript_clean stuck at true on violation paths).
+reset_capture
+mkdir -p "$(issue_dir ENG-87M1I3D)"
+_eng87_m1i3d_sidecar="$(issue_dir ENG-87M1I3D)/.envelope-transcript-implementing"
+printf '%s\n' "$(_eng87_ndjson_tool_use "mcp__plugin_linear_linear__list_issues --filter '{}'")" \
+  > "$_eng87_m1i3d_sidecar"
+_END_ROW_TRANSCRIPT_CLEAN=true   # baseline before validator runs
+_validate_dispatch_envelope ENG-87M1I3D implementing 2>/dev/null || true
+[[ "$_END_ROW_TRANSCRIPT_CLEAN" == "false" ]] \
+  && pass_at "ENG-87 M1-iter3-D: validator rc=29 path sets _END_ROW_TRANSCRIPT_CLEAN=false" \
+  || fail_at "ENG-87 M1-iter3-D: validator did not propagate violation to global" \
+       "got=_END_ROW_TRANSCRIPT_CLEAN='$_END_ROW_TRANSCRIPT_CLEAN' after rc=29 (expected 'false')"
+
+# M1-iter3-E: clean envelope path (no violations) leaves
+# _END_ROW_TRANSCRIPT_CLEAN at its baseline `true`. Symmetric pin to
+# M1-iter3-D — guards against an over-eager `false` write that would
+# misclassify clean dispatches.
+mkdir -p "$(issue_dir ENG-87M1I3E)"
+_eng87_m1i3e_sidecar="$(issue_dir ENG-87M1I3E)/.envelope-transcript-implementing"
+# Sidecar with no Linear MCP / curl-linear invocations — just a benign tool use.
+printf '%s\n' "$(_eng87_ndjson_tool_use "Read /tmp/foo")" > "$_eng87_m1i3e_sidecar"
+_END_ROW_TRANSCRIPT_CLEAN=true
+_validate_dispatch_envelope ENG-87M1I3E implementing 2>/dev/null || true
+[[ "$_END_ROW_TRANSCRIPT_CLEAN" == "true" ]] \
+  && pass_at "ENG-87 M1-iter3-E: validator clean path leaves _END_ROW_TRANSCRIPT_CLEAN=true" \
+  || fail_at "ENG-87 M1-iter3-E: validator over-eager false write" \
+       "got=_END_ROW_TRANSCRIPT_CLEAN='$_END_ROW_TRANSCRIPT_CLEAN' on clean envelope (expected 'true')"
+
+# ─── ENG-87 review-iter-3 M2: 3 halt/wait paths seed verdict_emitted ────────
+# The review-iter-2 M1 fix only seeded the trap globals from
+# classify_failure's halt-policy arms and _vh_protocol_violation. Three
+# additional sites still slip through (per iter-3 review):
+#   (a) _handle_wait budget-exhaustion path → caller exits 0 with
+#       verdict=halt on Linear but verdict_emitted="" in the row.
+#   (b) Scope-violation NOTABLE path → exits 0 with verdict=halt on
+#       Linear but verdict_emitted="" in the row.
+#   (c) Wait-success path → exits 0 with verdict=wait on Linear but
+#       verdict_emitted="" in the row.
+# Source-pin tests: the seed must appear within the relevant block, not
+# just anywhere in the file. Mirrors the M1-A trap-presence pin.
+printf '\n--- ENG-87 review-iter-3 M2: 3 exit paths seed verdict_emitted ---\n'
+
+# M2-iter3-A: scope-violation NOTABLE block (between `2)` arm header
+# and the matching `exit 0` of the not-yet-approved branch).
+_eng87_m2i3a_block="$(awk '
+  /halt_body=.*verdict result=halt reason=scope-violation/ { in_block=1 }
+  in_block { print }
+  in_block && /exit 0/ { exit }
+' "$RS_SRC")"
+if printf '%s\n' "$_eng87_m2i3a_block" \
+   | grep -qE '_END_ROW_VERDICT_EMITTED=("halt"|halt)'; then
+  pass_at "ENG-87 M2-iter3-A: scope-violation NOTABLE path seeds _END_ROW_VERDICT_EMITTED=halt"
+else
+  fail_at "ENG-87 M2-iter3-A: scope-violation NOTABLE missing seed" \
+    "block between halt_body=verdict-result=halt-scope-violation and exit 0 has no _END_ROW_VERDICT_EMITTED=halt — row will record verdict_emitted=\"\" despite halt verdict on Linear"
+fi
+
+# M2-iter3-B: budget-exhausted halt path (caller-side after _handle_wait
+# returned 1). Block runs from the `# Budget exhausted:` comment through
+# the `exit 0` at the wait-block bottom.
+_eng87_m2i3b_block="$(awk '
+  /# Budget exhausted: _handle_wait already posted/ { in_block=1 }
+  in_block { print }
+  in_block && /exit 0/ { exit }
+' "$RS_SRC")"
+if printf '%s\n' "$_eng87_m2i3b_block" \
+   | grep -qE '_END_ROW_VERDICT_EMITTED=("halt"|halt)'; then
+  pass_at "ENG-87 M2-iter3-B: _handle_wait budget-exhausted caller seeds _END_ROW_VERDICT_EMITTED=halt"
+else
+  fail_at "ENG-87 M2-iter3-B: budget-exhausted missing seed" \
+    "block from 'Budget exhausted' comment to exit 0 has no _END_ROW_VERDICT_EMITTED=halt — verdict was posted to Linear but row records empty string"
+fi
+
+# M2-iter3-C: wait-success path (the inner `_handle_wait` true branch).
+# Block runs from `if _handle_wait` through its corresponding `exit 0`.
+_eng87_m2i3c_block="$(awk '
+  /if _handle_wait "\$ident" "\$stage" "\$_wait_reason"; then/ { in_block=1 }
+  in_block { print }
+  in_block && /exit 0/ { exit }
+' "$RS_SRC")"
+if printf '%s\n' "$_eng87_m2i3c_block" \
+   | grep -qE '_END_ROW_VERDICT_EMITTED=("wait"|wait)'; then
+  pass_at "ENG-87 M2-iter3-C: wait-success path seeds _END_ROW_VERDICT_EMITTED=wait"
+else
+  fail_at "ENG-87 M2-iter3-C: wait-success missing seed" \
+    "block between 'if _handle_wait' and the inner exit 0 has no _END_ROW_VERDICT_EMITTED=wait — agent emitted wait verdict but row records empty string"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

@@ -450,6 +450,21 @@ outcome=$(latest_outcome)
   && pass_at "case-23 exit 23 → branch-creation-forbidden" \
   || fail_at "case-23" "outcome=$outcome"
 
+# ─── Test 24 (ENG-87 review-iter-3 M3): exit 29 → envelope-violation ──
+# Round-trip pin for the ENG-87 dispatch-envelope-violation arm in
+# failure_outcome_for_exit (bin/common.sh:235). CLAUDE.md "When wiring
+# a new script" §: "adding a new exit code without updating that
+# switch routes it to `unknown-exit-N` and the retrospective's §1
+# filter will not classify it." Test-23 covers the prior new arm
+# (23 → branch-creation-forbidden); the parallel pin for arm 29 was
+# absent — a future refactor that drops the `29)` case would silently
+# route every envelope-violation halt to `unknown-exit-29` and the
+# retrospective's §1 outcome filter would lose the classification.
+got="$(failure_outcome_for_exit 29 "")"
+[[ "$got" == "envelope-violation" ]] \
+  && pass_at "case-29 exit 29 → envelope-violation" \
+  || fail_at "case-29 (review-iter-3 M3)" "outcome=$got (expected envelope-violation)"
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
