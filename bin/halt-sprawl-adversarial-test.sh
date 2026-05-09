@@ -122,13 +122,16 @@ slack_call_count() { wc -l < "$SLACK_CAPTURE" | tr -d ' '; }
 
 # Six halted classified entries — above the default threshold of 5 in the
 # repo's live config — used by every case below unless overridden.
+# ENG-90 D-004: items carry operator_action_required=true so the new
+# inclusion-by-flag filter counts them. AC-ADV-MISSING-FLAG below pins
+# the inverse case (field absent → default-false → excluded).
 DEFAULT_CLASSIFIED='[
-  {"identifier":"ENG-901","slot":"vacate"},
-  {"identifier":"ENG-902","slot":"vacate"},
-  {"identifier":"ENG-903","slot":"vacate"},
-  {"identifier":"ENG-904","slot":"vacate"},
-  {"identifier":"ENG-905","slot":"vacate"},
-  {"identifier":"ENG-906","slot":"vacate"}
+  {"identifier":"ENG-901","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-902","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-903","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-904","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-905","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-906","slot":"vacate","operator_action_required":true}
 ]'
 
 # ─── ADV-DEBOUNCE-FUTURE: future-dated debounce stamp → slack silent ──
@@ -209,7 +212,7 @@ fi
 # three identifiers (no truncation issues), (c) metric notes report the
 # correct count.
 reset_state
-big_classified="$(jq -nc '[range(0; 100) | {identifier: ("ENG-\(. + 1000)"), slot: "vacate"}]')"
+big_classified="$(jq -nc '[range(0; 100) | {identifier: ("ENG-\(. + 1000)"), slot: "vacate", operator_action_required: true}]')"
 _poll_emit_halt_sprawl_alert "$big_classified" 2>/dev/null || true
 notes="$(jq -rc 'select(.event=="halt-sprawl") | .notes' "$METRICS_FILE" | tail -1)"
 slack_body="$(awk -F'\t' 'NR==1{print $2}' "$SLACK_CAPTURE")"
@@ -225,6 +228,31 @@ if [[ "$(count_metric_events alert)" == "1" ]] \
 else
   fail_at "ADV-LARGE-COUNT 100 vacate → 1 metric, slack body top-3 only with ellipsis" \
     "notes=$notes slack=$slack_body"
+fi
+
+# ─── AC-ADV-MISSING-FLAG (ENG-90 D-004): vacate items WITHOUT
+#     operator_action_required default to excluded. Pins the `// false`
+#     hatch in _poll_emit_halt_sprawl_alert: a future classifier branch
+#     that forgets to set the flag is silently excluded — strictly safer
+#     than silently included (no false-positive halt-sprawl alerts).
+#     Six items >> threshold 5; without the default-false hatch the
+#     filter would over-include and the alert would fire.
+reset_state
+classified='[
+  {"identifier":"ENG-MISS-1","slot":"vacate"},
+  {"identifier":"ENG-MISS-2","slot":"vacate"},
+  {"identifier":"ENG-MISS-3","slot":"vacate"},
+  {"identifier":"ENG-MISS-4","slot":"vacate"},
+  {"identifier":"ENG-MISS-5","slot":"vacate"},
+  {"identifier":"ENG-MISS-6","slot":"vacate"}
+]'
+_poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
+if [[ "$(count_metric_events alert)" == "0" ]] \
+   && [[ "$(slack_call_count)" == "0" ]]; then
+  pass_at "AC-ADV-MISSING-FLAG missing oar field → excluded (default-false)"
+else
+  fail_at "AC-ADV-MISSING-FLAG missing oar field → excluded (default-false)" \
+    "metric=$(count_metric_events alert) slack=$(slack_call_count)"
 fi
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"

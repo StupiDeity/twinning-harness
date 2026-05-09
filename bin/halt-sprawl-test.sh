@@ -178,15 +178,18 @@ slack_call_count() { wc -l < "$SLACK_CAPTURE" | tr -d ' '; }
 
 # ─── AC-THR-EQ: count == threshold → no metric, no Slack (strict GT) ──
 # 5 halted issues, threshold 5 → no alert (D-002).
+# ENG-90 D-004: items carry operator_action_required=true so the new
+# inclusion-by-flag filter counts them. Without the field, the default-
+# false hatch silently excludes — see AC-ADV-MISSING-FLAG.
 reset_fixtures; reset_state
 # Build a classified array of 5 vacate entries. We call the helper
 # directly (unit layer) — no need to route through main/linear stubs.
 classified='[
-  {"identifier":"ENG-101","slot":"vacate"},
-  {"identifier":"ENG-102","slot":"vacate"},
-  {"identifier":"ENG-103","slot":"vacate"},
-  {"identifier":"ENG-104","slot":"vacate"},
-  {"identifier":"ENG-105","slot":"vacate"}
+  {"identifier":"ENG-101","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-102","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-103","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-104","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-105","slot":"vacate","operator_action_required":true}
 ]'
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
 if [[ "$(count_metric_events alert)" == "0" ]] \
@@ -202,13 +205,13 @@ fi
 # and Slack is called with level=warn and body containing top-3 identifiers.
 reset_fixtures; reset_state
 classified='[
-  {"identifier":"ENG-201","slot":"vacate"},
-  {"identifier":"ENG-202","slot":"vacate"},
-  {"identifier":"ENG-203","slot":"vacate"},
-  {"identifier":"ENG-204","slot":"vacate"},
-  {"identifier":"ENG-205","slot":"vacate"},
-  {"identifier":"ENG-206","slot":"vacate"},
-  {"identifier":"ENG-207","slot":"vacate"}
+  {"identifier":"ENG-201","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-202","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-203","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-204","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-205","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-206","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-207","slot":"vacate","operator_action_required":true}
 ]'
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
 notes="$(last_metric_notes)"
@@ -239,7 +242,7 @@ SCRATCH_CONFIG="$STUB_DIR/config-zero.json"
 jq -n '{orchestrator: {alert_on_halted_over: 0}}' > "$SCRATCH_CONFIG"
 ORIG_CONFIG="$CONFIG"
 CONFIG="$SCRATCH_CONFIG"
-classified='[{"identifier":"ENG-301","slot":"vacate"}]'
+classified='[{"identifier":"ENG-301","slot":"vacate","operator_action_required":true}]'
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
 CONFIG="$ORIG_CONFIG"
 if [[ "$(count_metric_events alert)" == "1" ]] \
@@ -255,12 +258,12 @@ fi
 reset_fixtures; reset_state
 date -u +%Y-%m-%dT%H:%M:%SZ > "$DEBOUNCE_FILE"
 classified='[
-  {"identifier":"ENG-401","slot":"vacate"},
-  {"identifier":"ENG-402","slot":"vacate"},
-  {"identifier":"ENG-403","slot":"vacate"},
-  {"identifier":"ENG-404","slot":"vacate"},
-  {"identifier":"ENG-405","slot":"vacate"},
-  {"identifier":"ENG-406","slot":"vacate"}
+  {"identifier":"ENG-401","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-402","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-403","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-404","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-405","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-406","slot":"vacate","operator_action_required":true}
 ]'
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
@@ -282,12 +285,12 @@ printf '%s\n' "$past_ts" > "$DEBOUNCE_FILE"
 touch -t "$(date -u -v-25H +%Y%m%d%H%M 2>/dev/null \
             || date -u -d '25 hours ago' +%Y%m%d%H%M)" "$DEBOUNCE_FILE"
 classified='[
-  {"identifier":"ENG-501","slot":"vacate"},
-  {"identifier":"ENG-502","slot":"vacate"},
-  {"identifier":"ENG-503","slot":"vacate"},
-  {"identifier":"ENG-504","slot":"vacate"},
-  {"identifier":"ENG-505","slot":"vacate"},
-  {"identifier":"ENG-506","slot":"vacate"}
+  {"identifier":"ENG-501","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-502","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-503","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-504","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-505","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-506","slot":"vacate","operator_action_required":true}
 ]'
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
 if [[ "$(count_metric_events alert)" == "1" ]] \
@@ -313,10 +316,10 @@ fi
 # 4 vacate + 3 hold + 1 terminal, threshold 5 → count=4, no alert.
 reset_fixtures; reset_state
 classified='[
-  {"identifier":"ENG-601","slot":"vacate"},
-  {"identifier":"ENG-602","slot":"vacate"},
-  {"identifier":"ENG-603","slot":"vacate"},
-  {"identifier":"ENG-604","slot":"vacate"},
+  {"identifier":"ENG-601","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-602","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-603","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-604","slot":"vacate","operator_action_required":true},
   {"identifier":"ENG-605","slot":"hold"},
   {"identifier":"ENG-606","slot":"hold"},
   {"identifier":"ENG-607","slot":"hold"},
@@ -338,12 +341,12 @@ jq -n '{orchestrator: {paused: false}}' > "$SCRATCH_CONFIG"
 ORIG_CONFIG="$CONFIG"
 CONFIG="$SCRATCH_CONFIG"
 classified='[
-  {"identifier":"ENG-701","slot":"vacate"},
-  {"identifier":"ENG-702","slot":"vacate"},
-  {"identifier":"ENG-703","slot":"vacate"},
-  {"identifier":"ENG-704","slot":"vacate"},
-  {"identifier":"ENG-705","slot":"vacate"},
-  {"identifier":"ENG-706","slot":"vacate"}
+  {"identifier":"ENG-701","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-702","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-703","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-704","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-705","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-706","slot":"vacate","operator_action_required":true}
 ]'
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
 CONFIG="$ORIG_CONFIG"
@@ -375,12 +378,12 @@ fi
 # reset_state already cleared DEBOUNCE_FILE; no extra rm -f needed.
 reset_fixtures; reset_state
 classified='[
-  {"identifier":"ENG-801","slot":"vacate"},
-  {"identifier":"ENG-802","slot":"vacate"},
-  {"identifier":"ENG-803","slot":"vacate"},
-  {"identifier":"ENG-804","slot":"vacate"},
-  {"identifier":"ENG-805","slot":"vacate"},
-  {"identifier":"ENG-806","slot":"vacate"}
+  {"identifier":"ENG-801","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-802","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-803","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-804","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-805","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-806","slot":"vacate","operator_action_required":true}
 ]'
 _poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
 slack_body="$(awk -F'\t' 'NR==1{print $2}' "$SLACK_CAPTURE")"
@@ -393,6 +396,134 @@ if [[ "$slack_body" == *"ENG-801"* ]] \
 else
   fail_at "AC-TOP3-SUFFIX N>3 names top-3 and suffix ellipsis" \
     "body=$slack_body"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ENG-90 D-004 — inclusion-by-flag filter fixtures.
+# Pre-fix the polarity was exclude-by-wait_recallable; under the new
+# contract, halt-sprawl includes ONLY operator_action_required==true.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── AC-THR-EXCLUDE-WAIT (D-004 / preserves ENG-85 invariant under rename):
+#     6 wait-recallable vacates; threshold 5. count must be 0; no metric,
+#     no slack. Pre-ENG-85 included these → false-positive halt-sprawl.
+reset_fixtures; reset_state
+classified='[
+  {"identifier":"ENG-W1","slot":"vacate","wait_recallable":true,"operator_action_required":false},
+  {"identifier":"ENG-W2","slot":"vacate","wait_recallable":true,"operator_action_required":false},
+  {"identifier":"ENG-W3","slot":"vacate","wait_recallable":true,"operator_action_required":false},
+  {"identifier":"ENG-W4","slot":"vacate","wait_recallable":true,"operator_action_required":false},
+  {"identifier":"ENG-W5","slot":"vacate","wait_recallable":true,"operator_action_required":false},
+  {"identifier":"ENG-W6","slot":"vacate","wait_recallable":true,"operator_action_required":false}
+]'
+_poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
+if [[ "$(count_metric_events alert)" == "0" ]] \
+   && [[ "$(slack_call_count)" == "0" ]]; then
+  pass_at "AC-THR-EXCLUDE-WAIT 6 wait-recallable vacates → no alert"
+else
+  fail_at "AC-THR-EXCLUDE-WAIT 6 wait-recallable vacates → no alert" \
+    "metric=$(count_metric_events alert) slack=$(slack_call_count)"
+fi
+
+# ─── AC-THR-EXCLUDE-SKIP-CODE (D-004 — was a miscount pre-fix):
+#     6 vacate items modeling skip-until-code-changes evidence-unchanged
+#     (oar=false). Pre-D-004 these were COUNTED toward halt-sprawl
+#     because the old filter excluded only wait_recallable; under the
+#     inclusion-by-flag filter they are correctly excluded.
+reset_fixtures; reset_state
+classified='[
+  {"identifier":"ENG-SC1","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-SC2","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-SC3","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-SC4","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-SC5","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-SC6","slot":"vacate","operator_action_required":false}
+]'
+_poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
+if [[ "$(count_metric_events alert)" == "0" ]] \
+   && [[ "$(slack_call_count)" == "0" ]]; then
+  pass_at "AC-THR-EXCLUDE-SKIP-CODE 6 oar=false vacates → no alert (D-004)"
+else
+  fail_at "AC-THR-EXCLUDE-SKIP-CODE" \
+    "metric=$(count_metric_events alert) slack=$(slack_call_count)"
+fi
+
+# ─── AC-THR-EXCLUDE-REVIEW-VACATE (D-004 — would be miscount post-D-002
+#     without polarity flip): 6 review-PR-pending vacates (oar=false).
+#     Without D-004 these would over-count halt-sprawl since they emit
+#     slot=vacate post-D-002.
+reset_fixtures; reset_state
+classified='[
+  {"identifier":"ENG-RV1","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-RV2","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-RV3","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-RV4","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-RV5","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-RV6","slot":"vacate","operator_action_required":false}
+]'
+_poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
+if [[ "$(count_metric_events alert)" == "0" ]] \
+   && [[ "$(slack_call_count)" == "0" ]]; then
+  pass_at "AC-THR-EXCLUDE-REVIEW-VACATE 6 review-PR-pending vacates → no alert (D-004)"
+else
+  fail_at "AC-THR-EXCLUDE-REVIEW-VACATE" \
+    "metric=$(count_metric_events alert) slack=$(slack_call_count)"
+fi
+
+# ─── AC-THR-MIXED: 3 oar=true + 3 oar=false; threshold 5. Filter counts
+#     only oar=true → count=3 ≤ 5; no alert.
+reset_fixtures; reset_state
+classified='[
+  {"identifier":"ENG-MIX-T1","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-MIX-T2","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-MIX-T3","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-MIX-F1","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-MIX-F2","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-MIX-F3","slot":"vacate","operator_action_required":false}
+]'
+_poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
+if [[ "$(count_metric_events alert)" == "0" ]] \
+   && [[ "$(slack_call_count)" == "0" ]]; then
+  pass_at "AC-THR-MIXED count=3 (oar=true) ≤ threshold; no alert"
+else
+  fail_at "AC-THR-MIXED" \
+    "metric=$(count_metric_events alert) slack=$(slack_call_count)"
+fi
+
+# ─── AC-THR-MIXED-OVER: 6 oar=true (ENG-M-*) + 3 oar=false (ENG-X-*);
+#     threshold 5. count=6 > 5 → metric notes "count=6 threshold=5";
+#     Slack body lists ENG-M-1, ENG-M-2, ENG-M-3 (top-3); does NOT
+#     contain any ENG-X-* (top-3 selector mirrors filter). Suffix ", …"
+#     present (count=6 > 3).
+reset_fixtures; reset_state
+classified='[
+  {"identifier":"ENG-M-1","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-M-2","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-M-3","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-M-4","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-M-5","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-M-6","slot":"vacate","operator_action_required":true},
+  {"identifier":"ENG-X-1","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-X-2","slot":"vacate","operator_action_required":false},
+  {"identifier":"ENG-X-3","slot":"vacate","operator_action_required":false}
+]'
+_poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
+notes="$(last_metric_notes)"
+slack_body="$(awk -F'\t' 'NR==1{print $2}' "$SLACK_CAPTURE")"
+if [[ "$(count_metric_events alert)" == "1" ]] \
+   && [[ "$notes" == "count=6 threshold=5" ]] \
+   && [[ "$(slack_call_count)" == "1" ]] \
+   && [[ "$slack_body" == *"ENG-M-1"* ]] \
+   && [[ "$slack_body" == *"ENG-M-2"* ]] \
+   && [[ "$slack_body" == *"ENG-M-3"* ]] \
+   && [[ "$slack_body" != *"ENG-X-1"* ]] \
+   && [[ "$slack_body" != *"ENG-X-2"* ]] \
+   && [[ "$slack_body" != *"ENG-X-3"* ]] \
+   && [[ "$slack_body" == *"…"* ]]; then
+  pass_at "AC-THR-MIXED-OVER count=6 fires; top-3 selector mirrors filter (no ENG-X-* leak)"
+else
+  fail_at "AC-THR-MIXED-OVER" \
+    "notes=$notes body=$slack_body"
 fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
