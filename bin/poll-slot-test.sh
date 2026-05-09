@@ -836,15 +836,20 @@ SH
 chmod +x "$STUB_DIR/linear.sh"
 
 # Case ENG-50-A: stage:reviewing with REVIEW_SHOULD_DISPATCH=0 (dispatch).
+# ENG-90: hold-class outputs MUST omit operator_action_required (D-001
+# contract — oar lives only on `slot:"vacate"`). Symmetric with
+# AC-OAR-REVIEW-DISPATCH at line 1349-1355 — both pin the same path.
 reset_fixtures
 labels_json='["stage:reviewing"]'
 class="$(REVIEW_SHOULD_DISPATCH=0 _poll_classify_labels "ENG-590" "$labels_json")"
 adv="$(jq -r '.advanceable' <<<"$class")"
 slot="$(jq -r '.slot' <<<"$class")"
-if [[ "$adv" == "true" && "$slot" == "hold" ]]; then
-  pass_at "ENG-50: stage:reviewing + dispatch=true → hold/advanceable"
+if [[ "$adv" == "true" && "$slot" == "hold" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$class" >/dev/null; then
+  pass_at "ENG-50: stage:reviewing + dispatch=true → hold/advanceable; oar absent"
 else
-  fail_at "ENG-50: stage:reviewing + dispatch=true" "got slot=$slot adv=$adv"
+  fail_at "ENG-50: stage:reviewing + dispatch=true" \
+    "got slot=$slot adv=$adv full=$class"
 fi
 
 # Case ENG-50-B: stage:reviewing with REVIEW_SHOULD_DISPATCH=1 (idle).
