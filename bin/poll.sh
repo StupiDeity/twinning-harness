@@ -204,12 +204,28 @@ _poll_gather_stage_labeled_issues() {
 # orphan-cleanup behavior of pre-ENG-20 main(). For non-skip issues with
 # neither label nor state file, it short-circuits to return 0 with no
 # side effects — cheap.
+#
+# ENG-90: every `slot:"vacate"` output declares operator_action_required.
+# See CLAUDE.md "Slot-occupancy contract (ENG-90)" before adding new
+# branches.
 _poll_classify_labels() {
   local ident="$1" labels_json="$2"
   local refreshed_labels=""
 
   if ! refreshed_labels="$(_poll_evaluate_skip "$ident" "$labels_json")"; then
-    jq -nc --argjson l "$labels_json" '{slot:"vacate",advanceable:false,labels:$l}'
+    # ENG-90 D-005: differentiate the two skip kinds.
+    # skip-until-human-acts is operator-action-required (operator removes
+    # the label). skip-until-code-changes with evidence unchanged is
+    # auto-recallable: the next-tick _poll_evaluate_skip re-checks
+    # pipeline_content_hash + branch SHA and clears the label mid-tick on
+    # change (line 109-134).
+    local oar="false"
+    if [[ "$(jq -r --arg n "pipeline:skip-until-human-acts" \
+            '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")" == "true" ]]; then
+      oar="true"
+    fi
+    jq -nc --argjson l "$labels_json" --argjson oar "$oar" \
+      '{slot:"vacate",advanceable:false,operator_action_required:$oar,labels:$l}'
     return 0
   fi
   # _poll_evaluate_skip prints a refreshed labels_json on auto-resume so
@@ -227,33 +243,46 @@ _poll_classify_labels() {
     class='{"slot":"terminal","advanceable":false}'
   elif [[ "$(_has_label pipeline:paused)" == "true" ]] \
     || [[ "$(_has_label pipeline:scope-approval-needed)" == "true" ]]; then
-    class='{"slot":"vacate","advanceable":false}'
+    # ENG-90 D-001: human-applied paused / scope-approval-needed labels
+    # require an operator action (label removal) before the slot recalls.
+    class='{"slot":"vacate","advanceable":false,"operator_action_required":true}'
   elif [[ "$(_has_label pipeline:halted)" == "true" ]]; then
     local fresh
     fresh="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
-    if [[ -z "$fresh" ]]; then
-      class='{"slot":"hold","advanceable":false}'
-    else
+    if [[ -n "$fresh" ]]; then
       local marker
       marker="$(jq -r '.marker // ""' <<<"$fresh")"
       case "$marker" in
         pipeline-stage-summary|pipeline-rejection)
+          # Verdict-handler-led transition is upcoming in Pass 4; the halt
+          # label is consumed by apply_transition. Slot remains held
+          # (active dispatch work).
           class='{"slot":"hold","advanceable":true}' ;;
-        pipeline-halt)
-          class='{"slot":"vacate","advanceable":false}' ;;
         *)
-          class='{"slot":"hold","advanceable":false}' ;;
+          # ENG-90 D-003: pipeline-halt OR unknown marker. Halt label gates
+          # dispatch — no agent compute will run regardless of marker
+          # shape. Operator must run `bin/pipeline.sh decide --action
+          # continue`.
+          class='{"slot":"vacate","advanceable":false,"operator_action_required":true}' ;;
       esac
+    else
+      # ENG-90 D-003: no fresh marker (silent agent crash, externally-
+      # applied label, or marker race with this tick). Halt label still
+      # gates dispatch — no agent compute will run. Operator must run
+      # `bin/pipeline.sh decide --action continue`.
+      class='{"slot":"vacate","advanceable":false,"operator_action_required":true}'
     fi
   elif fresh_wait="$(find_fresh_wait_verdict "$ident" 2>/dev/null)"; [[ -n "$fresh_wait" ]]; then
     # ENG-85: a wait verdict newer than the most recent transition vacates
     # the slot. Symmetric with the pipeline-halt arm above — both express
     # agent-idle-on-external-signal. Pass 6 in main() picks wait-recallable
-    # issues only when no held / inbox work is ready.
+    # issues only when no held / inbox work is ready. ENG-90 D-001:
+    # operator_action_required=false — _handle_wait re-runs the predicate
+    # on the next tick.
     local _wait_ts
     _wait_ts="$(jq -r '.created_at' <<<"$fresh_wait")"
     class="$(jq -nc --arg ts "$_wait_ts" \
-      '{slot:"vacate", advanceable:false, wait_recallable:true, wait_progress_ts:$ts}')"
+      '{slot:"vacate", advanceable:false, wait_recallable:true, wait_progress_ts:$ts, operator_action_required:false}')"
   elif [[ "$(_has_label stage:reviewing)" == "true" ]]; then
     # ENG-50: gate review dispatch on observable PR state.
     # ENG-53 #12: derive the branch via bin/branch-name.sh (same convention
@@ -282,7 +311,11 @@ _poll_classify_labels() {
       if review_should_dispatch "$ident" "$_rp_branch"; then
         class='{"slot":"hold","advanceable":true}'
       else
-        class='{"slot":"hold","advanceable":false}'
+        # ENG-90 D-002: PR not mergeable / checks pending. Agent dispatch
+        # will not run; the next tick re-evaluates review_should_dispatch
+        # (cheap orchestrator-side state check). Vacate the slot so
+        # sibling work can dispatch.
+        class='{"slot":"vacate","advanceable":false,"operator_action_required":false}'
       fi
     fi
   else
