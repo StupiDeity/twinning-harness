@@ -654,6 +654,125 @@ else
     "phrase 'git fetch origin main && git checkout main' missing"
 fi
 
+# ─── ENG-83: §7 build agent merge command must include --repo flag ────
+# Without --repo, gh CLI's post-merge local cleanup tries `git checkout
+# main` and errors when the operator's main checkout already holds main
+# as a worktree (the canonical operator setup; see
+# docs/runbooks/operator-mental-model.md §4). Pin the rule + rationale
+# so a future "cleanup" pass can't strip the unfamiliar flag without
+# context. Mirrors the ENG-71 §7 pin shape above.
+
+# Positive: §7 names --repo on the gh pr merge command line.
+if printf '%s\n' "$s7" | grep -qE 'gh pr merge.*--repo'; then
+  ok "§7 names --repo flag on gh pr merge invocation"
+else
+  nope "§7 names --repo flag on gh pr merge invocation" \
+    "without --repo, gh's local cleanup errors against the operator's main worktree (ENG-83)"
+fi
+
+# Positive: §7 explains the rationale (worktree-locks-main).
+if printf '%s\n' "$s7" | grep -qE 'main is already used by worktree|local cleanup'; then
+  ok "§7 explains --repo rationale (worktree-locks-main / local cleanup)"
+else
+  nope "§7 explains --repo rationale" \
+    "rationale paragraph missing — a future cleanup pass might strip --repo without realising"
+fi
+
+# Negative: §7 must NOT contain a $(gh pr view ...) shape — the
+# allowlist matcher rejects $() in Bash arguments (per ENG-83 §1
+# and the secret-handling preamble above).
+if printf '%s\n' "$s7" | grep -qE 'repo_full="\$\(gh|--repo "\$\(gh'; then
+  nope "§7 lacks \$(gh ...) shell-substitution shape" \
+    "allowlist matcher rejects \$() in Bash arguments — agent must derive in two separate tool calls (ENG-83)"
+else
+  ok "§7 lacks \$(gh ...) shell-substitution shape (allowlist-safe)"
+fi
+
+# Positive: §7 instructs the two-step derivation (gh pr view first,
+# then gh pr merge with the literal). Pin the canonical command form.
+if printf '%s\n' "$s7" | grep -qF 'gh pr view <N> --json url'; then
+  ok "§7 names canonical owner/repo derivation (gh pr view --json url)"
+else
+  nope "§7 names canonical owner/repo derivation" \
+    "without the --json url derivation, the agent has no allowlist-safe path to compute <owner>/<repo>"
+fi
+
+# ─── ENG-83 QA adversarial coverage ──────────────────────────────────
+# The plan-enumerated asserts above pin --repo presence + rationale +
+# canonical derivation + absence of one $() shape. Cold-reviewer
+# (general-purpose subagent, 2026-05-09) surfaced regression vectors
+# the four asserts do NOT catch: alternative substitution shapes
+# (backticks, =$()), strip-by-cleanup of the load-bearing --auto /
+# --delete-branch flags on the example invocation, loss of the
+# MANDATORY imperative wording, and hardcoded-literal substitution
+# instead of the placeholder. Five asserts below close those gaps.
+
+# QA-ADV-1 (negative): §7 must NOT use backtick command substitution
+# `--repo \`gh ...\``. Backticks are rejected by the dispatch allowlist
+# matcher just like $(...) — the existing assert 3 (the $() negative
+# pin) does NOT cover this variant.
+if printf '%s\n' "$s7" | grep -qE -- '--repo[[:space:]]+`'; then
+  nope "§7 lacks --repo backtick-substitution shape" \
+    "allowlist matcher rejects backticks in Bash arguments — adv coverage on ENG-83 assert 3 ($() negative pin)"
+else
+  ok "§7 lacks --repo backtick-substitution shape (allowlist-safe)"
+fi
+
+# QA-ADV-2 (negative): §7 must NOT use the `--repo=$(...)` equals form.
+# The existing assert 3 negative pin keys on `--repo "$(gh` (with quote);
+# the equals form is a legitimate bash idiom that bypasses the regex
+# but is still rejected by the allowlist matcher.
+if printf '%s\n' "$s7" | grep -qF -- '--repo=$('; then
+  nope "§7 lacks --repo=\$(...) equals-form substitution" \
+    "allowlist matcher still rejects \$() inside the equals form — adv coverage on ENG-83 assert 3"
+else
+  ok "§7 lacks --repo=\$(...) equals-form substitution (allowlist-safe)"
+fi
+
+# QA-ADV-3 (positive): §7 *Merge strategy* example MUST keep `--auto`
+# AND `--delete-branch`. A future cleanup pass that adds --repo could
+# accidentally strip these load-bearing flags (--auto queues the
+# server-side merge until checks pass + human approval per P5/P2;
+# --delete-branch removes the remote ref via the API). Existing assert 1
+# only matches `gh pr merge.*--repo` — both flags could vanish silently.
+if printf '%s\n' "$s7" | grep -qE 'gh pr merge.*--repo.*--merge.*--auto|gh pr merge.*--repo.*--auto.*--merge'; then
+  ok "§7 example invocation keeps --merge AND --auto on the gh pr merge line"
+else
+  nope "§7 example invocation keeps --merge + --auto" \
+    "future cleanup pass might strip these load-bearing flags; --auto queues server-side merge per P5/P2"
+fi
+if printf '%s\n' "$s7" | grep -qF -- '--delete-branch'; then
+  ok "§7 keeps --delete-branch (remote ref cleanup via API)"
+else
+  nope "§7 keeps --delete-branch" \
+    "without --delete-branch, the remote source branch lingers post-merge; cleanup-worktrees.sh only handles local"
+fi
+
+# QA-ADV-4 (positive): §7 *Merge strategy* example MUST use the
+# `<derived-owner-repo>` PLACEHOLDER on the merge line, not a hardcoded
+# literal like `StupiDeity/twinning-harness`. Plan A-018 explicitly
+# rejects the hardcoded fallback as brittle on multi-target deployments.
+# A future "cleanup" might inline the example owner/repo and break the
+# rule for every non-harness target.
+if printf '%s\n' "$s7" | grep -qE 'gh pr merge.*--repo[[:space:]]+<derived-owner-repo>'; then
+  ok "§7 merge example uses <derived-owner-repo> placeholder (not a hardcoded literal)"
+else
+  nope "§7 merge example uses <derived-owner-repo> placeholder" \
+    "hardcoded literal like 'StupiDeity/twinning-harness' on the merge line breaks multi-target use (plan A-018)"
+fi
+
+# QA-ADV-5 (positive): §7 must word --repo as MANDATORY (or REQUIRED).
+# Existing asserts pin the flag's PRESENCE in the example but not the
+# imperative. A future edit that drops the "MANDATORY" sentence while
+# leaving the example would technically pass all four ENG-83 asserts;
+# the agent might then treat --repo as optional decoration.
+if printf '%s\n' "$s7" | grep -qE '`?--repo`?[[:space:]]+flag[[:space:]]+is[[:space:]]+(MANDATORY|REQUIRED|mandatory|required)'; then
+  ok "§7 marks --repo as MANDATORY (imperative wording present)"
+else
+  nope "§7 marks --repo as MANDATORY" \
+    "without the imperative, agent might treat --repo as optional; example alone is descriptive, not prescriptive"
+fi
+
 # ENG-71 C1 regression pin: §7 must NOT recommend `gh api repos/.../branches/main`
 # to verify the merge SHA — `gh api` is not in the building tool allowlist
 # (only `gh pr view`, `gh pr list`, `gh pr checks`, `gh pr edit`, `gh pr merge`,

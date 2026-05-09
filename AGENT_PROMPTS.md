@@ -1384,18 +1384,38 @@ Configuration audit (READ-ONLY — no edits in this stage):
   `<!-- meta: metric name=build_config_flag -->` and included in the summary. They do
   NOT automatically block the merge — humans decide via `pipeline:paused` / resume.
 
-Merge strategy (FIXED — no alternative; per ENG-13 D-008):
-  - `gh pr merge <N> --merge --auto --delete-branch -t "<conventional-title>" -b "<body>"`
-    where <conventional-title> is the PR title (which P7 ensures is conventional-commits
-    formatted).
+Merge strategy (FIXED — no alternative; per ENG-13 D-008, ENG-83):
+  - First derive the canonical <owner>/<repo> string for the --repo flag:
+      gh pr view <N> --json url --jq '.url | split("/")[3:5] | join("/")'
+    Capture the result (e.g. "StupiDeity/twinning-harness"). Substitute
+    it as a literal in the next command — do NOT use $(...) shell
+    substitution; the allowlist matcher rejects $(...) and backticks
+    inside Bash arguments (per the secret-handling preamble above).
+  - Then merge:
+      gh pr merge <N> --repo <derived-owner-repo> --merge --auto \
+        --delete-branch -t "<conventional-title>" -b "<body>"
+    where <conventional-title> is the PR title (P7 ensures it is
+    conventional-commits formatted) and <derived-owner-repo> is the
+    literal value captured in the previous step.
+  - The `--repo` flag is MANDATORY (ENG-83). Without it, gh CLI's
+    post-merge local cleanup runs `git checkout main` to delete the
+    source branch; that errors with "fatal: 'main' is already used by
+    worktree at '/Users/<user>/code/<project>'" because the operator's
+    main checkout already holds main as a worktree, blocking the gh
+    invocation before the server-side merge fires. With `--repo`, gh
+    treats the operation as cross-repo and skips the local cleanup
+    attempt; the server-side merge fires unconditionally and the
+    `--delete-branch` removes the remote ref via the API. Local
+    worktree cleanup is owned by the periodic `cleanup-worktrees.sh`
+    sweep; it is NOT this agent's job.
   - Use `--merge` (regular merge commit), NOT `--squash`. Regular merges preserve
     feature-branch history reachable from main via the merge commit's second parent,
     which is load-bearing for retrospective archaeology (`git log --all` queries).
   - `--auto` queues the merge to fire once required checks pass (P5) AND a human
     Code Owner has approved (P2 strengthened).
-  - `--delete-branch` removes `{branch_name}` post-merge. The periodic
-    `cleanup-worktrees.sh` sweep detects the merged state and removes the local
-    worktree on a subsequent tick.
+  - `--delete-branch` removes `{branch_name}` from origin post-merge.
+    The periodic `cleanup-worktrees.sh` sweep detects the merged state
+    and removes the local worktree on a subsequent tick.
   - Do NOT perform any worktree cleanup here — it is centralized in the sweep
     for uniformity.
 

@@ -204,6 +204,19 @@ If `true`: self-heal will fix on next tick. To force-fix immediately:
 git -C /path/to/twinning-harness config core.bare false
 ```
 
+**Build agent's `gh pr merge` always carries `--repo <owner>/<repo>`.**
+Without `--repo`, gh's `--delete-branch` post-merge cleanup runs `git
+checkout main` to delete the source branch locally; that errors with
+"fatal: 'main' is already used by worktree at ..." because the
+operator's main checkout in `~/code/<project>` already holds main as
+a worktree. With `--repo`, gh treats the operation as cross-repo and
+skips the local cleanup; the server-side merge fires unconditionally,
+and `cleanup-worktrees.sh` handles the local worktree removal on a
+subsequent tick. Operators reviewing build-stage Linear comments will
+see `--repo <owner>/<repo>` in the merge command — that is by design
+(ENG-83), not a debug artifact. Pinned in §7 of `AGENT_PROMPTS.md`
+and `bin/agent-prompts-content-test.sh`.
+
 ## §5 — Process / runtime
 
 **5-min launchd cadence with no "fire now" trigger.** A force-push at 12:01
