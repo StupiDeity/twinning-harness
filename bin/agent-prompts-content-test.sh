@@ -654,6 +654,49 @@ else
     "phrase 'git fetch origin main && git checkout main' missing"
 fi
 
+# ─── ENG-83: §7 build agent merge command must include --repo flag ────
+# Without --repo, gh CLI's post-merge local cleanup tries `git checkout
+# main` and errors when the operator's main checkout already holds main
+# as a worktree (the canonical operator setup; see
+# docs/runbooks/operator-mental-model.md §4). Pin the rule + rationale
+# so a future "cleanup" pass can't strip the unfamiliar flag without
+# context. Mirrors the ENG-71 §7 pin shape above.
+
+# Positive: §7 names --repo on the gh pr merge command line.
+if printf '%s\n' "$s7" | grep -qE 'gh pr merge.*--repo'; then
+  ok "§7 names --repo flag on gh pr merge invocation"
+else
+  nope "§7 names --repo flag on gh pr merge invocation" \
+    "without --repo, gh's local cleanup errors against the operator's main worktree (ENG-83)"
+fi
+
+# Positive: §7 explains the rationale (worktree-locks-main).
+if printf '%s\n' "$s7" | grep -qE 'main is already used by worktree|local cleanup'; then
+  ok "§7 explains --repo rationale (worktree-locks-main / local cleanup)"
+else
+  nope "§7 explains --repo rationale" \
+    "rationale paragraph missing — a future cleanup pass might strip --repo without realising"
+fi
+
+# Negative: §7 must NOT contain a $(gh pr view ...) shape — the
+# allowlist matcher rejects $() in Bash arguments (per ENG-83 §1
+# and the secret-handling preamble above).
+if printf '%s\n' "$s7" | grep -qE 'repo_full="\$\(gh|--repo "\$\(gh'; then
+  nope "§7 lacks \$(gh ...) shell-substitution shape" \
+    "allowlist matcher rejects \$() in Bash arguments — agent must derive in two separate tool calls (ENG-83)"
+else
+  ok "§7 lacks \$(gh ...) shell-substitution shape (allowlist-safe)"
+fi
+
+# Positive: §7 instructs the two-step derivation (gh pr view first,
+# then gh pr merge with the literal). Pin the canonical command form.
+if printf '%s\n' "$s7" | grep -qF 'gh pr view <N> --json url'; then
+  ok "§7 names canonical owner/repo derivation (gh pr view --json url)"
+else
+  nope "§7 names canonical owner/repo derivation" \
+    "without the --json url derivation, the agent has no allowlist-safe path to compute <owner>/<repo>"
+fi
+
 # ENG-71 C1 regression pin: §7 must NOT recommend `gh api repos/.../branches/main`
 # to verify the merge SHA — `gh api` is not in the building tool allowlist
 # (only `gh pr view`, `gh pr list`, `gh pr checks`, `gh pr edit`, `gh pr merge`,
