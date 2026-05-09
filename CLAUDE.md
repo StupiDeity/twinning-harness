@@ -507,10 +507,6 @@ Every output declares one of:
 - **`slot:"terminal"`** — `pipeline:abandoned`. Never recalled.
 - **`slot:"hold", advanceable:true`** — Active development. Pass 4 will
   dispatch a `claude -p` agent on this tick.
-- **`slot:"hold", advanceable:false`** — Reserved (today: never emitted;
-  left in place for transitional/legacy paths). If a branch needs to
-  express "do not dispatch but keep the slot," reach for `vacate`
-  instead.
 - **`slot:"vacate", operator_action_required:true`** — Agent-idle, recall
   path requires operator action (label removal,
   `bin/pipeline.sh decide --action continue`, PR review). Counted by
@@ -519,6 +515,11 @@ Every output declares one of:
   recall is automatic (next-tick orchestrator-side state check:
   `review_should_dispatch`, `pipeline_content_hash`, `_handle_wait`'s
   budget). Excluded from halt-sprawl.
+
+`slot:"hold", advanceable:false` is not part of the contract. If a new
+branch needs to express "do not dispatch but keep the slot," it doesn't
+exist — reach for `vacate` (with the appropriate `operator_action_required`
+flag) instead.
 
 Adding a new branch to `_poll_classify_labels` MUST set
 `operator_action_required` for every `slot:"vacate"` output AND add a

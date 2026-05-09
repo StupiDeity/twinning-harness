@@ -169,34 +169,54 @@ _poll_gather_stage_labeled_issues() {
 # Classify one issue's slot state from its labels (+ Linear comments when needed).
 # Input:  ident, labels_json  (labels_json is a JSON array of label name strings)
 # Output: {"slot": "hold"|"vacate"|"terminal", "advanceable": true|false,
+#          "operator_action_required": true|false (REQUIRED on every
+#                                  `slot:"vacate"` output; OMITTED on `hold`
+#                                  and `terminal`),
+#          "wait_recallable": true (only on the wait-verdict vacate arm —
+#                                  ENG-85),
+#          "wait_progress_ts": ISO8601 (only on the wait-verdict vacate arm),
 #          "labels": [name, ...]}
 # The emitted "labels" reflects any auto-resume label mutations from
 # _poll_evaluate_skip; _poll_classify_all merges it onto the gathered item
 # so Pass 4 reads the post-resume label set in the same tick.
 #
 # Rules (evaluated top-down, first match wins):
-#   _poll_evaluate_skip returns 1 (still skipped — applies to:
-#     skip-until-human-acts present, OR
-#     skip-until-code-changes present AND evidence unchanged)
-#                                                    → vacate
+#   _poll_evaluate_skip returns 1 (still skipped) →
+#     skip-until-human-acts present                → vacate, oar=true (D-005)
+#     skip-until-code-changes + state file present
+#       + evidence unchanged                       → vacate, oar=false (D-005 — auto-recallable)
+#     skip-until-code-changes + state file absent  → vacate, oar=true (D-005 review-fix —
+#                                                    no orchestrator-side recall predicate;
+#                                                    operator must remove label or
+#                                                    classify-failure must write state file)
 #   _poll_evaluate_skip returns 0 (include — covers:
 #     no skip labels + no state file, OR
 #     orphan state file cleanup, OR
 #     orphan label cleanup, OR
 #     skip-until-code-changes evidence changed + label cleared)
-#                                                    → proceed with label-based classification
-#   pipeline:abandoned                               → terminal
-#   pipeline:paused                                  → vacate (human-initiated)
-#   pipeline:scope-approval-needed                   → vacate (human-gated)
-#   pipeline:halted (bare; evaluated via marker)     →
-#     find_fresh_verdict returns empty               → hold, NOT advanceable
-#                                                      (agent may have exited silently;
-#                                                       next tick pre-dispatch re-checks)
-#     fresh marker is pipeline-halt                  → vacate (halt-for-human / protocol-violation)
+#                                                  → proceed with label-based classification
+#   pipeline:abandoned                             → terminal
+#   pipeline:paused                                → vacate, oar=true (D-001 — human-initiated)
+#   pipeline:scope-approval-needed                 → vacate, oar=true (D-001 — human-gated)
+#   pipeline:halted (bare; evaluated via marker) →
 #     fresh marker is pipeline-stage-summary/rejection → hold, advanceable
-#                                                      (verdict_handler will transition)
-#     other marker shape                             → hold, NOT advanceable (conservative)
-#   no blocker labels                                → hold, advanceable
+#                                                    (verdict_handler will transition)
+#     fresh marker is pipeline-halt | unknown marker
+#       | find_fresh_verdict returns empty         → vacate, oar=true (D-003 — folded
+#                                                    into default arm; halt label
+#                                                    gates dispatch regardless of
+#                                                    marker shape; operator must run
+#                                                    `bin/pipeline.sh decide --action continue`)
+#   wait verdict on stage:building                 → vacate, oar=false, wait_recallable=true
+#                                                    (D-001, ENG-85 — _handle_wait re-runs
+#                                                    the predicate next tick)
+#   stage:reviewing →
+#     branch-name derivation failed (Linear API down) → hold, advanceable (fail-open)
+#     review_should_dispatch=true                  → hold, advanceable (D-002)
+#     review_should_dispatch=false                 → vacate, oar=false (D-002 —
+#                                                    orchestrator-side state check
+#                                                    recalls next tick)
+#   no blocker labels                              → hold, advanceable
 #
 # Note: _poll_evaluate_skip handles both skip-until-* label branches AND
 # orphan cleanup (state file without label, or label without state file).
