@@ -50,6 +50,25 @@ _classify_label() {
   esac
 }
 
+# ─── Dispatch-id auto-injection (ENG-87) ─────────────────────────────
+# Append `<!-- meta: dispatch id=ENG-N-d<NNNN> stage=<gerund> -->` to a
+# comment body when PIPELINE_DISPATCH_ID is set. Idempotent — skip if
+# the body already contains the marker (defends against double-injection
+# on add-or-update-comment re-applies). Operator-lane writes (env unset)
+# bypass injection by design. Lint-clean: ${VAR-} (single-dash empty
+# fallback); neither name matches secret-probe-lint.sh's regex.
+_inject_dispatch_marker() {
+  local body="$1"
+  [[ -n "${PIPELINE_DISPATCH_ID-}" ]] || { printf '%s' "$body"; return 0; }
+  # Idempotent: if a dispatch marker is already present, return as-is.
+  if grep -qF '<!-- meta: dispatch id=' <<<"$body"; then
+    printf '%s' "$body"
+    return 0
+  fi
+  printf '%s\n\n<!-- meta: dispatch id=%s stage=%s -->' \
+    "$body" "${PIPELINE_DISPATCH_ID-}" "${PIPELINE_STAGE-}"
+}
+
 # Classify a comment body into transition_comment or other_comment.
 # transition_comment: the first non-blank line of the body is the
 # orchestrator transition waypoint marker. Recognized shapes:
@@ -478,6 +497,15 @@ add_comment() {
   _comment_class="$(_classify_comment_body "$body")"
   _check_lane "add" "$_comment_class" || return $?
 
+  # ENG-87: auto-inject dispatch_id marker. Placement is load-bearing —
+  # AFTER _check_lane (so the comment-class classification reflects the
+  # caller's authoring intent; the marker is appended at the END so
+  # _classify_comment_body's first-line-match is unchanged) and BEFORE
+  # the dry-run short-circuit (so unit tests under PIPELINE_DRY_RUN=1
+  # observe the injection). No-op when PIPELINE_DISPATCH_ID is unset
+  # (operator-manual lane).
+  body="$(_inject_dispatch_marker "$body")"
+
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
     log "[DRY_RUN] would comment on $ident: ${body:0:80}..."
     return 0
@@ -551,6 +579,13 @@ add_or_update_comment() {
   [[ -n "$body" ]] \
     || die "add-or-update-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
   _reject_legacy_marker_body "add-or-update-comment" "$body" || return $?
+
+  # ENG-87: auto-inject dispatch_id marker. Same placement rationale as
+  # add_comment — after the legacy-marker reject, before the dedup-marker
+  # append. The dedup-append (line ~573) runs on the already-injected
+  # body so both meta-markers coexist on the same comment. Idempotent
+  # on re-apply.
+  body="$(_inject_dispatch_marker "$body")"
 
   # ENG-60 vocabulary: write `<!-- meta: dedup key=... -->` (new shape).
   # Look up matches against the legacy `<!-- pipeline-sig: ... -->` shape too,
