@@ -491,11 +491,17 @@ else
     "got slot=$slot adv=$adv recall=$recall oar=$oar ts=$ts (want vacate/false/true/false/2026-04-28T08:17:00Z) full=$out"
 fi
 
-# ─── AC-WAIT-2 (ENG-85): two issues, ENG-A waits at stage:building,
-#     ENG-B held at stage:qa, max_concurrent=2. After classify, ENG-A
-#     is vacate; ENG-B is hold. Pass 4 dispatches ENG-B, NOT ENG-A.
-#     This is the literal regression test for the issue body's
-#     "ENG-79 starved 45 min" scenario.
+# ─── AC-WAIT-2 (ENG-91 inversion): two issues, ENG-WAIT-A waits at
+#     stage:building (predicate ready by stub default = 'proceed'),
+#     ENG-WAIT-B held at stage:qa, max_concurrent=2. Under the
+#     unified Pass 4U picker (ENG-91 D-001+D-002), stage_index
+#     dominates the sort — building (idx=6) outranks qa (idx=5), so
+#     ENG-WAIT-A wins the dispatch. Pre-ENG-91 this fixture asserted
+#     the inverse: Pass 4 picked the qa-held and Pass 6 wait-recall
+#     never fired. The 2026-05-09 ENG-83/ENG-90 race was the live
+#     incident for this regression — operator approves the build PR;
+#     wait predicate flips to ready; cross-pool starvation kept the
+#     near-merge ticket idle for 60+ min. This rewrite pins WIP-first.
 reset_fixtures
 write_label_fixture "stage:building" "ENG-WAIT-A|In Progress|1|stage:building"
 write_label_fixture "stage:qa"       "ENG-WAIT-B|In Progress|1|stage:qa"
@@ -507,11 +513,11 @@ write_comments_fixture "ENG-WAIT-B" \
 out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 reason="$(jq -r '.reason // ""' <<<"$out")"
-if [[ "$issue_id" == "ENG-WAIT-B" && "$reason" == *"stage:qa"* ]]; then
-  pass_at "AC-WAIT-2 (ENG-85): ENG-A waits, ENG-B (stage:qa) wins Pass 4 dispatch"
+if [[ "$issue_id" == "ENG-WAIT-A" && "$reason" == *"stage:building"* ]]; then
+  pass_at "AC-WAIT-2 (ENG-91): later-stage wait_recallable beats earlier-stage held"
 else
-  fail_at "AC-WAIT-2 (ENG-85): wait-vacates slot for sibling held work" \
-    "got issue_id=$issue_id reason=$reason (want ENG-WAIT-B / *stage:qa*) full=$out"
+  fail_at "AC-WAIT-2 (ENG-91): unified-picker WIP-first inversion" \
+    "got issue_id=$issue_id reason=$reason (want ENG-WAIT-A / *stage:building*) full=$out"
 fi
 
 # ─── AC-WAIT-3 (ENG-85): single wait issue, empty inbox, no other
@@ -631,6 +637,165 @@ else
   fail_at "AC-WAIT-7 (ENG-85): supersession by fail" \
     "got slot=$slot adv=$adv recall=$recall (want hold/true/false) full=$out"
 fi
+
+# ─── AC-PICK-1 (ENG-91): wait predicate ready outranks fresh inbox.
+#     ENG-PICK1A waits at stage:building with predicate ready
+#     (ENTRY_CONDITIONS_STUB_OUTPUT=proceed); ENG-PICK1B in inbox.
+#     Pre-ENG-91 Pass 5 picked the inbox issue (Pass 6 wait re-pickup
+#     fired only as a last resort). Post-ENG-91 the unified picker
+#     promotes the wait — building (idx=6) outranks the inbox source
+#     (idx=-1). Pins D-003 predicate-ready arm.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+write_label_fixture "stage:building" "ENG-PICK1A|In Progress|3|stage:building"
+write_inbox_fixture                  "ENG-PICK1B|Todo|3|Bug"
+write_comments_fixture "ENG-PICK1A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-PICK1A" \
+      && "$reason" == *"stage:building"* \
+      && "$reason" == *"predicate ready"* ]]; then
+  pass_at "AC-PICK-1 (ENG-91): wait@building (proceed) outranks fresh inbox"
+else
+  fail_at "AC-PICK-1 (ENG-91): predicate-ready arm" \
+    "got issue_id=$issue_id reason=$reason (want ENG-PICK1A / *stage:building* / *predicate ready*) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── AC-PICK-2 (ENG-91): wait predicate skip:* loses to inbox.
+#     Same fixture shape as AC-PICK-1 but the stub returns
+#     skip:awaiting-approval. The wait_recallable is excluded from
+#     the picker pool entirely; the inbox arrival becomes the only
+#     candidate and dispatches with entry_action=apply-stage-label.
+#     Pins D-003 contrapositive — a not-ready wait does NOT waste
+#     the slot or starve genuinely-ready earlier-stage / inbox work.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT="skip:awaiting-approval"
+write_label_fixture "stage:building" "ENG-PICK2A|In Progress|3|stage:building"
+write_inbox_fixture                  "ENG-PICK2B|Todo|3|Bug"
+write_comments_fixture "ENG-PICK2A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-PICK2B" && "$entry" == "apply-stage-label" ]]; then
+  pass_at "AC-PICK-2 (ENG-91): wait@building (skip:*) excluded; inbox dispatches"
+else
+  fail_at "AC-PICK-2 (ENG-91): predicate-skip exclusion" \
+    "got issue_id=$issue_id entry=$entry (want ENG-PICK2B / apply-stage-label) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── AC-PICK-3 (ENG-91): wait ready outranks earlier-stage held.
+#     ENG-PICK3A waits at stage:building (predicate ready);
+#     ENG-PICK3B held at stage:planning (advanceable). Stage_index
+#     dominates: building (6) > planning (1) → wait wins. This is
+#     the literal regression test for the 2026-05-09 ENG-83/ENG-90
+#     incident — operator approves a near-merge build PR; predicate
+#     flips to ready; pre-ENG-91 the dispatcher held the slot for
+#     the planning issue's next tick because Pass 4 ran before
+#     Pass 6.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+write_label_fixture "stage:building" "ENG-PICK3A|In Progress|3|stage:building"
+write_label_fixture "stage:planning" "ENG-PICK3B|In Progress|3|stage:planning"
+write_comments_fixture "ENG-PICK3A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-PICK3A" && "$reason" == *"stage:building"* ]]; then
+  pass_at "AC-PICK-3 (ENG-91): wait_recallable@building beats held@planning (live-incident regression)"
+else
+  fail_at "AC-PICK-3 (ENG-91): cross-pool starvation regression" \
+    "got issue_id=$issue_id reason=$reason (want ENG-PICK3A / *stage:building*) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── AC-PICK-4 (ENG-91): multi-fleet WIP-first.
+#     Three issues — ENG-PICK4A wait@building (ready), ENG-PICK4B
+#     held@planning (advanceable), ENG-PICK4C in inbox. cap=2 (test
+#     config default). The first main() dispatch must be ENG-PICK4A
+#     because building (6) > planning (1) > inbox (-1). The
+#     "subsequent ticks pick ENG-B then ENG-C" claim from the
+#     brainstorm AC-5 is not directly testable inside one main()
+#     invocation; this fixture limits itself to the load-bearing
+#     "first dispatch is ENG-A" pinning.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+write_label_fixture "stage:building" "ENG-PICK4A|In Progress|3|stage:building"
+write_label_fixture "stage:planning" "ENG-PICK4B|In Progress|3|stage:planning"
+write_inbox_fixture                  "ENG-PICK4C|Todo|3|Bug"
+write_comments_fixture "ENG-PICK4A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-PICK4A" && "$reason" == *"stage:building"* ]]; then
+  pass_at "AC-PICK-4 (ENG-91): multi-fleet — building wait beats planning held + inbox"
+else
+  fail_at "AC-PICK-4 (ENG-91): multi-fleet WIP-first" \
+    "got issue_id=$issue_id reason=$reason (want ENG-PICK4A / *stage:building*) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── AC-PICK-5 (ENG-91): predicate evaluator error fails open.
+#     ENG-PICK5A waits at stage:building; stub returns
+#     error:pr-approved-by-non-bot (the gh/jq outage shape from
+#     ENG-86 D-010). The picker fails open per D-003 and includes
+#     the wait in the pool. ENG-PICK5B in inbox. The wait dispatches
+#     because building (6) > inbox (-1). The orchestrator-side
+#     ENG-86 entry-conditions gate is the deferred safety net (out
+#     of scope for this fixture).
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT="error:pr-approved-by-non-bot"
+write_label_fixture "stage:building" "ENG-PICK5A|In Progress|3|stage:building"
+write_inbox_fixture                  "ENG-PICK5B|Todo|3|Bug"
+write_comments_fixture "ENG-PICK5A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-PICK5A" && "$reason" == *"stage:building"* ]]; then
+  pass_at "AC-PICK-5 (ENG-91): predicate error fails open (orchestrator gate is the next defense)"
+else
+  fail_at "AC-PICK-5 (ENG-91): predicate-error fail-open" \
+    "got issue_id=$issue_id reason=$reason (want ENG-PICK5A / *stage:building*) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── AC-PICK-6 (ENG-91): held later-stage outranks wait at earlier-stage.
+#     ENG-PICK6A waits at stage:implementing (predicate ready);
+#     ENG-PICK6B held at stage:building (advanceable). Building (6)
+#     beats implementing (2) in stage_index. Pins that
+#     wait_recallable does NOT always win — the unified sort puts
+#     stage_index above picker_source. Symmetric with AC-PICK-3 to
+#     prove the sort key is genuinely [-stage_index, …] and not a
+#     wait-then-held priority hierarchy.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+write_label_fixture "stage:implementing" "ENG-PICK6A|In Progress|3|stage:implementing"
+write_label_fixture "stage:building"     "ENG-PICK6B|In Progress|3|stage:building"
+write_comments_fixture "ENG-PICK6A" \
+  '<!-- pipeline: transition from=planning to=implementing -->|2026-05-09T07:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T07:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-PICK6B" && "$reason" == *"stage:building"* ]]; then
+  pass_at "AC-PICK-6 (ENG-91): held@building beats wait@implementing (stage_index dominates)"
+else
+  fail_at "AC-PICK-6 (ENG-91): stage_index symmetry" \
+    "got issue_id=$issue_id reason=$reason (want ENG-PICK6B / *stage:building*) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
 
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
 # A Todo issue carrying only pipeline:skip-until-human-acts (no state

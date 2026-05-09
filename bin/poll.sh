@@ -394,6 +394,102 @@ _poll_classify_all() {
   printf '%s' "$acc"
 }
 
+# ENG-91: recall-predicate readiness shim. Wraps entry-conditions.sh's
+# should_dispatch verb. Returns 0 = predicate ready (include in picker
+# pool); 1 = predicate said skip; 0 = error/unknown (fail-open per
+# ENG-86 D-010 — orchestrator's pre-dispatch gate is the next defense
+# layer if the picker over-includes a not-actually-ready candidate).
+_picker_predicate_ready() {
+  local ident="$1" stage_arg="$2"
+  local out
+  out="$(bash "$SCRIPT_DIR/entry-conditions.sh" should_dispatch \
+           "$stage_arg" "$ident" 2>/dev/null || printf '')"
+  case "$out" in
+    proceed)  return 0 ;;
+    skip:*)   return 1 ;;
+    error:*)  return 0 ;;
+    *)        return 0 ;;
+  esac
+}
+
+# ENG-91: assemble the unified picker pool. Returns a JSON array of
+# candidates, each carrying picker_source ∈ {held, wait_recallable,
+# inbox} and fifo_ts, sorted by [-stage_index, -priority_sort_rank,
+# fifo_ts]:
+#   - stage_index descending (later stage wins — WIP-first)
+#   - priority_sort_rank descending (Urgent > High > Normal > Low > None)
+#   - fifo_ts ascending (older wait_progress_ts / createdAt / updatedAt
+#     wins)
+# Inbox arrivals get stage_index=-1 (strictly below brainstorming=0),
+# so an inbox issue never beats a stage-labelled one of equal priority.
+#
+# Cap discipline:
+#   - held items always included (they are already counted in
+#     held_count; their fifo_ts is the gather projection's updatedAt).
+#   - wait_recallable + inbox cap-guarded by held_count <
+#     max_concurrent. Mirrors today's Pass 5/6 cap guards at
+#     bin/poll.sh's pre-ENG-91 lines 489 and 519.
+#
+# Wait_recallable items are gated on _picker_predicate_ready before
+# entering the pool (ENG-91 D-003). When the predicate evaluates skip,
+# the wait does NOT compete for the slot; an inbox arrival or earlier-
+# stage held may dispatch instead.
+_picker_build_pool() {
+  local classified="$1" held_count="$2" max_concurrent="$3"
+
+  local held_pool
+  held_pool="$(jq -c '
+    [.[]
+     | select(.slot == "hold" and .advanceable == true)
+     | . + {picker_source:"held", fifo_ts:(.updatedAt // "")}
+    ]' <<<"$classified")"
+
+  local wait_pool='[]' inbox_pool='[]'
+  if (( held_count < max_concurrent )); then
+    local wait_candidates wn wi=0
+    wait_candidates="$(jq -c '
+      [.[]
+       | select(.slot == "vacate" and (.wait_recallable // false) == true)
+      ]' <<<"$classified")"
+    wn="$(jq 'length' <<<"$wait_candidates")"
+    while (( wi < wn )); do
+      local wc wid wstage_label wstage_arg
+      wc="$(jq -c ".[$wi]" <<<"$wait_candidates")"
+      wid="$(jq -r '.identifier'  <<<"$wc")"
+      wstage_label="$(jq -r '.stage_label' <<<"$wc")"
+      wstage_arg="$(stage_arg_for_label "$wstage_label")"
+      if _picker_predicate_ready "$wid" "$wstage_arg"; then
+        local wc_aug
+        wc_aug="$(jq -c '. + {picker_source:"wait_recallable", fifo_ts:(.wait_progress_ts // "")}' <<<"$wc")"
+        wait_pool="$(jq -nc --argjson p "$wait_pool" --argjson x "$wc_aug" '$p + [$x]')"
+      else
+        log "picker: wait_recallable $wid skipped (predicate not ready)"
+      fi
+      wi=$((wi+1))
+    done
+
+    local inbox_state
+    inbox_state="$(config_get '.linear.native_states.inbox')"
+    inbox_pool="$(bash "$SCRIPT_DIR/linear.sh" list-issues-in-state "$inbox_state" \
+      | jq -c '
+        [.data.issues.nodes[]
+         | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
+         | select([.labels.nodes[].name] | index("pipeline:paused") | not)
+         | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
+         | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
+         | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
+         | {identifier: .identifier,
+            stage_label: "inbox",
+            stage_index: -1,
+            priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end),
+            picker_source: "inbox",
+            fifo_ts: (.createdAt // "")}]')"
+  fi
+
+  jq -c --argjson h "$held_pool" --argjson w "$wait_pool" --argjson i "$inbox_pool" \
+    -n '($h + $w + $i) | sort_by([-(.stage_index), -(.priority_sort_rank), .fifo_ts])'
+}
+
 # Emit a per-tick halt-sprawl alert when the count of slot=="vacate"
 # entries in the classified array exceeds the configured threshold.
 #
@@ -519,103 +615,71 @@ main() {
   local held_count
   held_count="$(jq 'length' <<<"$held")"
 
-  # Pass 4: attempt dispatch from held slots in sorted order.
-  # First advanceable candidate that is NOT currently pending a verdict
-  # transition wins. For halted-with-stage-summary-or-rejection candidates,
-  # we invoke verdict_handler (same as previous behaviour) and let the
-  # transition land; the new stage is picked up next tick.
-  local i=0
-  local hn
-  hn="$(jq 'length' <<<"$held")"
-  while (( i < hn )); do
-    local ident stage_label labels_json
-    ident="$(jq -r ".[$i].identifier"    <<<"$held")"
-    stage_label="$(jq -r ".[$i].stage_label" <<<"$held")"
-    labels_json="$(jq -c ".[$i].labels"   <<<"$held")"
-    # ENG-90 D-007: the slot-occupancy contract guarantees every
-    # `slot:"hold"` output has `advanceable:true` (verified at
-    # poll.sh:299 halt+stage-summary, :346 reviewing fail-open, :351
-    # reviewing+dispatch, :361 catch-all). Pass 3's `select(.slot ==
-    # "hold")` filter at line 515 admits only those branches, so the
-    # advanceable!=true skip-guard previously here was unreachable.
-    # If a future classifier branch ever emits hold/advanceable=false
-    # in violation of the contract, the per-row AC-OAR-* fixtures in
-    # bin/poll-slot-test.sh (and CLAUDE.md "Slot-occupancy contract")
-    # are the surface that catches it — not a defensive guard here
-    # that would silently re-introduce the very state the contract
-    # was meant to eliminate.
+  # Pass 4U (ENG-91): unified ranked picker over (held,
+  # wait_recallable_ready, inbox). Sort key documented at the top of
+  # _picker_build_pool: [-stage_index, -priority_sort_rank, fifo_ts,
+  # .identifier]. The ladder this replaces (held -> inbox -> wait
+  # re-pickup) starved later-stage waits behind earlier-stage / inbox
+  # work even after their recall predicate flipped to ready (the
+  # 2026-05-09 incident that drove ENG-91). See CLAUDE.md
+  # "Failure-mode quick reference" for the cross-pool starvation symptom.
+  #
+  # ENG-90 D-007 (composes with ENG-91): the slot-occupancy contract
+  # guarantees every `slot:"hold"` output has `advanceable:true`.
+  # `_picker_build_pool`'s held branch enforces this with
+  # `select(.slot == "hold" and .advanceable == true)`, so a contract
+  # violation surfaces as the held being silently excluded from the
+  # pool, caught by the AC-OAR-* fixtures in bin/poll-slot-test.sh,
+  # not by a defensive guard here.
+  local pool n i=0
+  pool="$(_picker_build_pool "$classified" "$held_count" "$max_concurrent")"
+  n="$(jq 'length' <<<"$pool")"
+  while (( i < n )); do
+    local cand source ident stage_label labels_json has_halt cur_stage_suffix arg
+    cand="$(jq -c ".[$i]" <<<"$pool")"
+    source="$(jq -r '.picker_source' <<<"$cand")"
+    ident="$(jq -r '.identifier'  <<<"$cand")"
 
-    local has_halt
-    has_halt="$(jq -r --arg n "pipeline:halted" \
-      '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
-    if [[ "$has_halt" == "true" ]]; then
-      local cur_stage_suffix="${stage_label#stage:}"
-      if verdict_handler "$ident" "$cur_stage_suffix"; then
-        log "poll: verdict-handler transitioned $ident; will be picked up next tick"
-      fi
-      i=$((i+1)); continue
-    fi
+    case "$source" in
+      held)
+        stage_label="$(jq -r '.stage_label' <<<"$cand")"
+        labels_json="$(jq -c '.labels'      <<<"$cand")"
+        has_halt="$(jq -r --arg n "pipeline:halted" \
+          '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")"
+        if [[ "$has_halt" == "true" ]]; then
+          cur_stage_suffix="${stage_label#stage:}"
+          if verdict_handler "$ident" "$cur_stage_suffix"; then
+            log "poll: verdict-handler transitioned $ident; will be picked up next tick"
+          fi
+          i=$((i+1)); continue
+        fi
+        arg="$(stage_arg_for_label "$stage_label")"
+        jq -nc \
+          --arg issue_id "$ident" \
+          --arg stage    "$arg" \
+          --arg reason   "held slot at $stage_label" \
+          '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
+        exit 0 ;;
 
-    local arg
-    arg="$(stage_arg_for_label "$stage_label")"
-    jq -nc \
-      --arg issue_id "$ident" \
-      --arg stage "$arg" \
-      --arg reason "held slot at $stage_label" \
-      '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
-    exit 0
+      wait_recallable)
+        stage_label="$(jq -r '.stage_label' <<<"$cand")"
+        arg="$(stage_arg_for_label "$stage_label")"
+        jq -nc \
+          --arg issue_id "$ident" \
+          --arg stage    "$arg" \
+          --arg reason   "wait re-pickup at $stage_label (predicate ready)" \
+          '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
+        exit 0 ;;
+
+      inbox)
+        jq -nc \
+          --arg issue_id "$ident" \
+          --arg stage    "brainstorming" \
+          --arg reason   "inbox pickup" \
+          '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
+        exit 0 ;;
+    esac
   done
-
-  # Pass 5: inbox pickup, only if a slot is available.
-  if (( held_count < max_concurrent )); then
-    local inbox_state
-    inbox_state="$(config_get '.linear.native_states.inbox')"
-    local inbox_pick
-    inbox_pick="$(bash "$SCRIPT_DIR/linear.sh" list-issues-in-state "$inbox_state" \
-      | jq -r '
-        [.data.issues.nodes[]
-         | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
-         | select([.labels.nodes[].name] | index("pipeline:paused") | not)
-         | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
-         | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
-         | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
-         | {identifier: .identifier,
-            priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
-        | sort_by(-.priority_sort_rank)
-        | .[0].identifier // ""')"
-    if [[ -n "$inbox_pick" ]]; then
-      jq -nc \
-        --arg issue_id "$inbox_pick" \
-        --arg stage "brainstorming" \
-        --arg reason "inbox pickup" \
-        '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
-      exit 0
-    fi
-  fi
-
-  # Pass 6 (ENG-85): wait re-pickup as last resort. Only fires when no
-  # held was dispatched (Pass 4), no inbox issue picked (Pass 5), AND
-  # there is slot capacity. Sort: priority desc, then wait_progress_ts asc
-  # (FIFO fairness — older waits go first).
-  if (( held_count < max_concurrent )); then
-    local wait_pick
-    wait_pick="$(jq -c '
-      [.[] | select(.slot == "vacate" and (.wait_recallable // false) == true)]
-      | sort_by([-(.priority_sort_rank), .wait_progress_ts])
-      | .[0] // empty' <<<"$classified")"
-    if [[ -n "$wait_pick" && "$wait_pick" != "null" ]]; then
-      local _wp_ident _wp_stage_label _wp_arg
-      _wp_ident="$(jq -r '.identifier'  <<<"$wait_pick")"
-      _wp_stage_label="$(jq -r '.stage_label' <<<"$wait_pick")"
-      _wp_arg="$(stage_arg_for_label "$_wp_stage_label")"
-      jq -nc \
-        --arg issue_id "$_wp_ident" \
-        --arg stage "$_wp_arg" \
-        --arg reason "wait re-pickup at $_wp_stage_label (no other ready work)" \
-        '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
-      exit 0
-    fi
-  fi
 
   # Reached here with no work to dispatch.
   if (( held_count >= max_concurrent )); then
