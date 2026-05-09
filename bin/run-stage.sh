@@ -777,6 +777,61 @@ _validate_dispatch_envelope() {
   return 0
 }
 
+# ENG-87 review M1+M2: dispatch_history.jsonl end-row trap. Plan §13.1.2
+# + §A-026 mandate two rows per dispatch (start + end). Pre-fix the end
+# row was only emitted on the success path (1 of 15 exit sites) and was
+# missing 3 of the 9 documented schema fields (policy, verdict_emitted,
+# verdict_target). EXIT trap centralises the emission so every early-
+# exit path appends the row exactly once.
+#
+# Globals owned by main() that the trap reads. Empty defaults so the
+# trap is a no-op until main() initialises them after the start-row.
+_END_ROW_HIST_FILE=""
+_END_ROW_DISPATCH_ID=""
+_END_ROW_STAGE=""
+_END_ROW_T0=""
+_END_ROW_ISSUE=""
+_END_ROW_VERDICT_EMITTED=""
+_END_ROW_VERDICT_TARGET=""
+_END_ROW_POLICY=""
+
+_append_dispatch_end_row() {
+  local exit_code="${1:-0}"
+  # Sentinel: empty HIST_FILE → trap fires before main() initialised the
+  # globals (precondition / guard early-exit) OR after a prior successful
+  # append (idempotency). No-op in both cases.
+  [[ -n "$_END_ROW_HIST_FILE" ]] || return 0
+  [[ -n "$_END_ROW_DISPATCH_ID" ]] || return 0
+  local exit_at; exit_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local now duration
+  now="$(date +%s)"
+  duration=$(( (now - _END_ROW_T0) * 1000 ))
+  local _summary_path="$(issue_dir "$_END_ROW_ISSUE")/stage-summary-${_END_ROW_STAGE}.md"
+  local _summary_present
+  _summary_present="$([[ -s "$_summary_path" ]] && printf 'true' || printf 'false')"
+  jq -nc \
+    --arg dispatch_id "$_END_ROW_DISPATCH_ID" \
+    --arg stage "$_END_ROW_STAGE" \
+    --arg exit_at "$exit_at" \
+    --argjson exit_code "${exit_code:-0}" \
+    --arg policy "$_END_ROW_POLICY" \
+    --arg verdict_emitted "$_END_ROW_VERDICT_EMITTED" \
+    --arg verdict_target "$_END_ROW_VERDICT_TARGET" \
+    --argjson duration_ms "$duration" \
+    --argjson stage_summary_present "$_summary_present" '
+    {
+      dispatch_id: $dispatch_id, stage: $stage, exit_at: $exit_at,
+      exit_code: $exit_code, policy: $policy,
+      verdict_emitted: $verdict_emitted, verdict_target: $verdict_target,
+      duration_ms: $duration_ms,
+      envelope: { stage_summary_present: $stage_summary_present, transcript_clean: true }
+    }' >> "$_END_ROW_HIST_FILE" 2>/dev/null || true
+  # Idempotency: clear the sentinel so a nested `set -e` exit does not
+  # double-append the same row.
+  _END_ROW_HIST_FILE=""
+  return 0
+}
+
 main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
@@ -902,6 +957,20 @@ main() {
     printf '{"dispatch_id":"%s","stage":"%s","started_at":"%s","trigger":"%s","predecessor_dispatch_id":"%s","branch":"%s","pipeline_content_hash":"%s"}\n' \
       "$_dispatch_id" "$stage" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       "$_trigger" "$_predecessor" "$_branch" "$_hash" >> "$_hist_file"
+
+    # ENG-87 review M1+M2: install the EXIT trap that appends the end
+    # row at every exit site. Globals seeded here; classify_failure /
+    # verdict_handler call sites refine POLICY / VERDICT_* below before
+    # the trap fires.
+    _END_ROW_HIST_FILE="$_hist_file"
+    _END_ROW_DISPATCH_ID="$_dispatch_id"
+    _END_ROW_STAGE="$stage"
+    _END_ROW_T0="$t0"
+    _END_ROW_ISSUE="$ident"
+    _END_ROW_VERDICT_EMITTED=""
+    _END_ROW_VERDICT_TARGET=""
+    _END_ROW_POLICY=""
+    trap '_append_dispatch_end_row $?' EXIT
   fi
 
   # Render the prompt.
@@ -1200,7 +1269,13 @@ main() {
         if (( _env_rc == 29 )); then
           classify_failure "$ident" "$stage" "skip-until-human-acts" \
             "dispatch envelope violation: agent bypassed bin/linear.sh (transcript shows mcp__plugin_linear or curl https://api.linear.app)" 29
-          rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
+          # ENG-87 review C3: do NOT remove the sidecar on the halt
+          # path. CLAUDE.md and docs/runbooks/recovery.md both promise
+          # that the transcript is "preserved across the halt for
+          # forensic review and removed by the next clean dispatch."
+          # Pre-clean at dispatch.sh:102 ensures the next dispatch
+          # cannot inherit a stale sidecar; cleanup on `--action
+          # continue` is the operator's recovery path.
           exit 29
         fi
         rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
@@ -1262,6 +1337,19 @@ main() {
   # confirmed equal to dispatched_stage_label, so no second linear.sh call needed).
   local vh_stage
   vh_stage="${current_stage_label#stage:}"
+
+  # ENG-87 review M2: capture verdict_emitted / verdict_target for the
+  # dispatch_history end-row trap BEFORE invoking verdict_handler (which
+  # consumes the comments via its own find_fresh_verdict call). Costs
+  # one extra Linear API round-trip on the success path; cheap relative
+  # to dispatch cost and keeps verdict_handler's signature unchanged.
+  local _fresh_verdict
+  _fresh_verdict="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
+  if [[ -n "$_fresh_verdict" ]]; then
+    _END_ROW_VERDICT_EMITTED="$(jq -r '.event.result // ""' <<<"$_fresh_verdict" 2>/dev/null || printf '')"
+    _END_ROW_VERDICT_TARGET="$(jq -r '.event.target // .event.stage // ""' <<<"$_fresh_verdict" 2>/dev/null || printf '')"
+  fi
+
   local vh_rc=0
   verdict_handler "$ident" "$vh_stage" || vh_rc=$?
 
@@ -1273,25 +1361,12 @@ main() {
 
   t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
 
-  # ENG-87: append dispatch-end row to dispatch_history.jsonl. Forensic
-  # only — never read at runtime by decision-making code. The envelope
-  # field is conservative; on any non-zero vh_rc the rows are still
-  # appended so the retrospective can pair start/end on dispatch_id.
-  # If skip_dispatch was set (scope-approval replay), no end row is
-  # appended (no start row was either — preserves the start/end pairing
-  # invariant).
-  if (( ! skip_dispatch )); then
-    local _hist_file_end _summary_end
-    _hist_file_end="$(issue_dir "$ident")/dispatch_history.jsonl"
-    _summary_end="$(issue_dir "$ident")/stage-summary-${stage}.md"
-    printf '{"dispatch_id":"%s","stage":"%s","exit_at":"%s","exit_code":%d,"duration_ms":%d,"envelope":{"stage_summary_present":%s,"transcript_clean":%s}}\n' \
-      "${PIPELINE_DISPATCH_ID:-}" "$stage" \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      "$vh_rc" "$duration" \
-      "$([[ -s "$_summary_end" ]] && printf 'true' || printf 'false')" \
-      "true" \
-      >> "$_hist_file_end" || true
-  fi
+  # ENG-87 review M1+M2: the dispatch_history.jsonl end row is appended
+  # by the EXIT trap (_append_dispatch_end_row) installed after the
+  # start-row above. The trap emits the full 9-field schema (plan §13.1.2)
+  # at every exit site (clean OR halt). If skip_dispatch was set
+  # (scope-approval replay), the trap is NOT installed (no start row was
+  # either — preserves the start/end pairing invariant).
 
   # ENG-26 D-005: claude ran for all three vh_rc arms below (success,
   # halt-for-human, protocol-violation), so each site receives cost

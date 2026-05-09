@@ -51,13 +51,28 @@ classify_failure() {
   current_hash="$(compute_pipeline_content_hash)"
   current_sha="$(_cf_branch_head_sha "$branch")"
 
-  # Load prior state (if any).
-  local prior_policy prior_hash prior_sha prior_count
+  # Load prior state (if any). prior_json carries the full document so
+  # the merge-write below preserves allocator-set fields
+  # (current_dispatch_id, current_dispatch_seq, current_stage) and any
+  # other operator-visible state. Plan §A-007 mandates this idiom; pre-
+  # ENG-87 review C2 fix, the body construction stomped allocator fields
+  # by writing a fresh object — breaking dispatch_id monotonicity
+  # (next allocator read prior_seq=0 → re-emitted d0001).
+  local prior_policy prior_hash prior_sha prior_count prior_json
   prior_policy=""
   prior_hash=""
   prior_sha=""
   prior_count=0
-  if [[ -f "$state_file" ]]; then
+  prior_json="{}"
+  if [[ -s "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+    prior_policy="$(jq -r '.policy // ""'                             "$state_file" 2>/dev/null || true)"
+    prior_hash="$(jq -r '.evidence.pipeline_content_hash // ""'       "$state_file" 2>/dev/null || true)"
+    prior_sha="$(jq -r '.evidence.branch_head_sha // ""'              "$state_file" 2>/dev/null || true)"
+    prior_count="$(jq -r '.retry_count // 0'                          "$state_file" 2>/dev/null || printf '0')"
+    prior_json="$(cat "$state_file")"
+  elif [[ -f "$state_file" ]]; then
+    # File exists but is empty or corrupt JSON — preserved fields are
+    # unrecoverable; legacy individual reads kept for back-compat.
     prior_policy="$(jq -r '.policy // ""'                             "$state_file" 2>/dev/null || true)"
     prior_hash="$(jq -r '.evidence.pipeline_content_hash // ""'       "$state_file" 2>/dev/null || true)"
     prior_sha="$(jq -r '.evidence.branch_head_sha // ""'              "$state_file" 2>/dev/null || true)"
@@ -78,9 +93,13 @@ classify_failure() {
 
   local recorded_at; recorded_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  # Build JSON atomically.
+  # Build JSON atomically. ENG-87 review C2: merge with prior_json so
+  # allocator-set fields (current_dispatch_id, current_dispatch_seq,
+  # current_stage) and other operator-visible state survive the write.
+  # Mirrors common.sh::_allocate_dispatch_id_locked's merge idiom.
   local body
   body="$(jq -cn \
+    --argjson prior "$prior_json" \
     --arg issue "$issue" \
     --arg stage "$stage" \
     --arg policy "$effective_policy" \
@@ -92,7 +111,7 @@ classify_failure() {
     --arg pipeline_content_hash "$current_hash" \
     --arg branch_head_sha "$current_sha" \
     --arg branch "$branch" '
-    {
+    $prior + {
       issue: $issue, stage: $stage, policy: $policy, reason: $reason,
       exit_code: $exit_code, exit_subcode: (if $subcode == "" then null else ($subcode|tonumber) end),
       recorded_at: $recorded_at, retry_count: $retry_count, branch: $branch,
@@ -101,6 +120,15 @@ classify_failure() {
 
   _cf_write_state "$state_file" "$body"
   log "classify-failure: wrote $state_file (policy=$effective_policy retry_count=$retry_count)"
+
+  # ENG-87 review M2: surface effective_policy to run-stage's
+  # dispatch_history end-row trap. No-op when the caller is not
+  # run-stage.sh::main (the global is unset / empty); set -u-safe via
+  # the `${var-}` form. Allocator-style coupling — same pattern as
+  # PIPELINE_DISPATCH_ID export from common.sh::_allocate_dispatch_id_locked.
+  if [[ -n "${_END_ROW_HIST_FILE-}" ]]; then
+    _END_ROW_POLICY="$effective_policy"
+  fi
 
   # Apply matching Linear label (skip policies only).
   case "$effective_policy" in

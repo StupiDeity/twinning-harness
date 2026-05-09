@@ -438,9 +438,11 @@ bypass of `bin/linear.sh`'s auto-injection chokepoint.
   (e.g. `mcp__plugin_linear:bash bin/...; ...`).
 - A transcript sidecar at
   `$PROJECT_STATE_DIR/<ident>/.envelope-transcript-<stage>` is preserved
-  for forensic review (cleared by the next clean dispatch's
-  `_validate_dispatch_envelope` clean-exit path; the halt path also
-  removes it after the halt comment lands).
+  across the halt for forensic review. The next dispatch's pre-clean at
+  `bin/dispatch.sh::_render_and_capture_stream` (line 102) removes it
+  unconditionally before any agent runs, so the sidecar survives until
+  the operator reads it OR until `--action continue` triggers the next
+  fresh dispatch.
 - `events.jsonl` row with `outcome=envelope-violation` (per
   `bin/common.sh::failure_outcome_for_exit` exit-code 29).
 
@@ -516,6 +518,32 @@ inside a single `tool_use.input.command` string — is documented at
 helper uses startswith semantics and does not split on `;` / `&&`).
 The AGENT_PROMPTS.md preamble's "Dispatch identifier and freshness
 contract" subsection is the prompt-side defense for that gap.
+
+### Forensic asymmetry post-resume
+
+After `--action continue` clears the halt label and the next tick allocates
+a fresh dispatch_id (e.g. d0008 replacing d0007), `find_fresh_verdict`'s
+strict id-match path filters the d0007 halt comment OUT (its dispatch
+marker says `id=d0007`, mismatching the current `id=d0008`). The issue
+resumes correctly — the agent emits a fresh d0008 verdict that the
+strict path picks up — but `bin/status.sh` and operator-triage workflows
+that read verdict history will report "no fresh verdict" between the
+`--action continue` and the next dispatch's first verdict emission.
+
+This is a forensic regression, not control-flow-breaking. The pre-ENG-87
+timestamp-window code would have surfaced the d0007 halt; the strict
+path does not. To inspect a halted issue's prior-dispatch halts after
+resume, query the comment history directly:
+
+```bash
+bash bin/linear.sh get-comments ENG-N \
+  | jq -r '.[] | select(.body | contains("verdict result=halt")) | "\(.createdAt) \(.body[:200])"'
+```
+
+The `dispatch_history.jsonl` audit log
+(`$(issue_dir <issue>)/dispatch_history.jsonl`) is also intact across
+the halt — start/end rows for the d0007 dispatch survive the
+`--action continue`.
 
 ---
 

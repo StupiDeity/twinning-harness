@@ -97,9 +97,11 @@ chmod +x "$STUB_DIR/scope-check.sh"
 source "$HARNESS_DIR/common.sh"
 # shellcheck source=classify-failure.sh
 source "$HARNESS_DIR/classify-failure.sh"
-# ENG-87: source dispatch.sh for assert_no_tool_invocation (used by
-# _validate_dispatch_envelope tests). dispatch.sh's main() is sentinel-
-# guarded so sourcing does not run it.
+# ENG-87 (post-review C1): assert_no_tool_invocation now lives in
+# common.sh (sourced above) and is exported, so production parity holds
+# without sourcing dispatch.sh. Source dispatch.sh anyway because other
+# tests in this file (Cases 67, 71, 86) reference its helpers; sentinel
+# at end of dispatch.sh prevents main() from firing.
 # shellcheck source=dispatch.sh
 source "$HARNESS_DIR/dispatch.sh"
 # shellcheck source=run-stage.sh

@@ -157,6 +157,43 @@ current_dispatch_id() {
   jq -r '.current_dispatch_id // ""' "$state_file" 2>/dev/null || printf ''
 }
 
+# ─── Transcript-based assertion (ENG-43, hoisted ENG-87) ──────────────
+# Single jq fork; reads NDJSON from $transcript line by line, finds
+# tool_use blocks invoking Bash whose .input.command starts with
+# $pattern, and prints the FIRST match on stdout (returning 1).
+# Soft-fail (return 0) on empty/missing transcript so dry-run /
+# planning-only paths never synthesize false positives. Pure: no
+# harness ambient context (D-010).
+#
+# Lives in common.sh (not dispatch.sh) because two callers need it:
+#   (1) bin/dispatch.sh::_render_and_capture_stream — runs in dispatch.sh's
+#       subprocess (gh pr create / branch creation / worktree mutation
+#       checks against the live transcript).
+#   (2) bin/run-stage.sh::_validate_dispatch_envelope — runs in run-stage.sh's
+#       parent process (post-dispatch envelope scan against the persisted
+#       sidecar). Pre-ENG-87 review fix, this caller hit `command not found`
+#       rc=127 because run-stage.sh sources only common.sh / classify-failure.sh
+#       / verdict-handler.sh — never dispatch.sh — and the conditional-context
+#       falsy arm halted every dispatch with rc=29.
+assert_no_tool_invocation() {
+  local transcript="$1" pattern="$2"
+  [[ -s "$transcript" ]] || return 0
+  local matched
+  matched="$(jq -Rr --arg p "$pattern" '
+    fromjson? // empty
+    | select(.type == "assistant")
+    | .message.content[]?
+    | select(.type == "tool_use" and .name == "Bash")
+    | (.input.command // "")
+    | select(startswith($p))
+  ' "$transcript" 2>/dev/null | head -1)" || true
+  if [[ -n "$matched" ]]; then
+    printf '%s\n' "$matched"
+    return 1
+  fi
+  return 0
+}
+
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
@@ -349,7 +386,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id assert_no_tool_invocation
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

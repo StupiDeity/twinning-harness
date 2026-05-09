@@ -499,8 +499,26 @@ code. Consumed by retrospective + manual triage; surfacing in
 (see "Failure-mode quick reference" §) clears the halt label and
 re-allocates a fresh `dispatch_id` on the next tick. The transcript
 sidecar at `$(issue_dir)/.envelope-transcript-<stage>` is preserved
-across the halt for forensic review and removed by the next clean
-dispatch.
+across the halt for forensic review and removed by the next dispatch's
+pre-clean at `bin/dispatch.sh::_render_and_capture_stream` (line 102).
+The `dispatch_history.jsonl` audit log carries the halted dispatch's
+start+end rows past the resume.
+
+**Forensic asymmetry post-resume.** After `--action continue` allocates
+a fresh `dispatch_id` (e.g. d0008 supersedes d0007), the strict
+id-match path in `find_fresh_verdict` filters the d0007 halt comment
+OUT — its `meta: dispatch id=d0007` marker mismatches the current d0008.
+The issue resumes correctly (the next dispatch's verdict is auto-
+injected with d0008 and surfaces normally), but operator-triage tools
+that read verdict history (`bin/status.sh`, manual `find_fresh_verdict`
+grep) will see "no fresh verdict" between the resume and the next
+dispatch's first verdict. Inspect prior halts directly via
+`bin/linear.sh get-comments` + a `verdict result=halt` filter; the
+`dispatch_history.jsonl` audit log is also intact across resume.
+Trade-off accepted (D-005): forensic regression is the cost of strict
+id-match; loosening to accept "previous-dispatch-id" halts as visible-
+but-superseded would re-introduce the V3 vulnerability the strict path
+prevents.
 
 **Operator gotchas.** A dispatch that crashes mid-flight between
 `allocate_dispatch_id` and `_clear_current_stage_slots` leaves a
