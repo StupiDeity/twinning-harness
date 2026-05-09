@@ -1455,20 +1455,43 @@ fi
 # ═══════════════════════════════════════════════════════════════════════
 
 # ─── AC-OAR-REVIEW-STARVATION: ENG-A at stage:reviewing+idle; ENG-B at
-#     stage:implementing; cap=2. main() dispatches ENG-B (review-vacate
+#     stage:implementing; cap=1. main() dispatches ENG-B (review-vacate
 #     freed the slot per D-002). Pre-ENG-90, ENG-A held the slot and
 #     blocked ENG-B's dispatch. Direct regression for the Linear issue
 #     body's primary motivating example.
+#
+#     Why cap=1, not the test default cap=2: under cap=2, BOTH ENG-A and
+#     ENG-B fit in held[] regardless of D-002. Pre-fix Pass 4 would skip
+#     ENG-A (advanceable=false guard, line ~528) then dispatch ENG-B —
+#     identical observable to post-fix. Cap=1 forces the slot pinch:
+#     pre-fix Pass 3 sorts reviewing (idx=4) above implementing (idx=2),
+#     held=[ENG-A] holds the only slot, Pass 4 skips ENG-A and the
+#     orchestrator goes idle (no JSON output). Post-fix ENG-A vacates,
+#     held=[ENG-B], and Pass 4 dispatches ENG-B. The assertion now
+#     genuinely fails pre-fix, satisfying "regression test must fail
+#     under the regression."
 reset_fixtures
+SCRATCH_CONFIG="$STUB_DIR/config-cap-1.json"
+jq -n '{
+  orchestrator: {paused: false, max_concurrent_features: 1, alert_on_halted_over: 5},
+  linear: {
+    native_states: {inbox: "Todo", active: "In Progress", done: "Done"},
+    workflow_stages: ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"],
+    stage_label_prefix: "stage:"
+  }
+}' > "$SCRATCH_CONFIG"
+ORIG_CONFIG="$CONFIG"
+CONFIG="$SCRATCH_CONFIG"
 write_label_fixture "stage:reviewing" \
   "ENG-OAR-REV-A|In Progress|3|stage:reviewing"
 write_label_fixture "stage:implementing" \
   "ENG-OAR-REV-B|In Progress|3|stage:implementing"
 out="$(REVIEW_SHOULD_DISPATCH=1 main 2>/dev/null || true)"
+CONFIG="$ORIG_CONFIG"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 stage="$(jq -r '.stage // ""' <<<"$out")"
 if [[ "$issue_id" == "ENG-OAR-REV-B" && "$stage" == "implementing" ]]; then
-  pass_at "AC-OAR-REVIEW-STARVATION review-vacate frees slot for sibling impl (D-002)"
+  pass_at "AC-OAR-REVIEW-STARVATION review-vacate frees slot for sibling impl (D-002, cap=1)"
 else
   fail_at "AC-OAR-REVIEW-STARVATION" \
     "got issue_id=$issue_id stage=$stage full=$out"
