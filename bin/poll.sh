@@ -527,15 +527,22 @@ main() {
   local hn
   hn="$(jq 'length' <<<"$held")"
   while (( i < hn )); do
-    local ident stage_label labels_json advanceable
+    local ident stage_label labels_json
     ident="$(jq -r ".[$i].identifier"    <<<"$held")"
     stage_label="$(jq -r ".[$i].stage_label" <<<"$held")"
     labels_json="$(jq -c ".[$i].labels"   <<<"$held")"
-    advanceable="$(jq -r ".[$i].advanceable" <<<"$held")"
-
-    if [[ "$advanceable" != "true" ]]; then
-      i=$((i+1)); continue
-    fi
+    # ENG-90 D-007: the slot-occupancy contract guarantees every
+    # `slot:"hold"` output has `advanceable:true` (verified at
+    # poll.sh:299 halt+stage-summary, :346 reviewing fail-open, :351
+    # reviewing+dispatch, :361 catch-all). Pass 3's `select(.slot ==
+    # "hold")` filter at line 515 admits only those branches, so the
+    # advanceable!=true skip-guard previously here was unreachable.
+    # If a future classifier branch ever emits hold/advanceable=false
+    # in violation of the contract, the per-row AC-OAR-* fixtures in
+    # bin/poll-slot-test.sh (and CLAUDE.md "Slot-occupancy contract")
+    # are the surface that catches it — not a defensive guard here
+    # that would silently re-introduce the very state the contract
+    # was meant to eliminate.
 
     local has_halt
     has_halt="$(jq -r --arg n "pipeline:halted" \
