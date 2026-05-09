@@ -160,7 +160,8 @@ _poll_gather_stage_labeled_issues() {
             stage_label:  $label,
             stage_index:  $idx,
             priority:     (.priority // 0),
-            labels:       [.labels.nodes[].name]}]')"
+            labels:       [.labels.nodes[].name],
+            updatedAt:    (.updatedAt // "")}]')"
     acc="$(jq -c --argjson a "$acc" --argjson b "$batch" '$a + $b' <<<"$acc")"
   done < <(jq -r '.linear.workflow_stages[]' "$CONFIG")
   jq -c 'unique_by(.identifier)' <<<"$acc"
