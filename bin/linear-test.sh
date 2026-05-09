@@ -761,6 +761,84 @@ unset _eng63_orig_linear_query _eng63_orig_resolve_uuid _eng63_orig_dry_run \
       _eng63_metric_count_before _eng63_metric_count_after _eng63_metric_delta \
       _eng63_ad002_count _eng63_ad002_old_jan _eng63_ad002_old_feb _eng63_ad002_old_mar
 
+# ─── ENG-87: dispatch_id auto-injection in add_comment / add_or_update_comment ─
+# bin/linear.sh's _inject_dispatch_marker is the chokepoint where every
+# Linear comment body gets stamped with the current dispatch_id. Tests
+# pin: env-set → marker appended; env-unset → no injection (operator
+# lane); idempotent re-apply; coexists with dedup-marker footer.
+printf '\n--- ENG-87: dispatch_id auto-injection ---\n'
+
+# Capture file for inspecting bodies via a stubbed log path. Use the
+# existing PIPELINE_DRY_RUN=1 path: add_comment in dry-run mode emits
+# `[DRY_RUN] would comment on <ident>: <first 80 chars>...` via log()
+# (writes to stderr). We stub the log function to capture full bodies.
+_eng87_lin_log="$_TEST_STUB_DIR/eng87-lin-log.txt"
+
+# Override the production log function with a body-capturing stub.
+# We can't see the full body via the normal log(), so we tap the
+# _inject_dispatch_marker invocation directly.
+_eng87_test_inject() {
+  local body="$1"
+  _inject_dispatch_marker "$body"
+}
+
+# Case 87-L1: env set → add-comment body carries the marker. Direct
+# invocation of _inject_dispatch_marker is the unit-test surface; the
+# add_comment wrapper invokes it before the dry-run short-circuit (Task
+# 7 placement).
+PIPELINE_DISPATCH_ID="ENG-87L-d0007" \
+PIPELINE_STAGE="implementing" \
+PIPELINE_DRY_RUN=1 \
+_eng87_l1_out="$(_eng87_test_inject "agent body line 1")"
+if grep -qF '<!-- meta: dispatch id=ENG-87L-d0007 stage=implementing -->' <<<"$_eng87_l1_out"; then
+  pass_at "ENG-87 L1: env set → marker appended to body"
+else
+  fail_at "ENG-87 L1: env set → marker appended to body" \
+    "expected marker in body, got: $_eng87_l1_out"
+fi
+
+# Case 87-L2: env unset → no injection (operator-manual lane bypass).
+unset PIPELINE_DISPATCH_ID
+unset PIPELINE_STAGE
+_eng87_l2_out="$(_eng87_test_inject "operator-direct comment")"
+if [[ "$_eng87_l2_out" == "operator-direct comment" ]]; then
+  pass_at "ENG-87 L2: env unset → body unchanged (operator-lane bypass)"
+else
+  fail_at "ENG-87 L2: env unset → body unchanged" \
+    "expected unchanged body, got: $_eng87_l2_out"
+fi
+
+# Case 87-L3: idempotent re-apply (body already carries marker).
+PIPELINE_DISPATCH_ID="ENG-87L-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l3_input=$'pre-stamped body line 1\n\n<!-- meta: dispatch id=ENG-87L-d0007 stage=implementing -->'
+PIPELINE_DISPATCH_ID="ENG-87L-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l3_out="$(_eng87_test_inject "$_eng87_l3_input")"
+# Count occurrences of the marker — must be exactly one (idempotent).
+_eng87_l3_count="$(grep -cF '<!-- meta: dispatch id=ENG-87L-d0007 stage=implementing -->' <<<"$_eng87_l3_out")"
+if [[ "$_eng87_l3_count" == "1" ]]; then
+  pass_at "ENG-87 L3: re-apply with marker present → exactly one marker (idempotent)"
+else
+  fail_at "ENG-87 L3: idempotent re-apply" \
+    "expected 1 marker, got $_eng87_l3_count occurrences in: $_eng87_l3_out"
+fi
+
+# Case 87-L4: empty PIPELINE_STAGE produces stage="" but still injects.
+# Documents: env consistency is the orchestrator's responsibility; if
+# PIPELINE_DISPATCH_ID is set but PIPELINE_STAGE is empty, the marker
+# carries `stage=` (empty value). Pins this behavior because dispatch.sh
+# always sets both, but a future caller might not.
+PIPELINE_DISPATCH_ID="ENG-87L4-d0001" \
+PIPELINE_STAGE="" \
+_eng87_l4_out="$(_eng87_test_inject "test body")"
+if grep -qF '<!-- meta: dispatch id=ENG-87L4-d0001 stage= -->' <<<"$_eng87_l4_out"; then
+  pass_at "ENG-87 L4: env partial (stage empty) → marker still appended with empty stage value"
+else
+  fail_at "ENG-87 L4: empty stage value" "got: $_eng87_l4_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
