@@ -205,24 +205,44 @@ _pipeline_drain_skip_labels() {
 }
 
 # _pipeline_drain_issue_state <issue>
-# Remove issue-state.json only when its .policy == "skip-until-human-acts".
-# Preserves the file for skip-until-code-changes (auto-resume evidence trail).
-# Returns "true" or "false" via stdout.
+# Drain classify-set fields (policy/reason/retry_count/exit_code/evidence/...)
+# from issue-state.json when its .policy == "skip-until-human-acts".
+# Preserves allocator-set fields (current_dispatch_seq/current_dispatch_id/
+# current_stage) so post-resume monotonic increment holds: pre-ENG-87-review-
+# iter-3 the rm -f path reset prior_seq to 0, the next allocator re-emitted
+# d0001 → collision with the original first dispatch's id and re-introduced
+# the V3 vulnerability the strict id-match path was designed to prevent.
+# Skip-until-code-changes is unaffected (full file preserved for auto-resume
+# evidence trail). Returns "true" when work was done, "false" otherwise.
 _pipeline_drain_issue_state() {
   local issue="$1"
   local d; d="$(issue_dir "$issue")"
   local state_file="$d/issue-state.json"
-  local state_removed=false
+  local state_drained=false
   if [[ -s "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
     local policy
     policy="$(jq -r '.policy // ""' "$state_file" 2>/dev/null || printf '')"
     if [[ "$policy" == "skip-until-human-acts" ]]; then
-      rm -f "$state_file"
-      state_removed=true
-      log "pipeline-decide: removed $state_file (policy=skip-until-human-acts)"
+      # Project to the allocator-owned subset; rm -f when no allocator
+      # fields exist (legacy / pre-cutover issues), preserving the
+      # original metric semantics for back-compat with PR-E / PR-N.
+      local has_alloc
+      has_alloc="$(jq -r 'has("current_dispatch_id") and (.current_dispatch_id // "") != ""' "$state_file" 2>/dev/null || printf 'false')"
+      if [[ "$has_alloc" == "true" ]]; then
+        local stripped tmp
+        stripped="$(jq -c '{current_dispatch_seq, current_dispatch_id, current_stage}' "$state_file" 2>/dev/null || printf '{}')"
+        tmp="${state_file}.tmp.$$"
+        printf '%s' "$stripped" > "$tmp"
+        mv -f "$tmp" "$state_file"
+        log "pipeline-decide: stripped classify-set fields from $state_file (preserved current_dispatch_id)"
+      else
+        rm -f "$state_file"
+        log "pipeline-decide: removed $state_file (policy=skip-until-human-acts, no allocator fields)"
+      fi
+      state_drained=true
     fi
   fi
-  printf '%s' "$state_removed"
+  printf '%s' "$state_drained"
 }
 
 # _pipeline_post_operator_transition <issue> <stage>
