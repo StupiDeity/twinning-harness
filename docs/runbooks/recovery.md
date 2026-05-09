@@ -422,6 +422,103 @@ After `--action continue`:
 
 ---
 
+## 8. Dispatch envelope violation (ENG-87)
+
+A stage dispatch halts with halt-token `dispatch-envelope-violation`
+(exit code 29). The post-dispatch envelope validator
+(`bin/run-stage.sh::_validate_dispatch_envelope`) detected an EGREGIOUS
+bypass of `bin/linear.sh`'s auto-injection chokepoint.
+
+### Symptom
+
+- Latest comment on the issue carries
+  `<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->`.
+- `pipeline:halted` label applied by the orchestrator.
+- The halt comment body lists the violation tokens
+  (e.g. `mcp__plugin_linear:bash bin/...; ...`).
+- A transcript sidecar at
+  `$PROJECT_STATE_DIR/<ident>/.envelope-transcript-<stage>` is preserved
+  for forensic review (cleared by the next clean dispatch's
+  `_validate_dispatch_envelope` clean-exit path; the halt path also
+  removes it after the halt comment lands).
+- `events.jsonl` row with `outcome=envelope-violation` (per
+  `bin/common.sh::failure_outcome_for_exit` exit-code 29).
+
+### Interpretation
+
+One of three causes:
+
+1. **Linear MCP plugin invocation.** The agent ran
+   `mcp__plugin_linear_*` (e.g. `mcp__plugin_linear_linear__save_issue`).
+   This is forbidden because (a) `save_issue` overwrites the entire
+   label set and silently strips `stage:*` / `pipeline:*` labels mid-flight
+   (CLAUDE.md "Linear conventions the harness depends on" §), and (b) it
+   bypasses the auto-injection chokepoint at
+   `bin/linear.sh::_inject_dispatch_marker`, breaking the
+   cross-dispatch staleness contract. Investigate
+   `bin/dispatch.sh::allowed_tools_for` for accidental MCP-tool
+   inclusion (verified absent at ENG-87 ship time, but a future
+   regression could re-introduce).
+
+2. **Direct `curl https://api.linear.app` invocation.** The agent
+   bypassed `bin/linear.sh` entirely with a raw HTTP call to the Linear
+   GraphQL API. Likely a prompt regression that re-introduced a
+   "wrong-way" example, OR a learned-rules entry that surfaced an old
+   curl recipe. Inspect the per-stage transcript at the sidecar path
+   above; grep for `https://api.linear.app` in
+   `learned-rules/<slug>/<stage>.md`.
+
+3. **Allocator failed and the chokepoint logged unstamped comments.**
+   Rare. Inspect `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log` for
+   `bin/common.sh::allocate_dispatch_id` errors (jq parse failures on
+   `issue-state.json`, mv-f failures, missing `$PROJECT_STATE_DIR`).
+   The agent then ran legitimately but the env var was empty, so the
+   chokepoint emitted unstamped bodies. Investigate the allocator
+   logs; an upstream JSON-corruption fix usually unblocks.
+
+### Recovery
+
+Inspect the transcript sidecar:
+
+```bash
+cat "$PROJECT_STATE_DIR/<ident>/.envelope-transcript-<stage>" | jq -c 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and (.input.command? // "" | startswith("mcp__plugin_linear") or startswith("curl https://api.linear.app")))'
+```
+
+Fix the underlying cause (allowlist edit in
+`.pipeline-config/config.json::dispatch.tools`, prompt fix to
+`AGENT_PROMPTS.md` or learned-rules, or allocator bug fix). Resume:
+
+```bash
+bash bin/pipeline.sh decide ENG-N --action continue
+```
+
+The atomic resume clears `pipeline:halted`, drops the per-issue
+counter, and posts an operator-resume waypoint that resets the
+freshness floor for the next dispatch (which re-allocates a fresh
+`dispatch_id`). The transcript sidecar is removed by the next clean
+dispatch's envelope validator.
+
+### Why this halt exists
+
+Defense-in-depth on top of the lane fence (ENG-41) and the chokepoint
+auto-injection at `bin/linear.sh`. The auto-injection is the
+preventive primitive — it stamps every comment posted via the
+sanctioned path. The envelope validator catches any agent that
+bypasses the chokepoint entirely (MCP fork or raw curl). Without this
+backstop, a bypassing agent's writes would land on Linear unstamped,
+and the next dispatch's `find_fresh_verdict` would treat them as the
+operator-manual lane (no marker = legacy fallback to timestamp window),
+defeating the cross-dispatch contract for that issue.
+
+The chained-command blind spot — `bash bin/linear.sh add-comment …; mcp__plugin_linear …`
+inside a single `tool_use.input.command` string — is documented at
+`bin/run-stage.sh:867-881` and accepted as a trade-off (the `assert_no_tool_invocation`
+helper uses startswith semantics and does not split on `;` / `&&`).
+The AGENT_PROMPTS.md preamble's "Dispatch identifier and freshness
+contract" subsection is the prompt-side defense for that gap.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
