@@ -97,6 +97,11 @@ chmod +x "$STUB_DIR/scope-check.sh"
 source "$HARNESS_DIR/common.sh"
 # shellcheck source=classify-failure.sh
 source "$HARNESS_DIR/classify-failure.sh"
+# ENG-87: source dispatch.sh for assert_no_tool_invocation (used by
+# _validate_dispatch_envelope tests). dispatch.sh's main() is sentinel-
+# guarded so sourcing does not run it.
+# shellcheck source=dispatch.sh
+source "$HARNESS_DIR/dispatch.sh"
 # shellcheck source=run-stage.sh
 source "$HARNESS_DIR/run-stage.sh"
 
@@ -3943,6 +3948,116 @@ if [[ -s "$(issue_dir ENG-87E)/issue-state.json" ]]; then
   pass_at "ENG-87 E: issue-state.json preserved (allocator-owned, not stage-slot)"
 else
   fail_at "ENG-87 E: issue-state.json preserved" "file removed by clear-on-start"
+fi
+
+# ─── ENG-87: _validate_dispatch_envelope (Task 9) ──────────────────────
+# Detective backstop on top of bin/linear.sh's auto-injection. Halts
+# only on EGREGIOUS bypass: agent invoked mcp__plugin_linear* or curl
+# https://api.linear.app outside the bin/linear.sh chokepoint. Reads the
+# .envelope-transcript-${stage} sidecar persisted by dispatch.sh.
+printf '\n--- ENG-87: _validate_dispatch_envelope ---\n'
+
+# Reset capture and ensure stage-summary file is absent for clean test
+reset_capture
+
+# Helper: write a NDJSON tool_use fixture line for a Bash command.
+_eng87_ndjson_tool_use() {
+  local cmd="$1"
+  jq -nc --arg c "$cmd" '
+    {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          name: "Bash",
+          input: { command: $c }
+        }]
+      }
+    }'
+}
+
+# Case 87-F: clean envelope (no transcript bypass) returns rc=0.
+# Sidecar contains only benign `bash bin/linear.sh add-comment` calls;
+# validator's MCP/curl scans both miss; rc=0.
+mkdir -p "$(issue_dir ENG-87F)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "bash bin/linear.sh add-comment ENG-87F --body 'hello'")" \
+  > "$(issue_dir ENG-87F)/.envelope-transcript-implementing"
+_eng87_f_rc=0
+_validate_dispatch_envelope ENG-87F implementing 2>/dev/null || _eng87_f_rc=$?
+if (( _eng87_f_rc == 0 )); then
+  pass_at "ENG-87 F: clean transcript → envelope validator returns rc=0"
+else
+  fail_at "ENG-87 F: clean transcript" "expected rc=0, got rc=$_eng87_f_rc"
+fi
+
+# Case 87-G: missing sidecar → rc=0 (fail-open detective). When
+# dispatch.sh's _render_and_capture_stream did not persist a transcript
+# (dry-run, smoke-only path), the validator cannot scan and returns
+# clean. Defense-in-depth, not gating.
+mkdir -p "$(issue_dir ENG-87G)"
+# Ensure the sidecar does NOT exist (idempotent pre-clean).
+rm -f "$(issue_dir ENG-87G)/.envelope-transcript-implementing"
+_eng87_g_rc=0
+_validate_dispatch_envelope ENG-87G implementing 2>/dev/null || _eng87_g_rc=$?
+if (( _eng87_g_rc == 0 )); then
+  pass_at "ENG-87 G: missing sidecar → fail-open rc=0 (detective-only)"
+else
+  fail_at "ENG-87 G: missing sidecar" "expected rc=0, got rc=$_eng87_g_rc"
+fi
+
+# Case 87-H: transcript with mcp__plugin_linear invocation → rc=29 +
+# halt comment posted via add-comment.
+reset_capture
+mkdir -p "$(issue_dir ENG-87H)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "mcp__plugin_linear_linear__save_issue --id ENG-87H --labels '[stage:reviewing]'")" \
+  > "$(issue_dir ENG-87H)/.envelope-transcript-implementing"
+_eng87_h_rc=0
+_validate_dispatch_envelope ENG-87H implementing 2>/dev/null || _eng87_h_rc=$?
+if (( _eng87_h_rc == 29 )); then
+  pass_at "ENG-87 H: mcp__plugin_linear invocation → rc=29 (envelope violation)"
+else
+  fail_at "ENG-87 H: mcp__plugin_linear → rc=29" "got rc=$_eng87_h_rc"
+fi
+# Verify halt-comment body shape via the captured add-comment.
+# add-comment's positional args are <ident> <body>; the stub records
+# them in the SIG / IDENT slots respectively (the stub was originally
+# written for add-or-update-comment's <sig> <ident> <body> layout).
+# Grep the entire CAPTURE_FILE for robustness.
+if grep -qF '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->' "$CAPTURE_FILE"; then
+  pass_at "ENG-87 H: halt comment carries dispatch-envelope-violation marker"
+else
+  fail_at "ENG-87 H: halt comment marker" "captured: $(cat "$CAPTURE_FILE")"
+fi
+
+# Case 87-I: transcript with curl https://api.linear.app → rc=29.
+reset_capture
+mkdir -p "$(issue_dir ENG-87I)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "curl https://api.linear.app/graphql -d '{...}'")" \
+  > "$(issue_dir ENG-87I)/.envelope-transcript-implementing"
+_eng87_i_rc=0
+_validate_dispatch_envelope ENG-87I implementing 2>/dev/null || _eng87_i_rc=$?
+if (( _eng87_i_rc == 29 )); then
+  pass_at "ENG-87 I: curl https://api.linear.app → rc=29 (envelope violation)"
+else
+  fail_at "ENG-87 I: curl-linear → rc=29" "got rc=$_eng87_i_rc"
+fi
+
+# Case 87-J: transcript with chained command starting `bash bin/linear.sh
+# add-comment …; mcp__plugin_linear` — known blind spot per A-020 of the
+# brainstorm. The first token wins for assert_no_tool_invocation's
+# startswith check, so chained commands escape detection. Pin this
+# documented gap so a future reader knows the validator is best-effort
+# on chained commands.
+reset_capture
+mkdir -p "$(issue_dir ENG-87J)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "bash bin/linear.sh add-comment ENG-87J --body 'ok'; mcp__plugin_linear_save")" \
+  > "$(issue_dir ENG-87J)/.envelope-transcript-implementing"
+_eng87_j_rc=0
+_validate_dispatch_envelope ENG-87J implementing 2>/dev/null || _eng87_j_rc=$?
+if (( _eng87_j_rc == 0 )); then
+  pass_at "ENG-87 J: chained command bypasses startswith scan (documented blind spot per A-020)"
+else
+  fail_at "ENG-87 J: chained-command bypass" "expected rc=0 (blind spot), got rc=$_eng87_j_rc"
 fi
 
 echo
