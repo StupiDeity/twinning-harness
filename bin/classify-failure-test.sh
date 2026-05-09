@@ -386,6 +386,55 @@ got_policy="$(jq -r '.policy // ""' "$(issue_dir ENG-887C2)/issue-state.json")"
   && pass_at "87.C2: classify_failure still writes its own policy field" \
   || fail_at "87.C2: classify_failure policy missing" "got: $got_policy"
 
+# ─── Test 87.C2-dual: classify_failure overwrites stale classify-set
+# ENG-87 review-iter-2 M3: the original 87.C2 verifies one direction
+# (allocator fields survive) but not the inverse (stale classify-set
+# fields get OVERWRITTEN). A future regression like
+# `$prior + ($prior + {…})` (double-merge that lets prior win) would
+# silently false-pass the original. Pin both directions: seed prior
+# with BOTH allocator fields AND a stale classify-set
+# {policy=retry-immediately, reason=old, retry_count=3}; assert the
+# new write produces the new classify values AND keeps the allocator
+# fields.
+reset_state
+# Restore the default _cf_branch_head_sha that respects MOCK_BRANCH_SHA
+# (case-8 above overrode it to always-empty and the override persists).
+_cf_branch_for() { printf 'feat/eng-887c2d'; }
+_cf_branch_head_sha() { printf '%s' "${MOCK_BRANCH_SHA:-mockbranchsha}"; }
+mkdir -p "$(issue_dir ENG-887C2D)"
+printf '%s\n' '{"current_dispatch_seq":11,"current_dispatch_id":"ENG-887C2D-d0011","current_stage":"implementing","policy":"retry-immediately","reason":"prior-stale-reason","retry_count":3,"exit_code":21,"evidence":{"pipeline_content_hash":"hOLD","branch_head_sha":"sOLD"}}' \
+  > "$(issue_dir ENG-887C2D)/issue-state.json"
+MOCK_PIPELINE_HASH="hNEW" MOCK_BRANCH_SHA="sNEW" \
+  classify_failure "ENG-887C2D" "implementing" "skip-until-human-acts" "new-reason" 29 ""
+# Allocator-fields direction.
+got_dispatch_id="$(jq -r '.current_dispatch_id // ""' "$(issue_dir ENG-887C2D)/issue-state.json")"
+got_dispatch_seq="$(jq -r '.current_dispatch_seq // ""' "$(issue_dir ENG-887C2D)/issue-state.json")"
+[[ "$got_dispatch_id" == "ENG-887C2D-d0011" ]] \
+  && pass_at "87.C2-dual: allocator current_dispatch_id survives merge (preserve direction)" \
+  || fail_at "87.C2-dual: allocator id" "got: $got_dispatch_id"
+[[ "$got_dispatch_seq" == "11" ]] \
+  && pass_at "87.C2-dual: allocator current_dispatch_seq survives merge" \
+  || fail_at "87.C2-dual: allocator seq" "got: $got_dispatch_seq"
+# Classify-set fields: stale values must be OVERWRITTEN with the new
+# values from this classify_failure invocation.
+got_policy="$(jq -r '.policy // ""' "$(issue_dir ENG-887C2D)/issue-state.json")"
+got_reason="$(jq -r '.reason // ""' "$(issue_dir ENG-887C2D)/issue-state.json")"
+got_exit_code="$(jq -r '.exit_code // ""' "$(issue_dir ENG-887C2D)/issue-state.json")"
+got_hash="$(jq -r '.evidence.pipeline_content_hash // ""' "$(issue_dir ENG-887C2D)/issue-state.json")"
+got_sha="$(jq -r '.evidence.branch_head_sha // ""' "$(issue_dir ENG-887C2D)/issue-state.json")"
+[[ "$got_policy" == "skip-until-human-acts" ]] \
+  && pass_at "87.C2-dual: stale policy 'retry-immediately' overwritten with new (overwrite direction)" \
+  || fail_at "87.C2-dual: policy not overwritten" "got: $got_policy (expected skip-until-human-acts)"
+[[ "$got_reason" == "new-reason" ]] \
+  && pass_at "87.C2-dual: stale reason overwritten" \
+  || fail_at "87.C2-dual: reason not overwritten" "got: $got_reason"
+[[ "$got_exit_code" == "29" ]] \
+  && pass_at "87.C2-dual: stale exit_code overwritten" \
+  || fail_at "87.C2-dual: exit_code not overwritten" "got: $got_exit_code"
+[[ "$got_hash" == "hNEW" && "$got_sha" == "sNEW" ]] \
+  && pass_at "87.C2-dual: stale evidence overwritten with current hash/sha" \
+  || fail_at "87.C2-dual: evidence not overwritten" "hash=$got_hash sha=$got_sha"
+
 # ─── Test 23: exit 23 → outcome=branch-creation-forbidden (ENG-66) ────
 # Pin the new cross-stage exit code added in ENG-66. Without this
 # fixture, a regression that drops the `23)` arm in

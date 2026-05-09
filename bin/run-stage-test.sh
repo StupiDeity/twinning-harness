@@ -4152,6 +4152,62 @@ else
   pass_at "ENG-87 C3: halt path preserves envelope sidecar (no rm before exit 29)"
 fi
 
+# Case 87-C1-prodshape (review-iter-2 M2): pre-fix, every production
+# dispatch hit `command not found` rc=127 because run-stage.sh sources
+# only common.sh + classify-failure.sh + verdict-handler.sh — never
+# dispatch.sh. The original C1 fix hoisted assert_no_tool_invocation
+# into common.sh and `export -f`'d it (covered by
+# common-test.sh::87.C1), but run-stage-test.sh still sources
+# dispatch.sh at line 106 (module-level harness setup), so an
+# integration test that exercises run-stage.sh's _validate_dispatch_envelope
+# at this layer would NOT regress to rc=127 even if a future commit
+# moved the helper back into dispatch.sh.
+#
+# Pin the production import-shape via a fresh `bash -c` subshell that
+# sources ONLY common.sh + classify-failure.sh + verdict-handler.sh
+# + run-stage.sh (the exact set run-stage.sh's own main() pulls in)
+# and invokes _validate_dispatch_envelope against a fixture sidecar.
+# The rc must NOT be 127. This locks in the production-shape regression
+# the iter-1 prompt asked for.
+_eng87_c1ps_root="$(mktemp -d -t twinning-eng87-c1ps.XXXXXX)"
+case "$_eng87_c1ps_root" in
+  /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*) ;;
+  *) printf 'REFUSING: %q is not a temp dir\n' "$_eng87_c1ps_root" >&2; exit 99 ;;
+esac
+mkdir -p "$_eng87_c1ps_root/state/test-c1ps/ENG-87C1PS"
+printf '%s\n' "$(_eng87_ndjson_tool_use "bash bin/linear.sh add-comment ENG-87C1PS --body 'ok'")" \
+  > "$_eng87_c1ps_root/state/test-c1ps/ENG-87C1PS/.envelope-transcript-implementing"
+
+_eng87_c1ps_rc=0
+TARGET_REPO="$_eng87_c1ps_root/target" \
+HARNESS_STATE_DIR="$_eng87_c1ps_root/state" \
+PROJECT_SLUG="test-c1ps" \
+bash -c '
+  set -uo pipefail
+  HARNESS_DIR="'"$HARNESS_DIR"'"
+  mkdir -p "$TARGET_REPO/.pipeline-config"
+  # Match run-stage.sh::main exact source set (NO dispatch.sh).
+  source "$HARNESS_DIR/common.sh"
+  source "$HARNESS_DIR/classify-failure.sh"
+  source "$HARNESS_DIR/verdict-handler.sh"
+  source "$HARNESS_DIR/run-stage.sh"
+  _validate_dispatch_envelope "ENG-87C1PS" "implementing" >/dev/null 2>&1
+  printf "%d" "$?"
+' > "$_eng87_c1ps_root/rc.out" 2>"$_eng87_c1ps_root/err.out" || _eng87_c1ps_rc=$?
+_eng87_c1ps_inner_rc="$(cat "$_eng87_c1ps_root/rc.out" 2>/dev/null || printf '?')"
+# rc=0 (clean transcript) is the pass; rc=127 is the regression mode.
+if [[ "$_eng87_c1ps_inner_rc" == "0" ]]; then
+  pass_at "ENG-87 C1-prodshape (review-iter-2 M2): _validate_dispatch_envelope works under run-stage.sh's exact source set (rc=0, NOT 127)"
+elif [[ "$_eng87_c1ps_inner_rc" == "127" ]]; then
+  fail_at "ENG-87 C1-prodshape: command-not-found regression" \
+    "rc=127 — assert_no_tool_invocation no longer defined when run-stage.sh sources only common+classify+verdict (the production failure mode); err=$(cat "$_eng87_c1ps_root/err.out" 2>/dev/null)"
+else
+  fail_at "ENG-87 C1-prodshape: unexpected rc" \
+    "expected 0, got $_eng87_c1ps_inner_rc; err=$(cat "$_eng87_c1ps_root/err.out" 2>/dev/null)"
+fi
+rm -rf "$_eng87_c1ps_root"
+unset _eng87_c1ps_root _eng87_c1ps_rc _eng87_c1ps_inner_rc
+
 # Case 87-C3-behavioral (review-iter-2 M4): the source-grep above is
 # brittle — a refactor that renames `_env_rc`, switches to `case`, or
 # extracts a helper produces empty `_eng87_c3_block` and the grep
@@ -4267,6 +4323,58 @@ _lines_after="$(wc -l < "$_eng87_m2_hist" | tr -d ' ')"
 [[ "$_lines_before" == "$_lines_after" ]] \
   && pass_at "ENG-87 M2: trap function is idempotent (sentinel prevents double-append)" \
   || fail_at "ENG-87 M2: idempotency" "lines before=$_lines_before after=$_lines_after"
+
+# M1' (review-iter-2 M1): halt-path verdict_emitted seed. Pre-fix, when
+# classify_failure ran with halt-class effective_policy it set
+# _END_ROW_POLICY but NOT _END_ROW_VERDICT_EMITTED — so the
+# dispatch_history.jsonl end row's verdict_emitted field was "" on
+# every halt path even though a halt verdict had landed on Linear.
+# Schema drift for the M2 9-field contract. Drive classify_failure
+# directly with halt-class policy and assert the trap-global is set
+# to "halt".
+mkdir -p "$(issue_dir ENG-87M1)"
+_eng87_m1_hist="$(issue_dir ENG-87M1)/dispatch_history.jsonl"
+: > "$_eng87_m1_hist"
+# Seed the trap globals as run-stage.sh::main would (line 965-972).
+_END_ROW_HIST_FILE="$_eng87_m1_hist"
+_END_ROW_DISPATCH_ID="ENG-87M1-d0001"
+_END_ROW_STAGE="implementing"
+_END_ROW_T0="$(date +%s)"
+_END_ROW_ISSUE="ENG-87M1"
+_END_ROW_VERDICT_EMITTED=""
+_END_ROW_VERDICT_TARGET=""
+_END_ROW_POLICY=""
+MOCK_PIPELINE_HASH="hM1" MOCK_BRANCH_SHA="sM1" \
+  classify_failure "ENG-87M1" "implementing" "skip-until-human-acts" \
+    "envelope-violation-test" 29 "" >/dev/null 2>&1 || true
+[[ "$_END_ROW_VERDICT_EMITTED" == "halt" ]] \
+  && pass_at "ENG-87 M1' (review-iter-2 M1): classify_failure with halt-class policy seeds verdict_emitted=halt" \
+  || fail_at "ENG-87 M1' (review-iter-2 M1): verdict_emitted seed" \
+       "got: '$_END_ROW_VERDICT_EMITTED' (expected 'halt'); _END_ROW_POLICY='$_END_ROW_POLICY'"
+
+# M1'-retry: classify_failure with retry-immediately policy must NOT
+# seed verdict_emitted (retry posts a transient-retry meta marker, not
+# a verdict — verdict_handler's filter excludes meta markers, so the
+# retry comment never registers as a halt verdict and the schema
+# field correctly stays "").
+mkdir -p "$(issue_dir ENG-87M1R)"
+_eng87_m1r_hist="$(issue_dir ENG-87M1R)/dispatch_history.jsonl"
+: > "$_eng87_m1r_hist"
+_END_ROW_HIST_FILE="$_eng87_m1r_hist"
+_END_ROW_DISPATCH_ID="ENG-87M1R-d0001"
+_END_ROW_STAGE="implementing"
+_END_ROW_T0="$(date +%s)"
+_END_ROW_ISSUE="ENG-87M1R"
+_END_ROW_VERDICT_EMITTED=""
+_END_ROW_VERDICT_TARGET=""
+_END_ROW_POLICY=""
+MOCK_PIPELINE_HASH="hM1R" MOCK_BRANCH_SHA="sM1R" \
+  classify_failure "ENG-87M1R" "implementing" "retry-immediately" \
+    "transient-test" 20 "" >/dev/null 2>&1 || true
+[[ -z "$_END_ROW_VERDICT_EMITTED" ]] \
+  && pass_at "ENG-87 M1' (review-iter-2 M1): classify_failure with retry-immediately does NOT seed verdict_emitted (no verdict posted)" \
+  || fail_at "ENG-87 M1' (review-iter-2 M1): retry-immediately should leave verdict_emitted empty" \
+       "got: '$_END_ROW_VERDICT_EMITTED' (expected '')"
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"

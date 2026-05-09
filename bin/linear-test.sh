@@ -907,6 +907,79 @@ fi
 rm -f "$_eng87_l5_log"
 unset _eng87_l5_log _eng87_l5_orig_log _eng87_l5_orig_resolve
 
+# Case 87-L4-int (review-iter-2 M6): integration test for
+# add_or_update_comment — pre-fix, Case-87-L4 only invoked the
+# _inject_dispatch_marker helper directly with a hand-crafted body
+# containing the dedup marker. That asserts the helper is dedup-marker-
+# aware but NOT the production assembly (line 588 inject vs line 597
+# dedup-append). A regression that swapped the two assembly steps
+# (dedup-append before inject) would silently false-pass L4 because
+# the helper invocation is unchanged. This integration test drives
+# add_or_update_comment end-to-end under PIPELINE_DRY_RUN=1 and asserts
+# both markers appear in the production-written body in the documented
+# source-order: dispatch BEFORE dedup.
+#
+# Two-pronged approach: (a) capture-via-log integration test (uses a
+# body short enough that both markers fit in the 80-char truncation
+# the dry-run path applies); (b) source-text grep that pins the
+# inject-before-dedup ordering directly.
+_eng87_l4i_log="$_TEST_STUB_DIR/eng87-l4int.log"
+: > "$_eng87_l4i_log"
+_eng87_l4i_orig_log="$(declare -f log 2>/dev/null || printf '')"
+log() { printf '%s\n' "$*" >> "$_eng87_l4i_log"; }
+# Use very short id + sig so both markers fit in the 80-char dry-run
+# truncation: body(1) + \n\n(2) + dispatch(46) + \n\n(2) + dedup(26) = 77.
+PIPELINE_DISPATCH_ID="ENG-X-d0001" \
+PIPELINE_STAGE="ui" \
+PIPELINE_DRY_RUN=1 \
+add_or_update_comment "t" "ENG-X" "x" >/dev/null 2>&1 || true
+unset -f log
+[[ -n "$_eng87_l4i_orig_log" ]] && eval "$_eng87_l4i_orig_log"
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE PIPELINE_DRY_RUN
+_eng87_l4i_line="$(cat "$_eng87_l4i_log")"
+# (a) Both markers present.
+if grep -qF '<!-- meta: dispatch id=ENG-X-d0001 stage=ui -->' <<<"$_eng87_l4i_line" \
+   && grep -qF '<!-- meta: dedup key=t -->' <<<"$_eng87_l4i_line"; then
+  pass_at "ENG-87 L4-int (review-iter-2 M6): add_or_update_comment dry-run carries BOTH dispatch + dedup markers"
+else
+  fail_at "ENG-87 L4-int: dual-marker presence" "log=$_eng87_l4i_line"
+fi
+# Source-order: dispatch index < dedup index (dispatch injected first;
+# dedup appended last). Production code at lines 588 (inject) and 597
+# (append) — pin via byte-position arithmetic.
+_eng87_l4i_disp_at="$(grep -nF '<!-- meta: dispatch id=ENG-X-d0001' <<<"$_eng87_l4i_line" | head -1 | cut -d: -f1)"
+_eng87_l4i_dedup_at="$(grep -nF '<!-- meta: dedup key=t -->' <<<"$_eng87_l4i_line" | head -1 | cut -d: -f1)"
+_eng87_l4i_disp_at="${_eng87_l4i_disp_at:-0}"
+_eng87_l4i_dedup_at="${_eng87_l4i_dedup_at:-0}"
+if (( _eng87_l4i_disp_at > 0 )) && (( _eng87_l4i_dedup_at > 0 )) \
+   && (( _eng87_l4i_disp_at < _eng87_l4i_dedup_at )); then
+  pass_at "ENG-87 L4-int (review-iter-2 M6): dispatch marker precedes dedup marker (production source-order preserved)"
+else
+  fail_at "ENG-87 L4-int: source-order" \
+    "disp_at=$_eng87_l4i_disp_at dedup_at=$_eng87_l4i_dedup_at log=$_eng87_l4i_line"
+fi
+# Source-text pin: linear.sh::add_or_update_comment must call
+# _inject_dispatch_marker BEFORE the dedup-marker append. A behavioral
+# test alone cannot detect a refactor that re-orders these (because
+# both markers would still appear in the body); the source pin closes
+# that gap.
+_eng87_l4i_src="$SCRIPT_DIR_REAL/linear.sh"
+_eng87_l4i_block="$(awk '/^add_or_update_comment\(\)/,/^}/' "$_eng87_l4i_src")"
+_eng87_l4i_inject_line="$(grep -n 'body="$(_inject_dispatch_marker' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
+_eng87_l4i_dedup_line="$(grep -n 'body+=\$.\\n\\n.\"\$marker\"' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
+if [[ -z "$_eng87_l4i_dedup_line" ]]; then
+  _eng87_l4i_dedup_line="$(grep -n 'body+=' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
+fi
+if [[ -n "$_eng87_l4i_inject_line" ]] && [[ -n "$_eng87_l4i_dedup_line" ]] \
+   && (( _eng87_l4i_inject_line < _eng87_l4i_dedup_line )); then
+  pass_at "ENG-87 L4-int (review-iter-2 M6): linear.sh source-text pins inject-before-dedup ordering"
+else
+  fail_at "ENG-87 L4-int: source-text order" \
+    "inject_line=$_eng87_l4i_inject_line dedup_line=$_eng87_l4i_dedup_line"
+fi
+rm -f "$_eng87_l4i_log"
+unset _eng87_l4i_log _eng87_l4i_orig_log _eng87_l4i_line _eng87_l4i_disp_at _eng87_l4i_dedup_at _eng87_l4i_src _eng87_l4i_block _eng87_l4i_inject_line _eng87_l4i_dedup_line
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
