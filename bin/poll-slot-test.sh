@@ -322,17 +322,21 @@ fi
 
 # ─── AC-5: metric reason — max-concurrent-reached only at inbox-gate ──
 # Capture idle reason by replacing the metrics.sh stub with a capture
-# stub for this test only. When all held slots are non-advanceable (bare
-# halted with no fresh verdict marker → hold, not advanceable), the
-# dispatch loop iterates without dispatching, then the inbox gate fires.
+# stub for this test only. With ENG-90 the halted-no-marker branch
+# vacates the slot, so this fixture uses halt + stage-summary markers
+# instead: classifier returns hold/advanceable=true; Pass 4 invokes
+# verdict_handler (a no-op against the stubbed Linear API) and falls
+# through without dispatching; held_count stays at 2 = max_concurrent;
+# the cap-gate on Pass 5/6 fires and the final idle path emits
+# "max-concurrent-reached".
 reset_fixtures
-# Two bare-halted issues with NO fresh verdict markers — classifier returns
-# hold/not-advanceable, so they hold slots but don't dispatch.
 write_label_fixture "stage:planning" \
   "ENG-6001|In Progress|3|Bug,stage:planning,pipeline:halted" \
   "ENG-6002|In Progress|3|Bug,stage:planning,pipeline:halted"
-# No comments-ENG-6001.json / comments-ENG-6002.json fixtures → get-comments
-# returns [] → find_fresh_verdict returns empty → classifier holds, not advanceable.
+write_comments_fixture "ENG-6001" \
+  "<!-- pipeline: verdict result=pass stage=planning -->|2026-04-24T10:00:00.000Z"
+write_comments_fixture "ENG-6002" \
+  "<!-- pipeline: verdict result=pass stage=planning -->|2026-04-24T10:00:00.000Z"
 
 # Replace metrics.sh with a capture stub that writes the reason to a file.
 REASON_CAPTURE="$STUB_DIR/last-reason"
@@ -464,13 +468,15 @@ slot="$(jq -r '.slot // ""' <<<"$out")"
 # as null and falls through to the default — which would emit "" not "false".
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
 recall="$(jq -r '.wait_recallable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
 ts="$(jq -r '.wait_progress_ts // ""' <<<"$out")"
 if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "true" \
+      && "$oar" == "false" \
       && "$ts" == "2026-04-28T08:17:00Z" ]]; then
-  pass_at "AC-WAIT-1 (ENG-85): wait verdict on stage:building → vacate/false/wait_recallable=true"
+  pass_at "AC-WAIT-1 (ENG-85): wait verdict on stage:building → vacate/false/wait_recallable=true/oar=false"
 else
   fail_at "AC-WAIT-1 (ENG-85): wait verdict classification" \
-    "got slot=$slot adv=$adv recall=$recall ts=$ts (want vacate/false/true/2026-04-28T08:17:00Z) full=$out"
+    "got slot=$slot adv=$adv recall=$recall oar=$oar ts=$ts (want vacate/false/true/false/2026-04-28T08:17:00Z) full=$out"
 fi
 
 # ─── AC-WAIT-2 (ENG-85): two issues, ENG-A waits at stage:building,
@@ -842,13 +848,19 @@ else
 fi
 
 # Case ENG-50-B: stage:reviewing with REVIEW_SHOULD_DISPATCH=1 (idle).
+# ENG-90 D-002: review-idle now vacates the slot with operator_action_required=false
+# (next-tick orchestrator-side state check via review_should_dispatch is the
+# implicit recall path). Pre-ENG-90 emitted hold/advanceable=false (held the
+# slot AND blocked sibling work — the starvation surface this ticket fixes).
 class="$(REVIEW_SHOULD_DISPATCH=1 _poll_classify_labels "ENG-591" "$labels_json")"
 adv="$(jq -r '.advanceable' <<<"$class")"
 slot="$(jq -r '.slot' <<<"$class")"
-if [[ "$adv" == "false" && "$slot" == "hold" ]]; then
-  pass_at "ENG-50: stage:reviewing + dispatch=false → hold/idle"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$class")"
+if [[ "$adv" == "false" && "$slot" == "vacate" && "$oar" == "false" ]]; then
+  pass_at "ENG-50/ENG-90: stage:reviewing + dispatch=false → vacate/oar=false (D-002)"
 else
-  fail_at "ENG-50: stage:reviewing + dispatch=false" "got slot=$slot adv=$adv"
+  fail_at "ENG-50/ENG-90: stage:reviewing + dispatch=false" \
+    "got slot=$slot adv=$adv oar=$oar"
 fi
 
 # Case ENG-50-C: non-reviewing stage unchanged (sanity).
@@ -1133,12 +1145,14 @@ else
 fi
 
 # ─── QA adversarial (ENG-85): Pass 6 respects max-concurrent cap.
-# Setup: 2 halted issues at stage:planning (no fresh verdict marker) +
-# 1 wait at stage:building, max_concurrent=2. The halted-no-marker case
-# at bin/poll.sh:235 classifies as {hold,advanceable=false}; both fill
-# the held set (held_count=2). Pass 4 cycles through both, dispatches
-# nothing. Pass 5 inbox is gated `< max_concurrent` and skipped.
-# Pass 6 is gated `< max_concurrent` and skipped. Final: idle
+# Setup: 2 halted-with-stage-summary issues at stage:planning + 1 wait
+# at stage:building, max_concurrent=2. With ENG-90 the halted-no-marker
+# branch vacates the slot, so this fixture uses halt + stage-summary
+# markers (classifier returns hold/advanceable=true). Pass 4 invokes
+# verdict_handler against the stubbed Linear API, logs, and falls
+# through without dispatching; held_count stays at 2 = max_concurrent.
+# Pass 5 inbox is gated `< max_concurrent` and skipped. Pass 6 is
+# gated `< max_concurrent` and skipped. Final: idle
 # "max-concurrent-reached". The wait issue must NOT be recalled.
 # Without this pin, dropping the `(( held_count < max_concurrent ))`
 # guard on Pass 6 (or moving Pass 6 above Pass 5's cap-check) would
@@ -1149,9 +1163,10 @@ write_label_fixture "stage:planning" \
   "ENG-WAIT-QA-CAP-2|In Progress|1|stage:planning,pipeline:halted"
 write_label_fixture "stage:building" \
   "ENG-WAIT-QA-CAP-3|In Progress|1|stage:building"
-# No comments fixtures for the halted issues → find_fresh_verdict returns
-# empty → halted arm hits the no-fresh-marker branch (slot=hold,
-# advanceable=false). The wait issue gets the wait fixture.
+write_comments_fixture "ENG-WAIT-QA-CAP-1" \
+  '<!-- pipeline: verdict result=pass stage=planning -->|2026-04-28T08:00:00Z'
+write_comments_fixture "ENG-WAIT-QA-CAP-2" \
+  '<!-- pipeline: verdict result=pass stage=planning -->|2026-04-28T08:00:00Z'
 write_comments_fixture "ENG-WAIT-QA-CAP-3" \
   '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
   '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
@@ -1168,6 +1183,314 @@ if [[ "$issue_id" == "null" && "$reason" == max-concurrent-reached* ]]; then
 else
   fail_at "QA adversarial (ENG-85): Pass 6 cap safety" \
     "got issue_id=$issue_id reason=$reason (want issue_id=null + max-concurrent-reached) full=$out"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ENG-90 — Slot-occupancy contract: per-classifier-branch unit fixtures.
+# Every branch of _poll_classify_labels is pinned by an AC-OAR-* row.
+# Adding a new branch without a fixture trips at CI; see CLAUDE.md
+# "Slot-occupancy contract (ENG-90)" for the contract.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── AC-OAR-ABANDONED: pipeline:abandoned → terminal; oar absent ──────
+reset_fixtures
+out="$(_poll_classify_labels "ENG-OAR-ABANDONED" '["pipeline:abandoned"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "terminal" && "$adv" == "false" && "$oar" == "null" ]]; then
+  pass_at "AC-OAR-ABANDONED pipeline:abandoned → terminal; oar absent"
+else
+  fail_at "AC-OAR-ABANDONED pipeline:abandoned → terminal" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-PAUSED: pipeline:paused → vacate, oar=true ────────────────
+reset_fixtures
+out="$(_poll_classify_labels "ENG-OAR-PAUSED" '["pipeline:paused"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-PAUSED pipeline:paused → vacate, oar=true (D-001)"
+else
+  fail_at "AC-OAR-PAUSED" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-SCOPE: pipeline:scope-approval-needed → vacate, oar=true ──
+reset_fixtures
+out="$(_poll_classify_labels "ENG-OAR-SCOPE" '["pipeline:scope-approval-needed"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-SCOPE pipeline:scope-approval-needed → vacate, oar=true (D-001)"
+else
+  fail_at "AC-OAR-SCOPE" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-HALT-PASS: halt + stage-summary verdict → hold/advanceable ─
+# Verdict-handler-led transition is upcoming in Pass 4; the halt label is
+# consumed by apply_transition. Slot remains held (active dispatch work).
+reset_fixtures
+write_comments_fixture "ENG-OAR-HALT-PASS" \
+  '<!-- pipeline: verdict result=pass stage=planning -->|2026-05-09T08:00:00Z'
+out="$(_poll_classify_labels "ENG-OAR-HALT-PASS" '["stage:planning","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+  pass_at "AC-OAR-HALT-PASS halt + stage-summary → hold/advanceable; oar absent"
+else
+  fail_at "AC-OAR-HALT-PASS" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-HALT-FAIL: halt + rejection verdict → hold/advanceable ────
+reset_fixtures
+write_comments_fixture "ENG-OAR-HALT-FAIL" \
+  '<!-- pipeline: verdict result=fail target=implementing -->|2026-05-09T08:00:00Z'
+out="$(_poll_classify_labels "ENG-OAR-HALT-FAIL" '["stage:implementing","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+  pass_at "AC-OAR-HALT-FAIL halt + rejection → hold/advanceable; oar absent"
+else
+  fail_at "AC-OAR-HALT-FAIL" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-HALT-HALT: halt + pipeline-halt verdict → vacate, oar=true ─
+# D-003: pipeline-halt marker folds into the default arm; same observable
+# behaviour as no-marker / unknown-marker (halt label gates dispatch).
+reset_fixtures
+write_comments_fixture "ENG-OAR-HALT-HALT" \
+  '<!-- pipeline: verdict result=halt reason=agent-blocked -->|2026-05-09T08:00:00Z'
+out="$(_poll_classify_labels "ENG-OAR-HALT-HALT" '["stage:implementing","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-HALT-HALT halt + pipeline-halt → vacate, oar=true (D-003)"
+else
+  fail_at "AC-OAR-HALT-HALT" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-HALT-NO-MARKER: halt + no fresh marker → vacate, oar=true ──
+# D-003: silent agent crash, externally-applied label, or marker race;
+# halt label still gates dispatch. Pre-ENG-90 emitted hold/advanceable=false
+# (the starvation surface). Linear stub returns [] for missing comments
+# fixture.
+reset_fixtures
+out="$(_poll_classify_labels "ENG-OAR-HALT-NO-MARKER" '["stage:planning","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-HALT-NO-MARKER halt + no marker → vacate, oar=true (D-003 — was hold pre-fix)"
+else
+  fail_at "AC-OAR-HALT-NO-MARKER" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-HALT-UNKNOWN-MARKER: halt + only transition marker (no actionable
+#     verdict) → vacate, oar=true. find_fresh_verdict skips non-verdict events
+#     and returns empty; same fall-through as no-marker. The fixture name is
+#     preserved for traceability against the audit table.
+reset_fixtures
+write_comments_fixture "ENG-OAR-HALT-UNKNOWN-MARKER" \
+  '<!-- pipeline: transition from=planning to=implementing -->|2026-05-09T08:00:00Z'
+out="$(_poll_classify_labels "ENG-OAR-HALT-UNKNOWN-MARKER" '["stage:planning","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-HALT-UNKNOWN-MARKER halt + transition-only → vacate, oar=true (D-003)"
+else
+  fail_at "AC-OAR-HALT-UNKNOWN-MARKER" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-WAIT: stage:building + wait verdict → vacate, oar=false ───
+# Wait is Pass-6-recallable; orchestrator-side _handle_wait re-runs the
+# predicate. Mirrors AC-WAIT-1's classification but explicitly pins
+# operator_action_required=false (D-001).
+reset_fixtures
+write_comments_fixture "ENG-OAR-WAIT" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+out="$(_poll_classify_labels "ENG-OAR-WAIT" '["stage:building"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "true" && "$oar" == "false" ]]; then
+  pass_at "AC-OAR-WAIT wait verdict → vacate/wait_recallable=true/oar=false (D-001)"
+else
+  fail_at "AC-OAR-WAIT" \
+    "got slot=$slot adv=$adv recall=$recall oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-REVIEW-DISPATCH: stage:reviewing + REVIEW_SHOULD_DISPATCH=0
+#     → hold/advanceable; oar absent. Mirrors ENG-50-A but explicitly
+#     pins the absence of the oar field on hold-class outputs.
+reset_fixtures
+out="$(REVIEW_SHOULD_DISPATCH=0 _poll_classify_labels "ENG-OAR-REVIEW-DISPATCH" '["stage:reviewing"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+  pass_at "AC-OAR-REVIEW-DISPATCH review_should_dispatch=true → hold/advanceable; oar absent"
+else
+  fail_at "AC-OAR-REVIEW-DISPATCH" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-REVIEW-IDLE: stage:reviewing + REVIEW_SHOULD_DISPATCH=1
+#     → vacate, oar=false (D-002). Pre-ENG-90 emitted hold/advanceable=false
+#     (the review-starvation surface).
+reset_fixtures
+out="$(REVIEW_SHOULD_DISPATCH=1 _poll_classify_labels "ENG-OAR-REVIEW-IDLE" '["stage:reviewing"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "false" ]]; then
+  pass_at "AC-OAR-REVIEW-IDLE review_should_dispatch=false → vacate, oar=false (D-002 — was hold pre-fix)"
+else
+  fail_at "AC-OAR-REVIEW-IDLE" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-SKIP-HUMAN: pipeline:skip-until-human-acts + state file
+#     → vacate, oar=true (D-005). Skip-until-human-acts requires operator
+#     action (label removal) to recall.
+reset_fixtures
+mkdir -p "$(issue_dir ENG-OAR-SKIP-HUMAN)"
+jq -nc '{policy:"skip-until-human-acts",branch:"feat/test",evidence:{pipeline_content_hash:"x",branch_head_sha:"y"}}' \
+  > "$(issue_dir ENG-OAR-SKIP-HUMAN)/issue-state.json"
+out="$(_poll_classify_labels "ENG-OAR-SKIP-HUMAN" '["stage:planning","pipeline:skip-until-human-acts"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+rm -rf "$PROJECT_STATE_DIR/ENG-OAR-SKIP-HUMAN"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-SKIP-HUMAN pipeline:skip-until-human-acts → vacate, oar=true (D-005)"
+else
+  fail_at "AC-OAR-SKIP-HUMAN" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-SKIP-CODE-UNCHANGED: pipeline:skip-until-code-changes + state
+#     file with hashes matching current → vacate, oar=false (D-005).
+#     Auto-recallable: next-tick re-checks pipeline_content_hash + branch
+#     SHA and clears the label mid-tick on change.
+reset_fixtures
+expected_hash="$(compute_pipeline_content_hash)"
+mkdir -p "$(issue_dir ENG-OAR-SKIP-CODE-UNCHANGED)"
+jq -nc --arg h "$expected_hash" \
+  '{policy:"skip-until-code-changes",branch:"feat/test",evidence:{pipeline_content_hash:$h,branch_head_sha:""}}' \
+  > "$(issue_dir ENG-OAR-SKIP-CODE-UNCHANGED)/issue-state.json"
+# git ls-remote is stubbed (line ~137) to return empty → current_sha=""
+# matches state file's branch_head_sha="" → evidence-unchanged path → rc=1.
+out="$(_poll_classify_labels "ENG-OAR-SKIP-CODE-UNCHANGED" '["stage:planning","pipeline:skip-until-code-changes"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+rm -rf "$PROJECT_STATE_DIR/ENG-OAR-SKIP-CODE-UNCHANGED"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "false" ]]; then
+  pass_at "AC-OAR-SKIP-CODE-UNCHANGED skip-until-code-changes evidence-unchanged → vacate, oar=false (D-005)"
+else
+  fail_at "AC-OAR-SKIP-CODE-UNCHANGED" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-OAR-DEFAULT: stage label only, no other markers → hold/advanceable
+#     The catch-all else arm; oar absent.
+reset_fixtures
+out="$(_poll_classify_labels "ENG-OAR-DEFAULT" '["stage:implementing"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+  pass_at "AC-OAR-DEFAULT default catch-all → hold/advanceable; oar absent"
+else
+  fail_at "AC-OAR-DEFAULT" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ENG-90 — Multi-issue regression fixtures (main()-level integration).
+# Pin the literal starvation scenarios that motivated the contract: a
+# stuck "hold" classification of agent-idle work blocked sibling issues
+# from advancing.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── AC-OAR-REVIEW-STARVATION: ENG-A at stage:reviewing+idle; ENG-B at
+#     stage:implementing; cap=2. main() dispatches ENG-B (review-vacate
+#     freed the slot per D-002). Pre-ENG-90, ENG-A held the slot and
+#     blocked ENG-B's dispatch. Direct regression for the Linear issue
+#     body's primary motivating example.
+reset_fixtures
+write_label_fixture "stage:reviewing" \
+  "ENG-OAR-REV-A|In Progress|3|stage:reviewing"
+write_label_fixture "stage:implementing" \
+  "ENG-OAR-REV-B|In Progress|3|stage:implementing"
+out="$(REVIEW_SHOULD_DISPATCH=1 main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+stage="$(jq -r '.stage // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-OAR-REV-B" && "$stage" == "implementing" ]]; then
+  pass_at "AC-OAR-REVIEW-STARVATION review-vacate frees slot for sibling impl (D-002)"
+else
+  fail_at "AC-OAR-REVIEW-STARVATION" \
+    "got issue_id=$issue_id stage=$stage full=$out"
+fi
+
+# ─── AC-OAR-HALT-NO-MARKER-STARVATION: ENG-A at stage:planning + halt + no
+#     marker; ENG-B Todo in inbox; cap=2. main() dispatches ENG-B with
+#     entry_action=apply-stage-label (halt-no-marker freed the slot per
+#     D-003). Pre-ENG-90, ENG-A held the slot and Pass 5's inbox gate
+#     skipped — no inbox issue could enter the pipeline.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-OAR-HNMS-A|In Progress|3|stage:planning,pipeline:halted"
+# No write_comments_fixture for ENG-OAR-HNMS-A → linear.sh stub returns []
+write_inbox_fixture \
+  "ENG-OAR-HNMS-B|Todo|3|Bug"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-OAR-HNMS-B" && "$entry" == "apply-stage-label" ]]; then
+  pass_at "AC-OAR-HALT-NO-MARKER-STARVATION halt-no-marker frees slot for inbox pickup (D-003)"
+else
+  fail_at "AC-OAR-HALT-NO-MARKER-STARVATION" \
+    "got issue_id=$issue_id entry=$entry full=$out"
+fi
+
+# ─── AC-OAR-DECIDE-CONTINUE-RECOVERS-HALT-NO-MARKER: simulates the
+#     post-resume tick after `bin/pipeline.sh decide --action continue`.
+#     Fixture state: halt label cleared (operator action) + transition
+#     waypoint marker present (operator-resume from decide). Classifier
+#     sees no halt label + a transition waypoint → catch-all else arm
+#     → hold/advanceable=true. main() dispatches the issue with
+#     entry_action=run, proving the documented recovery contract works.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-OAR-DCRH-A|In Progress|3|stage:planning"
+write_comments_fixture "ENG-OAR-DCRH-A" \
+  '<!-- pipeline: transition from=planning to=planning reason=operator-resume -->|2026-05-09T08:00:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+stage="$(jq -r '.stage // ""' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-OAR-DCRH-A" && "$stage" == "planning" && "$entry" == "run" ]]; then
+  pass_at "AC-OAR-DECIDE-CONTINUE-RECOVERS-HALT-NO-MARKER post-resume tick dispatches (D-003 recovery)"
+else
+  fail_at "AC-OAR-DECIDE-CONTINUE-RECOVERS-HALT-NO-MARKER" \
+    "got issue_id=$issue_id stage=$stage entry=$entry full=$out"
 fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
