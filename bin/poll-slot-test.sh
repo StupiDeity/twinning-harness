@@ -849,6 +849,179 @@ else
 fi
 export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
 
+# ─── QA adversarial (ENG-91): predicate subprocess exits non-zero with
+#     empty stdout — the brainstorm §7 explicit failure mode for an
+#     `entry-conditions.sh` invocation that crashes (gh outage, missing
+#     binary, segfault). `_picker_predicate_ready`'s `2>/dev/null ||
+#     printf ''` rescue guarantees `out=""`, which falls through to `*)`
+#     and fails open. Pins the shim's defensive contract: a hard
+#     subprocess failure does NOT propagate up the call chain (no
+#     `set -e` exit, no missing-jq-input error in the picker).
+#
+#     Implementation: temporarily replace the stub with a non-zero-exit
+#     stub for this test only, then restore the default stub.
+reset_fixtures
+qa_pred_crash_stub="$STUB_DIR/entry-conditions-crash.sh"
+cat > "$qa_pred_crash_stub" <<'CRASH_SH'
+#!/usr/bin/env bash
+exit 17
+CRASH_SH
+chmod +x "$qa_pred_crash_stub"
+cp "$STUB_DIR/entry-conditions.sh" "$STUB_DIR/entry-conditions.bak.sh"
+cp "$qa_pred_crash_stub" "$STUB_DIR/entry-conditions.sh"
+write_label_fixture "stage:building" "ENG-QA-PRED-CRASH|In Progress|3|stage:building"
+write_inbox_fixture                  "ENG-QA-PRED-CRASH-B|Todo|3|Bug"
+write_comments_fixture "ENG-QA-PRED-CRASH" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+qa_pred_crash_err="$STUB_DIR/qa-pred-crash.err"
+: > "$qa_pred_crash_err"
+out="$(main 2>"$qa_pred_crash_err" || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+# Restore the default stub for downstream tests.
+cp "$STUB_DIR/entry-conditions.bak.sh" "$STUB_DIR/entry-conditions.sh"
+rm -f "$STUB_DIR/entry-conditions.bak.sh" "$qa_pred_crash_stub"
+if [[ "$issue_id" == "ENG-QA-PRED-CRASH" && "$reason" == *"stage:building"* ]]; then
+  pass_at "QA adversarial (ENG-91): predicate subprocess crash (rc=17, empty stdout) fails open via shim rescue"
+else
+  fail_at "QA adversarial (ENG-91): predicate-subprocess-crash fail-open" \
+    "got issue_id=$issue_id reason=$reason (want ENG-QA-PRED-CRASH / *stage:building*) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── QA adversarial (ENG-91): predicate stdout with trailing whitespace
+#     ("proceed " — space after) does NOT match the literal `proceed)` arm
+#     of the case switch and falls to `*)` (fail-open). Pins the case
+#     matcher's exact-literal contract: a future stub or refactor that
+#     introduces trailing spaces would silently fail-open rather than
+#     match `proceed`. Documented behavior: garbage fails open.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT="proceed "
+write_label_fixture "stage:building" "ENG-QA-PRED-WS|In Progress|3|stage:building"
+write_inbox_fixture                  "ENG-QA-PRED-WS-B|Todo|3|Bug"
+write_comments_fixture "ENG-QA-PRED-WS" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+qa_pred_ws_err="$STUB_DIR/qa-pred-ws.err"
+: > "$qa_pred_ws_err"
+out="$(main 2>"$qa_pred_ws_err" || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+err_log="$(cat "$qa_pred_ws_err")"
+if [[ "$issue_id" == "ENG-QA-PRED-WS" && "$err_log" == *"unknown shape"* ]]; then
+  pass_at "QA adversarial (ENG-91): predicate trailing-whitespace fails open (literal-only proceed match)"
+else
+  fail_at "QA adversarial (ENG-91): predicate trailing-whitespace handling" \
+    "got issue_id=$issue_id err=$err_log (want ENG-QA-PRED-WS + unknown shape log)"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── QA adversarial (ENG-91): predicate stdout uppercase `PROCEED` does NOT
+#     match the case-sensitive `proceed)` arm and falls to `*)` (fail-open).
+#     Pins case-sensitivity: a future entry-conditions.sh that emits
+#     uppercase or mixed-case verbs would silently fail-open + log the
+#     unknown-shape diagnostic.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT="PROCEED"
+write_label_fixture "stage:building" "ENG-QA-PRED-CASE|In Progress|3|stage:building"
+write_inbox_fixture                  "ENG-QA-PRED-CASE-B|Todo|3|Bug"
+write_comments_fixture "ENG-QA-PRED-CASE" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+qa_pred_case_err="$STUB_DIR/qa-pred-case.err"
+: > "$qa_pred_case_err"
+out="$(main 2>"$qa_pred_case_err" || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+err_log="$(cat "$qa_pred_case_err")"
+if [[ "$issue_id" == "ENG-QA-PRED-CASE" && "$err_log" == *"unknown shape"* ]]; then
+  pass_at "QA adversarial (ENG-91): predicate uppercase 'PROCEED' fails open (case-sensitive match)"
+else
+  fail_at "QA adversarial (ENG-91): predicate case sensitivity" \
+    "got issue_id=$issue_id err=$err_log (want ENG-QA-PRED-CASE + unknown shape log)"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── QA adversarial (ENG-91): bare `skip:` (no reason token) DOES match
+#     the `skip:*)` glob arm — `*` matches zero characters. The picker
+#     excludes the wait from the pool. This pins the case-glob semantics
+#     so a future refactor that tightens the pattern to `skip:?*)` (one
+#     or more chars after the colon) is caught. The diagnostic log line
+#     "skipped (predicate not ready)" is emitted on the skip path.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT="skip:"
+write_label_fixture "stage:building" "ENG-QA-SKIP-BARE|In Progress|3|stage:building"
+write_inbox_fixture                  "ENG-QA-SKIP-BARE-B|Todo|3|Bug"
+write_comments_fixture "ENG-QA-SKIP-BARE" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+qa_skip_bare_err="$STUB_DIR/qa-skip-bare.err"
+: > "$qa_skip_bare_err"
+out="$(main 2>"$qa_skip_bare_err" || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+err_log="$(cat "$qa_skip_bare_err")"
+if [[ "$issue_id" == "ENG-QA-SKIP-BARE-B" && "$entry" == "apply-stage-label" \
+      && "$err_log" == *"picker: wait_recallable ENG-QA-SKIP-BARE skipped (predicate not ready)"* ]]; then
+  pass_at "QA adversarial (ENG-91): bare skip: matches skip:* glob — wait excluded; inbox dispatches"
+else
+  fail_at "QA adversarial (ENG-91): bare skip: glob match" \
+    "got issue_id=$issue_id entry=$entry (want ENG-QA-SKIP-BARE-B / apply-stage-label) err=$err_log"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
+# ─── QA adversarial (ENG-91): empty pool with held_count < max_concurrent
+#     → idle "no-work" reason. Pre-ENG-91 the test suite covered idle
+#     "max-concurrent-reached" (AC-5 + the cap-saturation adversarial)
+#     but had no dedicated fixture for the "no-work" branch — a refactor
+#     that swapped the trailing if/else order would silently route every
+#     idle tick to the wrong reason. Pins the trailing block at
+#     `bin/poll.sh:710-714` (preserved verbatim by ENG-91).
+#
+#     Setup: zero stage-labelled issues; zero inbox; zero waits. Default
+#     test config has cap=2, so held_count=0 < 2 — the no-work branch fires.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "null" && "$reason" == "no-work" ]]; then
+  pass_at "QA adversarial (ENG-91): empty pool below cap → idle 'no-work' (not max-concurrent-reached)"
+else
+  fail_at "QA adversarial (ENG-91): empty pool no-work idle reason" \
+    "got issue_id=$issue_id reason=$reason (want null / no-work) full=$out"
+fi
+
+# ─── QA adversarial (ENG-91): identifier final tiebreak. Two waits at
+#     identical stage_index, priority, AND wait_progress_ts (same Linear
+#     comment second). The sort key's `.identifier` ascending tiebreaker
+#     should select the alphabetically lower identifier (ENG-QA-IDENT-1
+#     beats ENG-QA-IDENT-2). Pins the review-fix-identifier-tiebreak
+#     contract (`bin/poll.sh:526` sort key includes `.identifier` as
+#     the final element) — a refactor that drops `.identifier` from the
+#     sort key would fall back to jq's stable-sort assumption (gather
+#     order), which is implementation-defined and unstable across jq
+#     minor versions. The deterministic `.identifier` ordering is the
+#     contract.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+write_label_fixture "stage:building" \
+  "ENG-QA-IDENT-2|In Progress|3|stage:building" \
+  "ENG-QA-IDENT-1|In Progress|3|stage:building"
+write_comments_fixture "ENG-QA-IDENT-1" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+write_comments_fixture "ENG-QA-IDENT-2" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "ENG-QA-IDENT-1" ]]; then
+  pass_at "QA adversarial (ENG-91): identifier tiebreak — alphabetically lower ID wins on full sort-key tie"
+else
+  fail_at "QA adversarial (ENG-91): identifier tiebreak determinism" \
+    "got issue_id=$issue_id (want ENG-QA-IDENT-1; full sort-key tie) full=$out"
+fi
+
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
 # A Todo issue carrying only pipeline:skip-until-human-acts (no state
 # file, no stage:* label) must be skipped by the picker's inbox jq filter
