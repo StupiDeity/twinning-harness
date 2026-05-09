@@ -93,6 +93,70 @@ compute_pipeline_content_hash() {
     | shasum -a 256 \
     | awk '{print $1}'
 }
+# ─── Dispatch identifier (ENG-87) ─────────────────────────────────────
+# Per-issue monotonic dispatch counter. Allocated at run-stage.sh::main
+# per dispatch (after preconditions, before render-prompt), exported as
+# PIPELINE_DISPATCH_ID, persisted in $(issue_dir)/issue-state.json. Format
+# ENG-N-d<NNNN> (4-digit zero-padded). The id is the glue layer for the
+# cross-dispatch staleness contract: every cross-dispatch read becomes a
+# single-equality check on this counter instead of secondary inference
+# (mtime, createdAt window, label state, prompt-token textual equality).
+allocate_dispatch_id() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "allocate_dispatch_id: missing issue id"
+  local state_file; state_file="$(issue_dir "$issue")/issue-state.json"
+  local lock_dir="$(issue_dir "$issue")/.allocate.lock"
+  mkdir -p "$(issue_dir "$issue")"
+  # Per-issue mkdir-lock around the read-modify-write. mv -f's rename
+  # atomicity guarantees readers see whole-or-prior, not a partial; the
+  # lock guarantees two concurrent allocators serialise instead of both
+  # reading the same prior_seq and double-writing seq+1.
+  acquire_lock "$lock_dir" 60 || die "allocate_dispatch_id: lock timeout for $issue"
+  # Use a trap to ensure the lock is released even on early die / jq
+  # parse failure inside the critical section.
+  local _alloc_rc=0
+  _allocate_dispatch_id_locked "$issue" "$state_file" || _alloc_rc=$?
+  release_lock "$lock_dir"
+  return "$_alloc_rc"
+}
+
+_allocate_dispatch_id_locked() {
+  local issue="$1" state_file="$2"
+  local prior_seq=0 prior_json="{}"
+  # Resilient prior-seq read: corrupt-JSON / torn-write / non-numeric
+  # current_dispatch_seq all reset to 0.
+  if [[ -s "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+    prior_seq="$(jq -r '.current_dispatch_seq // 0' "$state_file" 2>/dev/null || printf '0')"
+    [[ "$prior_seq" =~ ^[0-9]+$ ]] || prior_seq=0
+    prior_json="$(cat "$state_file")"
+  fi
+  local next_seq=$((prior_seq + 1))
+  local id; id="$(printf '%s-d%04d' "$issue" "$next_seq")"
+  # Merge: write current_dispatch_seq, current_dispatch_id, current_stage
+  # without losing classify-failure's existing fields (policy, reason,
+  # exit_code, retry_count, ...). jq -n + ($prior + {…}) preserves them.
+  local merged
+  merged="$(jq -cn --argjson prior "$prior_json" --argjson seq "$next_seq" \
+                 --arg id "$id" --arg stage "${PIPELINE_STAGE-}" '
+    $prior + {current_dispatch_seq: $seq, current_dispatch_id: $id, current_stage: $stage}')"
+  local tmp="${state_file}.tmp.$$"
+  printf '%s' "$merged" > "$tmp"
+  mv -f "$tmp" "$state_file"
+  export PIPELINE_DISPATCH_ID="$id"
+  printf '%s' "$id"
+}
+
+# Read-only sibling: returns current_dispatch_id from issue-state.json,
+# or empty string if absent. Used by verdict-handler.sh's dispatch_id-
+# primary filter (find_fresh_verdict, resume_in_progress_transition).
+current_dispatch_id() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "current_dispatch_id: missing issue id"
+  local state_file; state_file="$(issue_dir "$issue")/issue-state.json"
+  [[ -s "$state_file" ]] || { printf ''; return 0; }
+  jq -r '.current_dispatch_id // ""' "$state_file" 2>/dev/null || printf ''
+}
+
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
@@ -131,6 +195,7 @@ failure_outcome_for_exit() {
     26) printf 'worktree-mutation-forbidden' ;;
     27) printf 'self-leak' ;;
     28) printf 'leaked-in-scope-threshold' ;;
+    29) printf 'envelope-violation' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
@@ -272,7 +337,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

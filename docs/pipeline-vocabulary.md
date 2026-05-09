@@ -167,6 +167,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `protocol-violation`
 - `dispatch-timeout`
 - `pr-opened-too-early`
+- `dispatch-envelope-violation`
 
 ### `wait_reasons`
 
@@ -202,6 +203,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `evidence`
 - `reapplied`
 - `forensic`
+- `dispatch`
 
 ### `stages`
 

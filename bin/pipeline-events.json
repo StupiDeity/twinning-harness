@@ -15,7 +15,8 @@
     "scope-violation",
     "protocol-violation",
     "dispatch-timeout",
-    "pr-opened-too-early"
+    "pr-opened-too-early",
+    "dispatch-envelope-violation"
   ],
   "wait_reasons": [
     "awaiting-approval",
@@ -44,7 +45,8 @@
     "metric",
     "evidence",
     "reapplied",
-    "forensic"
+    "forensic",
+    "dispatch"
   ],
   "stages": [
     "brainstorming",
