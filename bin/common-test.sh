@@ -543,6 +543,63 @@ matched_cmd="$(assert_no_tool_invocation "$match_transcript" "mcp__plugin_linear
   || fail_at "87.C1: matched command should echo" "got: $matched_cmd"
 rm -f "$match_transcript"
 
+# ─── ENG-87 QA-adversarial ─────────────────────────────────────────
+# Boundary: dispatch_seq grammar past d9999. The format `%04d` is a
+# *minimum* width, not a max — Bash printf and awk both widen on
+# overflow, so seq=10000 yields ENG-N-d10000 (5 digits), not d0000
+# (truncation). Pin that the allocator continues monotonically rather
+# than wrapping silently, and that the marker grammar's `d[0-9]+`
+# shape is preserved (digits-only, no separator). Readers anchored on
+# `d[0-9]{4}` exactly would silently lose match — pin grammar so a
+# future reader-side regex change doesn't break this contract.
+printf '\n--- ENG-87 QA-adversarial: d9999 boundary ---\n'
+_eng87_qa1_dir="$_eng87_state_dir/ENG-87QA1"
+rm -rf "$_eng87_qa1_dir"
+mkdir -p "$_eng87_qa1_dir"
+printf '%s\n' '{"current_dispatch_seq":9999,"current_dispatch_id":"ENG-87QA1-d9999"}' \
+  > "$_eng87_qa1_dir/issue-state.json"
+qa1_id="$(allocate_dispatch_id ENG-87QA1)"
+[[ "$qa1_id" == "ENG-87QA1-d10000" ]] \
+  && pass_at "87.QA-1: seq=9999 increments to d10000 (no wrap, monotonic past 4-digit width)" \
+  || fail_at "87.QA-1: seq=9999 boundary" "expected ENG-87QA1-d10000, got: $qa1_id"
+qa1_seq="$(jq -r '.current_dispatch_seq // ""' "$_eng87_qa1_dir/issue-state.json" 2>/dev/null)"
+[[ "$qa1_seq" == "10000" ]] \
+  && pass_at "87.QA-1: persisted current_dispatch_seq=10000" \
+  || fail_at "87.QA-1: seq persistence" "expected 10000, got: $qa1_seq"
+[[ "$qa1_id" =~ ^ENG-87QA1-d[0-9]+$ ]] \
+  && pass_at "87.QA-1: id grammar d[0-9]+ preserved (digits-only, no separator on overflow)" \
+  || fail_at "87.QA-1: grammar drift" "id=$qa1_id"
+
+# Boundary: issue-state.json carries a UTF-8 BOM (0xEF 0xBB 0xBF). An
+# operator hand-edit in some editors injects BOM; jq tolerates it (jq
+# 1.5+) but `jq -e` may behave inconsistently across versions. Pin the
+# allocator's resilience: BOM-prefixed valid JSON should be treated as
+# *parseable* (read seq as 5) OR the corrupt-fallback path triggers
+# (seq=0 → d0001). Both are acceptable by D-007's torn-write policy;
+# pin one outcome so a silent jq-version dependency change doesn't
+# slip through.
+printf '\n--- ENG-87 QA-adversarial: BOM-prefixed state file ---\n'
+_eng87_qa2_dir="$_eng87_state_dir/ENG-87QA2"
+rm -rf "$_eng87_qa2_dir"
+mkdir -p "$_eng87_qa2_dir"
+printf '\xef\xbb\xbf{"current_dispatch_seq":5,"current_dispatch_id":"ENG-87QA2-d0005"}' \
+  > "$_eng87_qa2_dir/issue-state.json"
+qa2_id="$(allocate_dispatch_id ENG-87QA2)"
+# Whichever path was taken, the result MUST be a well-formed id. Both
+# `d0006` (jq tolerated BOM, read seq=5 → 6) and `d0001` (corrupt-
+# fallback path, seq=0 → 1) satisfy the contract. Pin "either-or" so
+# the test survives jq-version drift while still catching a truly
+# broken outcome (e.g., empty id, or die).
+case "$qa2_id" in
+  ENG-87QA2-d0006|ENG-87QA2-d0001)
+    pass_at "87.QA-2: BOM-prefixed state file → $qa2_id (jq-tolerant or corrupt-fallback; either is contract-compliant)"
+    ;;
+  *)
+    fail_at "87.QA-2: BOM-prefixed state file" \
+      "expected one of {ENG-87QA2-d0006, ENG-87QA2-d0001}, got: $qa2_id"
+    ;;
+esac
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

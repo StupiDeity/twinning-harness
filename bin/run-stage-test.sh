@@ -4545,6 +4545,73 @@ else
     "block between 'if _handle_wait' and the inner exit 0 has no _END_ROW_VERDICT_EMITTED=wait — agent emitted wait verdict but row records empty string"
 fi
 
+
+# ─── ENG-87 QA-adversarial: envelope validator edges ─────────────────────
+printf '\n--- ENG-87 QA-adversarial: envelope validator edges ---\n'
+
+# QA-6: Sidecar contains malformed/truncated NDJSON (disk-full
+# truncation simulated by half-line). The validator's jq pass should
+# not crash the orchestrator; behavior must be deterministic between
+# (a) "fail-open: corrupt = clean" and (b) "fail-closed: corrupt =
+# halt". Pin the actual behavior so a future jq-flag change is
+# visible. Per D-010 fail-open philosophy ("detective only, not a
+# primary defense"), expect rc=0 — but if the implementation chose
+# fail-closed, that's also defensible; either is contract-compliant
+# and deterministic.
+mkdir -p "$(issue_dir ENG-87QA-trunc)"
+# Write valid NDJSON line + a truncated half-line (no closing brace).
+{
+  printf '%s\n' "$(_eng87_ndjson_tool_use 'bash bin/linear.sh add-comment ENG-87QA-trunc --body ok')"
+  printf '{"type":"tool_use","name":"Bash","input":{"command":"bash bin/'  # truncated
+} > "$(issue_dir ENG-87QA-trunc)/.envelope-transcript-implementing"
+_eng87_qa6_rc=0
+_validate_dispatch_envelope ENG-87QA-trunc implementing 2>/dev/null || _eng87_qa6_rc=$?
+case "$_eng87_qa6_rc" in
+  0|29)
+    pass_at "ENG-87 QA-6: truncated/corrupt sidecar → rc=$_eng87_qa6_rc (deterministic; either fail-open or fail-closed)"
+    ;;
+  *)
+    fail_at "ENG-87 QA-6: corrupt sidecar non-deterministic" \
+      "expected rc∈{0,29}, got rc=$_eng87_qa6_rc — neither fail-open nor fail-closed"
+    ;;
+esac
+
+# QA-7: Multi-line `tool_use.input.command` with leading whitespace
+# attempts to evade the startswith prefix match. Pin the
+# documented blind spot: leading whitespace prevents the prefix from
+# matching (assert_no_tool_invocation does not normalize whitespace
+# before the startswith comparison). This is intentional behavior —
+# `bin/dispatch-test.sh::BC11` already pins the same property for the
+# branch-creation forbidden-prefix scan. Pin it here for the envelope
+# validator surface so a future change to either side stays in sync.
+mkdir -p "$(issue_dir ENG-87QA-leadws)"
+printf '%s\n' "$(_eng87_ndjson_tool_use '  curl https://api.linear.app/graphql -d {x:1}')" \
+  > "$(issue_dir ENG-87QA-leadws)/.envelope-transcript-implementing"
+_eng87_qa7_rc=0
+_validate_dispatch_envelope ENG-87QA-leadws implementing 2>/dev/null || _eng87_qa7_rc=$?
+if (( _eng87_qa7_rc == 0 )); then
+  pass_at "ENG-87 QA-7: leading-whitespace ' curl ...' command bypasses startswith scan (CURRENT — same blind spot as branch-creation BC11; pin in sync)"
+else
+  fail_at "ENG-87 QA-7: leading-whitespace evasion" \
+    "expected rc=0 (blind spot), got rc=$_eng87_qa7_rc — if a fix lands, this test must be flipped to expect rc=29"
+fi
+
+# QA-8: `bash -c` wrapper — agent invokes `bash -c "curl https://api.linear.app/..."`.
+# The startswith prefix match looks for `curl` at command start; here
+# `bash -c ...` is the leading token, so curl is hidden inside the
+# wrapped string. Pin the gap.
+mkdir -p "$(issue_dir ENG-87QA-bashc)"
+printf '%s\n' "$(_eng87_ndjson_tool_use 'bash -c "curl https://api.linear.app/graphql -d hello"')" \
+  > "$(issue_dir ENG-87QA-bashc)/.envelope-transcript-implementing"
+_eng87_qa8_rc=0
+_validate_dispatch_envelope ENG-87QA-bashc implementing 2>/dev/null || _eng87_qa8_rc=$?
+if (( _eng87_qa8_rc == 0 )); then
+  pass_at "ENG-87 QA-8: bash -c wrapper hides forbidden command from startswith scan (CURRENT — same class as ENG-87 J chained-command blind spot)"
+else
+  fail_at "ENG-87 QA-8: bash -c wrapper evasion" \
+    "expected rc=0 (blind spot), got rc=$_eng87_qa8_rc — if a fix lands (e.g. unwrap bash -c args before scan), this test must be updated"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

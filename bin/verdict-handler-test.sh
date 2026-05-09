@@ -1133,6 +1133,84 @@ fi
 # Restore the production current_dispatch_id (in case more tests follow).
 unset -f current_dispatch_id
 
+# ─── ENG-87 QA-adversarial: cutover + visibility edges ───────────────
+# The strict id-match path activates the moment ANY comment on the
+# issue carries a `<!-- meta: dispatch id=` marker (substring-match
+# against the entire concatenated comments JSON). This creates a
+# silent visibility blind spot during cutover: an issue that already
+# has a legitimate pre-ENG-87 verdict (no marker) gets a marker-bearing
+# comment posted by an unrelated tick (e.g., an operator triage note
+# auto-stamped by a fresh dispatch) — the legacy verdict immediately
+# becomes invisible to find_fresh_verdict because the strict path is
+# now active and the legacy verdict carries no current-dispatch
+# marker.
+#
+# Pin CURRENT behavior: mixed (legacy verdict + new marker on a
+# transition) → strict path activates → legacy verdict filtered out
+# → find_fresh_verdict returns empty → orchestrator may NOT advance
+# the issue based on the legacy verdict.
+#
+# Restore the test stub for current_dispatch_id (was unset above).
+current_dispatch_id() { printf '%s' "${_VH_TEST_DISPATCH_ID:-}"; }
+
+# Re-create stub log used by resume_in_progress_transition.
+reset_calls
+
+# Case 87-QA-CUTOVER-1: legacy verdict (no marker) + a NEW transition
+# marker present on the issue → strict path activates → legacy
+# verdict invisible.
+_VH_TEST_DISPATCH_ID="ENG-87QA-CUT-d0001"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: verdict result=pass stage=reviewing -->|2026-05-08T10:00:00.000Z" \
+  "<!-- pipeline: transition from=reviewing to=qa --><!-- meta: dispatch id=ENG-87QA-CUT-d0001 stage=reviewing -->|2026-05-09T09:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87QA-CUT" 2>/dev/null || printf '')"
+if [[ -z "$result" ]]; then
+  pass_at "ENG-87 QA-CUT-1: cutover blind spot — legacy verdict (no marker) invisible once any marker exists on issue (CURRENT behavior; documented D-005 trade-off)"
+else
+  fail_at "ENG-87 QA-CUT-1: cutover blind spot pin" \
+    "expected empty (legacy filtered), got: $result"
+fi
+
+# Case 87-QA-CUTOVER-2: post-cutover, the legacy verdict's stage CAN
+# still be resumed via the fresh dispatch's own verdict comment. Ship
+# a current-dispatch verdict comment alongside the legacy one →
+# find_fresh_verdict picks the current-dispatch verdict, ignoring the
+# legacy one's freshness. Pin: D-005's "first dispatch post-cutover
+# auto-stamps and unblocks" actually works.
+_VH_TEST_DISPATCH_ID="ENG-87QA-CUT2-d0002"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: verdict result=pass stage=reviewing -->|2026-05-08T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=fail target=implementing --><!-- meta: dispatch id=ENG-87QA-CUT2-d0002 stage=reviewing -->|2026-05-09T11:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87QA-CUT2" 2>/dev/null || printf '')"
+if [[ -n "$result" ]] \
+   && [[ "$(jq -r '.event.result' <<<"$result")" == "fail" ]]; then
+  pass_at "ENG-87 QA-CUT-2: post-cutover unblock — current-dispatch verdict picked, legacy filtered (D-005 recovery path)"
+else
+  fail_at "ENG-87 QA-CUT-2: post-cutover unblock" \
+    "expected fail verdict (current dispatch), got: $result"
+fi
+
+# Case 87-QA-RESUME-3: resume_in_progress_transition rejects a
+# transition whose marker carries an issue-id mismatch (e.g., another
+# project's ENG-87 leaks a marker via copy-paste in the body). The
+# guard at bin/verdict-handler.sh:408 extracts via grep -oE
+# `<!-- meta: dispatch id=[^[:space:]>]+`; pin current behavior on a
+# fully-different id token (different prefix entirely).
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87QA-R3-d0010"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=DIFFERENT-PROJECT-X-d0008 stage=planning -->|2026-05-09T08:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:planning"
+VH_CURRENT_LABELS="stage:planning pipeline:halted"
+rc=0; resume_in_progress_transition "ENG-87QA-R3" 2>/dev/null || rc=$?
+if [[ "$rc" == "1" ]]; then
+  pass_at "ENG-87 QA-R3: cross-project foreign id-token (DIFFERENT-PROJECT-X-d0008) rejected as stale (id-mismatch guard fires)"
+else
+  fail_at "ENG-87 QA-R3: cross-project foreign id" \
+    "rc=$rc calls=$(cat "$STUB_LOG") — expected guard to fire on non-matching id"
+fi
+unset -f current_dispatch_id
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

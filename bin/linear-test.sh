@@ -980,6 +980,96 @@ fi
 rm -f "$_eng87_l4i_log"
 unset _eng87_l4i_log _eng87_l4i_orig_log _eng87_l4i_line _eng87_l4i_disp_at _eng87_l4i_dedup_at _eng87_l4i_src _eng87_l4i_block _eng87_l4i_inject_line _eng87_l4i_dedup_line
 
+# ─── ENG-87 QA-adversarial: _inject_dispatch_marker edge cases ────────
+# Defensive: relax `set -e` so a single failing `if` predicate (e.g.
+# grep returning 1) cannot abort the whole test file early.
+set +e
+
+# QA-1 (idempotency false-positive on quoted-marker substring).
+# `_inject_dispatch_marker` checks for marker presence via `grep -qF
+# '<!-- meta: dispatch id='` against the entire body. If the body
+# legitimately *quotes* a prior dispatch's marker (e.g., a halt comment
+# diagnosing cross-dispatch staleness, or a fenced code block in
+# documentation), the substring match fires → injector skips → real
+# trailing marker NEVER appended → reader-side strict id-match path at
+# bin/verdict-handler.sh:123 looks for the CURRENT id and finds only
+# the quoted PRIOR id → comment filtered out as stale.
+#
+# This pins the CURRENT (false-positive) behavior so a reader can see
+# at-a-glance the gap. A targeted fix should anchor the idempotency
+# check to a trailing-on-its-own-line marker (line-anchored regex) so a
+# quoted-mid-body marker does NOT defeat injection. Test stays green;
+# the operator-visible cost is a follow-up Linear bug citing this case.
+printf '\n--- ENG-87 QA-adversarial: marker-injection edges ---\n'
+PIPELINE_DISPATCH_ID="ENG-87QA-d0008" \
+PIPELINE_STAGE="qa" \
+_eng87qa_quoted_body=$'Diagnostic for cross-dispatch staleness:\n\nThe prior cycle posted `<!-- meta: dispatch id=ENG-87QA-d0007 stage=qa -->` (cited here).\n\nMore body text.'
+PIPELINE_DISPATCH_ID="ENG-87QA-d0008" \
+PIPELINE_STAGE="qa" \
+_eng87qa_out="$(_eng87_test_inject "$_eng87qa_quoted_body")"
+# Pin current behavior: substring match fires, no current-dispatch
+# marker injected. The body still carries ONLY the quoted d0007
+# substring; the d0008 marker is absent.
+_eng87qa_d8_count="$(grep -cF 'dispatch id=ENG-87QA-d0008' <<<"$_eng87qa_out")"
+_eng87qa_d7_count="$(grep -cF 'dispatch id=ENG-87QA-d0007' <<<"$_eng87qa_out")"
+if [[ "$_eng87qa_d8_count" == "0" && "$_eng87qa_d7_count" == "1" ]]; then
+  pass_at "ENG-87 QA-3: quoted prior-dispatch marker defeats injection (CURRENT behavior; follow-up needed for line-anchored idempotency check)"
+else
+  fail_at "ENG-87 QA-3: quoted-marker false-positive" \
+    "expected d0008-count=0 d0007-count=1; got d0008=$_eng87qa_d8_count d0007=$_eng87qa_d7_count out: $_eng87qa_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+unset _eng87qa_quoted_body _eng87qa_out _eng87qa_d8_count _eng87qa_d7_count
+
+# QA-4 (foreign-dispatch update via add_or_update_comment).
+# add_or_update_comment finds an in-flight comment under the same
+# `meta: dedup key=...` and updates it with a new body. If the existing
+# comment carries a *prior* dispatch's `meta: dispatch id=` marker (the
+# dedup-found comment was originally posted under d0006), invoking
+# add_or_update_comment now under d0009 with a fresh body will:
+#   - inject d0009 marker into the new body (current dispatch's stamp)
+#   - the orchestrator-side update code path sends the current body
+# The test pins that the NEW body posted carries the CURRENT dispatch's
+# marker, not the prior one's. (Pre-fix bodies that quoted the OLD
+# dispatch id mid-text would have skipped injection — but a clean new
+# body posts cleanly under the current id.)
+PIPELINE_DISPATCH_ID="ENG-87QA-d0009" \
+PIPELINE_STAGE="qa" \
+_eng87qa4_clean_body="status update — dispatch context changed since last apply"
+PIPELINE_DISPATCH_ID="ENG-87QA-d0009" \
+PIPELINE_STAGE="qa" \
+_eng87qa4_out="$(_eng87_test_inject "$_eng87qa4_clean_body")"
+if grep -qF '<!-- meta: dispatch id=ENG-87QA-d0009 stage=qa -->' <<<"$_eng87qa4_out"; then
+  pass_at "ENG-87 QA-4: clean re-apply body under new dispatch_id stamps with current id (no prior-id leak)"
+else
+  fail_at "ENG-87 QA-4: foreign-dispatch update" \
+    "expected current-id stamp, got: $_eng87qa4_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+unset _eng87qa4_clean_body _eng87qa4_out
+
+# QA-5 (multi-line body with embedded marker-lookalike near end).
+# Pin: when the body's last line is the actual marker (correct shape),
+# injection skips. When the body's last line LOOKS like a marker but is
+# actually e.g. an HTML comment continuing onto the same line ending,
+# pin the substring-grep behavior (current). A line-anchored fix would
+# distinguish these; documenting current behavior so the contrast is
+# visible at fix time.
+PIPELINE_DISPATCH_ID="ENG-87QA-d0010" \
+PIPELINE_STAGE="implementing" \
+_eng87qa5_body="line one\n\n<!-- meta: dispatch id=ENG-87QA-d0010 stage=implementing -->"
+PIPELINE_DISPATCH_ID="ENG-87QA-d0010" \
+PIPELINE_STAGE="implementing" \
+_eng87qa5_out="$(_eng87_test_inject "$_eng87qa5_body")"
+_eng87qa5_count="$(grep -cF 'dispatch id=ENG-87QA-d0010' <<<"$_eng87qa5_out")"
+if [[ "$_eng87qa5_count" == "1" ]]; then
+  pass_at "ENG-87 QA-5: body with single trailing real marker → idempotent (count=1)"
+else
+  fail_at "ENG-87 QA-5: trailing-marker idempotency" "expected count=1, got: $_eng87qa5_count"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+unset _eng87qa5_body _eng87qa5_out _eng87qa5_count
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
