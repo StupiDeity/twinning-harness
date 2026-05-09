@@ -499,6 +499,36 @@ The next tick resumes from review's clean-review path (Decision C),
 emits `<!-- pipeline: verdict result=pass stage=reviewing -->`, and
 transitions to QA. Issues at any other stage are unaffected.
 
+## Slot-occupancy contract (ENG-90)
+
+`bin/poll.sh::_poll_classify_labels` is the slot-classification surface.
+Every output declares one of:
+
+- **`slot:"terminal"`** — `pipeline:abandoned`. Never recalled.
+- **`slot:"hold", advanceable:true`** — Active development. Pass 4 will
+  dispatch a `claude -p` agent on this tick.
+- **`slot:"vacate", operator_action_required:true`** — Agent-idle, recall
+  path requires operator action (label removal,
+  `bin/pipeline.sh decide --action continue`, PR review). Counted by
+  `_poll_emit_halt_sprawl_alert`'s threshold.
+- **`slot:"vacate", operator_action_required:false`** — Agent-idle,
+  recall is automatic (next-tick orchestrator-side state check:
+  `review_should_dispatch`, `pipeline_content_hash`, `_handle_wait`'s
+  budget). Excluded from halt-sprawl.
+
+`slot:"hold", advanceable:false` is not part of the contract. If a new
+branch needs to express "do not dispatch but keep the slot," it doesn't
+exist — reach for `vacate` (with the appropriate `operator_action_required`
+flag) instead.
+
+Adding a new branch to `_poll_classify_labels` MUST set
+`operator_action_required` for every `slot:"vacate"` output AND add a
+fixture under `bin/poll-slot-test.sh::AC-OAR-*`. The adversarial
+halt-sprawl test
+(`bin/halt-sprawl-adversarial-test.sh::AC-ADV-MISSING-FLAG`) catches
+silent omissions for the alert path; the poll-slot per-row fixtures
+catch silent omissions for the classifier path.
+
 ## Failure-mode quick reference
 
 For "this looks weird and I'm not sure why" mental-model gaps (slot

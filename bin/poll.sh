@@ -169,34 +169,62 @@ _poll_gather_stage_labeled_issues() {
 # Classify one issue's slot state from its labels (+ Linear comments when needed).
 # Input:  ident, labels_json  (labels_json is a JSON array of label name strings)
 # Output: {"slot": "hold"|"vacate"|"terminal", "advanceable": true|false,
+#          "operator_action_required": true|false (REQUIRED on every
+#                                  `slot:"vacate"` output; OMITTED on `hold`
+#                                  and `terminal`),
+#          "wait_recallable": true (only on the wait-verdict vacate arm —
+#                                  ENG-85; Pass-6-only ordering tag, NOT a
+#                                  recall-policy field. Every wait_recallable=true
+#                                  output also has operator_action_required=false
+#                                  per the slot-occupancy contract; the inverse
+#                                  does NOT hold (e.g. review-idle vacate is
+#                                  oar=false but not wait_recallable). Use
+#                                  operator_action_required for halt-sprawl
+#                                  inclusion; use wait_recallable only for
+#                                  Pass 6 picker selection at line 587-589),
+#          "wait_progress_ts": ISO8601 (only on the wait-verdict vacate arm),
 #          "labels": [name, ...]}
 # The emitted "labels" reflects any auto-resume label mutations from
 # _poll_evaluate_skip; _poll_classify_all merges it onto the gathered item
 # so Pass 4 reads the post-resume label set in the same tick.
 #
 # Rules (evaluated top-down, first match wins):
-#   _poll_evaluate_skip returns 1 (still skipped — applies to:
-#     skip-until-human-acts present, OR
-#     skip-until-code-changes present AND evidence unchanged)
-#                                                    → vacate
+#   _poll_evaluate_skip returns 1 (still skipped) →
+#     skip-until-human-acts present                → vacate, oar=true (D-005)
+#     skip-until-code-changes + state file present
+#       + evidence unchanged                       → vacate, oar=false (D-005 — auto-recallable)
+#     skip-until-code-changes + state file absent  → vacate, oar=true (D-005 review-fix —
+#                                                    no orchestrator-side recall predicate;
+#                                                    operator must remove label or
+#                                                    classify-failure must write state file)
 #   _poll_evaluate_skip returns 0 (include — covers:
 #     no skip labels + no state file, OR
 #     orphan state file cleanup, OR
 #     orphan label cleanup, OR
 #     skip-until-code-changes evidence changed + label cleared)
-#                                                    → proceed with label-based classification
-#   pipeline:abandoned                               → terminal
-#   pipeline:paused                                  → vacate (human-initiated)
-#   pipeline:scope-approval-needed                   → vacate (human-gated)
-#   pipeline:halted (bare; evaluated via marker)     →
-#     find_fresh_verdict returns empty               → hold, NOT advanceable
-#                                                      (agent may have exited silently;
-#                                                       next tick pre-dispatch re-checks)
-#     fresh marker is pipeline-halt                  → vacate (halt-for-human / protocol-violation)
+#                                                  → proceed with label-based classification
+#   pipeline:abandoned                             → terminal
+#   pipeline:paused                                → vacate, oar=true (D-001 — human-initiated)
+#   pipeline:scope-approval-needed                 → vacate, oar=true (D-001 — human-gated)
+#   pipeline:halted (bare; evaluated via marker) →
 #     fresh marker is pipeline-stage-summary/rejection → hold, advanceable
-#                                                      (verdict_handler will transition)
-#     other marker shape                             → hold, NOT advanceable (conservative)
-#   no blocker labels                                → hold, advanceable
+#                                                    (verdict_handler will transition)
+#     fresh marker is pipeline-halt | unknown marker
+#       | find_fresh_verdict returns empty         → vacate, oar=true (D-003 — folded
+#                                                    into default arm; halt label
+#                                                    gates dispatch regardless of
+#                                                    marker shape; operator must run
+#                                                    `bin/pipeline.sh decide --action continue`)
+#   wait verdict on stage:building                 → vacate, oar=false, wait_recallable=true
+#                                                    (D-001, ENG-85 — _handle_wait re-runs
+#                                                    the predicate next tick)
+#   stage:reviewing →
+#     branch-name derivation failed (Linear API down) → hold, advanceable (fail-open)
+#     review_should_dispatch=true                  → hold, advanceable (D-002)
+#     review_should_dispatch=false                 → vacate, oar=false (D-002 —
+#                                                    orchestrator-side state check
+#                                                    recalls next tick)
+#   no blocker labels                              → hold, advanceable
 #
 # Note: _poll_evaluate_skip handles both skip-until-* label branches AND
 # orphan cleanup (state file without label, or label without state file).
@@ -204,12 +232,39 @@ _poll_gather_stage_labeled_issues() {
 # orphan-cleanup behavior of pre-ENG-20 main(). For non-skip issues with
 # neither label nor state file, it short-circuits to return 0 with no
 # side effects — cheap.
+#
+# ENG-90: every `slot:"vacate"` output declares operator_action_required.
+# See CLAUDE.md "Slot-occupancy contract (ENG-90)" before adding new
+# branches.
 _poll_classify_labels() {
   local ident="$1" labels_json="$2"
   local refreshed_labels=""
 
   if ! refreshed_labels="$(_poll_evaluate_skip "$ident" "$labels_json")"; then
-    jq -nc --argjson l "$labels_json" '{slot:"vacate",advanceable:false,labels:$l}'
+    # ENG-90 D-005: differentiate the two skip kinds.
+    # skip-until-human-acts is operator-action-required (operator removes
+    # the label). skip-until-code-changes with evidence unchanged is
+    # auto-recallable: the next-tick _poll_evaluate_skip re-checks
+    # pipeline_content_hash + branch SHA and clears the label mid-tick on
+    # change (line 109-134).
+    #
+    # ENG-90 review-fix: the no-state-file path of skip-until-code-changes
+    # is ALSO operator-action-required. _poll_evaluate_skip short-circuits
+    # at line 87-89 BEFORE evidence is computed when the state file is
+    # absent, so the next tick takes the identical path and current_hash /
+    # current_sha never run — no orchestrator-side recall predicate exists.
+    # Operator must remove the label (or classify-failure.sh must belatedly
+    # write the state file).
+    local oar="false"
+    local _state_file
+    _state_file="$(issue_dir "$ident")/issue-state.json"
+    if [[ "$(jq -r --arg n "pipeline:skip-until-human-acts" \
+            '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")" == "true" ]] \
+       || [[ ! -f "$_state_file" ]]; then
+      oar="true"
+    fi
+    jq -nc --argjson l "$labels_json" --argjson oar "$oar" \
+      '{slot:"vacate",advanceable:false,operator_action_required:$oar,labels:$l}'
     return 0
   fi
   # _poll_evaluate_skip prints a refreshed labels_json on auto-resume so
@@ -227,33 +282,46 @@ _poll_classify_labels() {
     class='{"slot":"terminal","advanceable":false}'
   elif [[ "$(_has_label pipeline:paused)" == "true" ]] \
     || [[ "$(_has_label pipeline:scope-approval-needed)" == "true" ]]; then
-    class='{"slot":"vacate","advanceable":false}'
+    # ENG-90 D-001: human-applied paused / scope-approval-needed labels
+    # require an operator action (label removal) before the slot recalls.
+    class='{"slot":"vacate","advanceable":false,"operator_action_required":true}'
   elif [[ "$(_has_label pipeline:halted)" == "true" ]]; then
     local fresh
     fresh="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
-    if [[ -z "$fresh" ]]; then
-      class='{"slot":"hold","advanceable":false}'
-    else
+    if [[ -n "$fresh" ]]; then
       local marker
       marker="$(jq -r '.marker // ""' <<<"$fresh")"
       case "$marker" in
         pipeline-stage-summary|pipeline-rejection)
+          # Verdict-handler-led transition is upcoming in Pass 4; the halt
+          # label is consumed by apply_transition. Slot remains held
+          # (active dispatch work).
           class='{"slot":"hold","advanceable":true}' ;;
-        pipeline-halt)
-          class='{"slot":"vacate","advanceable":false}' ;;
         *)
-          class='{"slot":"hold","advanceable":false}' ;;
+          # ENG-90 D-003: pipeline-halt OR unknown marker. Halt label gates
+          # dispatch — no agent compute will run regardless of marker
+          # shape. Operator must run `bin/pipeline.sh decide --action
+          # continue`.
+          class='{"slot":"vacate","advanceable":false,"operator_action_required":true}' ;;
       esac
+    else
+      # ENG-90 D-003: no fresh marker (silent agent crash, externally-
+      # applied label, or marker race with this tick). Halt label still
+      # gates dispatch — no agent compute will run. Operator must run
+      # `bin/pipeline.sh decide --action continue`.
+      class='{"slot":"vacate","advanceable":false,"operator_action_required":true}'
     fi
   elif fresh_wait="$(find_fresh_wait_verdict "$ident" 2>/dev/null)"; [[ -n "$fresh_wait" ]]; then
     # ENG-85: a wait verdict newer than the most recent transition vacates
     # the slot. Symmetric with the pipeline-halt arm above — both express
     # agent-idle-on-external-signal. Pass 6 in main() picks wait-recallable
-    # issues only when no held / inbox work is ready.
+    # issues only when no held / inbox work is ready. ENG-90 D-001:
+    # operator_action_required=false — _handle_wait re-runs the predicate
+    # on the next tick.
     local _wait_ts
     _wait_ts="$(jq -r '.created_at' <<<"$fresh_wait")"
     class="$(jq -nc --arg ts "$_wait_ts" \
-      '{slot:"vacate", advanceable:false, wait_recallable:true, wait_progress_ts:$ts}')"
+      '{slot:"vacate", advanceable:false, wait_recallable:true, wait_progress_ts:$ts, operator_action_required:false}')"
   elif [[ "$(_has_label stage:reviewing)" == "true" ]]; then
     # ENG-50: gate review dispatch on observable PR state.
     # ENG-53 #12: derive the branch via bin/branch-name.sh (same convention
@@ -282,7 +350,11 @@ _poll_classify_labels() {
       if review_should_dispatch "$ident" "$_rp_branch"; then
         class='{"slot":"hold","advanceable":true}'
       else
-        class='{"slot":"hold","advanceable":false}'
+        # ENG-90 D-002: PR not mergeable / checks pending. Agent dispatch
+        # will not run; the next tick re-evaluates review_should_dispatch
+        # (cheap orchestrator-side state check). Vacate the slot so
+        # sibling work can dispatch.
+        class='{"slot":"vacate","advanceable":false,"operator_action_required":false}'
       fi
     fi
   else
@@ -351,13 +423,14 @@ _poll_emit_halt_sprawl_alert() {
     return 0
   fi
 
-  # ENG-85: exclude wait-recallable vacates from the halt-sprawl count.
-  # An issue awaiting a build approval/CI signal is agent-idle-on-external-signal,
-  # not a halt — including them would skew the operator-facing alert toward
-  # false positives (a fleet of long-running awaiting-approval builds would
-  # cross the halt-sprawl threshold without any halts actually present).
+  # ENG-90 D-004: count vacates where operator action is required to advance.
+  # Excludes orchestrator-recallable vacates (build-wait — ENG-85;
+  # review-PR-pending — D-002; skip-until-code-changes evidence-unchanged —
+  # D-005), which are not halts. Default-false hatch: items missing the
+  # flag default to excluded (strictly safer than over-counting). The
+  # `AC-ADV-MISSING-FLAG` adversarial test pins this default.
   local count
-  count="$(jq '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true)] | length' <<<"$classified_json")"
+  count="$(jq '[.[] | select(.slot == "vacate" and (.operator_action_required // false) == true)] | length' <<<"$classified_json")"
 
   if ! (( count > threshold )); then
     return 0
@@ -385,7 +458,7 @@ _poll_emit_halt_sprawl_alert() {
 
   if (( now_epoch - last_epoch > 86400 )); then
     local top3
-    top3="$(jq -rc '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true) | .identifier] | .[:3] | join(", ")' \
+    top3="$(jq -rc '[.[] | select(.slot == "vacate" and (.operator_action_required // false) == true) | .identifier] | .[:3] | join(", ")' \
              <<<"$classified_json")"
     local suffix=""
     if (( count > 3 )); then
@@ -454,15 +527,22 @@ main() {
   local hn
   hn="$(jq 'length' <<<"$held")"
   while (( i < hn )); do
-    local ident stage_label labels_json advanceable
+    local ident stage_label labels_json
     ident="$(jq -r ".[$i].identifier"    <<<"$held")"
     stage_label="$(jq -r ".[$i].stage_label" <<<"$held")"
     labels_json="$(jq -c ".[$i].labels"   <<<"$held")"
-    advanceable="$(jq -r ".[$i].advanceable" <<<"$held")"
-
-    if [[ "$advanceable" != "true" ]]; then
-      i=$((i+1)); continue
-    fi
+    # ENG-90 D-007: the slot-occupancy contract guarantees every
+    # `slot:"hold"` output has `advanceable:true` (verified at
+    # poll.sh:299 halt+stage-summary, :346 reviewing fail-open, :351
+    # reviewing+dispatch, :361 catch-all). Pass 3's `select(.slot ==
+    # "hold")` filter at line 515 admits only those branches, so the
+    # advanceable!=true skip-guard previously here was unreachable.
+    # If a future classifier branch ever emits hold/advanceable=false
+    # in violation of the contract, the per-row AC-OAR-* fixtures in
+    # bin/poll-slot-test.sh (and CLAUDE.md "Slot-occupancy contract")
+    # are the surface that catches it — not a defensive guard here
+    # that would silently re-introduce the very state the contract
+    # was meant to eliminate.
 
     local has_halt
     has_halt="$(jq -r --arg n "pipeline:halted" \
