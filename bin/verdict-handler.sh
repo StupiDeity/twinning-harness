@@ -56,6 +56,15 @@ _vh_protocol_violation() {
   bash "$_VH_SCRIPT_DIR/linear.sh" add-or-update-comment \
     "protocol-violation/$case_id/$issue" "$issue" "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
+  # ENG-87 review-iter-2 M1: surface verdict_emitted to run-stage's
+  # dispatch_history end-row trap. Protocol-violation halts post a
+  # halt verdict directly (NOT via classify_failure), so the trap
+  # globals would otherwise stay at their initial "" — schema drift
+  # for the verdict_emitted field. Same allocator-style coupling
+  # documented in classify-failure.sh.
+  if [[ -n "${_END_ROW_HIST_FILE-}" ]]; then
+    _END_ROW_VERDICT_EMITTED="halt"
+  fi
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
 }
 
