@@ -3938,6 +3938,67 @@ else
   fail_at "ENG-87 D: clear-on-start idempotent" "rc1=$_rc1 rc2=$_rc2"
 fi
 
+# Case 87-D' (review-iter-2 C3'): crash-recovery — dispatch_history.jsonl
+# has an orphaned start row (a prior dispatch died before its end-row
+# trap could fire). The next tick's allocator MUST advance past the
+# orphaned id by reading current_dispatch_seq from issue-state.json,
+# NOT from dispatch_history.jsonl. CLAUDE.md:523-526 advertises this
+# crash-recovery invariant; iter-2 review C3 flagged Case-87-D as
+# partial because it tested only the file-absent idempotence and not
+# the crash-recovery path.
+mkdir -p "$(issue_dir ENG-87DCRASH)"
+# Pre-seed issue-state.json as if allocator successfully ran for d0007
+# but the dispatch crashed before writing its end-row (history has only
+# the start row).
+jq -cn '{
+  current_dispatch_seq: 7,
+  current_dispatch_id: "ENG-87DCRASH-d0007",
+  current_stage: "implementing"
+}' > "$(issue_dir ENG-87DCRASH)/issue-state.json"
+# Pre-seed dispatch_history.jsonl with an orphaned start row.
+printf '{"dispatch_id":"ENG-87DCRASH-d0007","stage":"implementing","started_at":"2026-05-09T10:00:00Z","trigger":"transition","predecessor_dispatch_id":"ENG-87DCRASH-d0006","branch":"feat/eng-87dcrash","pipeline_content_hash":"hashCRASH"}\n' \
+  > "$(issue_dir ENG-87DCRASH)/dispatch_history.jsonl"
+PIPELINE_STAGE="implementing" _eng87_d_next_id="$(allocate_dispatch_id ENG-87DCRASH 2>/dev/null || printf '')"
+if [[ "$_eng87_d_next_id" == "ENG-87DCRASH-d0008" ]]; then
+  pass_at "ENG-87 D' (review-iter-2 C3'): post-crash allocator advances past orphaned start row (d0008, not d0001)"
+else
+  fail_at "ENG-87 D' (review-iter-2 C3'): post-crash allocator monotonicity" \
+    "expected ENG-87DCRASH-d0008, got: $_eng87_d_next_id"
+fi
+# Also assert the start row is preserved (audit log; never read at
+# runtime) — CLAUDE.md:539-541 mandates dispatch_history.jsonl is
+# append-only and survives recovery.
+_eng87_d_orphan_present=0
+grep -q '"dispatch_id":"ENG-87DCRASH-d0007"' "$(issue_dir ENG-87DCRASH)/dispatch_history.jsonl" \
+  && _eng87_d_orphan_present=1
+if (( _eng87_d_orphan_present == 1 )); then
+  pass_at "ENG-87 D' (review-iter-2 C3'): orphaned start row preserved in audit log"
+else
+  fail_at "ENG-87 D' (review-iter-2 C3'): audit-log preservation" "orphaned start row was rewritten/dropped"
+fi
+
+# Case 87-D2' (review-iter-2 C3'): crash-recovery — orphaned
+# wait-${stage}.json + stage-summary-${stage}.md from a prior crashed
+# dispatch are removed by clear-on-start on the next dispatch. CLAUDE.md
+# §"Operator gotchas" claims "a stale stage-summary-*.md or wait-*.json
+# from the crashed dispatch is gone before the agent starts". This pin
+# locks the behavior — without it, a refactor that conditioned the
+# clear on dispatch-success silently re-introduces the staleness window.
+mkdir -p "$(issue_dir ENG-87DLEFT)"
+printf '{"reason":"awaiting-approval","attempts":1}\n' \
+  > "$(issue_dir ENG-87DLEFT)/wait-implementing.json"
+printf '# stale summary from crashed prior dispatch\n' \
+  > "$(issue_dir ENG-87DLEFT)/stage-summary-implementing.md"
+_clear_current_stage_slots ENG-87DLEFT implementing
+_eng87_d2_w=0; [[ -e "$(issue_dir ENG-87DLEFT)/wait-implementing.json" ]] && _eng87_d2_w=1
+_eng87_d2_s=0; [[ -e "$(issue_dir ENG-87DLEFT)/stage-summary-implementing.md" ]] && _eng87_d2_s=1
+if (( _eng87_d2_w == 0 )) && (( _eng87_d2_s == 0 )); then
+  pass_at "ENG-87 D2' (review-iter-2 C3'): orphaned wait+summary from crashed dispatch cleared on next start"
+else
+  fail_at "ENG-87 D2' (review-iter-2 C3'): post-crash slot cleanup" \
+    "wait-present=$_eng87_d2_w summary-present=$_eng87_d2_s (expected both 0)"
+fi
+
 # Case 87-E: issue-state.json is NOT cleared (allocator merges into it).
 # Per plan: clearing issue-state.json would drop classify-failure's
 # policy/reason/retry_count fields and cause the next allocator call to
@@ -4089,6 +4150,30 @@ if printf '%s\n' "$_eng87_c3_block" \
     "rm -f .envelope-transcript-* found between rc=29 detection and exit 29 — operator will not be able to inspect the sidecar that recovery.md / CLAUDE.md tell them to read."
 else
   pass_at "ENG-87 C3: halt path preserves envelope sidecar (no rm before exit 29)"
+fi
+
+# Case 87-C3-behavioral (review-iter-2 M4): the source-grep above is
+# brittle — a refactor that renames `_env_rc`, switches to `case`, or
+# extracts a helper produces empty `_eng87_c3_block` and the grep
+# silently passes (false-positive). Add a behavioral test that drives
+# the validator end-to-end: pre-seed a violation transcript, invoke
+# `_validate_dispatch_envelope` directly, assert (a) rc=29 and
+# (b) sidecar still exists post-return. This is the contract operators
+# rely on — the recovery.md / CLAUDE.md "preserved across the halt"
+# promise — answered behaviorally rather than via source-text inference.
+reset_capture
+mkdir -p "$(issue_dir ENG-87C3B)"
+_eng87_c3b_sidecar="$(issue_dir ENG-87C3B)/.envelope-transcript-implementing"
+printf '%s\n' "$(_eng87_ndjson_tool_use "mcp__plugin_linear_linear__save_issue --id ENG-87C3B --labels '[stage:reviewing]'")" \
+  > "$_eng87_c3b_sidecar"
+_eng87_c3b_rc=0
+_validate_dispatch_envelope ENG-87C3B implementing 2>/dev/null || _eng87_c3b_rc=$?
+_eng87_c3b_present=0; [[ -s "$_eng87_c3b_sidecar" ]] && _eng87_c3b_present=1
+if (( _eng87_c3b_rc == 29 )) && (( _eng87_c3b_present == 1 )); then
+  pass_at "ENG-87 C3-behavioral (review-iter-2 M4): validator returns rc=29 AND sidecar preserved post-return (operator-inspectable)"
+else
+  fail_at "ENG-87 C3-behavioral (review-iter-2 M4): rc/preservation contract" \
+    "rc=$_eng87_c3b_rc sidecar-present=$_eng87_c3b_present (expected rc=29 present=1)"
 fi
 
 # ─── ENG-87 M1+M2: dispatch_history.jsonl end-row at every exit, full schema ──
