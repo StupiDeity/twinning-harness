@@ -1498,21 +1498,40 @@ else
 fi
 
 # ─── AC-OAR-HALT-NO-MARKER-STARVATION: ENG-A at stage:planning + halt + no
-#     marker; ENG-B Todo in inbox; cap=2. main() dispatches ENG-B with
+#     marker; ENG-B Todo in inbox; cap=1. main() dispatches ENG-B with
 #     entry_action=apply-stage-label (halt-no-marker freed the slot per
 #     D-003). Pre-ENG-90, ENG-A held the slot and Pass 5's inbox gate
 #     skipped — no inbox issue could enter the pipeline.
+#
+#     Why cap=1, not the test default cap=2: under cap=2, Pass 5's inbox
+#     gate (held_count < max_concurrent → 1 < 2 = true) admits ENG-B
+#     regardless of whether ENG-A holds or vacates. Pre-fix and post-fix
+#     dispatch identically. Cap=1 closes the gate pre-fix
+#     (held_count=1 ≥ cap=1) and opens it post-fix (held_count=0 < 1),
+#     which is the literal regression D-003 fixes.
 reset_fixtures
+SCRATCH_CONFIG="$STUB_DIR/config-cap-1.json"
+jq -n '{
+  orchestrator: {paused: false, max_concurrent_features: 1, alert_on_halted_over: 5},
+  linear: {
+    native_states: {inbox: "Todo", active: "In Progress", done: "Done"},
+    workflow_stages: ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"],
+    stage_label_prefix: "stage:"
+  }
+}' > "$SCRATCH_CONFIG"
+ORIG_CONFIG="$CONFIG"
+CONFIG="$SCRATCH_CONFIG"
 write_label_fixture "stage:planning" \
   "ENG-OAR-HNMS-A|In Progress|3|stage:planning,pipeline:halted"
 # No write_comments_fixture for ENG-OAR-HNMS-A → linear.sh stub returns []
 write_inbox_fixture \
   "ENG-OAR-HNMS-B|Todo|3|Bug"
 out="$(main 2>/dev/null || true)"
+CONFIG="$ORIG_CONFIG"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 entry="$(jq -r '.entry_action // ""' <<<"$out")"
 if [[ "$issue_id" == "ENG-OAR-HNMS-B" && "$entry" == "apply-stage-label" ]]; then
-  pass_at "AC-OAR-HALT-NO-MARKER-STARVATION halt-no-marker frees slot for inbox pickup (D-003)"
+  pass_at "AC-OAR-HALT-NO-MARKER-STARVATION halt-no-marker frees slot for inbox pickup (D-003, cap=1)"
 else
   fail_at "AC-OAR-HALT-NO-MARKER-STARVATION" \
     "got issue_id=$issue_id entry=$entry full=$out"
