@@ -384,13 +384,14 @@ _poll_emit_halt_sprawl_alert() {
     return 0
   fi
 
-  # ENG-85: exclude wait-recallable vacates from the halt-sprawl count.
-  # An issue awaiting a build approval/CI signal is agent-idle-on-external-signal,
-  # not a halt — including them would skew the operator-facing alert toward
-  # false positives (a fleet of long-running awaiting-approval builds would
-  # cross the halt-sprawl threshold without any halts actually present).
+  # ENG-90 D-004: count vacates where operator action is required to advance.
+  # Excludes orchestrator-recallable vacates (build-wait — ENG-85;
+  # review-PR-pending — D-002; skip-until-code-changes evidence-unchanged —
+  # D-005), which are not halts. Default-false hatch: items missing the
+  # flag default to excluded (strictly safer than over-counting). The
+  # `AC-ADV-MISSING-FLAG` adversarial test pins this default.
   local count
-  count="$(jq '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true)] | length' <<<"$classified_json")"
+  count="$(jq '[.[] | select(.slot == "vacate" and (.operator_action_required // false) == true)] | length' <<<"$classified_json")"
 
   if ! (( count > threshold )); then
     return 0
@@ -418,7 +419,7 @@ _poll_emit_halt_sprawl_alert() {
 
   if (( now_epoch - last_epoch > 86400 )); then
     local top3
-    top3="$(jq -rc '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true) | .identifier] | .[:3] | join(", ")' \
+    top3="$(jq -rc '[.[] | select(.slot == "vacate" and (.operator_action_required // false) == true) | .identifier] | .[:3] | join(", ")' \
              <<<"$classified_json")"
     local suffix=""
     if (( count > 3 )); then
