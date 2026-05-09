@@ -58,25 +58,19 @@ classify_failure() {
   # ENG-87 review C2 fix, the body construction stomped allocator fields
   # by writing a fresh object — breaking dispatch_id monotonicity
   # (next allocator read prior_seq=0 → re-emitted d0001).
+  # ENG-87 review-iter-2 m6: hoist the four scalar reads above the
+  # conditional. jq's `// "default"` makes them safe on corrupt /
+  # empty / missing files (returns ""/"0"). Only `prior_json` (consumed
+  # by --argjson prior in the merge below) MUST be `{}` on the
+  # corrupt-JSON branch — --argjson would die on invalid input.
   local prior_policy prior_hash prior_sha prior_count prior_json
-  prior_policy=""
-  prior_hash=""
-  prior_sha=""
-  prior_count=0
+  prior_policy="$(jq -r '.policy // ""'                       "$state_file" 2>/dev/null || true)"
+  prior_hash="$(jq -r '.evidence.pipeline_content_hash // ""' "$state_file" 2>/dev/null || true)"
+  prior_sha="$(jq -r '.evidence.branch_head_sha // ""'        "$state_file" 2>/dev/null || true)"
+  prior_count="$(jq -r '.retry_count // 0'                    "$state_file" 2>/dev/null || printf '0')"
   prior_json="{}"
   if [[ -s "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
-    prior_policy="$(jq -r '.policy // ""'                             "$state_file" 2>/dev/null || true)"
-    prior_hash="$(jq -r '.evidence.pipeline_content_hash // ""'       "$state_file" 2>/dev/null || true)"
-    prior_sha="$(jq -r '.evidence.branch_head_sha // ""'              "$state_file" 2>/dev/null || true)"
-    prior_count="$(jq -r '.retry_count // 0'                          "$state_file" 2>/dev/null || printf '0')"
     prior_json="$(cat "$state_file")"
-  elif [[ -f "$state_file" ]]; then
-    # File exists but is empty or corrupt JSON — preserved fields are
-    # unrecoverable; legacy individual reads kept for back-compat.
-    prior_policy="$(jq -r '.policy // ""'                             "$state_file" 2>/dev/null || true)"
-    prior_hash="$(jq -r '.evidence.pipeline_content_hash // ""'       "$state_file" 2>/dev/null || true)"
-    prior_sha="$(jq -r '.evidence.branch_head_sha // ""'              "$state_file" 2>/dev/null || true)"
-    prior_count="$(jq -r '.retry_count // 0'                          "$state_file" 2>/dev/null || printf '0')"
   fi
 
   # Auto-escalation: retry-immediately with matching evidence → increment, escalate at >=2.

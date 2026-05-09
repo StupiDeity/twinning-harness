@@ -10,7 +10,13 @@
 #             24=linear-post-failed, 25=agent-contract-missing (agent exited clean
 #             but emitted neither the stage-summary file nor a verdict-marker comment),
 #             26=worktree-mutation-forbidden (build-stage transcript invoked
-#             git checkout/switch/pull/reset; ENG-71).
+#             git checkout/switch/pull/reset; ENG-71),
+#             27=self-leak (out-of-scope path appeared post-dispatch; ENG-14),
+#             28=leaked-in-scope-threshold (≥3 consecutive in-scope leaks; ENG-14),
+#             29=envelope-violation (dispatch envelope validator detected agent bypass
+#             of bin/linear.sh — ENG-87),
+#             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
+#             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -769,6 +775,12 @@ _validate_dispatch_envelope() {
   if (( ${#violations[@]} > 0 )); then
     local viol_str; viol_str="$(printf '%s; ' "${violations[@]}")"
     local body
+    # ${VAR:-unknown} (NOT ${VAR-}) is intentional here: the halt body is
+    # operator-facing prose and must never render a literal empty
+    # `dispatch_id=` field — `unknown` is a self-explanatory sentinel
+    # if the env var was somehow unset by the time validation runs (e.g.
+    # a downstream caller that forgot to allocate). Lint-safe — neither
+    # variable name matches secret-probe-lint.sh's regex.
     body="$(printf '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->\n\nDispatch envelope violation on dispatch_id=%s stage=%s:\n\n%s\n\nThe agent bypassed bin/linear.sh (auto-injection chokepoint). Inspect: %s\n\n**Resume:** investigate the bypass, fix the agent prompt or tool-allowlist, then run `bash bin/pipeline.sh decide %s --action continue`.' \
       "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$viol_str" "$sidecar" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
@@ -954,9 +966,27 @@ main() {
     # Refining (loopback vs inbox-pickup vs retry-immediately) is forensic
     # only and is left to a future ticket per brainstorm §12.
     _trigger="transition"
-    printf '{"dispatch_id":"%s","stage":"%s","started_at":"%s","trigger":"%s","predecessor_dispatch_id":"%s","branch":"%s","pipeline_content_hash":"%s"}\n' \
-      "$_dispatch_id" "$stage" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      "$_trigger" "$_predecessor" "$_branch" "$_hash" >> "$_hist_file"
+    # ENG-87 review-iter-2 m1: jq -nc --arg for symmetry with the
+    # end-row writer at line ~824 and to keep the row safe under any
+    # future field carrying embedded `"` / newline. printf '%s' was a
+    # holdover from when the schema was strictly ASCII-safe.
+    jq -nc \
+      --arg dispatch_id "$_dispatch_id" \
+      --arg stage "$stage" \
+      --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg trigger "$_trigger" \
+      --arg predecessor_dispatch_id "$_predecessor" \
+      --arg branch "$_branch" \
+      --arg pipeline_content_hash "$_hash" '
+      {
+        dispatch_id: $dispatch_id,
+        stage: $stage,
+        started_at: $started_at,
+        trigger: $trigger,
+        predecessor_dispatch_id: $predecessor_dispatch_id,
+        branch: $branch,
+        pipeline_content_hash: $pipeline_content_hash
+      }' >> "$_hist_file"
 
     # ENG-87 review M1+M2: install the EXIT trap that appends the end
     # row at every exit site. Globals seeded here; classify_failure /

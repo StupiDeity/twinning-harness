@@ -493,7 +493,14 @@ reason `dispatch-envelope-violation` (registered in
 at `$(issue_dir)/dispatch_history.jsonl`. Two rows per dispatch
 (start + end). NEVER cleared; never read at runtime by decision-making
 code. Consumed by retrospective + manual triage; surfacing in
-`bin/status.sh` is a separate ticket.
+`bin/status.sh` is a separate ticket. **Accepted YAGNI cost.** The
+~95 LOC writer + 8 module globals + idempotency sentinel ship without
+a runtime consumer (the retrospective is the first reader, and that
+ticket is open as ENG-92). Trade-off: paying the maintenance cost now
+to capture forensic data starting at iter-1 of the contract avoids
+having to back-fill missing `dispatch_id`-stamped history rows the
+moment a real incident lands. Reviewers should NOT trim the writer
+absent a separate decision to defer the forensic capture surface.
 
 **Recovery.** `bash bin/pipeline.sh decide ENG-N --action continue`
 (see "Failure-mode quick reference" §) clears the halt label and

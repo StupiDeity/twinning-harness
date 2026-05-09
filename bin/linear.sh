@@ -55,8 +55,8 @@ _classify_label() {
 # comment body when PIPELINE_DISPATCH_ID is set. Idempotent — skip if
 # the body already contains the marker (defends against double-injection
 # on add-or-update-comment re-applies). Operator-lane writes (env unset)
-# bypass injection by design. Lint-clean: ${VAR-} (single-dash empty
-# fallback); neither name matches secret-probe-lint.sh's regex.
+# bypass injection by design. ${VAR-} (single-dash empty fallback) is
+# the set -u-safe form for set-but-may-be-empty env probing.
 _inject_dispatch_marker() {
   local body="$1"
   [[ -n "${PIPELINE_DISPATCH_ID-}" ]] || { printf '%s' "$body"; return 0; }

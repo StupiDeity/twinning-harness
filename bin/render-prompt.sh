@@ -32,11 +32,12 @@ COMMON_SECTION='0. Common rules (delivered to every stage)'
 
 # ENG-87: prompt-token resolver registry. Every {token} in
 # AGENT_PROMPTS.md is resolved at render time by a function registered
-# here. Generalises ENG-79's bin/branch-name.sh fix (the only canonical
-# resolver pre-ENG-87). Render-time validator dies on any unknown {token}
-# encountered in the source. Adding a new token = (a) register here,
-# (b) add the resolver function below, (c) emit the {token} in
-# AGENT_PROMPTS.md.
+# here. ENG-79 introduced bin/branch-name.sh (a single dedicated helper
+# for the {branch} token); ENG-87 extends that one-helper precedent to
+# a registry covering all {token}s. Render-time validator dies on any
+# unknown {token} encountered in the source. Adding a new token =
+# (a) register here, (b) add the resolver function below, (c) emit
+# the {token} in AGENT_PROMPTS.md.
 PROMPT_RESOLVERS='
 issue_id=_resolve_issue_id
 issue_id_lower=_resolve_issue_id_lower
