@@ -96,6 +96,18 @@ SH
   chmod +x "$STUB_DIR/$cmd"
 done
 
+# ENG-91 stub: entry-conditions.sh emits whatever's in
+# $ENTRY_CONDITIONS_STUB_OUTPUT (default 'proceed'). Each AC-PICK-*
+# case sets this env var before the `main` invocation to drive the
+# predicate-readiness arm being tested. The verb gate matches the real
+# script's CLI dispatcher (bin/entry-conditions.sh:140-145).
+cat > "$STUB_DIR/entry-conditions.sh" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == "should_dispatch" ]] || exit 1
+printf '%s\n' "${ENTRY_CONDITIONS_STUB_OUTPUT:-proceed}"
+SH
+chmod +x "$STUB_DIR/entry-conditions.sh"
+
 # ─── Source poll.sh and override SCRIPT_DIR ───────────────────────────
 # poll.sh sets SCRIPT_DIR from BASH_SOURCE at load time and uses it in
 # every `bash "$SCRIPT_DIR/..."` call. We source the real file (so
