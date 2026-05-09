@@ -385,6 +385,108 @@ result="$(parse_pipeline_marker "$body")"
 [[ "$(jq -r '.event' <<<"$result")" == "verdict" ]] && pass_at "P23: lone unbalanced backtick before real marker → real survives" || fail_at "P23: event mismatch" "got: $result"
 [[ "$(jq -r '.result' <<<"$result")" == "pass" ]] && pass_at "P23: lone backtick → result=pass (strip is conservative)" || fail_at "P23: result mismatch" "got: $result"
 
+# ─── ENG-87: allocate_dispatch_id, current_dispatch_id ───────────────
+# Per-issue monotonic counter for cross-dispatch staleness defense.
+# Allocated at run-stage.sh::main per dispatch, exported as
+# PIPELINE_DISPATCH_ID, persisted in $(issue_dir)/issue-state.json.
+# Tests pin atomicity (mv -f), monotonicity, durability across process
+# boundaries, corrupt-JSON resilience, and the read-back via
+# current_dispatch_id.
+printf '\n--- ENG-87: allocate_dispatch_id ---\n'
+
+# Use the existing $_TEST_ROOT (set at the top of this file).
+# PROJECT_STATE_DIR is derived per-issue via issue_dir(). Each case
+# pre-cleans the per-issue dir.
+_eng87_state_dir="$_TEST_ROOT/state/test-slug"
+mkdir -p "$_eng87_state_dir"
+PROJECT_STATE_DIR="$_eng87_state_dir"
+export PROJECT_STATE_DIR
+
+# Case 87.1: first allocation creates issue-state.json with seq=1 and
+# returns ENG-87T-d0001. Asserts atomic-write semantics + initial-state
+# bootstrapping (file absent → seq=1 path).
+_eng87_case1_dir="$_eng87_state_dir/ENG-87T1"
+rm -rf "$_eng87_case1_dir"
+id1="$(allocate_dispatch_id ENG-87T1)"
+assert_eq "87.1: first allocation returns ENG-87T1-d0001" "ENG-87T1-d0001" "$id1"
+got_seq="$(jq -r '.current_dispatch_seq // ""' "$_eng87_case1_dir/issue-state.json" 2>/dev/null)"
+assert_eq "87.1: issue-state.json carries current_dispatch_seq=1" "1" "$got_seq"
+got_id="$(jq -r '.current_dispatch_id // ""' "$_eng87_case1_dir/issue-state.json" 2>/dev/null)"
+assert_eq "87.1: issue-state.json carries current_dispatch_id" "ENG-87T1-d0001" "$got_id"
+
+# Case 87.2: second allocation increments seq to 2 AND preserves prior
+# classify-failure fields (policy/reason/retry_count). The merge MUST
+# be additive — current_dispatch_seq updates without losing the
+# operator-visible policy state.
+_eng87_case2_dir="$_eng87_state_dir/ENG-87T2"
+rm -rf "$_eng87_case2_dir"
+mkdir -p "$_eng87_case2_dir"
+printf '%s\n' '{"current_dispatch_seq":1,"current_dispatch_id":"ENG-87T2-d0001","policy":"retry-immediately","reason":"linear-post-failed","retry_count":1}' \
+  > "$_eng87_case2_dir/issue-state.json"
+id2="$(allocate_dispatch_id ENG-87T2)"
+assert_eq "87.2: second allocation increments to d0002" "ENG-87T2-d0002" "$id2"
+got_seq="$(jq -r '.current_dispatch_seq // ""' "$_eng87_case2_dir/issue-state.json" 2>/dev/null)"
+assert_eq "87.2: seq=2 after increment" "2" "$got_seq"
+got_policy="$(jq -r '.policy // ""' "$_eng87_case2_dir/issue-state.json" 2>/dev/null)"
+assert_eq "87.2: classify-failure policy preserved" "retry-immediately" "$got_policy"
+got_reason="$(jq -r '.reason // ""' "$_eng87_case2_dir/issue-state.json" 2>/dev/null)"
+assert_eq "87.2: classify-failure reason preserved" "linear-post-failed" "$got_reason"
+got_retry="$(jq -r '.retry_count // ""' "$_eng87_case2_dir/issue-state.json" 2>/dev/null)"
+assert_eq "87.2: classify-failure retry_count preserved" "1" "$got_retry"
+
+# Case 87.3: concurrent invocations serialise via mv -f atomicity.
+# Two parallel allocator calls must produce a {d0003, d0004} set with
+# no collision and no double-write at the same seq. The atomicity
+# property is provided by mv -f on POSIX (rename(2)); the test pins
+# the assumption against a future refactor that drops the tmpfile-
+# and-rename pattern.
+_eng87_case3_dir="$_eng87_state_dir/ENG-87T3"
+rm -rf "$_eng87_case3_dir"
+mkdir -p "$_eng87_case3_dir"
+printf '%s\n' '{"current_dispatch_seq":2,"current_dispatch_id":"ENG-87T3-d0002"}' \
+  > "$_eng87_case3_dir/issue-state.json"
+_eng87_p1_out="$_TEST_ROOT/eng87-p1.out"
+_eng87_p2_out="$_TEST_ROOT/eng87-p2.out"
+( allocate_dispatch_id ENG-87T3 > "$_eng87_p1_out" ) &
+_eng87_p1_pid=$!
+( allocate_dispatch_id ENG-87T3 > "$_eng87_p2_out" ) &
+_eng87_p2_pid=$!
+wait "$_eng87_p1_pid" "$_eng87_p2_pid"
+id_a="$(cat "$_eng87_p1_out")"
+id_b="$(cat "$_eng87_p2_out")"
+# Sort the two ids and verify the set equals {d0003, d0004}. With mv -f
+# atomicity the second-write wins, so the on-disk seq is one of {3, 4}
+# but the two stdout outputs MUST differ (each call read a distinct
+# prior seq before its own mv).
+_eng87_sorted="$(printf '%s\n%s\n' "$id_a" "$id_b" | sort)"
+_eng87_expected_sorted=$'ENG-87T3-d0003\nENG-87T3-d0004'
+assert_eq "87.3: concurrent allocator returns {d0003, d0004} no collision" \
+  "$_eng87_expected_sorted" "$_eng87_sorted"
+
+# Case 87.4: corrupt-JSON in prior issue-state.json → treated as seq=0
+# and the new id is d0001. Pins resilience against torn writes /
+# operator hand-edits.
+_eng87_case4_dir="$_eng87_state_dir/ENG-87T4"
+rm -rf "$_eng87_case4_dir"
+mkdir -p "$_eng87_case4_dir"
+printf '%s' '{not valid json' > "$_eng87_case4_dir/issue-state.json"
+id4="$(allocate_dispatch_id ENG-87T4)"
+assert_eq "87.4: corrupt JSON → resets to d0001" "ENG-87T4-d0001" "$id4"
+
+# Case 87.5: current_dispatch_id reads back the just-allocated id.
+# Confirms the read-only sibling helper works against a pre-populated
+# issue-state.json; pins the contract used by verdict-handler's
+# dispatch_id-primary filter.
+_eng87_case5_id="$(current_dispatch_id ENG-87T1)"
+assert_eq "87.5: current_dispatch_id reads ENG-87T1-d0001" "ENG-87T1-d0001" "$_eng87_case5_id"
+
+# Case 87.6: current_dispatch_id returns empty on missing issue-state.json
+# (legacy issues — no dispatches recorded yet).
+_eng87_case6_dir="$_eng87_state_dir/ENG-87T6"
+rm -rf "$_eng87_case6_dir"
+_eng87_case6_id="$(current_dispatch_id ENG-87T6)"
+assert_eq "87.6: current_dispatch_id returns empty when state file absent" "" "$_eng87_case6_id"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
