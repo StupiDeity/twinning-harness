@@ -173,7 +173,15 @@ _poll_gather_stage_labeled_issues() {
 #                                  `slot:"vacate"` output; OMITTED on `hold`
 #                                  and `terminal`),
 #          "wait_recallable": true (only on the wait-verdict vacate arm —
-#                                  ENG-85),
+#                                  ENG-85; Pass-6-only ordering tag, NOT a
+#                                  recall-policy field. Every wait_recallable=true
+#                                  output also has operator_action_required=false
+#                                  per the slot-occupancy contract; the inverse
+#                                  does NOT hold (e.g. review-idle vacate is
+#                                  oar=false but not wait_recallable). Use
+#                                  operator_action_required for halt-sprawl
+#                                  inclusion; use wait_recallable only for
+#                                  Pass 6 picker selection at line 587-589),
 #          "wait_progress_ts": ISO8601 (only on the wait-verdict vacate arm),
 #          "labels": [name, ...]}
 # The emitted "labels" reflects any auto-resume label mutations from
