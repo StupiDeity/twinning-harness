@@ -1007,6 +1007,169 @@ else
 fi
 rm -rf "$PROJECT_STATE_DIR/ENG-930"
 
+# ─── QA adversarial (ENG-85): find_fresh_wait_verdict on empty comment list ──
+# Boundary test for new code path — Linear stub returns "[]" (empty array).
+# The helper's first while-loop runs over zero rows (last_transition_ts="");
+# the second while-loop runs over zero rows (fresh_result=""); the closing
+# `[[ "$fresh_result" != "wait" ]] && return empty` short-circuit fires.
+# Without this test, a refactor that drops the empty-array guard at the
+# top (`[[ -z "$comments" || "$comments" == "null" ]] && return empty`) but
+# leaves the post-loop short-circuit in place would still pass — but a
+# refactor that drops BOTH (e.g., to "always emit something") would silently
+# return a `wait_result=""` shape and trip the wait-arm classifier on issues
+# with no Linear history at all.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-EMPTY"  # zero pairs → []
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-EMPTY" 2>/dev/null || true)"
+if [[ -z "$out_helper" ]]; then
+  pass_at "QA adversarial (ENG-85): find_fresh_wait_verdict returns empty for [] comments"
+else
+  fail_at "QA adversarial (ENG-85): find_fresh_wait_verdict empty-comments boundary" \
+    "got non-empty: $out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): wait verdict OLDER than the latest transition
+#     is filtered out by the transition floor.
+# Setup: wait at 08:00, THEN a later transition at 09:00.
+# find_fresh_wait_verdict's first loop sets last_transition_ts="09:00";
+# second loop's `[[ -n "$last_transition_ts" && ! "$ts" > "$last_transition_ts" ]] && continue`
+# discards the 08:00 wait. fresh_result="" → return empty.
+# This pins the supersession-by-newer-transition rule (the wait was on a
+# previous stage iteration; the new stage entry resets the budget).
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-FLOOR" \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T09:00:00Z'
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-FLOOR" 2>/dev/null || true)"
+if [[ -z "$out_helper" ]]; then
+  pass_at "QA adversarial (ENG-85): wait older than latest transition is floored out"
+else
+  fail_at "QA adversarial (ENG-85): transition-floor supersession" \
+    "got non-empty (wait should be discarded): $out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): wait verdict with NO transition history
+#     (genesis state) is still surfaced.
+# Edge case: an issue with a single wait verdict and no transition events
+# at all. last_transition_ts remains empty → second loop's `-n` guard
+# short-circuits → wait passes through. Defensive: protects against a
+# refactor that "requires" a transition floor by setting it to a sentinel.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-GENESIS" \
+  '<!-- pipeline: verdict result=wait reason=awaiting-ci -->|2026-04-28T08:17:00Z'
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-GENESIS" 2>/dev/null || true)"
+reason="$(jq -r '.reason // ""' <<<"$out_helper")"
+if [[ "$reason" == "awaiting-ci" ]]; then
+  pass_at "QA adversarial (ENG-85): wait with no transition history is still surfaced"
+else
+  fail_at "QA adversarial (ENG-85): genesis-state wait" \
+    "got reason=$reason out=$out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): wait then result=pass supersedes the wait.
+# Symmetric with AC-WAIT-7 (which uses result=fail). A successful build
+# verdict landing while the orchestrator was waiting should not leave the
+# issue dangling in wait state — it should advance via find_fresh_verdict's
+# transition. This pins that pass/fail/halt all supersede a prior wait.
+# Without this, AC-WAIT-7 (fail) alone leaves the pass/halt cases at the
+# precedent of "find_fresh_verdict mirrors run-stage.sh:332-356" — true,
+# but unpinned at the read-side.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-PASS" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z' \
+  '<!-- pipeline: verdict result=pass stage=building -->|2026-04-28T10:30:00Z'
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-PASS" 2>/dev/null || true)"
+if [[ -z "$out_helper" ]]; then
+  pass_at "QA adversarial (ENG-85): pass-supersedes-wait → helper returns empty"
+else
+  fail_at "QA adversarial (ENG-85): supersession by pass" \
+    "got non-empty: $out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): pipeline:scope-approval-needed + fresh wait
+#     → earlier elif arm wins (vacate, NO wait_recallable). Pass 6 must NOT
+#     pick it up (the issue is awaiting human triage, not a build-side
+#     external signal). Pins arm ordering: scope-approval / paused / abandoned
+#     all take precedence over wait_recallable to prevent silent recall of
+#     human-blocked work. Without this, swapping the elif order would
+#     visibly leak scope-approval issues into Pass 6 wait recalls.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-SAN" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+out="$(_poll_classify_labels "ENG-WAIT-QA-SAN" '["stage:building","pipeline:scope-approval-needed"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable // false | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "false" ]]; then
+  pass_at "QA adversarial (ENG-85): scope-approval-needed precedes wait arm (no wait_recallable)"
+else
+  fail_at "QA adversarial (ENG-85): scope-approval precedence" \
+    "got slot=$slot adv=$adv recall=$recall (want vacate/false/false) full=$out"
+fi
+
+# ─── QA adversarial (ENG-85): stage:reviewing issue + wait verdict —
+# defense-in-depth check that the new wait arm fires BEFORE the reviewing
+# arm. Per ENG-54 the review stage is agent-only and doesn't emit wait,
+# but a stray wait marker on a stage:reviewing issue (operator action,
+# protocol drift) should not cause the orchestrator to treat it as a
+# review-poll.sh dispatch decision. The brainstorm §4 D-002 ordering
+# rationale claims this is strictly safer than pre-ENG-85's re-dispatch
+# loop on a broken review. This pins it.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-REVIEW" \
+  '<!-- pipeline: transition from=implementing to=reviewing -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+out="$(_poll_classify_labels "ENG-WAIT-QA-REVIEW" '["stage:reviewing"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "true" ]]; then
+  pass_at "QA adversarial (ENG-85): wait arm precedes stage:reviewing arm (defense-in-depth)"
+else
+  fail_at "QA adversarial (ENG-85): wait-vs-reviewing branch ordering" \
+    "got slot=$slot adv=$adv recall=$recall (want vacate/false/true) full=$out"
+fi
+
+# ─── QA adversarial (ENG-85): Pass 6 respects max-concurrent cap.
+# Setup: 2 halted issues at stage:planning (no fresh verdict marker) +
+# 1 wait at stage:building, max_concurrent=2. The halted-no-marker case
+# at bin/poll.sh:235 classifies as {hold,advanceable=false}; both fill
+# the held set (held_count=2). Pass 4 cycles through both, dispatches
+# nothing. Pass 5 inbox is gated `< max_concurrent` and skipped.
+# Pass 6 is gated `< max_concurrent` and skipped. Final: idle
+# "max-concurrent-reached". The wait issue must NOT be recalled.
+# Without this pin, dropping the `(( held_count < max_concurrent ))`
+# guard on Pass 6 (or moving Pass 6 above Pass 5's cap-check) would
+# over-allocate the dispatcher and starve the held-but-stuck path.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-WAIT-QA-CAP-1|In Progress|1|stage:planning,pipeline:halted" \
+  "ENG-WAIT-QA-CAP-2|In Progress|1|stage:planning,pipeline:halted"
+write_label_fixture "stage:building" \
+  "ENG-WAIT-QA-CAP-3|In Progress|1|stage:building"
+# No comments fixtures for the halted issues → find_fresh_verdict returns
+# empty → halted arm hits the no-fresh-marker branch (slot=hold,
+# advanceable=false). The wait issue gets the wait fixture.
+write_comments_fixture "ENG-WAIT-QA-CAP-3" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+# `idle` emits `{"issue_id":null,"stage":null,"reason":"<idle-reason>"}`.
+# Pass 6 firing would emit a real dispatch with a non-null issue_id and a
+# `wait re-pickup` reason. Assert: issue_id is null AND the reason starts
+# with "max-concurrent-reached" — proving Pass 5/6 were both gated out by
+# the cap-check and the final idle path took over.
+if [[ "$issue_id" == "null" && "$reason" == max-concurrent-reached* ]]; then
+  pass_at "QA adversarial (ENG-85): Pass 6 respects cap when held_count >= max_concurrent"
+else
+  fail_at "QA adversarial (ENG-85): Pass 6 cap safety" \
+    "got issue_id=$issue_id reason=$reason (want issue_id=null + max-concurrent-reached) full=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
