@@ -1027,7 +1027,15 @@ main() {
     _END_ROW_HIST_FILE="$_hist_file"
     _END_ROW_DISPATCH_ID="$_dispatch_id"
     _END_ROW_STAGE="$stage"
-    _END_ROW_T0="$t0"
+    # ENG-87 review-iter-3 m2: capture _END_ROW_T0 at the start-row
+    # write site, NOT at the top of main(). `t0` was set before
+    # verify_preconditions, scope-approval check, _pre_dispatch_merge_gate,
+    # and _entry_conditions_gate — so duration_ms used to include
+    # pre-dispatch gating that has nothing to do with the agent's run,
+    # breaking the started_at + duration_ms ≈ exit_at invariant the
+    # plan §13.1.2 schema implies. `date +%s` here aligns with the
+    # `started_at` jq arg above (within ~milliseconds).
+    _END_ROW_T0="$(date +%s)"
     _END_ROW_ISSUE="$ident"
     _END_ROW_VERDICT_EMITTED=""
     _END_ROW_VERDICT_TARGET=""
