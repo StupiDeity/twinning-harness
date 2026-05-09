@@ -1459,6 +1459,46 @@ else
     "got slot=$slot adv=$adv full=$out"
 fi
 
+# ─── AC-OAR-HALT-OVER-REVIEWING: stage:reviewing + pipeline:halted +
+#     fresh stage-summary marker → halted-arm wins (hold/advanceable=true),
+#     reviewing-arm unreached. Pins the elif-chain ordering at
+#     bin/poll.sh:273-353: pipeline:halted is evaluated BEFORE
+#     stage:reviewing. A refactor that reordered the chain would silently
+#     regress this precedence; covered transitively by audit-table-row
+#     unit fixtures was an unverified claim until this fixture landed.
+reset_fixtures
+write_comments_fixture "ENG-OAR-HOR-A" \
+  '<!-- pipeline: verdict result=pass stage=reviewing -->|2026-05-09T08:00:00Z'
+out="$(_poll_classify_labels "ENG-OAR-HOR-A" '["stage:reviewing","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$out" >/dev/null; then
+  pass_at "AC-OAR-HALT-OVER-REVIEWING halted-arm precedes reviewing-arm; oar absent"
+else
+  fail_at "AC-OAR-HALT-OVER-REVIEWING" \
+    "got slot=$slot adv=$adv full=$out"
+fi
+
+# ─── AC-OAR-PAUSED-OVER-REVIEWING: stage:reviewing + pipeline:paused →
+#     paused-arm wins (vacate, oar=true), reviewing-arm unreached. Same
+#     precedence guarantee as AC-OAR-HALT-OVER-REVIEWING but for the
+#     pipeline:paused branch (an earlier elif). A refactor that promoted
+#     stage:reviewing above pipeline:paused would silently emit
+#     vacate/oar=false (review-idle path) and lose the operator-action
+#     signal halt-sprawl relies on.
+reset_fixtures
+out="$(REVIEW_SHOULD_DISPATCH=1 _poll_classify_labels "ENG-OAR-POR-A" '["stage:reviewing","pipeline:paused"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-PAUSED-OVER-REVIEWING paused-arm precedes reviewing-arm; oar=true"
+else
+  fail_at "AC-OAR-PAUSED-OVER-REVIEWING" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════
 # ENG-90 — Multi-issue regression fixtures (main()-level integration).
 # Pin the literal starvation scenarios that motivated the contract: a
