@@ -4413,7 +4413,11 @@ else
 fi
 
 # M1-iter3-B: transcript_clean=true when global=true (clean envelope).
-got_tc_a="$(jq -r '.envelope.transcript_clean // ""' <<<"$_eng87_m1i3a_line")"
+# `| tostring` (not `// "MISSING"`) — jq's `//` operator treats every
+# falsy left-hand-side (including the legitimate boolean `false` that
+# M1-iter3-C inspects) as the substitution trigger; tostring renders
+# the bool as "true"/"false" without that ambiguity.
+got_tc_a="$(jq -r '.envelope.transcript_clean | tostring' <<<"$_eng87_m1i3a_line")"
 [[ "$got_tc_a" == "true" ]] \
   && pass_at "ENG-87 M1-iter3-B: envelope.transcript_clean=true reflects clean global" \
   || fail_at "ENG-87 M1-iter3-B: transcript_clean clean case" "got=$got_tc_a (expected true)"
@@ -4435,7 +4439,10 @@ _END_ROW_POLICY="skip-until-human-acts"
 _END_ROW_TRANSCRIPT_CLEAN=false
 _append_dispatch_end_row 29 2>/dev/null || true
 _eng87_m1i3c_line="$(tail -1 "$_eng87_m1i3c_hist" 2>/dev/null || printf '')"
-got_tc_c="$(jq -r '.envelope.transcript_clean // ""' <<<"$_eng87_m1i3c_line")"
+# `| tostring` (mirrors M1-iter3-B) — jq's `//` substitutes for any
+# falsy LHS including legitimate boolean `false`, masking the very
+# field this case is asserting.
+got_tc_c="$(jq -r '.envelope.transcript_clean | tostring' <<<"$_eng87_m1i3c_line")"
 [[ "$got_tc_c" == "false" ]] \
   && pass_at "ENG-87 M1-iter3-C: envelope.transcript_clean=false reflects violation global" \
   || fail_at "ENG-87 M1-iter3-C: transcript_clean violation case" \
@@ -4487,11 +4494,15 @@ _validate_dispatch_envelope ENG-87M1I3E implementing 2>/dev/null || true
 printf '\n--- ENG-87 review-iter-3 M2: 3 exit paths seed verdict_emitted ---\n'
 
 # M2-iter3-A: scope-violation NOTABLE block (between `2)` arm header
-# and the matching `exit 0` of the not-yet-approved branch).
+# and the matching `exit 0` of the not-yet-approved branch). Use a
+# strict `^[[:space:]]*exit 0[[:space:]]*$` regex so the awk's terminal
+# match does not trip on `failure_outcome_for_exit 0` substrings inside
+# the metrics.sh call (the substring "exit 0" appears in that helper's
+# name, truncating the extraction before the seed line is reached).
 _eng87_m2i3a_block="$(awk '
   /halt_body=.*verdict result=halt reason=scope-violation/ { in_block=1 }
   in_block { print }
-  in_block && /exit 0/ { exit }
+  in_block && /^[[:space:]]*exit 0[[:space:]]*$/ { exit }
 ' "$RS_SRC")"
 if printf '%s\n' "$_eng87_m2i3a_block" \
    | grep -qE '_END_ROW_VERDICT_EMITTED=("halt"|halt)'; then
@@ -4503,11 +4514,12 @@ fi
 
 # M2-iter3-B: budget-exhausted halt path (caller-side after _handle_wait
 # returned 1). Block runs from the `# Budget exhausted:` comment through
-# the `exit 0` at the wait-block bottom.
+# the `exit 0` at the wait-block bottom. Strict standalone-statement
+# regex (mirrors the M2-iter3-A guard against substring matches).
 _eng87_m2i3b_block="$(awk '
   /# Budget exhausted: _handle_wait already posted/ { in_block=1 }
   in_block { print }
-  in_block && /exit 0/ { exit }
+  in_block && /^[[:space:]]*exit 0[[:space:]]*$/ { exit }
 ' "$RS_SRC")"
 if printf '%s\n' "$_eng87_m2i3b_block" \
    | grep -qE '_END_ROW_VERDICT_EMITTED=("halt"|halt)'; then
@@ -4519,10 +4531,11 @@ fi
 
 # M2-iter3-C: wait-success path (the inner `_handle_wait` true branch).
 # Block runs from `if _handle_wait` through its corresponding `exit 0`.
+# Strict standalone-statement regex (mirrors M2-iter3-A/B).
 _eng87_m2i3c_block="$(awk '
   /if _handle_wait "\$ident" "\$stage" "\$_wait_reason"; then/ { in_block=1 }
   in_block { print }
-  in_block && /exit 0/ { exit }
+  in_block && /^[[:space:]]*exit 0[[:space:]]*$/ { exit }
 ' "$RS_SRC")"
 if printf '%s\n' "$_eng87_m2i3c_block" \
    | grep -qE '_END_ROW_VERDICT_EMITTED=("wait"|wait)'; then

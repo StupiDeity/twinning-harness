@@ -784,6 +784,13 @@ _validate_dispatch_envelope() {
     body="$(printf '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->\n\nDispatch envelope violation on dispatch_id=%s stage=%s:\n\n%s\n\nThe agent bypassed bin/linear.sh (auto-injection chokepoint). Inspect: %s\n\n**Resume:** investigate the bypass, fix the agent prompt or tool-allowlist, then run `bash bin/pipeline.sh decide %s --action continue`.' \
       "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$viol_str" "$sidecar" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+    # ENG-87 review-iter-3 M1: flip the trap global so the
+    # dispatch_history.jsonl end-row records envelope.transcript_clean=false.
+    # Without this, the writer's hardcoded `true` literal made every row
+    # claim a clean envelope even when the validator just halted the
+    # dispatch for an MCP/curl-linear bypass. Forensic readers could not
+    # distinguish clean from violation rows by this field.
+    _END_ROW_TRANSCRIPT_CLEAN=false
     return 29
   fi
   return 0
@@ -806,6 +813,13 @@ _END_ROW_ISSUE=""
 _END_ROW_VERDICT_EMITTED=""
 _END_ROW_VERDICT_TARGET=""
 _END_ROW_POLICY=""
+# ENG-87 review-iter-3 M1: envelope.transcript_clean reflects whether
+# _validate_dispatch_envelope returned 29 (violation) or 0 (clean).
+# Default true; flipped to false by the validator's rc=29 arm. Without
+# this, the writer hardcoded `transcript_clean: true` regardless of
+# outcome — forensic readers could not distinguish clean from violation
+# rows by this field.
+_END_ROW_TRANSCRIPT_CLEAN=true
 
 _append_dispatch_end_row() {
   local exit_code="${1:-0}"
@@ -821,6 +835,18 @@ _append_dispatch_end_row() {
   local _summary_path="$(issue_dir "$_END_ROW_ISSUE")/stage-summary-${_END_ROW_STAGE}.md"
   local _summary_present
   _summary_present="$([[ -s "$_summary_path" ]] && printf 'true' || printf 'false')"
+  # ENG-87 review-iter-3 M1: envelope schema completeness. Plan §13.1.2
+  # mandates 3 sub-fields — stage_summary_present, comments_stamped,
+  # transcript_clean. Pre-fix `comments_stamped` was missing entirely
+  # and `transcript_clean` was hardcoded `true`. transcript_clean now
+  # reflects _END_ROW_TRANSCRIPT_CLEAN (set false by the validator on
+  # rc=29). comments_stamped ships as `[]` baseline — ENG-87's writer
+  # is forensic-only with no runtime consumer (ENG-92 deferred), and
+  # the iter-3 review explicitly accepted the empty-array baseline as
+  # the simpler of two options. Future enrichment is an accumulator
+  # populated by add_or_update_comment callers; tracked separately.
+  local _tc_arg="${_END_ROW_TRANSCRIPT_CLEAN:-true}"
+  case "$_tc_arg" in true|false) ;; *) _tc_arg="true" ;; esac
   jq -nc \
     --arg dispatch_id "$_END_ROW_DISPATCH_ID" \
     --arg stage "$_END_ROW_STAGE" \
@@ -830,13 +856,19 @@ _append_dispatch_end_row() {
     --arg verdict_emitted "$_END_ROW_VERDICT_EMITTED" \
     --arg verdict_target "$_END_ROW_VERDICT_TARGET" \
     --argjson duration_ms "$duration" \
-    --argjson stage_summary_present "$_summary_present" '
+    --argjson stage_summary_present "$_summary_present" \
+    --argjson transcript_clean "$_tc_arg" \
+    --argjson comments_stamped '[]' '
     {
       dispatch_id: $dispatch_id, stage: $stage, exit_at: $exit_at,
       exit_code: $exit_code, policy: $policy,
       verdict_emitted: $verdict_emitted, verdict_target: $verdict_target,
       duration_ms: $duration_ms,
-      envelope: { stage_summary_present: $stage_summary_present, transcript_clean: true }
+      envelope: {
+        stage_summary_present: $stage_summary_present,
+        comments_stamped:      $comments_stamped,
+        transcript_clean:      $transcript_clean
+      }
     }' >> "$_END_ROW_HIST_FILE" 2>/dev/null || true
   # Idempotency: clear the sentinel so a nested `set -e` exit does not
   # double-append the same row.
@@ -1000,6 +1032,11 @@ main() {
     _END_ROW_VERDICT_EMITTED=""
     _END_ROW_VERDICT_TARGET=""
     _END_ROW_POLICY=""
+    # ENG-87 review-iter-3 M1: seed the envelope trap-global at its
+    # default (true). _validate_dispatch_envelope flips it to false on
+    # the rc=29 path so the end-row's envelope.transcript_clean reflects
+    # the validator's actual outcome.
+    _END_ROW_TRANSCRIPT_CLEAN=true
     trap '_append_dispatch_end_row $?' EXIT
   fi
 
@@ -1184,6 +1221,11 @@ main() {
             "$(failure_outcome_for_exit 0 1)" "$duration" \
             "branch=$branch notable_count=$(wc -l <<<"$notable_files" | tr -d ' ')" \
             "${_cf_pending[@]+"${_cf_pending[@]}"}" || true
+          # ENG-87 review-iter-3 M2: a halt verdict was just posted to
+          # Linear (line ~1167). Seed the trap global so the
+          # dispatch_history.jsonl end-row records verdict_emitted="halt"
+          # in line with the schema (plan §13.1.2).
+          [[ -n "${_END_ROW_HIST_FILE-}" ]] && _END_ROW_VERDICT_EMITTED="halt"
           exit 0
         fi
         ;;
@@ -1238,6 +1280,10 @@ main() {
         # ENG-54: review-stage wait-success branch is gone (review never
         # waits anymore — _fresh_wait_reason narrowed to build only).
         log "stage $stage wait on $ident (reason=$_wait_reason)"
+        # ENG-87 review-iter-3 M2: agent emitted verdict result=wait (the
+        # very thing _fresh_wait_reason matched). Seed the trap global so
+        # the end-row records verdict_emitted="wait" per plan §13.1.2.
+        [[ -n "${_END_ROW_HIST_FILE-}" ]] && _END_ROW_VERDICT_EMITTED="wait"
         exit 0
       fi
       # Budget exhausted: _handle_wait already posted the halt comment and
@@ -1256,6 +1302,12 @@ main() {
         "$(( ($(date +%s) - t0) * 1000 ))" "verdict=halt reason=$_wait_reason exhausted=external-signal-budget" \
         "${_halt_cost_flags[@]+"${_halt_cost_flags[@]}"}" || true
       log "stage $stage halt-for-human on $ident (external-signal-budget exhausted, reason=$_wait_reason)"
+      # ENG-87 review-iter-3 M2: _handle_wait posted a halt verdict to
+      # Linear (line ~568, external-signal-budget-exhausted). Seed the
+      # trap global so the end-row records verdict_emitted="halt" per
+      # plan §13.1.2 — without this, the row carried "" despite the
+      # halt verdict landing on Linear.
+      [[ -n "${_END_ROW_HIST_FILE-}" ]] && _END_ROW_VERDICT_EMITTED="halt"
       exit 0
     fi
   fi
