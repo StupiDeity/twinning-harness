@@ -336,11 +336,12 @@ fi
 # Capture idle reason by replacing the metrics.sh stub with a capture
 # stub for this test only. With ENG-90 the halted-no-marker branch
 # vacates the slot, so this fixture uses halt + stage-summary markers
-# instead: classifier returns hold/advanceable=true; Pass 4 invokes
-# verdict_handler (a no-op against the stubbed Linear API) and falls
-# through without dispatching; held_count stays at 2 = max_concurrent;
-# the cap-gate on Pass 5/6 fires and the final idle path emits
-# "max-concurrent-reached".
+# instead: classifier returns hold/advanceable=true; the Pass 4U held
+# arm invokes verdict_handler (a no-op against the stubbed Linear API)
+# and falls through without dispatching; held_count stays at 2 =
+# max_concurrent; _picker_build_pool's `held_count < max_concurrent`
+# guard suppresses wait + inbox enrolment and the final idle path
+# emits "max-concurrent-reached".
 reset_fixtures
 write_label_fixture "stage:planning" \
   "ENG-6001|In Progress|3|Bug,stage:planning,pipeline:halted" \
@@ -521,8 +522,11 @@ else
 fi
 
 # ─── AC-WAIT-3 (ENG-85): single wait issue, empty inbox, no other
-#     classified issues → Pass 6 fires with reason
-#     "wait re-pickup at stage:building (no other ready work)".
+#     classified issues → unified picker's wait_recallable arm fires
+#     with reason "wait re-pickup at stage:building (predicate ready)".
+#     (ENG-91 changed the dispatch reason suffix from "no other ready
+#     work" to "predicate ready"; the substring assertion below
+#     accepts both.)
 reset_fixtures
 write_label_fixture "stage:building" "ENG-WAIT-C|In Progress|1|stage:building"
 write_comments_fixture "ENG-WAIT-C" \
@@ -536,14 +540,16 @@ entry="$(jq -r '.entry_action // ""' <<<"$out")"
 reason="$(jq -r '.reason // ""' <<<"$out")"
 if [[ "$issue_id" == "ENG-WAIT-C" && "$stage" == "building" \
       && "$entry" == "run" && "$reason" == *"wait re-pickup at stage:building"* ]]; then
-  pass_at "AC-WAIT-3 (ENG-85): Pass 6 recalls wait issue when no other ready work"
+  pass_at "AC-WAIT-3 (ENG-85): wait_recallable arm recalls wait issue when no other ready work"
 else
-  fail_at "AC-WAIT-3 (ENG-85): Pass 6 wait recall" \
+  fail_at "AC-WAIT-3 (ENG-85): wait_recallable arm recall" \
     "got issue_id=$issue_id stage=$stage entry=$entry reason=$reason full=$out"
 fi
 
-# ─── AC-WAIT-4 (ENG-85): two wait issues, equal priority. Pass 6
-#     picks the older one (FIFO tiebreak by wait_progress_ts asc).
+# ─── AC-WAIT-4 (ENG-85): two wait issues, equal priority. The unified
+#     picker's wait_recallable arm picks the older one (FIFO tiebreak
+#     by wait_progress_ts asc — same fifo_ts ordering as the pre-ENG-91
+#     dedicated wait recall path).
 reset_fixtures
 write_label_fixture "stage:building" \
   "ENG-WAIT-D|In Progress|1|stage:building" \
@@ -557,13 +563,15 @@ write_comments_fixture "ENG-WAIT-E" \
 out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 if [[ "$issue_id" == "ENG-WAIT-D" ]]; then
-  pass_at "AC-WAIT-4 (ENG-85): Pass 6 FIFO tiebreak — older wait (ENG-WAIT-D) wins"
+  pass_at "AC-WAIT-4 (ENG-85): unified picker FIFO tiebreak — older wait (ENG-WAIT-D) wins"
 else
-  fail_at "AC-WAIT-4 (ENG-85): Pass 6 FIFO" "got issue_id=$issue_id (want ENG-WAIT-D) full=$out"
+  fail_at "AC-WAIT-4 (ENG-85): unified picker FIFO" "got issue_id=$issue_id (want ENG-WAIT-D) full=$out"
 fi
 
-# ─── AC-WAIT-5 (ENG-85): two wait issues, different priority. Pass 6
-#     picks the higher-priority one regardless of wait_progress_ts.
+# ─── AC-WAIT-5 (ENG-85): two wait issues, different priority. The
+#     unified picker's wait_recallable arm picks the higher-priority
+#     one regardless of wait_progress_ts (priority_sort_rank descending
+#     dominates fifo_ts ascending in the sort key).
 #     ENG-WAIT-F (priority=Normal=3) wait at 10:00:00Z;
 #     ENG-WAIT-G (priority=Urgent=1) wait at 10:05:00Z.
 #     Urgent wins despite being newer.
@@ -580,9 +588,9 @@ write_comments_fixture "ENG-WAIT-G" \
 out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 if [[ "$issue_id" == "ENG-WAIT-G" ]]; then
-  pass_at "AC-WAIT-5 (ENG-85): Pass 6 priority dominates FIFO (Urgent wins over Normal)"
+  pass_at "AC-WAIT-5 (ENG-85): unified picker priority dominates FIFO (Urgent wins over Normal)"
 else
-  fail_at "AC-WAIT-5 (ENG-85): Pass 6 priority" "got issue_id=$issue_id (want ENG-WAIT-G) full=$out"
+  fail_at "AC-WAIT-5 (ENG-85): unified picker priority" "got issue_id=$issue_id (want ENG-WAIT-G) full=$out"
 fi
 
 # ─── AC-WAIT-6 (ENG-85): pins that the halted arm in _poll_classify_labels
@@ -641,8 +649,9 @@ fi
 # ─── AC-PICK-1 (ENG-91): wait predicate ready outranks fresh inbox.
 #     ENG-PICK1A waits at stage:building with predicate ready
 #     (ENTRY_CONDITIONS_STUB_OUTPUT=proceed); ENG-PICK1B in inbox.
-#     Pre-ENG-91 Pass 5 picked the inbox issue (Pass 6 wait re-pickup
-#     fired only as a last resort). Post-ENG-91 the unified picker
+#     Pre-ENG-91 the inbox arm picked the inbox issue (the wait
+#     re-pickup arm fired only as a last resort, after held + inbox).
+#     Post-ENG-91 the unified picker
 #     promotes the wait — building (idx=6) outranks the inbox source
 #     (idx=-1). Pins D-003 predicate-ready arm.
 reset_fixtures
@@ -672,6 +681,12 @@ export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
 #     candidate and dispatches with entry_action=apply-stage-label.
 #     Pins D-003 contrapositive — a not-ready wait does NOT waste
 #     the slot or starve genuinely-ready earlier-stage / inbox work.
+#
+#     Also asserts the diagnostic log line "picker: wait_recallable
+#     <ENG-N> skipped (predicate not ready)" is emitted on stderr —
+#     CLAUDE.md "Failure-mode quick reference" instructs operators
+#     to grep this string in the per-tick log; a future refactor that
+#     drops the `log` call should fail this test (review-fix-AC-PICK-2-log).
 reset_fixtures
 export ENTRY_CONDITIONS_STUB_OUTPUT="skip:awaiting-approval"
 write_label_fixture "stage:building" "ENG-PICK2A|In Progress|3|stage:building"
@@ -679,14 +694,18 @@ write_inbox_fixture                  "ENG-PICK2B|Todo|3|Bug"
 write_comments_fixture "ENG-PICK2A" \
   '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
   '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
-out="$(main 2>/dev/null || true)"
+ac_pick2_err="$STUB_DIR/ac-pick2.err"
+: > "$ac_pick2_err"
+out="$(main 2>"$ac_pick2_err" || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 entry="$(jq -r '.entry_action // ""' <<<"$out")"
-if [[ "$issue_id" == "ENG-PICK2B" && "$entry" == "apply-stage-label" ]]; then
-  pass_at "AC-PICK-2 (ENG-91): wait@building (skip:*) excluded; inbox dispatches"
+err_log="$(cat "$ac_pick2_err")"
+if [[ "$issue_id" == "ENG-PICK2B" && "$entry" == "apply-stage-label" \
+      && "$err_log" == *"picker: wait_recallable ENG-PICK2A skipped (predicate not ready)"* ]]; then
+  pass_at "AC-PICK-2 (ENG-91): wait@building (skip:*) excluded; inbox dispatches; diagnostic log emitted"
 else
-  fail_at "AC-PICK-2 (ENG-91): predicate-skip exclusion" \
-    "got issue_id=$issue_id entry=$entry (want ENG-PICK2B / apply-stage-label) full=$out"
+  fail_at "AC-PICK-2 (ENG-91): predicate-skip exclusion + diagnostic log" \
+    "got issue_id=$issue_id entry=$entry (want ENG-PICK2B / apply-stage-label) full=$out err=$err_log"
 fi
 export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
 
@@ -697,8 +716,8 @@ export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
 #     the literal regression test for the 2026-05-09 ENG-83/ENG-90
 #     incident — operator approves a near-merge build PR; predicate
 #     flips to ready; pre-ENG-91 the dispatcher held the slot for
-#     the planning issue's next tick because Pass 4 ran before
-#     Pass 6.
+#     the planning issue because the held loop ran before the wait
+#     re-pickup ladder fired.
 reset_fixtures
 export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
 write_label_fixture "stage:building" "ENG-PICK3A|In Progress|3|stage:building"
@@ -797,9 +816,43 @@ else
 fi
 export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
 
+# ─── AC-PICK-7 (ENG-91 review-fix): inbox query failure does NOT brown
+#     out helds / waits. Pre-fix, malformed inbox output made
+#     `--argjson i "$inbox_pool"` parse-fail, _picker_build_pool emitted
+#     empty stdout, the iteration loop didn't execute and the picker
+#     idled — held + wait also failed to dispatch. Per brainstorm §7
+#     error-handling contract: "list-issues-in-state errors mid-tick
+#     ... inbox pool is empty for this tick. Held + wait_recallable
+#     still dispatch." This fixture pins that contract by force-feeding
+#     malformed JSON to the inbox-state stub call site (the linear.sh
+#     stub returns the file contents verbatim if the fixture exists,
+#     so writing non-JSON simulates the brown-out failure mode).
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+write_label_fixture "stage:building" "ENG-PICK7A|In Progress|3|stage:building"
+write_comments_fixture "ENG-PICK7A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T08:17:00Z'
+# Force list-issues-in-state to emit malformed JSON (simulates a Linear
+# API garbled response or network blip). Without the picker's defensive
+# default, the jq `--argjson i "$inbox_pool"` parse-fails and the entire
+# dispatch surface for this tick browns out.
+printf 'NOT_VALID_JSON{{{{' > "$FIXTURE_DIR/state-Todo.json"
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-PICK7A" && "$reason" == *"stage:building"* ]]; then
+  pass_at "AC-PICK-7 (ENG-91): inbox query failure does NOT brown out wait dispatch"
+else
+  fail_at "AC-PICK-7 (ENG-91): inbox-failure brown-out regression" \
+    "got issue_id=$issue_id reason=$reason (want ENG-PICK7A / *stage:building*) full=$out"
+fi
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
 # A Todo issue carrying only pipeline:skip-until-human-acts (no state
-# file, no stage:* label) must be skipped by Pass 5's inbox jq filter.
+# file, no stage:* label) must be skipped by the picker's inbox jq filter
+# (post-ENG-91 the filter lives in `_picker_build_pool`'s inbox branch).
 # Pre-fix: the issue was dispatched into stage:brainstorming.
 reset_fixtures
 write_inbox_fixture \
@@ -1282,12 +1335,13 @@ else
 fi
 
 # ─── QA adversarial (ENG-85): pipeline:scope-approval-needed + fresh wait
-#     → earlier elif arm wins (vacate, NO wait_recallable). Pass 6 must NOT
-#     pick it up (the issue is awaiting human triage, not a build-side
-#     external signal). Pins arm ordering: scope-approval / paused / abandoned
-#     all take precedence over wait_recallable to prevent silent recall of
-#     human-blocked work. Without this, swapping the elif order would
-#     visibly leak scope-approval issues into Pass 6 wait recalls.
+#     → earlier elif arm wins (vacate, NO wait_recallable). The unified
+#     Pass 4U picker must NOT pick it up (the issue is awaiting human
+#     triage, not a build-side external signal). Pins arm ordering:
+#     scope-approval / paused / abandoned all take precedence over
+#     wait_recallable to prevent silent recall of human-blocked work.
+#     Without this, swapping the elif order would visibly leak
+#     scope-approval issues into the picker's wait_recallable arm.
 reset_fixtures
 write_comments_fixture "ENG-WAIT-QA-SAN" \
   '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
@@ -1326,19 +1380,18 @@ else
     "got slot=$slot adv=$adv recall=$recall (want vacate/false/true) full=$out"
 fi
 
-# ─── QA adversarial (ENG-85): Pass 6 respects max-concurrent cap.
+# ─── QA adversarial (ENG-85): unified picker respects max-concurrent cap.
 # Setup: 2 halted-with-stage-summary issues at stage:planning + 1 wait
 # at stage:building, max_concurrent=2. With ENG-90 the halted-no-marker
 # branch vacates the slot, so this fixture uses halt + stage-summary
-# markers (classifier returns hold/advanceable=true). Pass 4 invokes
-# verdict_handler against the stubbed Linear API, logs, and falls
-# through without dispatching; held_count stays at 2 = max_concurrent.
-# Pass 5 inbox is gated `< max_concurrent` and skipped. Pass 6 is
-# gated `< max_concurrent` and skipped. Final: idle
+# markers (classifier returns hold/advanceable=true). The Pass 4U held
+# arm invokes verdict_handler against the stubbed Linear API, logs, and
+# falls through without dispatching; held_count stays at 2 = max_concurrent.
+# `_picker_build_pool`'s `held_count < max_concurrent` cap-guard
+# suppresses the wait_recallable + inbox arms. Final: idle
 # "max-concurrent-reached". The wait issue must NOT be recalled.
-# Without this pin, dropping the `(( held_count < max_concurrent ))`
-# guard on Pass 6 (or moving Pass 6 above Pass 5's cap-check) would
-# over-allocate the dispatcher and starve the held-but-stuck path.
+# Without this pin, dropping the cap-guard inside _picker_build_pool
+# would over-allocate the dispatcher and starve the held-but-stuck path.
 reset_fixtures
 write_label_fixture "stage:planning" \
   "ENG-WAIT-QA-CAP-1|In Progress|1|stage:planning,pipeline:halted" \
@@ -1356,14 +1409,15 @@ out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 reason="$(jq -r '.reason // ""' <<<"$out")"
 # `idle` emits `{"issue_id":null,"stage":null,"reason":"<idle-reason>"}`.
-# Pass 6 firing would emit a real dispatch with a non-null issue_id and a
-# `wait re-pickup` reason. Assert: issue_id is null AND the reason starts
-# with "max-concurrent-reached" — proving Pass 5/6 were both gated out by
-# the cap-check and the final idle path took over.
+# A wait re-pickup (Pass 4U wait_recallable arm) would emit a real
+# dispatch with a non-null issue_id and a `wait re-pickup` reason.
+# Assert: issue_id is null AND the reason starts with
+# "max-concurrent-reached" — proving the picker's cap-guard suppressed
+# the wait + inbox arms and the final idle path took over.
 if [[ "$issue_id" == "null" && "$reason" == max-concurrent-reached* ]]; then
-  pass_at "QA adversarial (ENG-85): Pass 6 respects cap when held_count >= max_concurrent"
+  pass_at "QA adversarial (ENG-85): unified picker respects cap when held_count >= max_concurrent"
 else
-  fail_at "QA adversarial (ENG-85): Pass 6 cap safety" \
+  fail_at "QA adversarial (ENG-85): unified-picker cap safety" \
     "got issue_id=$issue_id reason=$reason (want issue_id=null + max-concurrent-reached) full=$out"
 fi
 
@@ -1418,8 +1472,9 @@ else
 fi
 
 # ─── AC-OAR-HALT-PASS: halt + stage-summary verdict → hold/advanceable ─
-# Verdict-handler-led transition is upcoming in Pass 4; the halt label is
-# consumed by apply_transition. Slot remains held (active dispatch work).
+# Verdict-handler-led transition is upcoming in the Pass 4U held arm;
+# the halt label is consumed by apply_transition. Slot remains held
+# (active dispatch work).
 reset_fixtures
 write_comments_fixture "ENG-OAR-HALT-PASS" \
   '<!-- pipeline: verdict result=pass stage=planning -->|2026-05-09T08:00:00Z'
@@ -1695,13 +1750,13 @@ fi
 #     body's primary motivating example.
 #
 #     Why cap=1, not the test default cap=2: under cap=2, BOTH ENG-A and
-#     ENG-B fit in held[] regardless of D-002. Pre-fix Pass 4 would skip
-#     ENG-A (advanceable=false guard, line ~528) then dispatch ENG-B —
-#     identical observable to post-fix. Cap=1 forces the slot pinch:
-#     pre-fix Pass 3 sorts reviewing (idx=4) above implementing (idx=2),
-#     held=[ENG-A] holds the only slot, Pass 4 skips ENG-A and the
-#     orchestrator goes idle (no JSON output). Post-fix ENG-A vacates,
-#     held=[ENG-B], and Pass 4 dispatches ENG-B. The assertion now
+#     ENG-B fit in held[] regardless of D-002. Pre-fix the held loop would
+#     skip ENG-A (advanceable=false guard) then dispatch ENG-B — identical
+#     observable to post-fix. Cap=1 forces the slot pinch: pre-fix Pass 3
+#     sorts reviewing (idx=4) above implementing (idx=2), held=[ENG-A]
+#     holds the only slot, the held loop skips ENG-A and the orchestrator
+#     goes idle (no JSON output). Post-fix ENG-A vacates, held=[ENG-B],
+#     and the Pass 4U held arm dispatches ENG-B. The assertion now
 #     genuinely fails pre-fix, satisfying "regression test must fail
 #     under the regression."
 reset_fixtures
@@ -1734,13 +1789,13 @@ fi
 # ─── AC-OAR-HALT-NO-MARKER-STARVATION: ENG-A at stage:planning + halt + no
 #     marker; ENG-B Todo in inbox; cap=1. main() dispatches ENG-B with
 #     entry_action=apply-stage-label (halt-no-marker freed the slot per
-#     D-003). Pre-ENG-90, ENG-A held the slot and Pass 5's inbox gate
-#     skipped — no inbox issue could enter the pipeline.
+#     D-003). Pre-ENG-90, ENG-A held the slot and the picker's inbox
+#     cap-gate skipped — no inbox issue could enter the pipeline.
 #
-#     Why cap=1, not the test default cap=2: under cap=2, Pass 5's inbox
-#     gate (held_count < max_concurrent → 1 < 2 = true) admits ENG-B
-#     regardless of whether ENG-A holds or vacates. Pre-fix and post-fix
-#     dispatch identically. Cap=1 closes the gate pre-fix
+#     Why cap=1, not the test default cap=2: under cap=2, the picker's
+#     inbox gate (held_count < max_concurrent → 1 < 2 = true) admits
+#     ENG-B regardless of whether ENG-A holds or vacates. Pre-fix and
+#     post-fix dispatch identically. Cap=1 closes the gate pre-fix
 #     (held_count=1 ≥ cap=1) and opens it post-fix (held_count=0 < 1),
 #     which is the literal regression D-003 fixes.
 reset_fixtures

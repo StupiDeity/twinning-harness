@@ -408,18 +408,36 @@ _picker_predicate_ready() {
     proceed)  return 0 ;;
     skip:*)   return 1 ;;
     error:*)  return 0 ;;
-    *)        return 0 ;;
+    *)
+      # Unknown shape — entry-conditions.sh has a closed output vocabulary
+      # today (proceed | skip:* | error:*); a future addition (e.g.,
+      # `defer:<reason>`) would silently fail-open without this log line.
+      # ENG-86 D-010 specifies fail-open on `error:*` only; this catch-all
+      # is a strictly defensive degenerate case (review-fix-unknown-shape).
+      log "picker: predicate $stage_arg/$ident returned unknown shape '$out'; failing open"
+      return 0 ;;
   esac
 }
 
 # ENG-91: assemble the unified picker pool. Returns a JSON array of
 # candidates, each carrying picker_source ∈ {held, wait_recallable,
 # inbox} and fifo_ts, sorted by [-stage_index, -priority_sort_rank,
-# fifo_ts]:
+# fifo_ts, .identifier]:
 #   - stage_index descending (later stage wins — WIP-first)
 #   - priority_sort_rank descending (Urgent > High > Normal > Low > None)
-#   - fifo_ts ascending (older wait_progress_ts / createdAt / updatedAt
-#     wins)
+#   - fifo_ts ascending:
+#       waits  → wait_progress_ts (strict entry-FIFO of the wait verdict)
+#       inbox  → createdAt        (strict entry-FIFO of the issue itself)
+#       helds  → updatedAt        (LRU-proxy, NOT strict entry-FIFO; see
+#                                  brainstorm O-1 — `updatedAt` advances
+#                                  on every label/comment change, so two
+#                                  helds at the same stage+priority will
+#                                  tie-break by least-recently-touched.
+#                                  Real-world ties are rare; ENG-91 ships
+#                                  the freshness proxy and defers strict
+#                                  stage-transition-ts FIFO).
+#   - .identifier ascending (final tiebreak): total-orders the sort,
+#     removes jq stable-sort assumption (review-fix-identifier-tiebreak).
 # Inbox arrivals get stage_index=-1 (strictly below brainstorming=0),
 # so an inbox issue never beats a stage-labelled one of equal priority.
 #
@@ -427,13 +445,17 @@ _picker_predicate_ready() {
 #   - held items always included (they are already counted in
 #     held_count; their fifo_ts is the gather projection's updatedAt).
 #   - wait_recallable + inbox cap-guarded by held_count <
-#     max_concurrent. Mirrors today's Pass 5/6 cap guards at
-#     bin/poll.sh's pre-ENG-91 lines 489 and 519.
+#     max_concurrent. Mirrors today's pre-ENG-91 Pass 5/6 cap guards.
 #
 # Wait_recallable items are gated on _picker_predicate_ready before
 # entering the pool (ENG-91 D-003). When the predicate evaluates skip,
 # the wait does NOT compete for the slot; an inbox arrival or earlier-
 # stage held may dispatch instead.
+#
+# Failure containment: a list-issues-in-state error or malformed JSON
+# defaults `inbox_pool` to `[]` rather than browning out the entire
+# dispatch surface for the tick (review-fix-inbox-brownout per
+# brainstorm §7).
 _picker_build_pool() {
   local classified="$1" held_count="$2" max_concurrent="$3"
 
@@ -470,6 +492,13 @@ _picker_build_pool() {
 
     local inbox_state
     inbox_state="$(config_get '.linear.native_states.inbox')"
+    # `|| printf '[]'` rescues a list-issues-in-state failure (Linear API
+    # outage, network blip, malformed JSON mid-stream). Without this, the
+    # `--argjson i $inbox_pool` parse below fails under set -euo pipefail
+    # and the entire dispatch surface (including helds + waits) browns
+    # out for the tick — a regression from the pre-ENG-91 path which
+    # gracefully degraded to held + wait dispatch when only the inbox
+    # query failed. Brainstorm §7 explicit contract.
     inbox_pool="$(bash "$SCRIPT_DIR/linear.sh" list-issues-in-state "$inbox_state" \
       | jq -c '
         [.data.issues.nodes[]
@@ -483,11 +512,18 @@ _picker_build_pool() {
             stage_index: -1,
             priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end),
             picker_source: "inbox",
-            fifo_ts: (.createdAt // "")}]')"
+            fifo_ts: (.createdAt // "")}]' \
+      || printf '[]')"
+    # Defensive default: jq sometimes emits empty stdout on weird inputs
+    # without erroring (e.g., null on a missing .data path). The
+    # `|| printf '[]'` only fires on a non-zero pipe; this `[[ -z ]]`
+    # guard catches the empty-but-clean case so $inbox_pool is always
+    # valid JSON for the --argjson concat below.
+    [[ -z "$inbox_pool" ]] && inbox_pool='[]'
   fi
 
   jq -c --argjson h "$held_pool" --argjson w "$wait_pool" --argjson i "$inbox_pool" \
-    -n '($h + $w + $i) | sort_by([-(.stage_index), -(.priority_sort_rank), .fifo_ts])'
+    -n '($h + $w + $i) | sort_by([-(.stage_index), -(.priority_sort_rank), .fifo_ts, .identifier])'
 }
 
 # Emit a per-tick halt-sprawl alert when the count of slot=="vacate"
