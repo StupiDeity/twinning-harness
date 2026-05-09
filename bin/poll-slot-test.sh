@@ -1301,21 +1301,33 @@ else
     "got slot=$slot adv=$adv oar=$oar full=$out"
 fi
 
-# ─── AC-OAR-HALT-UNKNOWN-MARKER: halt + only transition marker (no actionable
-#     verdict) → vacate, oar=true. find_fresh_verdict skips non-verdict events
-#     and returns empty; same fall-through as no-marker. The fixture name is
-#     preserved for traceability against the audit table.
+# ─── AC-OAR-HALT-NO-VERDICT: halt + only a transition marker present (no
+#     actionable verdict) → vacate, oar=true. find_fresh_verdict ignores
+#     non-verdict events (bin/verdict-handler.sh:107-117) and returns
+#     empty, so this fixture exercises the same `if -z "$fresh"` no-marker
+#     fall-through as AC-OAR-HALT-NO-MARKER (poll.sh:299-305), NOT the
+#     case-`*)` arm at poll.sh:292-297.
+#
+#     Naming note: previously called AC-OAR-HALT-UNKNOWN-MARKER, but
+#     find_fresh_verdict never emits marker:"unknown" in production —
+#     parse_pipeline_marker only emits known event kinds; the
+#     marker:"unknown" jq-projection arm at bin/verdict-handler.sh:139-141
+#     is reached only for verdicts with unrecognised result tokens, which
+#     the registry rejects. The case-`*)` arm in _poll_classify_labels is
+#     defense-in-depth against future drift; observable behaviour is
+#     identical to the no-marker fall-through (both vacate/oar=true).
+#     Renamed to NO-VERDICT to match the path actually exercised.
 reset_fixtures
-write_comments_fixture "ENG-OAR-HALT-UNKNOWN-MARKER" \
+write_comments_fixture "ENG-OAR-HALT-NO-VERDICT" \
   '<!-- pipeline: transition from=planning to=implementing -->|2026-05-09T08:00:00Z'
-out="$(_poll_classify_labels "ENG-OAR-HALT-UNKNOWN-MARKER" '["stage:planning","pipeline:halted"]')"
+out="$(_poll_classify_labels "ENG-OAR-HALT-NO-VERDICT" '["stage:planning","pipeline:halted"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
 oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
 if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
-  pass_at "AC-OAR-HALT-UNKNOWN-MARKER halt + transition-only → vacate, oar=true (D-003)"
+  pass_at "AC-OAR-HALT-NO-VERDICT halt + transition-only → vacate, oar=true (D-003)"
 else
-  fail_at "AC-OAR-HALT-UNKNOWN-MARKER" \
+  fail_at "AC-OAR-HALT-NO-VERDICT" \
     "got slot=$slot adv=$adv oar=$oar full=$out"
 fi
 
