@@ -439,7 +439,7 @@ bypass of `bin/linear.sh`'s auto-injection chokepoint.
 - A transcript sidecar at
   `$PROJECT_STATE_DIR/<ident>/.envelope-transcript-<stage>` is preserved
   across the halt for forensic review. The next dispatch's pre-clean at
-  `bin/dispatch.sh::_render_and_capture_stream` (line 102) removes it
+  `bin/dispatch.sh::_render_and_capture_stream` (line 83) removes it
   unconditionally before any agent runs, so the sidecar survives until
   the operator reads it OR until `--action continue` triggers the next
   fresh dispatch.

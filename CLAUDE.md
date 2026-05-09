@@ -500,7 +500,7 @@ code. Consumed by retrospective + manual triage; surfacing in
 re-allocates a fresh `dispatch_id` on the next tick. The transcript
 sidecar at `$(issue_dir)/.envelope-transcript-<stage>` is preserved
 across the halt for forensic review and removed by the next dispatch's
-pre-clean at `bin/dispatch.sh::_render_and_capture_stream` (line 102).
+pre-clean at `bin/dispatch.sh::_render_and_capture_stream` (line 83).
 The `dispatch_history.jsonl` audit log carries the halted dispatch's
 start+end rows past the resume.
 
