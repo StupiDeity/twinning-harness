@@ -176,6 +176,22 @@ seen in Linear is human-applied.
 
 ## Linear conventions the harness depends on
 
+- **Every new ticket carries a type label at creation time.** Exactly one of
+  `Bug` / `Feature` / `Improvement` MUST be set when the issue is filed. Mapping
+  to branch shape (per `bin/branch-name.sh:26-29`):
+  - `Bug` → `fix/<eng-n>-<slug>`
+  - `Feature` / `Improvement` → `feat/<eng-n>-<slug>`
+
+  This is **load-bearing, not cosmetic**. `branch-name.sh` re-evaluates the
+  `Bug` label on every call (worktree creation, render-prompt, the orchestrator's
+  `apply_transition` PR-create hook in `bin/verdict-handler.sh:206`). Adding or
+  removing `Bug` after the worktree is created causes branch-shape drift: the
+  pushed branch has the old prefix, but `branch-name.sh` returns the new one,
+  and the PR-create hook silently fails with `gh pr create --head fix/...`
+  against an unpushed branch (its `|| log` swallows the failure — see ENG-86,
+  May 2026). If unsure which label fits when filing, ASK before creating;
+  do not file the ticket unlabelled and "decide later."
+
 - **Mutate labels additively.** Use `bash bin/linear.sh add-label <ENG-N> <label>` and
   `remove-label`. Never reach for the Linear MCP `save_issue` from harness code or from
   scripts the harness invokes — that call overwrites the entire label set and will silently
