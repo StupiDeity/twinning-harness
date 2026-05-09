@@ -1408,6 +1408,27 @@ else
     "got slot=$slot adv=$adv oar=$oar full=$out"
 fi
 
+# ─── AC-OAR-SKIP-CODE-NO-STATE: pipeline:skip-until-code-changes WITHOUT a
+#     state file → vacate, oar=true (D-005 review-fix). _poll_evaluate_skip
+#     short-circuits at bin/poll.sh:87-89 BEFORE the evidence check, so the
+#     next tick takes the identical path — no orchestrator-side recall. Only
+#     operator action recovers (label removal, or classify-failure.sh
+#     belatedly writing the state file). Pinned distinct from
+#     AC-OAR-SKIP-CODE-UNCHANGED (which DOES auto-recover via the
+#     pipeline_content_hash / branch SHA recompute).
+reset_fixtures
+# Intentionally do NOT create issue-state.json for ENG-OAR-SKIP-CODE-NO-STATE.
+out="$(_poll_classify_labels "ENG-OAR-SKIP-CODE-NO-STATE" '["stage:planning","pipeline:skip-until-code-changes"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-OAR-SKIP-CODE-NO-STATE skip-until-code-changes + no state file → vacate, oar=true (D-005 review-fix)"
+else
+  fail_at "AC-OAR-SKIP-CODE-NO-STATE" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
 # ─── AC-OAR-DEFAULT: stage label only, no other markers → hold/advanceable
 #     The catch-all else arm; oar absent.
 reset_fixtures
