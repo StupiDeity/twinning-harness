@@ -127,7 +127,7 @@ jq -r '.orchestrator.paused' .pipeline-config/state.local.json
 
 Fix: `bash bin/reset-pipeline.sh` (clears both).
 
-## §3 — Comment dedup invisibility
+## §3 — Comment dedup invisibility <a id="sig-dedup"></a>
 
 **Linear comment dedup is sig-based.** Two writes with the same
 `<!-- meta: dedup key=X -->` marker collapse — the second writes UPDATES
