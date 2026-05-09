@@ -219,9 +219,20 @@ _poll_classify_labels() {
     # auto-recallable: the next-tick _poll_evaluate_skip re-checks
     # pipeline_content_hash + branch SHA and clears the label mid-tick on
     # change (line 109-134).
+    #
+    # ENG-90 review-fix: the no-state-file path of skip-until-code-changes
+    # is ALSO operator-action-required. _poll_evaluate_skip short-circuits
+    # at line 87-89 BEFORE evidence is computed when the state file is
+    # absent, so the next tick takes the identical path and current_hash /
+    # current_sha never run — no orchestrator-side recall predicate exists.
+    # Operator must remove the label (or classify-failure.sh must belatedly
+    # write the state file).
     local oar="false"
+    local _state_file
+    _state_file="$(issue_dir "$ident")/issue-state.json"
     if [[ "$(jq -r --arg n "pipeline:skip-until-human-acts" \
-            '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")" == "true" ]]; then
+            '[.[] | select(. == $n)] | length > 0' <<<"$labels_json")" == "true" ]] \
+       || [[ ! -f "$_state_file" ]]; then
       oar="true"
     fi
     jq -nc --argjson l "$labels_json" --argjson oar "$oar" \
