@@ -263,10 +263,22 @@ parse_pipeline_marker() {
   # NOT register as real state-driving events.
   body="$(_strip_code_blocks_and_spans "$body")"
 
-  # Match either family. The grep is intentionally unanchored so a marker
-  # appearing anywhere in the body is found; we take the LAST one (`tail -1`)
-  # because mechanical summary writers append the dedup marker to the end.
-  marker="$(grep -oE '<!-- (pipeline|meta): [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  # Family precedence: pipeline > meta. Pipeline-family markers
+  # (verdict, transition, decision) are state-driving — every caller of
+  # this function cares about them. Meta-family markers (dedup, metric,
+  # dispatch, ...) are bookkeeping that often coexists in the SAME comment
+  # body alongside a state-driving pipeline marker (ENG-87 dispatch_id
+  # auto-injection appends `<!-- meta: dispatch ... -->` AT THE END of
+  # every comment that goes through the linear.sh chokepoint, so a
+  # straight `tail -1` would return the dispatch marker for every
+  # comment that carries both — hijacking find_fresh_verdict /
+  # resume_in_progress_transition / _vh_drain_legacy_labels). Within a
+  # family the LAST marker wins (legacy semantics: mechanical summary
+  # writers append dedup markers at the end).
+  marker="$(grep -oE '<!-- pipeline: [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  if [[ -z "$marker" ]]; then
+    marker="$(grep -oE '<!-- meta: [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  fi
   [[ -z "$marker" ]] && return 1
 
   local family payload
