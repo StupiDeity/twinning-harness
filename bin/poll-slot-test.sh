@@ -1193,16 +1193,20 @@ fi
 # ═══════════════════════════════════════════════════════════════════════
 
 # ─── AC-OAR-ABANDONED: pipeline:abandoned → terminal; oar absent ──────
+# Use `jq -e 'has(...) | not'` to assert the field is OMITTED, not just
+# coerced to literal-null. `jq -r '.field | tostring'` returns "null"
+# both for missing AND for explicit null, so a regression that emitted
+# `{operator_action_required:null}` would silently pass otherwise.
 reset_fixtures
 out="$(_poll_classify_labels "ENG-OAR-ABANDONED" '["pipeline:abandoned"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
-if [[ "$slot" == "terminal" && "$adv" == "false" && "$oar" == "null" ]]; then
+if [[ "$slot" == "terminal" && "$adv" == "false" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$out" >/dev/null; then
   pass_at "AC-OAR-ABANDONED pipeline:abandoned → terminal; oar absent"
 else
   fail_at "AC-OAR-ABANDONED pipeline:abandoned → terminal" \
-    "got slot=$slot adv=$adv oar=$oar full=$out"
+    "got slot=$slot adv=$adv full=$out"
 fi
 
 # ─── AC-OAR-PAUSED: pipeline:paused → vacate, oar=true ────────────────
@@ -1240,12 +1244,12 @@ write_comments_fixture "ENG-OAR-HALT-PASS" \
 out="$(_poll_classify_labels "ENG-OAR-HALT-PASS" '["stage:planning","pipeline:halted"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
-if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+if [[ "$slot" == "hold" && "$adv" == "true" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$out" >/dev/null; then
   pass_at "AC-OAR-HALT-PASS halt + stage-summary → hold/advanceable; oar absent"
 else
   fail_at "AC-OAR-HALT-PASS" \
-    "got slot=$slot adv=$adv oar=$oar full=$out"
+    "got slot=$slot adv=$adv full=$out"
 fi
 
 # ─── AC-OAR-HALT-FAIL: halt + rejection verdict → hold/advanceable ────
@@ -1255,12 +1259,12 @@ write_comments_fixture "ENG-OAR-HALT-FAIL" \
 out="$(_poll_classify_labels "ENG-OAR-HALT-FAIL" '["stage:implementing","pipeline:halted"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
-if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+if [[ "$slot" == "hold" && "$adv" == "true" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$out" >/dev/null; then
   pass_at "AC-OAR-HALT-FAIL halt + rejection → hold/advanceable; oar absent"
 else
   fail_at "AC-OAR-HALT-FAIL" \
-    "got slot=$slot adv=$adv oar=$oar full=$out"
+    "got slot=$slot adv=$adv full=$out"
 fi
 
 # ─── AC-OAR-HALT-HALT: halt + pipeline-halt verdict → vacate, oar=true ─
@@ -1342,12 +1346,12 @@ reset_fixtures
 out="$(REVIEW_SHOULD_DISPATCH=0 _poll_classify_labels "ENG-OAR-REVIEW-DISPATCH" '["stage:reviewing"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
-if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+if [[ "$slot" == "hold" && "$adv" == "true" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$out" >/dev/null; then
   pass_at "AC-OAR-REVIEW-DISPATCH review_should_dispatch=true → hold/advanceable; oar absent"
 else
   fail_at "AC-OAR-REVIEW-DISPATCH" \
-    "got slot=$slot adv=$adv oar=$oar full=$out"
+    "got slot=$slot adv=$adv full=$out"
 fi
 
 # ─── AC-OAR-REVIEW-IDLE: stage:reviewing + REVIEW_SHOULD_DISPATCH=1
@@ -1435,12 +1439,12 @@ reset_fixtures
 out="$(_poll_classify_labels "ENG-OAR-DEFAULT" '["stage:implementing"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
 adv="$(jq -r '.advanceable | tostring' <<<"$out")"
-oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
-if [[ "$slot" == "hold" && "$adv" == "true" && "$oar" == "null" ]]; then
+if [[ "$slot" == "hold" && "$adv" == "true" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$out" >/dev/null; then
   pass_at "AC-OAR-DEFAULT default catch-all → hold/advanceable; oar absent"
 else
   fail_at "AC-OAR-DEFAULT" \
-    "got slot=$slot adv=$adv oar=$oar full=$out"
+    "got slot=$slot adv=$adv full=$out"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
