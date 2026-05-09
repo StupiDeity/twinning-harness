@@ -152,6 +152,133 @@ else
   pass_at 'ENG-79: render-prompt.sh has no `feature/${issue_id_lower}` literal'
 fi
 
+# ─── ENG-87: PROMPT_RESOLVERS registry + render-time validator ─────────
+# Replaces ENG-79's hand-rolled python interpolation with a resolver
+# table at render-prompt.sh's top + a render-time die() on unknown
+# tokens. Tests source render-prompt.sh into a subshell directly so the
+# resolver functions (defined in render-prompt.sh) are in scope without
+# the bash -c re-process boundary.
+
+# Restore the project profile so render-prompt's append_project_profile
+# does not die. Required because case-6.4/6.5 above mutate it.
+mkdir -p "$sandbox/harness/learned-rules/test-slug"
+cat > "$sandbox/harness/learned-rules/test-slug/project-profile.md" <<'PROFILE'
+---
+slug: test-slug
+generated_at: 2026-04-27T00:00:00Z
+generated_by: discovery-agent
+schema_version: 1
+---
+
+# Project profile — Test
+
+## Stack
+bash.
+PROFILE
+
+# Helper: run a body inside a subshell with common.sh + render-prompt.sh
+# sourced, the sandbox env in place, and resolver-side globals
+# pre-populated. The body comes via heredoc on stdin (eval).
+run_resolver_body() {
+  local body="$1"
+  (
+    set +e
+    export TARGET_REPO="$sandbox/target"
+    export PROJECT_SLUG="test-slug"
+    export HARNESS_ROOT="$sandbox/harness"
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/common.sh"
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/render-prompt.sh"
+    eval "$body"
+  )
+}
+
+# Case 87-R1: every existing token in PROMPT_RESOLVERS resolves cleanly.
+out="$(run_resolver_body '
+  _RENDER_ISSUE_ID="ENG-87R1"
+  _RENDER_ISSUE_ID_LOWER="eng-87r1"
+  _RENDER_TITLE="Test title"
+  _RENDER_DESCRIPTION="Test description"
+  _RENDER_DATE="2026-05-09"
+  _RENDER_SLUG="test-slug"
+  _RENDER_BRAINSTORM_FILE="docs/brainstorms/foo.md"
+  _RENDER_PLAN_FILE="docs/plans/foo.md"
+  _RENDER_BRANCH_NAME="feat/eng-87r1-foo"
+  _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-87R1/stage-summary-implementing.md"
+  _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
+  PIPELINE_DISPATCH_ID="ENG-87R1-d0042"
+  resolve_block_tokens "{issue_id} {issue_id_lower} {issue_title} {date} {slug} {branch_name} {dispatch_id}"
+' 2>&1)"
+expected="ENG-87R1 eng-87r1 Test title 2026-05-09 test-slug feat/eng-87r1-foo ENG-87R1-d0042"
+if [[ "$out" == "$expected" ]]; then
+  pass_at "ENG-87 R1: every PROMPT_RESOLVERS token resolves cleanly"
+else
+  fail_at "ENG-87 R1: every token resolves" "expected='$expected' got='$out'"
+fi
+
+# Case 87-R2: unknown {token} dies with token name in message.
+err="$(run_resolver_body '
+  resolve_block_tokens "Hello {nonexistent_token_xyz} world" 2>&1
+  printf "post-die-marker"
+' 2>&1 || true)"
+if grep -qF 'unknown token' <<<"$err" && grep -qF 'nonexistent_token_xyz' <<<"$err" \
+   && ! grep -qF 'post-die-marker' <<<"$err"; then
+  pass_at "ENG-87 R2: unknown {token} dies (token name in message; control flow halts)"
+else
+  fail_at "ENG-87 R2: unknown token dies" "err=$err"
+fi
+
+# Case 87-R3: {dispatch_id} interpolates from $PIPELINE_DISPATCH_ID.
+out="$(run_resolver_body '
+  PIPELINE_DISPATCH_ID="ENG-87R3-d0042"
+  resolve_block_tokens "id={dispatch_id}"
+' 2>&1)"
+if [[ "$out" == "id=ENG-87R3-d0042" ]]; then
+  pass_at "ENG-87 R3: {dispatch_id} interpolates from \$PIPELINE_DISPATCH_ID"
+else
+  fail_at "ENG-87 R3: {dispatch_id} interpolation" "out=$out"
+fi
+
+# Case 87-R4: {dispatch_id} resolves to empty when env unset (acceptable
+# per resolver contract — release stage / direct-dispatch test paths).
+out="$(run_resolver_body '
+  unset PIPELINE_DISPATCH_ID
+  resolve_block_tokens "id={dispatch_id}|end"
+' 2>&1)"
+if [[ "$out" == "id=|end" ]]; then
+  pass_at "ENG-87 R4: {dispatch_id} → empty when env unset (allowed by contract)"
+else
+  fail_at "ENG-87 R4: {dispatch_id} empty-env" "out=$out"
+fi
+
+# Case 87-R5: PROMPT_RESOLVERS registry covers every {token} in
+# AGENT_PROMPTS.md. Drift guard — if a new token enters the source
+# without a registered resolver, this test catches it before the
+# orchestrator's render-time validator fires at dispatch time.
+agent_prompts_tokens="$(grep -oE '\{[a-z_]+\}' "$SCRIPT_DIR/../AGENT_PROMPTS.md" | sort -u)"
+registry_tokens="$(awk '/^PROMPT_RESOLVERS=/{flag=1; next} /^'"'"'$/ && flag {flag=0} flag' "$RP_SRC" \
+  | grep -oE '^[a-z_]+=' | sed 's/=$//')"
+# Tokens used ONLY by the released-stage block (handled by the
+# legacy-sed pass in main(), not the resolver registry).
+released_tokens=$'{version}\n{tag}\n{prev_tag}'
+missing_tokens=""
+while IFS= read -r tok; do
+  [[ -z "$tok" ]] && continue
+  if grep -qFx "$tok" <<<"$released_tokens"; then
+    continue
+  fi
+  name="${tok#\{}"; name="${name%\}}"
+  if ! grep -qFx "$name" <<<"$registry_tokens"; then
+    missing_tokens+="$tok "
+  fi
+done <<<"$agent_prompts_tokens"
+if [[ -z "$missing_tokens" ]]; then
+  pass_at "ENG-87 R5: every {token} in AGENT_PROMPTS.md has a resolver in PROMPT_RESOLVERS"
+else
+  fail_at "ENG-87 R5: token coverage" "missing resolvers: $missing_tokens"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
