@@ -982,6 +982,113 @@ else
   ok 'ENG-74 QA: no `env VAR=val bash bin/...` command shape anywhere in AGENT_PROMPTS.md'
 fi
 
+# ─── ENG-87: §§1-7 stage-summary mandate generalisation ────────────
+# Pre-fix, only §5 (Review) carried the "MANDATORY — overwrite on every
+# dispatch" clause + the "do not read-then-conditionally-skip" carve-out
+# + the ENG-71/77 incident citation. ENG-77 (May 2026) showed the same
+# stale-file failure mode is structural (any stage can hit it on any
+# loopback), so the contract must ship to every numbered stage.
+# Generalises ENG-71's §5 trio to §§1-7. Token-coverage asserts that
+# every `{...}` in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS.
+assert_overwrite_mandate() {
+  local section_name="$1" stage_key="$2"
+  local body; body="$(section_body "$section_name")"
+  if printf '%s\n' "$body" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+    ok "${stage_key}: mandates 'overwrite on every dispatch'"
+  else
+    nope "${stage_key}: mandates 'overwrite on every dispatch'" \
+      "without this rule, the ${stage_key} agent can re-emit verdicts without a fresh file write — orchestrator posts stale body, downstream loopback gets no new feedback (ENG-77/ENG-71 May 2026 cycle)"
+  fi
+  if printf '%s\n' "$body" | grep -qF 'read-then-conditionally-skip'; then
+    ok "${stage_key}: bans 'read-then-conditionally-skip'"
+  else
+    nope "${stage_key}: bans 'read-then-conditionally-skip'" \
+      "the carve-out names the exact ENG-71 misreading; without it, agents may re-derive the same wrong behavior"
+  fi
+  if printf '%s\n' "$body" | grep -qE 'ENG-(71|77).*(May|2026)'; then
+    ok "${stage_key}: cites the ENG-71/77 incident"
+  else
+    nope "${stage_key}: cites the ENG-71/77 incident" \
+      "without the precedent, a future prompt-cleanup pass might decide the rule is overcautious and remove it"
+  fi
+}
+
+assert_overwrite_mandate "## 1. Brainstorm Agent"               brainstorming
+assert_overwrite_mandate "## 2. Plan Agent"                     planning
+assert_overwrite_mandate "## 3. Implementation Agent (Backend)" implementing
+assert_overwrite_mandate "## 4. UI Agent (Frontend)"            ui
+assert_overwrite_mandate "## 5. Review Agent"                   reviewing
+assert_overwrite_mandate "## 6. QA Agent"                       qa
+assert_overwrite_mandate "## 7. Build Agent"                    building
+
+# ─── ENG-87: agent-side preamble carries the dispatch-id contract ──
+# The preamble (content between the H1 and `## 1.`) must contain the
+# `### Dispatch identifier and freshness contract` heading. Without it,
+# agents lack the canonical reference for `{dispatch_id}` interpolation
+# and the no-mcp/no-curl mandates that the envelope validator enforces.
+preamble_body="$(awk '/^# / {h=1; next} /^## 1\./ {exit} h' "$PROMPTS")"
+if printf '%s' "$preamble_body" | grep -qF 'Dispatch identifier and freshness contract'; then
+  ok "preamble: cites Dispatch identifier and freshness contract"
+else
+  nope "preamble: cites Dispatch identifier and freshness contract" \
+    "preamble subsection missing — agents have no canonical reference for {dispatch_id} interpolation and the no-mcp/no-curl mandates"
+fi
+
+# Preamble must mention the auto-injection rule in some form so the
+# agent knows not to hand-craft `<!-- meta: dispatch id=... -->` markers.
+if printf '%s' "$preamble_body" | grep -qE 'auto-inject|chokepoint'; then
+  ok "preamble: cites auto-injection / chokepoint mechanism"
+else
+  nope "preamble: cites auto-injection / chokepoint mechanism" \
+    "without naming the chokepoint, an agent reading the preamble might attempt manual marker emission"
+fi
+
+# Preamble must name the envelope-violation halt class so agents know
+# the cost of bypassing bin/linear.sh.
+if printf '%s' "$preamble_body" | grep -qF 'dispatch-envelope-violation'; then
+  ok "preamble: names dispatch-envelope-violation halt class"
+else
+  nope "preamble: names dispatch-envelope-violation halt class" \
+    "without the halt-token reference, the no-mcp/no-curl rules read like style preferences instead of hard contracts"
+fi
+
+# ─── ENG-87: token-coverage — every `{token}` in AGENT_PROMPTS.md
+# must be declared in bin/render-prompt.sh::PROMPT_RESOLVERS. Mirrors
+# the render-time validator; defense-in-depth so a token added to
+# AGENT_PROMPTS.md without a resolver entry fails fast at content-test
+# time (instead of at the next dispatch's render).
+RENDER_PROMPT_SH="$HARNESS_ROOT/bin/render-prompt.sh"
+if [[ -f "$RENDER_PROMPT_SH" ]]; then
+  resolver_tokens="$(awk '
+    /^PROMPT_RESOLVERS=/{in_block=1; next}
+    in_block && /^[[:space:]]*'"'"'[[:space:]]*$/ {exit}
+    in_block {print}
+  ' "$RENDER_PROMPT_SH" | awk -F= '/^[a-z_]+=/{print $1}' | sort -u)"
+  prompt_tokens="$(grep -oE '\{[a-z_]+\}' "$PROMPTS" | sed 's/^{//; s/}$//' | sort -u)"
+  # Release-stage-only tokens handled by the legacy sed pass in
+  # render-prompt.sh::main (they're not in PROMPT_RESOLVERS by design).
+  released_only_tokens=$'version\ntag\nprev_tag'
+  missing=""
+  while IFS= read -r tok; do
+    [[ -z "$tok" ]] && continue
+    if grep -qxF "$tok" <<<"$released_only_tokens"; then
+      continue
+    fi
+    if ! grep -qxF "$tok" <<<"$resolver_tokens"; then
+      missing+="$tok "
+    fi
+  done <<<"$prompt_tokens"
+  if [[ -z "$missing" ]]; then
+    ok "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS"
+  else
+    nope "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS" \
+      "missing resolver entry for: $missing — render-prompt.sh would die at dispatch time"
+  fi
+else
+  nope "ENG-87: bin/render-prompt.sh exists for PROMPT_RESOLVERS lookup" \
+    "render-prompt.sh missing — token-coverage assert cannot run"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
