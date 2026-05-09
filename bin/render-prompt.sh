@@ -22,6 +22,14 @@ released=8. Release Agent
 retrospective=9. Retrospective Agent (Scheduled)
 '
 
+# §0 holds rules delivered to every stage's prompt (Secret-handling, Tool
+# allowlist & probing, etc.). Maintained as a single source of truth in
+# AGENT_PROMPTS.md; render-prompt.sh prepends its fenced block to every
+# per-stage block before token interpolation. Editing rules here lets
+# operators avoid 9-place edits in §§1-9 (the maintenance hazard ENG-46,
+# ENG-53#11, ENG-57, ENG-74 each had to swallow before this consolidation).
+COMMON_SECTION='0. Common rules (delivered to every stage)'
+
 lookup_section() {
   local stage="$1"
   grep -E "^${stage}=" <<<"$STAGE_TO_SECTION" | head -1 | cut -d= -f2-
@@ -169,6 +177,19 @@ main() {
   local block
   block="$(extract_block "$section")"
   [[ -n "$block" ]] || die "could not extract block for section: $section"
+
+  # Prepend §0 (common rules delivered to every stage). Token interpolation
+  # below runs over the full concatenated block, so {issue_id} substitutions
+  # inside §0's exit-ramp prose resolve uniformly. Released stage uses sed
+  # for substitution and only resolves {version}/{tag}/{prev_tag}; §0's
+  # {issue_id} reference there is left as a literal placeholder, which is
+  # acceptable because the released agent's main behavior is dictated by §8
+  # and the §0 preamble is an operational guardrail, not a primary control
+  # path.
+  local common_block
+  common_block="$(extract_block "$COMMON_SECTION")"
+  [[ -n "$common_block" ]] || die "could not extract common rules block (§0); check that AGENT_PROMPTS.md still has '## $COMMON_SECTION' with exactly two column-0 fences"
+  block="${common_block}"$'\n'"${block}"
 
   # Released stage is cross-issue: it has no single owning Linear issue. Render with
   # release metadata (version/tag/prev_tag) supplied via env by run-release-observer.sh.

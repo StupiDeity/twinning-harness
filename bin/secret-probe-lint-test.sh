@@ -204,58 +204,56 @@ case_8_no_git_repo() {
   cleanup_fixture "$dir"
 }
 
-# ─── case 9: AGENT_PROMPTS.md per-stage blocks inline the secret-handling rule ─
-# Review-loopback P0 #1 — the file-level "## Secret-handling preamble (ENG-46)"
-# section is invisible to dispatched agents because `bin/render-prompt.sh::extract_block`
-# emits only content inside `## N. <Stage> Agent` fenced blocks. The fix is to
-# inline a brief restatement of the rule inside each per-stage fenced block; this
-# test asserts every stage carries the inline rule.
+# ─── case 9: every dispatched agent receives the secret-handling rule ────
+# Original review-loopback P0 #1: the file-level "## Secret-handling preamble
+# (ENG-46)" section was invisible to dispatched agents because
+# `bin/render-prompt.sh::extract_block` only emitted content inside
+# `## N. <Stage> Agent` fenced blocks. The fix at the time was to inline the
+# rule in every stage. After the AGENT_PROMPTS.md consolidation, the rule
+# lives in `## 0. Common rules (delivered to every stage)` and
+# `bin/render-prompt.sh::main` prepends §0's fenced block to every per-stage
+# block — so each stage's rendered prompt still carries the rule, just from
+# a single source. This test asserts both layers of the post-consolidation
+# contract: (a) §0's fenced block carries the rule, (b) render-prompt.sh
+# prepends §0, so what the agent actually sees has the rule.
 case_9_per_stage_secret_rule_inlined() {
   local prompts="$SCRIPT_DIR_REAL/../AGENT_PROMPTS.md"
+  local render="$SCRIPT_DIR_REAL/../bin/render-prompt.sh"
   if [[ ! -f "$prompts" ]]; then
     bad 'case-9' "AGENT_PROMPTS.md not found at $prompts"
     return
   fi
-  # Section keys carry the numeric prefix used by render-prompt.sh's
-  # STAGE_TO_SECTION table; matches `extract_block`'s comparison form.
-  local stages=(
-    '1. Brainstorm Agent'
-    '2. Plan Agent'
-    '3. Implementation Agent (Backend)'
-    '4. UI Agent (Frontend)'
-    '5. Review Agent'
-    '6. QA Agent'
-    '7. Build Agent'
-    '8. Release Agent'
-    '9. Retrospective Agent (Scheduled)'
-  )
-  local missing=()
-  local s body
-  for s in "${stages[@]}"; do
-    body="$(awk -v section="$s" '
-      /^## [0-9]+\. / {
-        if (in_section) { exit }
-        line = $0
-        sub(/^## /, "", line)
-        if (line == section) { in_section=1 }
-        next
-      }
-      in_section && /^```/ {
-        fence_count++
-        if (fence_count == 1) { in_block=1; next }
-        if (fence_count == 2) { exit }
-      }
-      in_section && in_block { print }
-    ' "$prompts")"
-    if ! grep -qE 'Secret-handling \(ENG-46\)' <<<"$body"; then
-      missing+=("$s")
-    fi
-  done
-  if (( ${#missing[@]} > 0 )); then
-    bad 'case-9' "per-stage fenced blocks missing inline 'Secret-handling (ENG-46)' rule: ${missing[*]}"
-  else
-    ok 'case-9'
+  if [[ ! -f "$render" ]]; then
+    bad 'case-9' "bin/render-prompt.sh not found at $render"
+    return
   fi
+
+  # (a) §0 fenced block carries the rule.
+  local s0_body
+  s0_body="$(awk '
+    /^## 0\. / { in_section=1; next }
+    /^## [0-9]+\. / && in_section { exit }
+    in_section && /^```/ { fence_count++; if (fence_count == 1) { in_block=1; next } if (fence_count == 2) { exit } }
+    in_section && in_block { print }
+  ' "$prompts")"
+  if ! grep -qE 'Secret-handling \(ENG-46\)' <<<"$s0_body"; then
+    bad 'case-9' "§0 (Common rules) fenced block missing 'Secret-handling (ENG-46)' rule — single source of truth is broken"
+    return
+  fi
+
+  # (b) render-prompt.sh prepends §0's block in main() before per-stage
+  # rendering. Without this, agents only see their per-stage block and the
+  # rule never reaches them.
+  if ! grep -qE 'extract_block "\$COMMON_SECTION"' "$render"; then
+    bad 'case-9' "bin/render-prompt.sh::main does not extract \$COMMON_SECTION (§0) — agents won't see the rule from §0"
+    return
+  fi
+  if ! grep -qE 'common_block.*\$.*block|block=.*common_block' "$render"; then
+    bad 'case-9' "bin/render-prompt.sh::main extracts §0 but does not prepend it to the per-stage block — agents won't see the rule"
+    return
+  fi
+
+  ok 'case-9'
 }
 
 # ─── case 10: bin/dry-run.sh wires bin/secret-probe-lint.sh ───────────────

@@ -27,6 +27,43 @@ section_body() {
   ' "$PROMPTS"
 }
 
+# rendered_stage_body — returns what `bin/render-prompt.sh::extract_block` will
+# deliver to the agent for this stage: §0 (Common rules) prepended to the
+# stage's own body. Use this for assertions on rules that live in §0 (Secret-
+# handling, Tool allowlist & probing, env-var-prefix, etc.) so per-stage
+# loops still pass after the §0 consolidation. Use plain section_body() for
+# stage-specific content (overwrite rule, --repo flag, branch loopback).
+rendered_stage_body() {
+  local heading="$1"
+  section_body "## 0. Common rules"
+  section_body "$heading"
+}
+
+# ─── §0 (Common rules) consolidation invariant ────────────────────────
+# §0 is the single source of truth for rules delivered to every stage.
+# render-prompt.sh::main prepends §0's fenced block to every per-stage
+# block before token interpolation. Per-stage assertions below use
+# rendered_stage_body (= §0 + §N) so the same checks survive both the
+# pre-consolidation layout (rules inlined per stage) and the post-
+# consolidation layout (rules in §0 only). Pin §0's existence + the four
+# load-bearing phrases here so a §0 deletion surfaces directly, not just
+# via downstream test-cascade.
+s0="$(section_body "## 0. Common rules")"
+if [[ -n "$s0" ]]; then
+  ok "§0 (Common rules) section exists"
+else
+  nope "§0 (Common rules) section exists" \
+    "section missing — render-prompt.sh::main will die on dispatch (no common block to prepend)"
+fi
+for phrase in 'Secret-handling (ENG-46)' 'Tool allowlist & probing (ENG-53 #11' 'retry with the same sig' 'Do NOT prepend env-var assignments'; do
+  if printf '%s\n' "$s0" | grep -qF "$phrase"; then
+    ok "§0 carries '$phrase' (delivered to every stage by render-prompt.sh)"
+  else
+    nope "§0 carries '$phrase'" \
+      "phrase missing from §0 — per-stage checks below would still pass on re-inlined copies but consolidation is broken"
+  fi
+done
+
 s2="$(section_body "## 2. Plan Agent")"
 s3="$(section_body "## 3. Implementation Agent (Backend)")"
 s4="$(section_body "## 4. UI Agent (Frontend)")"
@@ -324,7 +361,10 @@ for stage_section in \
   "## 7. Build Agent" \
   "## 8. Release Agent" \
   "## 9. Retrospective Agent (Scheduled)"; do
-  body="$(section_body "$stage_section")"
+  # rendered_stage_body == §0 (Common rules) + per-stage body. The phrases
+  # tested below now live in §0 (consolidated) and are delivered to every
+  # stage by render-prompt.sh::main's prepend.
+  body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
 
   if printf '%s\n' "$body" | grep -qE 'Tool allowlist & probing \(ENG-53 #11'; then
@@ -402,7 +442,8 @@ for stage_section in \
   "## 7. Build Agent" \
   "## 8. Release Agent" \
   "## 9. Retrospective Agent (Scheduled)"; do
-  body="$(section_body "$stage_section")"
+  # rendered_stage_body picks up the rule from §0 (consolidated).
+  body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
 
   if printf '%s\n' "$body" | grep -qF 'retry with the same sig'; then
@@ -445,7 +486,7 @@ for stage_section in \
   "## 7. Build Agent" \
   "## 8. Release Agent" \
   "## 9. Retrospective Agent (Scheduled)"; do
-  body="$(section_body "$stage_section")"
+  body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
 
   if printf '%s\n' "$body" | grep -qF 'Do NOT prepend env-var assignments'; then
@@ -480,7 +521,7 @@ for stage_section in \
   "## 5. Review Agent" \
   "## 6. QA Agent" \
   "## 7. Build Agent"; do
-  body="$(section_body "$stage_section")"
+  body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
 
   if printf '%s\n' "$body" | grep -qF -- '--body -'; then
@@ -898,7 +939,7 @@ for stage_section in \
   "## 7. Build Agent" \
   "## 8. Release Agent" \
   "## 9. Retrospective Agent (Scheduled)"; do
-  body="$(section_body "$stage_section")"
+  body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
 
   if printf '%s\n' "$body" | grep -qE 'Do NOT prepend env-var assignments.*PIPELINE_WRITER=agent.*bash bin/'; then
