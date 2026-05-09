@@ -95,7 +95,11 @@ _render_and_capture_stream() {
   local usage_file="$1" issue_dir="$2" stage="${3:-}"
   local raw_capture="${issue_dir}/.raw-stream.ndjson.tmp"
   local violation_file="${issue_dir}/.transcript-violation-${stage}"
-  rm -f "$violation_file"            # idempotent pre-clean (D-008)
+  # ENG-87: the envelope-validator sidecar persists across the RETURN
+  # trap below so run-stage.sh::_validate_dispatch_envelope can scan
+  # it post-dispatch. Idempotent pre-clean (D-008).
+  local envelope_sidecar="${issue_dir}/.envelope-transcript-${stage}"
+  rm -f "$violation_file" "$envelope_sidecar"
   trap 'rm -f "$raw_capture"' RETURN
   mkdir -p "$issue_dir"
 
@@ -175,6 +179,15 @@ _render_and_capture_stream() {
     else
       log "[cost] no result event found in stream (soft fail; usage-<stage>.json not written)"
     fi
+  fi
+
+  # ENG-87: persist a copy of the transcript for the post-dispatch
+  # envelope validator. The trap above removes $raw_capture on RETURN;
+  # the validator (run-stage.sh::_validate_dispatch_envelope) needs an
+  # inspection target after dispatch.sh exits. Same dir as the existing
+  # .transcript-violation-${stage} sidecar.
+  if [[ -s "$raw_capture" && -n "$stage" ]]; then
+    cp "$raw_capture" "$envelope_sidecar" 2>/dev/null || true
   fi
 
   # ENG-43: defense-in-depth assertion. Tool lane should already deny
@@ -434,7 +447,17 @@ main() {
   # after 10s if claude ignores the term. gtimeout's exit 124 propagates
   # via the pipeline (set -o pipefail) so failure_outcome_for_exit can
   # classify it as dispatch-timeout.
+  # ENG-87: PIPELINE_DISPATCH_ID is the per-dispatch glue carried into the
+  # agent's subshell so its `bash bin/linear.sh add-comment` calls auto-
+  # inject the `<!-- meta: dispatch id=… stage=… -->` marker. PIPELINE_STAGE
+  # is the gerund-form stage name used by the auto-inject marker. Both are
+  # ${VAR-} (single-dash) so the test path that invokes dispatch.sh
+  # directly (without going through run-stage.sh::main) propagates an
+  # empty value rather than a "literal-when-set" leak — neither name
+  # matches secret-probe-lint.sh's regex, so this is lint-clean.
   local cmd=(env PIPELINE_WRITER=agent
+    "PIPELINE_DISPATCH_ID=${PIPELINE_DISPATCH_ID-}"
+    "PIPELINE_STAGE=$stage"
     gtimeout --signal=TERM --kill-after=10 "$timeout_seconds"
     claude -p
     --output-format stream-json --verbose

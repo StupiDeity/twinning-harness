@@ -711,6 +711,72 @@ _entry_conditions_gate() {
   esac
 }
 
+# ENG-87: clear current-stage local files at the start of every dispatch
+# so file existence post-dispatch is proof of THIS-dispatch authorship.
+# Generalises the wait-exit clear at lines 497-499 (build-only) to all
+# stages. Cleared:
+#   stage-summary-${stage}.md  (read by post_completion_comment)
+#   wait-${stage}.json         (overwritten by _handle_wait when the
+#                               agent emits a wait verdict; clearing
+#                               here ensures a fresh dispatch doesn't
+#                               inherit a stale counter)
+# NOT cleared:
+#   issue-state.json           (allocator merges into it; clearing
+#                               would lose classify-failure state)
+#   stage-summary-OTHER.md     (forward+loopback reads need them
+#                               intact — see brainstorm §6.1/6.2)
+_clear_current_stage_slots() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2"
+  local d; d="$(issue_dir "$ident")"
+  rm -f "$d/stage-summary-${stage}.md" 2>/dev/null || true
+  rm -f "$d/wait-${stage}.json"        2>/dev/null || true
+  return 0
+}
+
+# ENG-87: post-dispatch envelope validator. Detective-only — halts only
+# on egregious bypass:
+#   (a) Transcript invoked mcp__plugin_linear* (Linear MCP fork outside
+#       bin/linear.sh's auto-injection lane).
+#   (b) Transcript invoked curl https://api.linear.app (direct Linear
+#       HTTP API outside bin/linear.sh).
+# Returns 0 = envelope clean, 29 = violation (caller halts).
+# Skip on wait-exit and scope-approval-replay (caller gate).
+_validate_dispatch_envelope() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2"
+  local d; d="$(issue_dir "$ident")"
+  local sidecar="${d}/.envelope-transcript-${stage}"
+  # When dispatch.sh's _render_and_capture_stream did not persist a
+  # sidecar (dry-run, smoke-only path), no transcript scan is possible —
+  # the validator is detective-only, fail-open in that case.
+  [[ -s "$sidecar" ]] || return 0
+
+  local violations=()
+  local _viol_mcp _viol_curl
+  if _viol_mcp="$(assert_no_tool_invocation "$sidecar" "mcp__plugin_linear")"; then
+    :
+  else
+    violations+=("mcp__plugin_linear:${_viol_mcp}")
+  fi
+  if _viol_curl="$(assert_no_tool_invocation "$sidecar" "curl https://api.linear.app")"; then
+    :
+  else
+    violations+=("curl-linear:${_viol_curl}")
+  fi
+  if (( ${#violations[@]} > 0 )); then
+    local viol_str; viol_str="$(printf '%s; ' "${violations[@]}")"
+    local body
+    body="$(printf '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->\n\nDispatch envelope violation on dispatch_id=%s stage=%s:\n\n%s\n\nThe agent bypassed bin/linear.sh (auto-injection chokepoint). Inspect: %s\n\n**Resume:** investigate the bypass, fix the agent prompt or tool-allowlist, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+      "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$viol_str" "$sidecar" "$ident")"
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+    return 29
+  fi
+  return 0
+}
+
 main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
@@ -798,6 +864,45 @@ main() {
   # Guarantee the per-issue state dir exists before dispatch so an agent's first
   # Write of stage-summary-<stage>.md cannot fail on missing parents.
   mkdir -p "$(issue_dir "$ident")"
+
+  # ENG-87: allocate dispatch_id (per-issue monotonic counter) and clear
+  # current-stage local files. Skip on scope-approval replay (the prior
+  # dispatch's id is still durable in issue-state.json and its envelope
+  # was already validated). Stamps PIPELINE_DISPATCH_ID + PIPELINE_STAGE
+  # into the env so dispatch.sh's `env` block carries them into the
+  # agent subshell, where bin/linear.sh's auto-injection picks them up
+  # for the per-comment dispatch marker.
+  if (( ! skip_dispatch )); then
+    export PIPELINE_STAGE="$stage"
+    local _dispatch_id
+    _dispatch_id="$(allocate_dispatch_id "$ident")"
+    log "dispatch-id allocated: $_dispatch_id (stage=$stage)"
+    _clear_current_stage_slots "$ident" "$stage"
+    # Append dispatch-start row to history (orchestrator-only forensic
+    # log; never read at runtime by decision-making code).
+    local _hist_file _trigger _predecessor _branch _hash
+    _hist_file="$(issue_dir "$ident")/dispatch_history.jsonl"
+    _branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident" 2>/dev/null || printf '')"
+    _hash="$(compute_pipeline_content_hash 2>/dev/null || printf '')"
+    # predecessor = the prior id; empty if this is d0001.
+    if [[ "$_dispatch_id" =~ -d0*([1-9][0-9]*)$ ]]; then
+      local _seq="${BASH_REMATCH[1]}"
+      if (( _seq > 1 )); then
+        _predecessor="$(printf '%s-d%04d' "$ident" "$((_seq - 1))")"
+      else
+        _predecessor=""
+      fi
+    else
+      _predecessor=""
+    fi
+    # Trigger inferred from labels; conservative default = "transition".
+    # Refining (loopback vs inbox-pickup vs retry-immediately) is forensic
+    # only and is left to a future ticket per brainstorm §12.
+    _trigger="transition"
+    printf '{"dispatch_id":"%s","stage":"%s","started_at":"%s","trigger":"%s","predecessor_dispatch_id":"%s","branch":"%s","pipeline_content_hash":"%s"}\n' \
+      "$_dispatch_id" "$stage" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$_trigger" "$_predecessor" "$_branch" "$_hash" >> "$_hist_file"
+  fi
 
   # Render the prompt.
   local prompt_file log_file
@@ -1080,6 +1185,29 @@ main() {
     esac
   fi
 
+  # ENG-87: post-dispatch envelope validator. Halts on egregious bypass
+  # only — transcript scan for direct Linear API calls (mcp__plugin_linear*
+  # or curl https://api.linear.app) outside the bin/linear.sh chokepoint.
+  # Detective backstop on top of (a) ENG-41's lane fence, (b) Task 7's
+  # auto-injection — catches an agent that bypasses bin/linear.sh entirely.
+  # Skip on scope-approval replay (no agent ran). Cleans the sidecar
+  # whether the envelope is clean OR violation (after halt comment lands).
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      brainstorming|planning|implementing|ui|reviewing|qa|building)
+        local _env_rc=0
+        _validate_dispatch_envelope "$ident" "$stage" || _env_rc=$?
+        if (( _env_rc == 29 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "dispatch envelope violation: agent bypassed bin/linear.sh (transcript shows mcp__plugin_linear or curl https://api.linear.app)" 29
+          rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
+          exit 29
+        fi
+        rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
+        ;;
+    esac
+  fi
+
   # Push branch BEFORE posting the completion comment so any `github.com/.../blob/<branch>/…`
   # link in the agent's summary resolves. run-local.sh's partition-sweep push only fires on
   # uncommitted dirty paths; an agent that commits its artifacts cleanly otherwise leaves the
@@ -1144,6 +1272,27 @@ main() {
   esac
 
   t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+
+  # ENG-87: append dispatch-end row to dispatch_history.jsonl. Forensic
+  # only — never read at runtime by decision-making code. The envelope
+  # field is conservative; on any non-zero vh_rc the rows are still
+  # appended so the retrospective can pair start/end on dispatch_id.
+  # If skip_dispatch was set (scope-approval replay), no end row is
+  # appended (no start row was either — preserves the start/end pairing
+  # invariant).
+  if (( ! skip_dispatch )); then
+    local _hist_file_end _summary_end
+    _hist_file_end="$(issue_dir "$ident")/dispatch_history.jsonl"
+    _summary_end="$(issue_dir "$ident")/stage-summary-${stage}.md"
+    printf '{"dispatch_id":"%s","stage":"%s","exit_at":"%s","exit_code":%d,"duration_ms":%d,"envelope":{"stage_summary_present":%s,"transcript_clean":%s}}\n' \
+      "${PIPELINE_DISPATCH_ID:-}" "$stage" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$vh_rc" "$duration" \
+      "$([[ -s "$_summary_end" ]] && printf 'true' || printf 'false')" \
+      "true" \
+      >> "$_hist_file_end" || true
+  fi
+
   # ENG-26 D-005: claude ran for all three vh_rc arms below (success,
   # halt-for-human, protocol-violation), so each site receives cost
   # flags. Read once into a bash array, then expand under the
