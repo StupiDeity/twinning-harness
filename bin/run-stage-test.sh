@@ -4060,6 +4060,127 @@ else
   fail_at "ENG-87 J: chained-command bypass" "expected rc=0 (blind spot), got rc=$_eng87_j_rc"
 fi
 
+# ─── ENG-87 C3: envelope-violation halt path preserves sidecar ─────────
+# CLAUDE.md and docs/runbooks/recovery.md both promise:
+#   "the transcript sidecar at $(issue_dir)/.envelope-transcript-<stage>
+#    is preserved across the halt for forensic review and removed by the
+#    next clean dispatch."
+# The halt-comment body emitted by _validate_dispatch_envelope even
+# points the operator at the sidecar by path. A pre-fix `rm -f` between
+# the rc=29 detection and `exit 29` deleted it before the operator
+# could read it. Pin this with a source-level grep.
+printf '\n--- ENG-87 C3: envelope halt preserves sidecar ---\n'
+
+RS_SRC="$HARNESS_DIR/run-stage.sh"
+# Find the envelope-violation block: from `if (( _env_rc == 29 )); then`
+# to the matching `exit 29`. Awk extracts the slice; grep searches for
+# any `rm -f` against the envelope-transcript path inside that slice.
+_eng87_c3_block="$(awk '
+  /if \(\( _env_rc == 29 \)\); then/ { in_block=1 }
+  in_block { print }
+  in_block && /exit 29/ { exit }
+' "$RS_SRC")"
+
+if printf '%s\n' "$_eng87_c3_block" \
+   | grep -qE 'rm[[:space:]]+-f.*\.envelope-transcript'; then
+  fail_at "ENG-87 C3: halt path preserves envelope sidecar" \
+    "rm -f .envelope-transcript-* found between rc=29 detection and exit 29 — operator will not be able to inspect the sidecar that recovery.md / CLAUDE.md tell them to read."
+else
+  pass_at "ENG-87 C3: halt path preserves envelope sidecar (no rm before exit 29)"
+fi
+
+# ─── ENG-87 M1+M2: dispatch_history.jsonl end-row at every exit, full schema ──
+# Plan §13.1.2 + §A-026 mandate two rows per dispatch (start + end), with
+# end-row schema = {dispatch_id, stage, exit_at, exit_code, policy,
+# verdict_emitted, verdict_target, duration_ms, envelope}. Pre-fix the
+# end row was emitted on only 1 of 15 exit paths, and was missing 3
+# fields (policy, verdict_emitted, verdict_target).
+printf '\n--- ENG-87 M1+M2: dispatch_history end-row schema + trap ---\n'
+
+# M1-A: source-level pin — main() installs an EXIT trap calling
+# _append_dispatch_end_row. Without this, a refactor that drops the
+# trap silently regresses to per-exit-path appends.
+if grep -qE "trap '?_append_dispatch_end_row" "$RS_SRC" \
+   || grep -qE 'trap [^ ]*_append_dispatch_end_row' "$RS_SRC"; then
+  pass_at "ENG-87 M1: main() installs EXIT trap → _append_dispatch_end_row"
+else
+  fail_at "ENG-87 M1: EXIT trap missing" \
+    "no 'trap ... _append_dispatch_end_row ... EXIT' line in run-stage.sh — early-exit paths will skip the end row, breaking start/end pairing"
+fi
+
+# M1-B: trap function exists.
+if declare -F _append_dispatch_end_row >/dev/null 2>&1; then
+  pass_at "ENG-87 M1: _append_dispatch_end_row defined"
+else
+  fail_at "ENG-87 M1: helper undefined" "expected function _append_dispatch_end_row"
+fi
+
+# M2-A: end-row schema includes the 9 fields plan §13.1.2 mandates.
+# Drive the helper directly with controlled globals; inspect emitted
+# JSONL line.
+mkdir -p "$(issue_dir ENG-87M2)"
+_eng87_m2_hist="$(issue_dir ENG-87M2)/dispatch_history.jsonl"
+: > "$_eng87_m2_hist"
+# Set the globals the trap function reads. Using the project-namespaced
+# names defined in run-stage.sh.
+_END_ROW_HIST_FILE="$_eng87_m2_hist"
+_END_ROW_DISPATCH_ID="ENG-87M2-d0042"
+_END_ROW_STAGE="implementing"
+_END_ROW_T0="$(($(date +%s) - 5))"
+_END_ROW_ISSUE="ENG-87M2"
+_END_ROW_VERDICT_EMITTED="fail"
+_END_ROW_VERDICT_TARGET="implementing"
+_END_ROW_POLICY="skip-until-human-acts"
+# Provide a stage-summary file so envelope.stage_summary_present=true.
+printf 'stub summary\n' > "$(issue_dir ENG-87M2)/stage-summary-implementing.md"
+
+_append_dispatch_end_row 21 2>/dev/null || true
+_eng87_m2_line="$(tail -1 "$_eng87_m2_hist" 2>/dev/null || printf '')"
+if [[ -n "$_eng87_m2_line" ]] && jq -e . <<<"$_eng87_m2_line" >/dev/null 2>&1; then
+  pass_at "ENG-87 M2: _append_dispatch_end_row emits valid JSON"
+else
+  fail_at "ENG-87 M2: invalid JSON or empty line" "got: $_eng87_m2_line"
+fi
+
+# M2-B: schema field check — assert all 9 mandated fields.
+for fld in dispatch_id stage exit_at exit_code policy verdict_emitted verdict_target duration_ms envelope; do
+  if [[ -n "$_eng87_m2_line" ]] \
+     && jq -e --arg f "$fld" 'has($f)' <<<"$_eng87_m2_line" >/dev/null 2>&1; then
+    pass_at "ENG-87 M2: end-row carries field '$fld'"
+  else
+    fail_at "ENG-87 M2: end-row missing '$fld'" "row=$_eng87_m2_line"
+  fi
+done
+
+# M2-C: field values reflect the globals.
+got_id="$(jq -r '.dispatch_id // ""' <<<"$_eng87_m2_line")"
+got_policy="$(jq -r '.policy // ""' <<<"$_eng87_m2_line")"
+got_ve="$(jq -r '.verdict_emitted // ""' <<<"$_eng87_m2_line")"
+got_vt="$(jq -r '.verdict_target // ""' <<<"$_eng87_m2_line")"
+got_ec="$(jq -r '.exit_code // ""' <<<"$_eng87_m2_line")"
+[[ "$got_id" == "ENG-87M2-d0042" ]] \
+  && pass_at "ENG-87 M2: dispatch_id matches global" \
+  || fail_at "ENG-87 M2: dispatch_id" "got: $got_id"
+[[ "$got_policy" == "skip-until-human-acts" ]] \
+  && pass_at "ENG-87 M2: policy reflects classify-failure write" \
+  || fail_at "ENG-87 M2: policy" "got: $got_policy"
+[[ "$got_ve" == "fail" && "$got_vt" == "implementing" ]] \
+  && pass_at "ENG-87 M2: verdict_emitted/verdict_target reflect verdict_handler context" \
+  || fail_at "ENG-87 M2: verdict_emitted/target" "ve=$got_ve vt=$got_vt"
+[[ "$got_ec" == "21" ]] \
+  && pass_at "ENG-87 M2: exit_code reflects trap argument" \
+  || fail_at "ENG-87 M2: exit_code" "got: $got_ec"
+
+# M2-D: idempotency — second invocation of the trap function does NOT
+# append a duplicate row (sentinel pattern). Prevents nested-exit
+# double-write under set -euo pipefail.
+_lines_before="$(wc -l < "$_eng87_m2_hist" | tr -d ' ')"
+_append_dispatch_end_row 21 2>/dev/null || true
+_lines_after="$(wc -l < "$_eng87_m2_hist" | tr -d ' ')"
+[[ "$_lines_before" == "$_lines_after" ]] \
+  && pass_at "ENG-87 M2: trap function is idempotent (sentinel prevents double-append)" \
+  || fail_at "ENG-87 M2: idempotency" "lines before=$_lines_before after=$_lines_after"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

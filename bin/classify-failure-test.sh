@@ -353,6 +353,39 @@ else
   fail_at "case-22 (QA adversarial) attempt-counter shape" "got: $full_capture"
 fi
 
+# ─── Test 87.C2: classify_failure preserves allocator-set fields ─────
+# ENG-87 review C2: pre-fix, classify_failure overwrote issue-state.json
+# with a fresh JSON missing current_dispatch_id / current_dispatch_seq;
+# next tick's allocator reset seq=0 → re-emitted d0001 → monotonicity
+# broken. Plan §A-007 mandates the merge-preserve idiom:
+# `$prior + {…}`, mirroring _allocate_dispatch_id_locked at common.sh.
+#
+# Sequence: seed issue-state with allocator-side fields → invoke
+# classify_failure → assert allocator fields survive.
+reset_state
+mkdir -p "$(issue_dir ENG-887C2)"
+printf '%s\n' '{"current_dispatch_seq":7,"current_dispatch_id":"ENG-887C2-d0007","current_stage":"implementing"}' \
+  > "$(issue_dir ENG-887C2)/issue-state.json"
+MOCK_PIPELINE_HASH="hashC2" MOCK_BRANCH_SHA="shaC2" \
+  classify_failure "ENG-887C2" "implementing" "skip-until-human-acts" "test" 29 ""
+got_dispatch_id="$(jq -r '.current_dispatch_id // ""' "$(issue_dir ENG-887C2)/issue-state.json")"
+got_dispatch_seq="$(jq -r '.current_dispatch_seq // ""' "$(issue_dir ENG-887C2)/issue-state.json")"
+got_stage="$(jq -r '.current_stage // ""' "$(issue_dir ENG-887C2)/issue-state.json")"
+got_policy="$(jq -r '.policy // ""' "$(issue_dir ENG-887C2)/issue-state.json")"
+[[ "$got_dispatch_id" == "ENG-887C2-d0007" ]] \
+  && pass_at "87.C2: classify_failure preserves current_dispatch_id" \
+  || fail_at "87.C2: current_dispatch_id stomped" "got: $got_dispatch_id"
+[[ "$got_dispatch_seq" == "7" ]] \
+  && pass_at "87.C2: classify_failure preserves current_dispatch_seq" \
+  || fail_at "87.C2: current_dispatch_seq stomped" "got: $got_dispatch_seq"
+[[ "$got_stage" == "implementing" ]] \
+  && pass_at "87.C2: classify_failure preserves current_stage" \
+  || fail_at "87.C2: current_stage stomped" "got: $got_stage"
+# Also confirm classify_failure's own fields landed.
+[[ "$got_policy" == "skip-until-human-acts" ]] \
+  && pass_at "87.C2: classify_failure still writes its own policy field" \
+  || fail_at "87.C2: classify_failure policy missing" "got: $got_policy"
+
 # ─── Test 23: exit 23 → outcome=branch-creation-forbidden (ENG-66) ────
 # Pin the new cross-stage exit code added in ENG-66. Without this
 # fixture, a regression that drops the `23)` arm in

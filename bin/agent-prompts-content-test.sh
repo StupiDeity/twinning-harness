@@ -1052,6 +1052,20 @@ else
     "without the halt-token reference, the no-mcp/no-curl rules read like style preferences instead of hard contracts"
 fi
 
+# Preamble must carry the no-carry-forward-state mandate (Task 14's
+# fourth bullet): agents MUST NOT read a previous dispatch's id to
+# "carry forward" any state. Each dispatch is a fresh slate; loopback
+# inputs come from the SOURCE stage's stage-summary file. Without this
+# rule, an agent reading the preamble could plausibly cache prior-
+# dispatch artifacts and re-emit them, defeating the clear-on-start
+# invariant (G-2).
+if printf '%s' "$preamble_body" | grep -qiE 'carry forward|fresh slate|previous (cycle|dispatch)'; then
+  ok "preamble: carries the no-carry-forward-state mandate"
+else
+  nope "preamble: carries the no-carry-forward-state mandate" \
+    "Task 14's fourth bullet (no-carry-forward-state) missing — without it, an agent could read prior-dispatch artifacts and defeat the clear-on-start invariant"
+fi
+
 # ─── ENG-87: token-coverage — every `{token}` in AGENT_PROMPTS.md
 # must be declared in bin/render-prompt.sh::PROMPT_RESOLVERS. Mirrors
 # the render-time validator; defense-in-depth so a token added to

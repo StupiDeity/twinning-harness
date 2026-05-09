@@ -824,20 +824,88 @@ else
     "expected 1 marker, got $_eng87_l3_count occurrences in: $_eng87_l3_out"
 fi
 
-# Case 87-L4: empty PIPELINE_STAGE produces stage="" but still injects.
-# Documents: env consistency is the orchestrator's responsibility; if
-# PIPELINE_DISPATCH_ID is set but PIPELINE_STAGE is empty, the marker
-# carries `stage=` (empty value). Pins this behavior because dispatch.sh
-# always sets both, but a future caller might not.
-PIPELINE_DISPATCH_ID="ENG-87L4-d0001" \
-PIPELINE_STAGE="" \
-_eng87_l4_out="$(_eng87_test_inject "test body")"
-if grep -qF '<!-- meta: dispatch id=ENG-87L4-d0001 stage= -->' <<<"$_eng87_l4_out"; then
-  pass_at "ENG-87 L4: env partial (stage empty) → marker still appended with empty stage value"
+# Case 87-L4: dispatch marker AND dedup marker coexist on the same body.
+# Plan §Task 10 L4 (Failure-Mode row "Auto-injection breaks dedup-marker
+# placement") asserts that `_inject_dispatch_marker` does NOT remove or
+# clobber the existing `<!-- meta: dedup key=... -->` footer. Both
+# markers must be present after injection.
+PIPELINE_DISPATCH_ID="ENG-87L4-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l4_input=$'completion summary body\n\nmore prose.\n\n<!-- meta: dedup key=completion/implementing/ENG-87L4 -->'
+PIPELINE_DISPATCH_ID="ENG-87L4-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l4_out="$(_eng87_test_inject "$_eng87_l4_input")"
+if grep -qF '<!-- meta: dispatch id=ENG-87L4-d0007 stage=implementing -->' <<<"$_eng87_l4_out" \
+   && grep -qF '<!-- meta: dedup key=completion/implementing/ENG-87L4 -->' <<<"$_eng87_l4_out"; then
+  pass_at "ENG-87 L4: dispatch marker + dedup marker coexist after injection"
 else
-  fail_at "ENG-87 L4: empty stage value" "got: $_eng87_l4_out"
+  fail_at "ENG-87 L4: dispatch + dedup coexistence" "got: $_eng87_l4_out"
 fi
 unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Case 87-L4b: empty PIPELINE_STAGE produces stage="" but still injects.
+# Documents env-consistency contract: orchestrator owns env setup; if
+# PIPELINE_DISPATCH_ID is set but PIPELINE_STAGE is empty, the marker
+# carries `stage=` (empty value). Pins behavior because dispatch.sh
+# always sets both, but a future caller might not.
+PIPELINE_DISPATCH_ID="ENG-87L4b-d0001" \
+PIPELINE_STAGE="" \
+_eng87_l4b_out="$(_eng87_test_inject "test body")"
+if grep -qF '<!-- meta: dispatch id=ENG-87L4b-d0001 stage= -->' <<<"$_eng87_l4b_out"; then
+  pass_at "ENG-87 L4b: env partial (stage empty) → marker still appended with empty stage value"
+else
+  fail_at "ENG-87 L4b: empty stage value" "got: $_eng87_l4b_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Case 87-L5: integration — call add_comment directly under PIPELINE_DRY_RUN=1
+# and assert the captured `[DRY_RUN] would comment` log line shows the
+# body ends with `<!-- meta: dispatch id=… -->`. Pins the wiring at
+# bin/linear.sh::add_comment (line 507-ish): a future refactor that
+# drops `body=$(_inject_dispatch_marker "$body")` would not be caught
+# by L1/L3/L4 (those test the helper directly).
+_eng87_l5_log="$_TEST_STUB_DIR/eng87-l5-add-comment.log"
+: > "$_eng87_l5_log"
+
+# Stub `log` to capture lines into our file (production log writes to
+# stderr; we want stdout-style capture for the assertion).
+_eng87_l5_orig_log="$(declare -f log 2>/dev/null || printf '')"
+log() {
+  local m="$*"
+  printf '%s\n' "$m" >> "$_eng87_l5_log"
+}
+
+# Stub `_resolve_issue_uuid` so add_comment's pre-flight passes without
+# hitting Linear (linear-test.sh's existing pattern; see ENG-63 cases).
+_eng87_l5_orig_resolve="$(declare -f _resolve_issue_uuid 2>/dev/null || printf '')"
+_resolve_issue_uuid() {
+  printf 'mock-uuid-eng87-l5'
+}
+export PIPELINE_DRY_RUN=1
+PIPELINE_DISPATCH_ID="ENG-87L5-d0011" \
+PIPELINE_STAGE="reviewing" \
+add_comment ENG-87L5 "agent body line 1" >/dev/null 2>&1 || true
+
+# Restore original behaviour so subsequent tests are not contaminated.
+if [[ -n "$_eng87_l5_orig_log" ]]; then
+  unset -f log
+  eval "$_eng87_l5_orig_log"
+fi
+unset -f _resolve_issue_uuid
+[[ -n "$_eng87_l5_orig_resolve" ]] && eval "$_eng87_l5_orig_resolve"
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Assert the captured log line shows the marker — confirms add_comment
+# threads the body through _inject_dispatch_marker before the dry-run
+# short-circuit fires.
+if grep -qF '<!-- meta: dispatch id=ENG-87L5-d0011 stage=reviewing -->' "$_eng87_l5_log"; then
+  pass_at "ENG-87 L5: add_comment invokes _inject_dispatch_marker (integration)"
+else
+  fail_at "ENG-87 L5: add_comment integration" \
+    "expected dispatch marker in dry-run log, got: $(cat "$_eng87_l5_log")"
+fi
+rm -f "$_eng87_l5_log"
+unset _eng87_l5_log _eng87_l5_orig_log _eng87_l5_orig_resolve
 
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"

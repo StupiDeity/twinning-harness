@@ -487,6 +487,62 @@ rm -rf "$_eng87_case6_dir"
 _eng87_case6_id="$(current_dispatch_id ENG-87T6)"
 assert_eq "87.6: current_dispatch_id returns empty when state file absent" "" "$_eng87_case6_id"
 
+# ─── ENG-87 C1: assert_no_tool_invocation hoisted to common.sh ──────
+# Pre-fix, this helper lived only in dispatch.sh and was inaccessible
+# to run-stage.sh::_validate_dispatch_envelope (run-stage.sh sources
+# common.sh, classify-failure.sh, verdict-handler.sh — never dispatch.sh).
+# In production every dispatch hit `command not found` rc=127 at
+# bin/run-stage.sh:759, fell into the `if VAR=...; then` falsy arm,
+# halted with rc=29 (envelope-violation). Tests passed only because
+# bin/run-stage-test.sh deliberately sourced dispatch.sh.
+#
+# Pin: helper available after sourcing common.sh alone, AND exported.
+printf '\n--- ENG-87 C1: assert_no_tool_invocation in common.sh ---\n'
+
+if declare -F assert_no_tool_invocation >/dev/null 2>&1; then
+  pass_at "87.C1: assert_no_tool_invocation defined in common.sh"
+else
+  fail_at "87.C1: assert_no_tool_invocation undefined in common.sh" \
+    "function not declared after sourcing common.sh"
+fi
+
+# Verify it is on the export -f list. Subprocesses spawned by
+# run-stage.sh's bash invocations need the export so child shells
+# inherit the function.
+if export -p -f 2>/dev/null | grep -q ' assert_no_tool_invocation' \
+   || declare -F -f assert_no_tool_invocation 2>/dev/null | grep -q 'assert_no_tool_invocation'; then
+  pass_at "87.C1: assert_no_tool_invocation declared (declare -F succeeds)"
+else
+  fail_at "87.C1: assert_no_tool_invocation not visible to declare -F" \
+    "expected declare -F success after sourcing common.sh"
+fi
+
+# Behaviour smoke: empty/missing transcript returns 0 (soft-fail per D-010).
+empty_transcript="$(mktemp -t eng87-c1-empty-XXXXXX)"
+: > "$empty_transcript"
+rc=0
+assert_no_tool_invocation "$empty_transcript" "mcp__plugin_linear" || rc=$?
+[[ "$rc" == "0" ]] \
+  && pass_at "87.C1: empty-transcript → rc=0 (soft-fail per D-010)" \
+  || fail_at "87.C1: empty-transcript should rc=0" "got: $rc"
+rm -f "$empty_transcript"
+
+# Behaviour smoke: matching tool_use returns 1 + prints command.
+match_transcript="$(mktemp -t eng87-c1-match-XXXXXX)"
+cat > "$match_transcript" <<'JSONL'
+{"type":"system","subtype":"init","session_id":"abc"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"mcp__plugin_linear_linear__save_issue --issue ENG-87 --label foo"}}]}}
+JSONL
+rc=0
+matched_cmd="$(assert_no_tool_invocation "$match_transcript" "mcp__plugin_linear")" || rc=$?
+[[ "$rc" == "1" ]] \
+  && pass_at "87.C1: matching tool_use → rc=1 (violation found)" \
+  || fail_at "87.C1: matching tool_use should rc=1" "got rc=$rc cmd=$matched_cmd"
+[[ "$matched_cmd" == mcp__plugin_linear* ]] \
+  && pass_at "87.C1: matched command echoed on stdout" \
+  || fail_at "87.C1: matched command should echo" "got: $matched_cmd"
+rm -f "$match_transcript"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
