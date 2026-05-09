@@ -3866,6 +3866,85 @@ unset MOCK_GH_REVIEWS_JSON
 CONFIG="$QA_CFG_SAVED"
 rm -f "$QA_TMP_CFG"
 
+# ─── ENG-87: clear-on-dispatch-start (_clear_current_stage_slots) ──────
+# Pre-dispatch helper that removes (a) stage-summary-${stage}.md and
+# (b) wait-${stage}.json so file existence post-dispatch is proof of
+# THIS-dispatch authorship. Generalises the wait-exit clear pattern at
+# bin/run-stage.sh:497-499 (build-only) to all stages. Idempotent.
+printf '\n--- ENG-87: _clear_current_stage_slots ---\n'
+
+# Case 87-A: current-stage stage-summary file is cleared.
+mkdir -p "$(issue_dir ENG-87A)"
+printf 'STALE iter-1\n' > "$(issue_dir ENG-87A)/stage-summary-implementing.md"
+_clear_current_stage_slots ENG-87A implementing
+if [[ ! -e "$(issue_dir ENG-87A)/stage-summary-implementing.md" ]]; then
+  pass_at "ENG-87 A: current-stage stage-summary cleared at dispatch start"
+else
+  fail_at "ENG-87 A: current-stage stage-summary cleared at dispatch start" \
+    "file still exists: $(issue_dir ENG-87A)/stage-summary-implementing.md"
+fi
+
+# Case 87-B: OTHER-stage stage-summary files preserved (loopback safety).
+# When implementing dispatches, the review summary must remain readable
+# so the implement agent sees fresh feedback. Brainstorm §6.2 invariant.
+mkdir -p "$(issue_dir ENG-87B)"
+printf 'STALE implementing\n' > "$(issue_dir ENG-87B)/stage-summary-implementing.md"
+printf 'fresh reviewing report\n' > "$(issue_dir ENG-87B)/stage-summary-reviewing.md"
+_clear_current_stage_slots ENG-87B implementing
+if [[ ! -e "$(issue_dir ENG-87B)/stage-summary-implementing.md" ]]; then
+  pass_at "ENG-87 B: current-stage cleared (implementing)"
+else
+  fail_at "ENG-87 B: current-stage cleared (implementing)" "still exists"
+fi
+if [[ -e "$(issue_dir ENG-87B)/stage-summary-reviewing.md" ]]; then
+  pass_at "ENG-87 B: OTHER-stage preserved (reviewing — loopback source)"
+else
+  fail_at "ENG-87 B: OTHER-stage preserved (reviewing — loopback source)" \
+    "file removed: stage-summary-reviewing.md"
+fi
+
+# Case 87-C: wait-${stage}.json cleared with the summary.
+mkdir -p "$(issue_dir ENG-87C)"
+printf '{"attempts":3}\n' > "$(issue_dir ENG-87C)/wait-building.json"
+printf 'STALE\n' > "$(issue_dir ENG-87C)/stage-summary-building.md"
+_clear_current_stage_slots ENG-87C building
+if [[ ! -e "$(issue_dir ENG-87C)/wait-building.json" ]]; then
+  pass_at "ENG-87 C: wait-\${stage}.json cleared"
+else
+  fail_at "ENG-87 C: wait-\${stage}.json cleared" "wait-building.json still exists"
+fi
+if [[ ! -e "$(issue_dir ENG-87C)/stage-summary-building.md" ]]; then
+  pass_at "ENG-87 C: stage-summary cleared with wait file"
+else
+  fail_at "ENG-87 C: stage-summary cleared with wait file" "still exists"
+fi
+
+# Case 87-D: clear is idempotent (safe to call when files absent).
+mkdir -p "$(issue_dir ENG-87D)"
+_clear_current_stage_slots ENG-87D building
+_rc1=$?
+_clear_current_stage_slots ENG-87D building
+_rc2=$?
+if (( _rc1 == 0 )) && (( _rc2 == 0 )); then
+  pass_at "ENG-87 D: clear-on-start idempotent (rc=0 on missing files)"
+else
+  fail_at "ENG-87 D: clear-on-start idempotent" "rc1=$_rc1 rc2=$_rc2"
+fi
+
+# Case 87-E: issue-state.json is NOT cleared (allocator merges into it).
+# Per plan: clearing issue-state.json would drop classify-failure's
+# policy/reason/retry_count fields and cause the next allocator call to
+# reset seq to 1 instead of incrementing.
+mkdir -p "$(issue_dir ENG-87E)"
+printf '%s\n' '{"current_dispatch_seq":5,"policy":"retry-immediately"}' \
+  > "$(issue_dir ENG-87E)/issue-state.json"
+_clear_current_stage_slots ENG-87E implementing
+if [[ -s "$(issue_dir ENG-87E)/issue-state.json" ]]; then
+  pass_at "ENG-87 E: issue-state.json preserved (allocator-owned, not stage-slot)"
+else
+  fail_at "ENG-87 E: issue-state.json preserved" "file removed by clear-on-start"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
