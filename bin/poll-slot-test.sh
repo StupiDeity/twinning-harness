@@ -1617,6 +1617,98 @@ else
     "got issue_id=$issue_id stage=$stage entry=$entry full=$out"
 fi
 
+# ═══════════════════════════════════════════════════════════════════════
+# ENG-90 — QA-authored adversarial precedence fixtures.
+# Pin the elif-chain ordering at bin/poll.sh:280-358 so a refactor that
+# reorders branches surfaces here rather than via silent miscounts in
+# halt-sprawl. The audit-table fixtures pin per-branch outputs in
+# isolation; these pin the inter-branch precedence when multiple
+# qualifying labels co-exist.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── AC-QA-ADV-PAUSED-OVER-HALTED: pipeline:paused + pipeline:halted
+#     (with no fresh marker) → paused-arm wins (vacate, oar=true);
+#     halted-arm unreached. Pins precedence #3 (paused/scope-approval) >
+#     #4 (halted). Pre-ENG-90 the halted-no-marker arm emitted
+#     hold/advanceable=false; today both arms produce the same
+#     vacate+oar=true shape, but a future refactor that splits oar
+#     semantics between them (e.g., halted gains a recall predicate)
+#     would silently route an issue with both labels through the wrong
+#     arm. Holding the precedence pinned now keeps that surface
+#     explicit.
+reset_fixtures
+out="$(_poll_classify_labels "ENG-QA-PAH-A" '["pipeline:paused","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" ]]; then
+  pass_at "AC-QA-ADV-PAUSED-OVER-HALTED paused-arm precedes halted-arm; oar=true"
+else
+  fail_at "AC-QA-ADV-PAUSED-OVER-HALTED" \
+    "got slot=$slot adv=$adv oar=$oar full=$out"
+fi
+
+# ─── AC-QA-ADV-HALTED-OVER-WAIT: pipeline:halted (with no fresh
+#     verdict marker) + a fresh wait verdict in comments → halted-arm
+#     wins (vacate, oar=true via D-003 default); wait-arm unreached.
+#     Pins precedence #4 (halted) > #5 (fresh wait verdict).
+#
+#     Why this matters: the halt label gates dispatch unconditionally
+#     (verdict_handler will not advance a halted issue without a
+#     stage-summary/rejection marker). A wait verdict alone never
+#     resumes a halted issue — it must be paired with operator action.
+#     If the elif chain reordered to put wait BEFORE halted, halt-sprawl
+#     would silently miscount the issue as oar=false (wait arm) when in
+#     reality operator action is required (halt arm). Pinning the
+#     ordering keeps halt-sprawl correct under refactors.
+#
+#     Fixture nuance: the comments contain BOTH a transition marker (so
+#     find_fresh_wait_verdict's post-transition window is bounded) AND
+#     a wait verdict newer than the transition. find_fresh_verdict
+#     returns empty for this comment set (no verdict result token —
+#     wait is excluded per bin/verdict-handler.sh:113), so the halted
+#     arm falls into the no-marker fallthrough (D-003 → vacate, oar=true).
+reset_fixtures
+write_comments_fixture "ENG-QA-HOW-A" \
+  '<!-- pipeline: transition from=building to=building reason=dispatch -->|2026-05-09T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-05-09T09:00:00Z'
+out="$(_poll_classify_labels "ENG-QA-HOW-A" '["stage:building","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+oar="$(jq -r '.operator_action_required | tostring' <<<"$out")"
+wait_recall="$(jq -r '.wait_recallable // false | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$oar" == "true" && "$wait_recall" == "false" ]]; then
+  pass_at "AC-QA-ADV-HALTED-OVER-WAIT halted-arm precedes wait-arm; oar=true; wait_recallable absent"
+else
+  fail_at "AC-QA-ADV-HALTED-OVER-WAIT" \
+    "got slot=$slot adv=$adv oar=$oar wait_recallable=$wait_recall full=$out"
+fi
+
+# ─── AC-QA-ADV-ABANDONED-OVER-HALTED: pipeline:abandoned + pipeline:halted
+#     → terminal (oar absent); halted-arm unreached. Pins precedence
+#     #2 (abandoned/terminal) > #4 (halted).
+#
+#     The contract states `pipeline:abandoned` → terminal, never
+#     recalled. If the elif chain reordered halted above abandoned, an
+#     abandoned-but-also-halted issue would emit vacate/oar=true
+#     instead of terminal — halt-sprawl would over-count abandoned
+#     issues and the terminal-is-permanent guarantee would silently
+#     break for any abandoned issue still carrying a stale halt label.
+#     Pinning this ordering preserves the contract's terminal axiom
+#     under multi-label edge cases (e.g., operator runs `decide
+#     --action abandon` without first clearing pipeline:halted).
+reset_fixtures
+out="$(_poll_classify_labels "ENG-QA-AOH-A" '["pipeline:abandoned","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+if [[ "$slot" == "terminal" && "$adv" == "false" ]] \
+   && jq -e 'has("operator_action_required") | not' <<<"$out" >/dev/null; then
+  pass_at "AC-QA-ADV-ABANDONED-OVER-HALTED terminal-arm precedes halted-arm; oar absent"
+else
+  fail_at "AC-QA-ADV-ABANDONED-OVER-HALTED" \
+    "got slot=$slot adv=$adv full=$out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

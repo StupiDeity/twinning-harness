@@ -255,6 +255,35 @@ else
     "metric=$(count_metric_events alert) slack=$(slack_call_count)"
 fi
 
+# ─── AC-QA-ADV-OAR-STRING (ENG-90 QA adversarial): the `// false` hatch
+#     in _poll_emit_halt_sprawl_alert handles null/absent values, but
+#     `(.operator_action_required // false) == true` is type-strict on the
+#     == comparison: a STRING "true" is not equal to a BOOL true. Pins the
+#     contract on classifier writers: oar must be emitted as a JSON bool
+#     via `--argjson` (NOT --arg), or the row falls into the silent-exclude
+#     bucket. A future classifier writer who interpolates "$bool_var"
+#     unquoted as a JSON string would silently miscount halt-sprawl. This
+#     pins the type-strictness so jq behaviour changes don't drift.
+#     Six string-typed items >> threshold 5; without the type-strict
+#     comparison the alert would fire.
+reset_state
+classified='[
+  {"identifier":"ENG-STR-1","slot":"vacate","operator_action_required":"true"},
+  {"identifier":"ENG-STR-2","slot":"vacate","operator_action_required":"true"},
+  {"identifier":"ENG-STR-3","slot":"vacate","operator_action_required":"true"},
+  {"identifier":"ENG-STR-4","slot":"vacate","operator_action_required":"true"},
+  {"identifier":"ENG-STR-5","slot":"vacate","operator_action_required":"true"},
+  {"identifier":"ENG-STR-6","slot":"vacate","operator_action_required":"true"}
+]'
+_poll_emit_halt_sprawl_alert "$classified" 2>/dev/null || true
+if [[ "$(count_metric_events alert)" == "0" ]] \
+   && [[ "$(slack_call_count)" == "0" ]]; then
+  pass_at "AC-QA-ADV-OAR-STRING string-typed oar=\"true\" excluded (filter is type-strict)"
+else
+  fail_at "AC-QA-ADV-OAR-STRING string-typed oar=\"true\" excluded (filter is type-strict)" \
+    "metric=$(count_metric_events alert) slack=$(slack_call_count)"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
