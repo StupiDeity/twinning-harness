@@ -222,7 +222,7 @@ _poll_classify_labels() {
     jq -r --arg n "$1" '[.[] | select(. == $n)] | length > 0' <<<"$labels_json"
   }
 
-  local class
+  local class fresh_wait
   if [[ "$(_has_label pipeline:abandoned)" == "true" ]]; then
     class='{"slot":"terminal","advanceable":false}'
   elif [[ "$(_has_label pipeline:paused)" == "true" ]] \
@@ -245,6 +245,15 @@ _poll_classify_labels() {
           class='{"slot":"hold","advanceable":false}' ;;
       esac
     fi
+  elif fresh_wait="$(find_fresh_wait_verdict "$ident" 2>/dev/null)"; [[ -n "$fresh_wait" ]]; then
+    # ENG-85: a wait verdict newer than the most recent transition vacates
+    # the slot. Symmetric with the pipeline-halt arm above — both express
+    # agent-idle-on-external-signal. Pass 6 in main() picks wait-recallable
+    # issues only when no held / inbox work is ready.
+    local _wait_ts
+    _wait_ts="$(jq -r '.created_at' <<<"$fresh_wait")"
+    class="$(jq -nc --arg ts "$_wait_ts" \
+      '{slot:"vacate", advanceable:false, wait_recallable:true, wait_progress_ts:$ts}')"
   elif [[ "$(_has_label stage:reviewing)" == "true" ]]; then
     # ENG-50: gate review dispatch on observable PR state.
     # ENG-53 #12: derive the branch via bin/branch-name.sh (same convention
@@ -342,8 +351,13 @@ _poll_emit_halt_sprawl_alert() {
     return 0
   fi
 
+  # ENG-85: exclude wait-recallable vacates from the halt-sprawl count.
+  # An issue awaiting a build approval/CI signal is agent-idle-on-external-signal,
+  # not a halt — including them would skew the operator-facing alert toward
+  # false positives (a fleet of long-running awaiting-approval builds would
+  # cross the halt-sprawl threshold without any halts actually present).
   local count
-  count="$(jq '[.[] | select(.slot == "vacate")] | length' <<<"$classified_json")"
+  count="$(jq '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true)] | length' <<<"$classified_json")"
 
   if ! (( count > threshold )); then
     return 0
@@ -371,7 +385,7 @@ _poll_emit_halt_sprawl_alert() {
 
   if (( now_epoch - last_epoch > 86400 )); then
     local top3
-    top3="$(jq -rc '[.[] | select(.slot == "vacate") | .identifier] | .[:3] | join(", ")' \
+    top3="$(jq -rc '[.[] | select(.slot == "vacate" and (.wait_recallable // false) != true) | .identifier] | .[:3] | join(", ")' \
              <<<"$classified_json")"
     local suffix=""
     if (( count > 3 )); then
@@ -472,34 +486,60 @@ main() {
   done
 
   # Pass 5: inbox pickup, only if a slot is available.
+  if (( held_count < max_concurrent )); then
+    local inbox_state
+    inbox_state="$(config_get '.linear.native_states.inbox')"
+    local inbox_pick
+    inbox_pick="$(bash "$SCRIPT_DIR/linear.sh" list-issues-in-state "$inbox_state" \
+      | jq -r '
+        [.data.issues.nodes[]
+         | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
+         | select([.labels.nodes[].name] | index("pipeline:paused") | not)
+         | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
+         | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
+         | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
+         | {identifier: .identifier,
+            priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
+        | sort_by(-.priority_sort_rank)
+        | .[0].identifier // ""')"
+    if [[ -n "$inbox_pick" ]]; then
+      jq -nc \
+        --arg issue_id "$inbox_pick" \
+        --arg stage "brainstorming" \
+        --arg reason "inbox pickup" \
+        '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
+      exit 0
+    fi
+  fi
+
+  # Pass 6 (ENG-85): wait re-pickup as last resort. Only fires when no
+  # held was dispatched (Pass 4), no inbox issue picked (Pass 5), AND
+  # there is slot capacity. Sort: priority desc, then wait_progress_ts asc
+  # (FIFO fairness — older waits go first).
+  if (( held_count < max_concurrent )); then
+    local wait_pick
+    wait_pick="$(jq -c '
+      [.[] | select(.slot == "vacate" and (.wait_recallable // false) == true)]
+      | sort_by([-(.priority_sort_rank), .wait_progress_ts])
+      | .[0] // empty' <<<"$classified")"
+    if [[ -n "$wait_pick" && "$wait_pick" != "null" ]]; then
+      local _wp_ident _wp_stage_label _wp_arg
+      _wp_ident="$(jq -r '.identifier'  <<<"$wait_pick")"
+      _wp_stage_label="$(jq -r '.stage_label' <<<"$wait_pick")"
+      _wp_arg="$(stage_arg_for_label "$_wp_stage_label")"
+      jq -nc \
+        --arg issue_id "$_wp_ident" \
+        --arg stage "$_wp_arg" \
+        --arg reason "wait re-pickup at $_wp_stage_label (no other ready work)" \
+        '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
+      exit 0
+    fi
+  fi
+
+  # Reached here with no work to dispatch.
   if (( held_count >= max_concurrent )); then
     idle "max-concurrent-reached (held=$held_count, limit=$max_concurrent)"
   fi
-
-  local inbox_state
-  inbox_state="$(config_get '.linear.native_states.inbox')"
-  local inbox_pick
-  inbox_pick="$(bash "$SCRIPT_DIR/linear.sh" list-issues-in-state "$inbox_state" \
-    | jq -r '
-      [.data.issues.nodes[]
-       | select([.labels.nodes[].name] | any(startswith("stage:")) | not)
-       | select([.labels.nodes[].name] | index("pipeline:paused") | not)
-       | select([.labels.nodes[].name] | index("pipeline:abandoned") | not)
-       | select([.labels.nodes[].name] | index("pipeline:skip-until-human-acts") | not)
-       | select([.labels.nodes[].name] | index("pipeline:skip-until-code-changes") | not)
-       | {identifier: .identifier,
-          priority_sort_rank: (if (.priority // 0) == 0 then 0 else (5 - .priority) end)}]
-      | sort_by(-.priority_sort_rank)
-      | .[0].identifier // ""')"
-  if [[ -n "$inbox_pick" ]]; then
-    jq -nc \
-      --arg issue_id "$inbox_pick" \
-      --arg stage "brainstorming" \
-      --arg reason "inbox pickup" \
-      '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
-    exit 0
-  fi
-
   idle "no-work"
 }
 

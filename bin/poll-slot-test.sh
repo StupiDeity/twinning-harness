@@ -446,13 +446,13 @@ else
     "extra_halt_clear=$extra_halt_clear extra_resume_post=$extra_resume_post"
 fi
 
-# ─── ENG-45: stage:building + only pipeline-wait fresh → hold,advanceable=true
-# Asserts the load-bearing claim from plan A-004: _poll_classify_labels' else
-# branch (the soft-redispatch path) classifies an issue with stage:building, no
-# halt label, no skip labels, and only a pipeline-wait fresh comment as
-# slot=hold,advanceable=true. This is the path the new wait flow exploits to
-# get the orchestrator to re-dispatch build on the next tick without operator
-# intervention.
+# ─── AC-WAIT-1 (ENG-85): stage:building + only pipeline-wait fresh
+#     → slot=vacate, advanceable=false, wait_recallable=true. Replaces
+#     the pre-ENG-85 ENG-45 fixture (which asserted hold/advanceable=true
+#     via the catch-all else branch). The pre-ENG-85 hold/true
+#     classification was the load-bearing starvation surface this
+#     ticket fixes; AC-WAIT-3 covers the "wait still progresses
+#     eventually" contract that the prior ENG-45 fixture pinned.
 reset_fixtures
 write_comments_fixture "ENG-45-WAIT" \
   '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
@@ -460,11 +460,158 @@ write_comments_fixture "ENG-45-WAIT" \
 
 out="$(_poll_classify_labels "ENG-45-WAIT" '["stage:building"]')"
 slot="$(jq -r '.slot // ""' <<<"$out")"
-adv="$(jq -r '.advanceable // ""'  <<<"$out")"
-if [[ "$slot" == "hold" && "$adv" == "true" ]]; then
-  pass_at "ENG-45 poll-slot: pipeline-wait re-dispatches via else branch (hold,advanceable=true)"
+# Use `tostring` rather than `// ""` because jq's `//` treats boolean false
+# as null and falls through to the default — which would emit "" not "false".
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable | tostring' <<<"$out")"
+ts="$(jq -r '.wait_progress_ts // ""' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "true" \
+      && "$ts" == "2026-04-28T08:17:00Z" ]]; then
+  pass_at "AC-WAIT-1 (ENG-85): wait verdict on stage:building → vacate/false/wait_recallable=true"
 else
-  fail_at "ENG-45 poll-slot wait re-dispatch" "got slot=$slot adv=$adv (want hold/true) full=$out"
+  fail_at "AC-WAIT-1 (ENG-85): wait verdict classification" \
+    "got slot=$slot adv=$adv recall=$recall ts=$ts (want vacate/false/true/2026-04-28T08:17:00Z) full=$out"
+fi
+
+# ─── AC-WAIT-2 (ENG-85): two issues, ENG-A waits at stage:building,
+#     ENG-B held at stage:qa, max_concurrent=2. After classify, ENG-A
+#     is vacate; ENG-B is hold. Pass 4 dispatches ENG-B, NOT ENG-A.
+#     This is the literal regression test for the issue body's
+#     "ENG-79 starved 45 min" scenario.
+reset_fixtures
+write_label_fixture "stage:building" "ENG-WAIT-A|In Progress|1|stage:building"
+write_label_fixture "stage:qa"       "ENG-WAIT-B|In Progress|1|stage:qa"
+write_comments_fixture "ENG-WAIT-A" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+write_comments_fixture "ENG-WAIT-B" \
+  '<!-- pipeline: transition from=reviewing to=qa -->|2026-04-28T08:05:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-B" && "$reason" == *"stage:qa"* ]]; then
+  pass_at "AC-WAIT-2 (ENG-85): ENG-A waits, ENG-B (stage:qa) wins Pass 4 dispatch"
+else
+  fail_at "AC-WAIT-2 (ENG-85): wait-vacates slot for sibling held work" \
+    "got issue_id=$issue_id reason=$reason (want ENG-WAIT-B / *stage:qa*) full=$out"
+fi
+
+# ─── AC-WAIT-3 (ENG-85): single wait issue, empty inbox, no other
+#     classified issues → Pass 6 fires with reason
+#     "wait re-pickup at stage:building (no other ready work)".
+reset_fixtures
+write_label_fixture "stage:building" "ENG-WAIT-C|In Progress|1|stage:building"
+write_comments_fixture "ENG-WAIT-C" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+# No inbox fixture written → list-issues-in-state stub returns empty.
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+stage="$(jq -r '.stage // ""' <<<"$out")"
+entry="$(jq -r '.entry_action // ""' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-C" && "$stage" == "building" \
+      && "$entry" == "run" && "$reason" == *"wait re-pickup at stage:building"* ]]; then
+  pass_at "AC-WAIT-3 (ENG-85): Pass 6 recalls wait issue when no other ready work"
+else
+  fail_at "AC-WAIT-3 (ENG-85): Pass 6 wait recall" \
+    "got issue_id=$issue_id stage=$stage entry=$entry reason=$reason full=$out"
+fi
+
+# ─── AC-WAIT-4 (ENG-85): two wait issues, equal priority. Pass 6
+#     picks the older one (FIFO tiebreak by wait_progress_ts asc).
+reset_fixtures
+write_label_fixture "stage:building" \
+  "ENG-WAIT-D|In Progress|1|stage:building" \
+  "ENG-WAIT-E|In Progress|1|stage:building"
+write_comments_fixture "ENG-WAIT-D" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z'
+write_comments_fixture "ENG-WAIT-E" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:05:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-D" ]]; then
+  pass_at "AC-WAIT-4 (ENG-85): Pass 6 FIFO tiebreak — older wait (ENG-WAIT-D) wins"
+else
+  fail_at "AC-WAIT-4 (ENG-85): Pass 6 FIFO" "got issue_id=$issue_id (want ENG-WAIT-D) full=$out"
+fi
+
+# ─── AC-WAIT-5 (ENG-85): two wait issues, different priority. Pass 6
+#     picks the higher-priority one regardless of wait_progress_ts.
+#     ENG-WAIT-F (priority=Normal=3) wait at 10:00:00Z;
+#     ENG-WAIT-G (priority=Urgent=1) wait at 10:05:00Z.
+#     Urgent wins despite being newer.
+reset_fixtures
+write_label_fixture "stage:building" \
+  "ENG-WAIT-F|In Progress|3|stage:building" \
+  "ENG-WAIT-G|In Progress|1|stage:building"
+write_comments_fixture "ENG-WAIT-F" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z'
+write_comments_fixture "ENG-WAIT-G" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:05:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+if [[ "$issue_id" == "ENG-WAIT-G" ]]; then
+  pass_at "AC-WAIT-5 (ENG-85): Pass 6 priority dominates FIFO (Urgent wins over Normal)"
+else
+  fail_at "AC-WAIT-5 (ENG-85): Pass 6 priority" "got issue_id=$issue_id (want ENG-WAIT-G) full=$out"
+fi
+
+# ─── AC-WAIT-6 (ENG-85): pins that the halted arm in _poll_classify_labels
+#     fires BEFORE the new wait arm (branch-ordering invariant).
+#     Setup plants both pipeline:halted AND a halt verdict; the halted
+#     arm short-circuits at the case='pipeline-halt' branch and emits
+#     slot=vacate, advanceable=false (no wait_recallable key set). Does
+#     NOT exercise find_fresh_wait_verdict's `fresh_result != "wait"`
+#     supersession short-circuit — that path is exercised by AC-WAIT-7.
+#     Pins the brainstorm §"Acceptance" §4 hand-off:
+#     "ENG-45 external_signal_budget escalation path still works
+#     (wait → halt-for-budget-exhausted → existing halt vacate)."
+reset_fixtures
+write_comments_fixture "ENG-WAIT-H" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z' \
+  '<!-- pipeline: verdict result=halt reason=external-signal-budget-exhausted -->|2026-04-28T10:30:00Z'
+
+out="$(_poll_classify_labels "ENG-WAIT-H" '["stage:building","pipeline:halted"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable // false | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "false" ]]; then
+  pass_at "AC-WAIT-6 (ENG-85): budget-exhausted halt routes through halted arm, NOT wait arm"
+else
+  fail_at "AC-WAIT-6 (ENG-85): halt-handoff" \
+    "got slot=$slot adv=$adv recall=$recall (want vacate/false/false) full=$out"
+fi
+
+# ─── AC-WAIT-7 (ENG-85): wait verdict superseded by a later fail before
+#     the next tick. find_fresh_wait_verdict's `fresh_result != "wait"`
+#     short-circuit at bin/verdict-handler.sh fires (latest verdict in
+#     the post-transition window is fail, not wait — helper returns
+#     empty). The new wait arm in _poll_classify_labels does NOT fire;
+#     classifier falls through to the catch-all else branch
+#     (slot=hold, advanceable=true). No pipeline:halted label is set
+#     here (distinguishes from AC-WAIT-6's halted-arm precedence pin).
+#     Pins the supersession-by-fail load-bearing claim of D-001.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-I" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z' \
+  '<!-- pipeline: verdict result=fail target=implementing -->|2026-04-28T10:30:00Z'
+
+out="$(_poll_classify_labels "ENG-WAIT-I" '["stage:building"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable // false | tostring' <<<"$out")"
+if [[ "$slot" == "hold" && "$adv" == "true" && "$recall" == "false" ]]; then
+  pass_at "AC-WAIT-7 (ENG-85): fail-supersedes-wait routes through else, NOT wait arm"
+else
+  fail_at "AC-WAIT-7 (ENG-85): supersession by fail" \
+    "got slot=$slot adv=$adv recall=$recall (want hold/true/false) full=$out"
 fi
 
 # ─── AC-8: ENG-24 Bug A — Todo with skip-until-human-acts is NOT inbox-picked ──
@@ -859,6 +1006,169 @@ else
     "non-zero exit"
 fi
 rm -rf "$PROJECT_STATE_DIR/ENG-930"
+
+# ─── QA adversarial (ENG-85): find_fresh_wait_verdict on empty comment list ──
+# Boundary test for new code path — Linear stub returns "[]" (empty array).
+# The helper's first while-loop runs over zero rows (last_transition_ts="");
+# the second while-loop runs over zero rows (fresh_result=""); the closing
+# `[[ "$fresh_result" != "wait" ]] && return empty` short-circuit fires.
+# Without this test, a refactor that drops the empty-array guard at the
+# top (`[[ -z "$comments" || "$comments" == "null" ]] && return empty`) but
+# leaves the post-loop short-circuit in place would still pass — but a
+# refactor that drops BOTH (e.g., to "always emit something") would silently
+# return a `wait_result=""` shape and trip the wait-arm classifier on issues
+# with no Linear history at all.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-EMPTY"  # zero pairs → []
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-EMPTY" 2>/dev/null || true)"
+if [[ -z "$out_helper" ]]; then
+  pass_at "QA adversarial (ENG-85): find_fresh_wait_verdict returns empty for [] comments"
+else
+  fail_at "QA adversarial (ENG-85): find_fresh_wait_verdict empty-comments boundary" \
+    "got non-empty: $out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): wait verdict OLDER than the latest transition
+#     is filtered out by the transition floor.
+# Setup: wait at 08:00, THEN a later transition at 09:00.
+# find_fresh_wait_verdict's first loop sets last_transition_ts="09:00";
+# second loop's `[[ -n "$last_transition_ts" && ! "$ts" > "$last_transition_ts" ]] && continue`
+# discards the 08:00 wait. fresh_result="" → return empty.
+# This pins the supersession-by-newer-transition rule (the wait was on a
+# previous stage iteration; the new stage entry resets the budget).
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-FLOOR" \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T09:00:00Z'
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-FLOOR" 2>/dev/null || true)"
+if [[ -z "$out_helper" ]]; then
+  pass_at "QA adversarial (ENG-85): wait older than latest transition is floored out"
+else
+  fail_at "QA adversarial (ENG-85): transition-floor supersession" \
+    "got non-empty (wait should be discarded): $out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): wait verdict with NO transition history
+#     (genesis state) is still surfaced.
+# Edge case: an issue with a single wait verdict and no transition events
+# at all. last_transition_ts remains empty → second loop's `-n` guard
+# short-circuits → wait passes through. Defensive: protects against a
+# refactor that "requires" a transition floor by setting it to a sentinel.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-GENESIS" \
+  '<!-- pipeline: verdict result=wait reason=awaiting-ci -->|2026-04-28T08:17:00Z'
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-GENESIS" 2>/dev/null || true)"
+reason="$(jq -r '.reason // ""' <<<"$out_helper")"
+if [[ "$reason" == "awaiting-ci" ]]; then
+  pass_at "QA adversarial (ENG-85): wait with no transition history is still surfaced"
+else
+  fail_at "QA adversarial (ENG-85): genesis-state wait" \
+    "got reason=$reason out=$out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): wait then result=pass supersedes the wait.
+# Symmetric with AC-WAIT-7 (which uses result=fail). A successful build
+# verdict landing while the orchestrator was waiting should not leave the
+# issue dangling in wait state — it should advance via find_fresh_verdict's
+# transition. This pins that pass/fail/halt all supersede a prior wait.
+# Without this, AC-WAIT-7 (fail) alone leaves the pass/halt cases at the
+# precedent of "find_fresh_verdict mirrors run-stage.sh:332-356" — true,
+# but unpinned at the read-side.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-PASS" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T10:00:00Z' \
+  '<!-- pipeline: verdict result=pass stage=building -->|2026-04-28T10:30:00Z'
+out_helper="$(find_fresh_wait_verdict "ENG-WAIT-QA-PASS" 2>/dev/null || true)"
+if [[ -z "$out_helper" ]]; then
+  pass_at "QA adversarial (ENG-85): pass-supersedes-wait → helper returns empty"
+else
+  fail_at "QA adversarial (ENG-85): supersession by pass" \
+    "got non-empty: $out_helper"
+fi
+
+# ─── QA adversarial (ENG-85): pipeline:scope-approval-needed + fresh wait
+#     → earlier elif arm wins (vacate, NO wait_recallable). Pass 6 must NOT
+#     pick it up (the issue is awaiting human triage, not a build-side
+#     external signal). Pins arm ordering: scope-approval / paused / abandoned
+#     all take precedence over wait_recallable to prevent silent recall of
+#     human-blocked work. Without this, swapping the elif order would
+#     visibly leak scope-approval issues into Pass 6 wait recalls.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-SAN" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+out="$(_poll_classify_labels "ENG-WAIT-QA-SAN" '["stage:building","pipeline:scope-approval-needed"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable // false | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "false" ]]; then
+  pass_at "QA adversarial (ENG-85): scope-approval-needed precedes wait arm (no wait_recallable)"
+else
+  fail_at "QA adversarial (ENG-85): scope-approval precedence" \
+    "got slot=$slot adv=$adv recall=$recall (want vacate/false/false) full=$out"
+fi
+
+# ─── QA adversarial (ENG-85): stage:reviewing issue + wait verdict —
+# defense-in-depth check that the new wait arm fires BEFORE the reviewing
+# arm. Per ENG-54 the review stage is agent-only and doesn't emit wait,
+# but a stray wait marker on a stage:reviewing issue (operator action,
+# protocol drift) should not cause the orchestrator to treat it as a
+# review-poll.sh dispatch decision. The brainstorm §4 D-002 ordering
+# rationale claims this is strictly safer than pre-ENG-85's re-dispatch
+# loop on a broken review. This pins it.
+reset_fixtures
+write_comments_fixture "ENG-WAIT-QA-REVIEW" \
+  '<!-- pipeline: transition from=implementing to=reviewing -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+out="$(_poll_classify_labels "ENG-WAIT-QA-REVIEW" '["stage:reviewing"]')"
+slot="$(jq -r '.slot // ""' <<<"$out")"
+adv="$(jq -r '.advanceable | tostring' <<<"$out")"
+recall="$(jq -r '.wait_recallable | tostring' <<<"$out")"
+if [[ "$slot" == "vacate" && "$adv" == "false" && "$recall" == "true" ]]; then
+  pass_at "QA adversarial (ENG-85): wait arm precedes stage:reviewing arm (defense-in-depth)"
+else
+  fail_at "QA adversarial (ENG-85): wait-vs-reviewing branch ordering" \
+    "got slot=$slot adv=$adv recall=$recall (want vacate/false/true) full=$out"
+fi
+
+# ─── QA adversarial (ENG-85): Pass 6 respects max-concurrent cap.
+# Setup: 2 halted issues at stage:planning (no fresh verdict marker) +
+# 1 wait at stage:building, max_concurrent=2. The halted-no-marker case
+# at bin/poll.sh:235 classifies as {hold,advanceable=false}; both fill
+# the held set (held_count=2). Pass 4 cycles through both, dispatches
+# nothing. Pass 5 inbox is gated `< max_concurrent` and skipped.
+# Pass 6 is gated `< max_concurrent` and skipped. Final: idle
+# "max-concurrent-reached". The wait issue must NOT be recalled.
+# Without this pin, dropping the `(( held_count < max_concurrent ))`
+# guard on Pass 6 (or moving Pass 6 above Pass 5's cap-check) would
+# over-allocate the dispatcher and starve the held-but-stuck path.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-WAIT-QA-CAP-1|In Progress|1|stage:planning,pipeline:halted" \
+  "ENG-WAIT-QA-CAP-2|In Progress|1|stage:planning,pipeline:halted"
+write_label_fixture "stage:building" \
+  "ENG-WAIT-QA-CAP-3|In Progress|1|stage:building"
+# No comments fixtures for the halted issues → find_fresh_verdict returns
+# empty → halted arm hits the no-fresh-marker branch (slot=hold,
+# advanceable=false). The wait issue gets the wait fixture.
+write_comments_fixture "ENG-WAIT-QA-CAP-3" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-04-28T08:00:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-04-28T08:17:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+# `idle` emits `{"issue_id":null,"stage":null,"reason":"<idle-reason>"}`.
+# Pass 6 firing would emit a real dispatch with a non-null issue_id and a
+# `wait re-pickup` reason. Assert: issue_id is null AND the reason starts
+# with "max-concurrent-reached" — proving Pass 5/6 were both gated out by
+# the cap-check and the final idle path took over.
+if [[ "$issue_id" == "null" && "$reason" == max-concurrent-reached* ]]; then
+  pass_at "QA adversarial (ENG-85): Pass 6 respects cap when held_count >= max_concurrent"
+else
+  fail_at "QA adversarial (ENG-85): Pass 6 cap safety" \
+    "got issue_id=$issue_id reason=$reason (want issue_id=null + max-concurrent-reached) full=$out"
+fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
