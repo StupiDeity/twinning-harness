@@ -207,7 +207,7 @@ list_issues_in_state() {
   local state_name="$1" team_id project_id
   team_id="$(config_get '.linear.team_id')"
   project_id="$(_require_project_id)"
-  local q='query($teamId: ID!, $projectId: ID!, $state: String!) { issues(first: 50, filter: { team: { id: { eq: $teamId } }, project: { id: { eq: $projectId } }, state: { name: { eq: $state } } }) { nodes { id identifier title state { name } labels { nodes { name } } priority updatedAt } } }'
+  local q='query($teamId: ID!, $projectId: ID!, $state: String!) { issues(first: 50, filter: { team: { id: { eq: $teamId } }, project: { id: { eq: $projectId } }, state: { name: { eq: $state } } }) { nodes { id identifier title state { name } labels { nodes { name } } priority updatedAt createdAt } } }'
   local vars
   vars="$(jq -cn --arg teamId "$team_id" --arg projectId "$project_id" --arg state "$state_name" '{teamId:$teamId, projectId:$projectId, state:$state}')"
   linear_query "$q" "$vars"
