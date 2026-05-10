@@ -192,10 +192,15 @@ seen in Linear is human-applied.
   May 2026). If unsure which label fits when filing, ASK before creating;
   do not file the ticket unlabelled and "decide later."
 
-- **Mutate labels additively.** Use `bash bin/linear.sh add-label <ENG-N> <label>` and
-  `remove-label`. Never reach for the Linear MCP `save_issue` from harness code or from
-  scripts the harness invokes — that call overwrites the entire label set and will silently
-  drop `stage:*` / `pipeline:*` labels that the orchestrator is mid-flight on.
+- **Mutate labels additively on existing issues.** Use `bash bin/linear.sh add-label <ENG-N> <label>`
+  and `remove-label`. Never use the Linear MCP `save_issue` to update an existing issue,
+  and never use it to mutate labels by any path — that call overwrites the entire label
+  set and will silently drop `stage:*` / `pipeline:*` labels that the orchestrator is
+  mid-flight on. **Creating a new issue with `save_issue` is allowed and is the
+  expected path** (there is no prior label set to overwrite); set the type label
+  (`Bug` / `Feature` / `Improvement`) and any other initial labels in the create call's
+  `labels` field per the convention above. Once the issue exists, all subsequent label
+  changes go through `bin/linear.sh add-label` / `remove-label`.
 - **Doc-to-issue ownership is YAML frontmatter, not prose.** `reconcile.sh` (lines ~68–77)
   greps the first 20 lines of `docs/brainstorms/*.md` and `docs/plans/*.md` for a literal
   `linear: ENG-N` line; that, plus a fallback H1 match, is what makes a doc the canonical
