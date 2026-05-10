@@ -4324,18 +4324,19 @@ _lines_after="$(wc -l < "$_eng87_m2_hist" | tr -d ' ')"
   && pass_at "ENG-87 M2: trap function is idempotent (sentinel prevents double-append)" \
   || fail_at "ENG-87 M2: idempotency" "lines before=$_lines_before after=$_lines_after"
 
-# M1' (review-iter-2 M1): halt-path verdict_emitted seed. Pre-fix, when
-# classify_failure ran with halt-class effective_policy it set
-# _END_ROW_POLICY but NOT _END_ROW_VERDICT_EMITTED — so the
-# dispatch_history.jsonl end row's verdict_emitted field was "" on
-# every halt path even though a halt verdict had landed on Linear.
-# Schema drift for the M2 9-field contract. Drive classify_failure
-# directly with halt-class policy and assert the trap-global is set
-# to "halt".
+# M1' (review-iter-2 M1, superseded by iter-7 M3): halt-path
+# verdict_emitted is now derived in _append_dispatch_end_row (which
+# reads find_fresh_verdict from Linear at trap-fire time) rather than
+# seeded directly by classify_failure. The post-iter-7 invariant is
+# that classify_failure does NOT mutate _END_ROW_VERDICT_EMITTED at
+# all — cross-file IPC via run-stage's globals is gone. Both the halt
+# and retry paths now leave the global at its initial empty state;
+# the writer fills it in (or leaves it empty for retry, since
+# retry-immediately posts a `<!-- meta: metric ... -->` marker which
+# verdict_handler's filter excludes).
 mkdir -p "$(issue_dir ENG-87M1)"
 _eng87_m1_hist="$(issue_dir ENG-87M1)/dispatch_history.jsonl"
 : > "$_eng87_m1_hist"
-# Seed the trap globals as run-stage.sh::main would (line 965-972).
 _END_ROW_HIST_FILE="$_eng87_m1_hist"
 _END_ROW_DISPATCH_ID="ENG-87M1-d0001"
 _END_ROW_STAGE="implementing"
@@ -4347,16 +4348,23 @@ _END_ROW_POLICY=""
 MOCK_PIPELINE_HASH="hM1" MOCK_BRANCH_SHA="sM1" \
   classify_failure "ENG-87M1" "implementing" "skip-until-human-acts" \
     "envelope-violation-test" 29 "" >/dev/null 2>&1 || true
-[[ "$_END_ROW_VERDICT_EMITTED" == "halt" ]] \
-  && pass_at "ENG-87 M1' (review-iter-2 M1): classify_failure with halt-class policy seeds verdict_emitted=halt" \
-  || fail_at "ENG-87 M1' (review-iter-2 M1): verdict_emitted seed" \
-       "got: '$_END_ROW_VERDICT_EMITTED' (expected 'halt'); _END_ROW_POLICY='$_END_ROW_POLICY'"
+# Iter-7 M3: classify_failure leaves _END_ROW_VERDICT_EMITTED empty
+# (writer reads from Linear). _END_ROW_POLICY is still seeded by
+# classify_failure (local information not derivable from Linear).
+[[ -z "$_END_ROW_VERDICT_EMITTED" ]] \
+  && pass_at "ENG-87 M1'-iter7 (M3): classify_failure halt path leaves verdict_emitted empty (writer derives from Linear)" \
+  || fail_at "ENG-87 M1'-iter7 (M3): classify_failure should not seed verdict_emitted" \
+       "got: '$_END_ROW_VERDICT_EMITTED' (expected ''); _END_ROW_POLICY='$_END_ROW_POLICY'"
+[[ "$_END_ROW_POLICY" == "skip-until-human-acts" ]] \
+  && pass_at "ENG-87 M1'-iter7 (M3): classify_failure still seeds _END_ROW_POLICY (local-only info)" \
+  || fail_at "ENG-87 M1'-iter7 (M3): _END_ROW_POLICY should be set" \
+       "got: '$_END_ROW_POLICY' (expected 'skip-until-human-acts')"
 
-# M1'-retry: classify_failure with retry-immediately policy must NOT
-# seed verdict_emitted (retry posts a transient-retry meta marker, not
-# a verdict — verdict_handler's filter excludes meta markers, so the
-# retry comment never registers as a halt verdict and the schema
-# field correctly stays "").
+# M1'-retry: classify_failure with retry-immediately policy still
+# leaves verdict_emitted empty. Same shape as the halt arm post-
+# iter-7-M3 — the cross-file mutation is gone for ALL effective_policy
+# values, not just retry. Pin both the seed-removal and the policy-
+# preservation properties.
 mkdir -p "$(issue_dir ENG-87M1R)"
 _eng87_m1r_hist="$(issue_dir ENG-87M1R)/dispatch_history.jsonl"
 : > "$_eng87_m1r_hist"
@@ -4372,8 +4380,8 @@ MOCK_PIPELINE_HASH="hM1R" MOCK_BRANCH_SHA="sM1R" \
   classify_failure "ENG-87M1R" "implementing" "retry-immediately" \
     "transient-test" 20 "" >/dev/null 2>&1 || true
 [[ -z "$_END_ROW_VERDICT_EMITTED" ]] \
-  && pass_at "ENG-87 M1' (review-iter-2 M1): classify_failure with retry-immediately does NOT seed verdict_emitted (no verdict posted)" \
-  || fail_at "ENG-87 M1' (review-iter-2 M1): retry-immediately should leave verdict_emitted empty" \
+  && pass_at "ENG-87 M1'-iter7 (M3): classify_failure retry-immediately leaves verdict_emitted empty" \
+  || fail_at "ENG-87 M1'-iter7 (M3): retry-immediately should leave verdict_emitted empty" \
        "got: '$_END_ROW_VERDICT_EMITTED' (expected '')"
 
 # ─── ENG-87 review-iter-3 M1: dispatch_history.jsonl envelope schema completeness ──
@@ -4412,19 +4420,19 @@ else
     "row=$_eng87_m1i3a_line — plan §13.1.2 mandates 3 envelope sub-fields"
 fi
 
-# M1-iter3-B: transcript_clean=true when global=true (clean envelope).
-# `| tostring` (not `// "MISSING"`) — jq's `//` operator treats every
-# falsy left-hand-side (including the legitimate boolean `false` that
-# M1-iter3-C inspects) as the substitution trigger; tostring renders
-# the bool as "true"/"false" without that ambiguity.
+# M1-iter3-B (post-iter-7 M2 reframe): transcript_clean=true when the
+# trap's exit_code arg is anything other than 29. The writer derives
+# the field from exit_code; previous iter-3 had a separate global
+# that the validator mutated.
 got_tc_a="$(jq -r '.envelope.transcript_clean | tostring' <<<"$_eng87_m1i3a_line")"
 [[ "$got_tc_a" == "true" ]] \
-  && pass_at "ENG-87 M1-iter3-B: envelope.transcript_clean=true reflects clean global" \
-  || fail_at "ENG-87 M1-iter3-B: transcript_clean clean case" "got=$got_tc_a (expected true)"
+  && pass_at "ENG-87 M1-iter3-B-iter7: envelope.transcript_clean=true on exit_code=0 (writer derives from arg)" \
+  || fail_at "ENG-87 M1-iter3-B-iter7: transcript_clean clean case" "got=$got_tc_a (expected true)"
 
-# M1-iter3-C: transcript_clean=false when global=false (violation envelope).
-# Drives the writer with the global flipped — proves the literal `true`
-# regression cannot recur.
+# M1-iter3-C (post-iter-7 M2 reframe): transcript_clean=false when
+# the trap's exit_code arg is 29 (envelope-violation per
+# failure_outcome_for_exit). Drives _append_dispatch_end_row with
+# rc=29 directly — no _END_ROW_TRANSCRIPT_CLEAN global needed.
 mkdir -p "$(issue_dir ENG-87M1I3C)"
 _eng87_m1i3c_hist="$(issue_dir ENG-87M1I3C)/dispatch_history.jsonl"
 : > "$_eng87_m1i3c_hist"
@@ -4436,48 +4444,47 @@ _END_ROW_ISSUE="ENG-87M1I3C"
 _END_ROW_VERDICT_EMITTED="halt"
 _END_ROW_VERDICT_TARGET=""
 _END_ROW_POLICY="skip-until-human-acts"
-_END_ROW_TRANSCRIPT_CLEAN=false
 _append_dispatch_end_row 29 2>/dev/null || true
 _eng87_m1i3c_line="$(tail -1 "$_eng87_m1i3c_hist" 2>/dev/null || printf '')"
-# `| tostring` (mirrors M1-iter3-B) — jq's `//` substitutes for any
-# falsy LHS including legitimate boolean `false`, masking the very
-# field this case is asserting.
 got_tc_c="$(jq -r '.envelope.transcript_clean | tostring' <<<"$_eng87_m1i3c_line")"
 [[ "$got_tc_c" == "false" ]] \
-  && pass_at "ENG-87 M1-iter3-C: envelope.transcript_clean=false reflects violation global" \
-  || fail_at "ENG-87 M1-iter3-C: transcript_clean violation case" \
+  && pass_at "ENG-87 M1-iter3-C-iter7: envelope.transcript_clean=false on exit_code=29 (writer derives from arg)" \
+  || fail_at "ENG-87 M1-iter3-C-iter7: transcript_clean violation case" \
        "got=$got_tc_c (expected false); row=$_eng87_m1i3c_line"
 
-# M1-iter3-D: _validate_dispatch_envelope rc=29 path sets
-# _END_ROW_TRANSCRIPT_CLEAN=false. Proves the validator wires the
-# envelope outcome through to the trap global (the missing link
-# pre-fix that left transcript_clean stuck at true on violation paths).
+# M1-iter3-D (superseded by iter-7 M2): the validator's outcome is now
+# carried through its return code (29 = violation, 0 = clean). The
+# writer derives transcript_clean from the trap's exit_code arg, so
+# the validator no longer mutates _END_ROW_TRANSCRIPT_CLEAN — the
+# global is gone. Pin: a violation transcript causes _validate_dispatch_envelope
+# to return 29; the writer's behavior is exercised by M1-iter3-B/C
+# (which now drive _append_dispatch_end_row with exit_code arg).
 reset_capture
 mkdir -p "$(issue_dir ENG-87M1I3D)"
 _eng87_m1i3d_sidecar="$(issue_dir ENG-87M1I3D)/.envelope-transcript-implementing"
 printf '%s\n' "$(_eng87_ndjson_tool_use "mcp__plugin_linear_linear__list_issues --filter '{}'")" \
   > "$_eng87_m1i3d_sidecar"
-_END_ROW_TRANSCRIPT_CLEAN=true   # baseline before validator runs
-_validate_dispatch_envelope ENG-87M1I3D implementing 2>/dev/null || true
-[[ "$_END_ROW_TRANSCRIPT_CLEAN" == "false" ]] \
-  && pass_at "ENG-87 M1-iter3-D: validator rc=29 path sets _END_ROW_TRANSCRIPT_CLEAN=false" \
-  || fail_at "ENG-87 M1-iter3-D: validator did not propagate violation to global" \
-       "got=_END_ROW_TRANSCRIPT_CLEAN='$_END_ROW_TRANSCRIPT_CLEAN' after rc=29 (expected 'false')"
+_eng87_m1i3d_rc=0
+_validate_dispatch_envelope ENG-87M1I3D implementing 2>/dev/null || _eng87_m1i3d_rc=$?
+[[ "$_eng87_m1i3d_rc" == "29" ]] \
+  && pass_at "ENG-87 M1-iter3-D-iter7 (M2): validator returns 29 on violation (writer derives transcript_clean=false from exit_code)" \
+  || fail_at "ENG-87 M1-iter3-D-iter7 (M2): validator should return 29 on violation" \
+       "got rc=$_eng87_m1i3d_rc (expected 29)"
+unset _eng87_m1i3d_rc
 
-# M1-iter3-E: clean envelope path (no violations) leaves
-# _END_ROW_TRANSCRIPT_CLEAN at its baseline `true`. Symmetric pin to
-# M1-iter3-D — guards against an over-eager `false` write that would
-# misclassify clean dispatches.
+# M1-iter3-E (superseded by iter-7 M2): clean envelope returns rc=0.
+# Symmetric pin to M1-iter3-D — same iter-7 reframing (validator
+# returns rc, writer derives global).
 mkdir -p "$(issue_dir ENG-87M1I3E)"
 _eng87_m1i3e_sidecar="$(issue_dir ENG-87M1I3E)/.envelope-transcript-implementing"
-# Sidecar with no Linear MCP / curl-linear invocations — just a benign tool use.
 printf '%s\n' "$(_eng87_ndjson_tool_use "Read /tmp/foo")" > "$_eng87_m1i3e_sidecar"
-_END_ROW_TRANSCRIPT_CLEAN=true
-_validate_dispatch_envelope ENG-87M1I3E implementing 2>/dev/null || true
-[[ "$_END_ROW_TRANSCRIPT_CLEAN" == "true" ]] \
-  && pass_at "ENG-87 M1-iter3-E: validator clean path leaves _END_ROW_TRANSCRIPT_CLEAN=true" \
-  || fail_at "ENG-87 M1-iter3-E: validator over-eager false write" \
-       "got=_END_ROW_TRANSCRIPT_CLEAN='$_END_ROW_TRANSCRIPT_CLEAN' on clean envelope (expected 'true')"
+_eng87_m1i3e_rc=0
+_validate_dispatch_envelope ENG-87M1I3E implementing 2>/dev/null || _eng87_m1i3e_rc=$?
+[[ "$_eng87_m1i3e_rc" == "0" ]] \
+  && pass_at "ENG-87 M1-iter3-E-iter7 (M2): validator returns 0 on clean envelope (writer derives transcript_clean=true)" \
+  || fail_at "ENG-87 M1-iter3-E-iter7 (M2): validator should return 0 on clean envelope" \
+       "got rc=$_eng87_m1i3e_rc (expected 0)"
+unset _eng87_m1i3e_rc
 
 # ─── ENG-87 review-iter-3 M2: 3 halt/wait paths seed verdict_emitted ────────
 # The review-iter-2 M1 fix only seeded the trap globals from
@@ -4493,12 +4500,14 @@ _validate_dispatch_envelope ENG-87M1I3E implementing 2>/dev/null || true
 # just anywhere in the file. Mirrors the M1-A trap-presence pin.
 printf '\n--- ENG-87 review-iter-3 M2: 3 exit paths seed verdict_emitted ---\n'
 
-# M2-iter3-A: scope-violation NOTABLE block (between `2)` arm header
-# and the matching `exit 0` of the not-yet-approved branch). Use a
-# strict `^[[:space:]]*exit 0[[:space:]]*$` regex so the awk's terminal
-# match does not trip on `failure_outcome_for_exit 0` substrings inside
-# the metrics.sh call (the substring "exit 0" appears in that helper's
-# name, truncating the extraction before the seed line is reached).
+# M2-iter3-A/B/C (superseded by iter-7 M3): The three halt/wait
+# paths previously seeded _END_ROW_VERDICT_EMITTED= directly. Iter-7
+# M3 replaces those manual seeds with a derivation in
+# _append_dispatch_end_row (find_fresh_verdict + find_fresh_wait_verdict
+# read at trap-fire time). Pin the SUPERSESSION: the manual seeds in
+# scope-violation NOTABLE / budget-exhausted / wait-success paths
+# must NOT be present (those exit blocks should carry NO
+# _END_ROW_VERDICT_EMITTED= mutations).
 _eng87_m2i3a_block="$(awk '
   /halt_body=.*verdict result=halt reason=scope-violation/ { in_block=1 }
   in_block { print }
@@ -4506,16 +4515,12 @@ _eng87_m2i3a_block="$(awk '
 ' "$RS_SRC")"
 if printf '%s\n' "$_eng87_m2i3a_block" \
    | grep -qE '_END_ROW_VERDICT_EMITTED=("halt"|halt)'; then
-  pass_at "ENG-87 M2-iter3-A: scope-violation NOTABLE path seeds _END_ROW_VERDICT_EMITTED=halt"
+  fail_at "ENG-87 M2-iter3-A-iter7 (M3): scope-violation NOTABLE manual seed not removed" \
+    "block still seeds _END_ROW_VERDICT_EMITTED=halt manually — iter-7 M3 derives this from find_fresh_verdict in the writer"
 else
-  fail_at "ENG-87 M2-iter3-A: scope-violation NOTABLE missing seed" \
-    "block between halt_body=verdict-result=halt-scope-violation and exit 0 has no _END_ROW_VERDICT_EMITTED=halt — row will record verdict_emitted=\"\" despite halt verdict on Linear"
+  pass_at "ENG-87 M2-iter3-A-iter7 (M3): scope-violation NOTABLE block has no manual verdict_emitted seed (writer derives)"
 fi
 
-# M2-iter3-B: budget-exhausted halt path (caller-side after _handle_wait
-# returned 1). Block runs from the `# Budget exhausted:` comment through
-# the `exit 0` at the wait-block bottom. Strict standalone-statement
-# regex (mirrors the M2-iter3-A guard against substring matches).
 _eng87_m2i3b_block="$(awk '
   /# Budget exhausted: _handle_wait already posted/ { in_block=1 }
   in_block { print }
@@ -4523,15 +4528,12 @@ _eng87_m2i3b_block="$(awk '
 ' "$RS_SRC")"
 if printf '%s\n' "$_eng87_m2i3b_block" \
    | grep -qE '_END_ROW_VERDICT_EMITTED=("halt"|halt)'; then
-  pass_at "ENG-87 M2-iter3-B: _handle_wait budget-exhausted caller seeds _END_ROW_VERDICT_EMITTED=halt"
+  fail_at "ENG-87 M2-iter3-B-iter7 (M3): budget-exhausted manual seed not removed" \
+    "block still seeds _END_ROW_VERDICT_EMITTED=halt manually — iter-7 M3 derives this from find_fresh_verdict in the writer"
 else
-  fail_at "ENG-87 M2-iter3-B: budget-exhausted missing seed" \
-    "block from 'Budget exhausted' comment to exit 0 has no _END_ROW_VERDICT_EMITTED=halt — verdict was posted to Linear but row records empty string"
+  pass_at "ENG-87 M2-iter3-B-iter7 (M3): budget-exhausted block has no manual verdict_emitted seed (writer derives)"
 fi
 
-# M2-iter3-C: wait-success path (the inner `_handle_wait` true branch).
-# Block runs from `if _handle_wait` through its corresponding `exit 0`.
-# Strict standalone-statement regex (mirrors M2-iter3-A/B).
 _eng87_m2i3c_block="$(awk '
   /if _handle_wait "\$ident" "\$stage" "\$_wait_reason"; then/ { in_block=1 }
   in_block { print }
@@ -4539,10 +4541,10 @@ _eng87_m2i3c_block="$(awk '
 ' "$RS_SRC")"
 if printf '%s\n' "$_eng87_m2i3c_block" \
    | grep -qE '_END_ROW_VERDICT_EMITTED=("wait"|wait)'; then
-  pass_at "ENG-87 M2-iter3-C: wait-success path seeds _END_ROW_VERDICT_EMITTED=wait"
+  fail_at "ENG-87 M2-iter3-C-iter7 (M3): wait-success manual seed not removed" \
+    "block still seeds _END_ROW_VERDICT_EMITTED=wait manually — iter-7 M3 derives this from find_fresh_wait_verdict fallback in the writer"
 else
-  fail_at "ENG-87 M2-iter3-C: wait-success missing seed" \
-    "block between 'if _handle_wait' and the inner exit 0 has no _END_ROW_VERDICT_EMITTED=wait — agent emitted wait verdict but row records empty string"
+  pass_at "ENG-87 M2-iter3-C-iter7 (M3): wait-success block has no manual verdict_emitted seed (writer derives)"
 fi
 
 
@@ -4710,17 +4712,22 @@ if grep -nE '_END_ROW_VERDICT_EMITTED=' "$HARNESS_DIR/verdict-handler.sh" >/dev/
 else
   pass_at "ENG-87 M3-iter7: verdict-handler.sh has no _END_ROW_VERDICT_EMITTED= mutation"
 fi
-# Within run-stage.sh, allow only: trap-init stanza (5 lines under the
-# `if (( ! skip_dispatch ))` block ~line 1040, where the globals are
-# default-empty seeded), and writer body inside _append_dispatch_end_row.
-# Count occurrences and assert they shrink from 5+ to ≤3 (init + writer
-# read + writer fallback for wait).
+# Within run-stage.sh, allow only:
+#   (a) module-level init `_END_ROW_VERDICT_EMITTED=""` (load-time)
+#   (b) per-dispatch main() reseed (clears prior-call state in tests
+#       that source the file and call main() multiple times)
+#   (c) writer-internal assignments inside _append_dispatch_end_row
+#       (find_fresh_verdict + find_fresh_wait_verdict reads)
+# Pre-iter-7 the file carried 5 manual seeds at halt/wait sites
+# (scope-violation halt, wait-success, budget-exhausted halt) plus
+# the success-path consolidator. The fix moves all derivation INTO
+# the writer; (a)+(b)+(c) totals 4 sites. Count and assert ≤4.
 _eng87_m3_count="$(grep -cE '_END_ROW_VERDICT_EMITTED=' "$HARNESS_DIR/run-stage.sh" || true)"
-if (( _eng87_m3_count <= 3 )); then
-  pass_at "ENG-87 M3-iter7: run-stage.sh _END_ROW_VERDICT_EMITTED= count ≤ 3 (init + writer read; was 5+)"
+if (( _eng87_m3_count <= 4 )); then
+  pass_at "ENG-87 M3-iter7: run-stage.sh _END_ROW_VERDICT_EMITTED= count ≤ 4 (init + reseed + 2 writer reads; was 5+ explicit halt/wait seeds)"
 else
   fail_at "ENG-87 M3-iter7: run-stage.sh _END_ROW_VERDICT_EMITTED= count" \
-    "expected ≤3 mutation sites, found $_eng87_m3_count — manual seeds at scope-violation/wait-success/budget-exhausted halts should be replaced by a single read inside _append_dispatch_end_row (call find_fresh_verdict + fall back to find_fresh_wait_verdict; parse .event.result + .event.target)"
+    "expected ≤4 mutation sites, found $_eng87_m3_count — manual seeds at scope-violation/wait-success/budget-exhausted halts should be replaced by a single read inside _append_dispatch_end_row (call find_fresh_verdict + fall back to find_fresh_wait_verdict; parse .event.result + .event.target)"
 fi
 unset _eng87_m3_count
 

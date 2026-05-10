@@ -56,15 +56,10 @@ _vh_protocol_violation() {
   bash "$_VH_SCRIPT_DIR/linear.sh" add-or-update-comment \
     "protocol-violation/$case_id/$issue" "$issue" "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
-  # ENG-87 review-iter-2 M1: surface verdict_emitted to run-stage's
-  # dispatch_history end-row trap. Protocol-violation halts post a
-  # halt verdict directly (NOT via classify_failure), so the trap
-  # globals would otherwise stay at their initial "" — schema drift
-  # for the verdict_emitted field. Same allocator-style coupling
-  # documented in classify-failure.sh.
-  if [[ -n "${_END_ROW_HIST_FILE-}" ]]; then
-    _END_ROW_VERDICT_EMITTED="halt"
-  fi
+  # ENG-87 review-iter-7 M3: cross-file mutation of run-stage.sh's
+  # verdict_emitted global is gone — _append_dispatch_end_row reads
+  # find_fresh_verdict at trap-fire time and picks up the halt comment
+  # this function just posted via add-or-update-comment.
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
 }
 
@@ -405,8 +400,14 @@ resume_in_progress_transition() {
   local _curr_id _last_dispatch_id
   _curr_id="$(current_dispatch_id "$issue" 2>/dev/null || printf '')"
   if [[ -n "$_curr_id" ]]; then
+    # ENG-87 review-iter-7 m1: tail -1 (not head -1). _inject_dispatch_marker
+    # always APPENDS its marker (last line), so the writer's contract is
+    # "last marker is canonical." Pre-iter-7 the reader used head -1
+    # which on a body that legitimately quotes a prior marker (e.g., a
+    # halt body diagnosing cross-dispatch staleness) would return the
+    # quoted-prose id, not the auto-injected real id at the tail.
     _last_dispatch_id="$(grep -oE '<!-- meta: dispatch id=[^[:space:]>]+' <<<"$last_body" \
-      | head -1 | sed -E 's/.*id=//')"
+      | tail -1 | sed -E 's/.*id=//')"
     if [[ -n "$_last_dispatch_id" && "$_last_dispatch_id" != "$_curr_id" ]]; then
       log "verdict-handler: skipping resume — transition dispatch_id ($_last_dispatch_id) != current ($_curr_id)"
       return 1

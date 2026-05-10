@@ -121,26 +121,16 @@ classify_failure() {
   # the `${var-}` form. Allocator-style coupling — same pattern as
   # PIPELINE_DISPATCH_ID export from common.sh::_allocate_dispatch_id_locked.
   #
-  # ENG-87 review-iter-2 M1: also surface verdict_emitted when this
-  # classify_failure call posts a halt-shape verdict. The halt-policy
-  # arms below (skip-until-code-changes / skip-until-human-acts) post a
-  # `<!-- pipeline: verdict result=halt reason=X -->` comment via
-  # add-or-update-comment at line ~190; the end-row trap on the success
-  # path captures verdict_emitted via find_fresh_verdict, but halt
-  # paths exited before that read could fire. Without this seed, the
-  # 9-field schema's verdict_emitted is "" on every halt path despite
-  # a halt verdict landing on Linear — a forensic-integrity gap.
-  # retry-immediately posts a `<!-- meta: metric name=transient-retry -->`
-  # marker (NOT a verdict per the verdict-handler filter), so its
-  # verdict_emitted correctly stays "". verdict_target stays "" on
-  # halts (the halt verdict shape carries no target field).
+  # ENG-87 review-iter-7 M3: cross-file mutation of run-stage.sh's
+  # verdict_emitted global is gone — the writer in
+  # _append_dispatch_end_row reads find_fresh_verdict at trap-fire time,
+  # so the halt comment this function just posted (or is about to
+  # post via add-or-update-comment below) is picked up automatically.
+  # _END_ROW_POLICY stays here because it reflects this function's
+  # own decision (skip-until-* / retry-immediately), which is local
+  # information not derivable from Linear.
   if [[ -n "${_END_ROW_HIST_FILE-}" ]]; then
     _END_ROW_POLICY="$effective_policy"
-    case "$effective_policy" in
-      skip-until-code-changes|skip-until-human-acts)
-        _END_ROW_VERDICT_EMITTED="halt"
-        ;;
-    esac
   fi
 
   # Apply matching Linear label (skip policies only).
