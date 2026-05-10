@@ -177,6 +177,55 @@ _profile_schema_version() {
   ' "$path"
 }
 
+# _inject_tool_allowlist_section <path>
+# Splices a `## Tool allowlist` section with <<NEEDS-INPUT:>> markers
+# into a valid v1 profile after the `## Build & test gates` heading and
+# bumps the frontmatter schema_version from 1 to 2. Atomic write.
+# Returns rc=1 with one-line stderr on missing anchor or missing file.
+#
+# Pipeline safety: `awk … "$path" | atomic_write_file "$path"` is safe
+# because awk opens "$path" for reading at start and the kernel holds
+# the file descriptor across the rename atomic_write_file performs.
+_inject_tool_allowlist_section() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf '_inject_tool_allowlist_section: not a file: %s\n' "$path" >&2; return 1; }
+  if ! grep -qE '^## Build & test gates$' "$path"; then
+    printf '_inject_tool_allowlist_section: missing anchor "## Build & test gates" in %s\n' "$path" >&2
+    return 1
+  fi
+  awk '
+    BEGIN { fm=0; past_btg=0; injected=0 }
+    NR==1 && $0=="---" { fm=1; print; next }
+    fm==1 && $0=="---" { fm=2; print; next }
+    fm==1 && /^schema_version:[[:space:]]+1[[:space:]]*$/ { print "schema_version: 2"; next }
+    fm==2 && /^## Build & test gates$/ { past_btg=1; print; next }
+    fm==2 && past_btg==1 && injected==0 && /^## / {
+      print "## Tool allowlist"
+      print ""
+      print "Per-stage Bash patterns the orchestrator grants to `claude -p` at dispatch."
+      print "Stage-agnostic core tools (Read, Write, Edit, Grep, Glob, TaskCreate,"
+      print "git family, `bash bin/linear.sh`, `bash bin/pipeline.sh`,"
+      print "`bash bin/guards.sh`, `bash bin/slack.sh`, `bash bin/metrics.sh`)"
+      print "are implicit and not declared here."
+      print ""
+      print "- brainstorming: (none)"
+      print "- planning: (none)"
+      print "- implementing:"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the implementing stage need? List one per line, e.g. Bash(cargo:*) — see bin/setup-prompts/discovery.md derivation rule.>>"
+      print "- ui:"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the ui stage need?>>"
+      print "- reviewing: (none)"
+      print "- qa:"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the qa stage need?>>"
+      print "- building: (none)"
+      print "- released: (none)"
+      print ""
+      injected=1
+    }
+    { print }
+  ' "$path" | atomic_write_file "$path"
+}
+
 # _resolve_profile_markers <path>
 # Reads <path>, finds <<NEEDS-INPUT: question>> markers, prompts the
 # operator (stdin) for each, replaces the entire line containing the
