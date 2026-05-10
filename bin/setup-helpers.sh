@@ -158,6 +158,25 @@ _validate_project_profile_schema() {
   return 0
 }
 
+# _profile_schema_version <path>
+# Emits the integer value of `schema_version:` from the YAML frontmatter
+# on stdout, or empty string on miss. Always returns 0; caller decides
+# whether empty is fatal.
+_profile_schema_version() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf ''; return 0; }
+  awk '
+    NR==1 && $0=="---" { in_fm=1; next }
+    in_fm && $0=="---" { exit }
+    in_fm && /^schema_version:[[:space:]]+[0-9]+[[:space:]]*$/ {
+      sub(/^schema_version:[[:space:]]+/, "")
+      sub(/[[:space:]]*$/, "")
+      print
+      exit
+    }
+  ' "$path"
+}
+
 # _resolve_profile_markers <path>
 # Reads <path>, finds <<NEEDS-INPUT: question>> markers, prompts the
 # operator (stdin) for each, replaces the entire line containing the
