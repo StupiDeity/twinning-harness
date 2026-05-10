@@ -60,8 +60,15 @@ _classify_label() {
 _inject_dispatch_marker() {
   local body="$1"
   [[ -n "${PIPELINE_DISPATCH_ID-}" ]] || { printf '%s' "$body"; return 0; }
-  # Idempotent: if a dispatch marker is already present, return as-is.
-  if grep -qF '<!-- meta: dispatch id=' <<<"$body"; then
+  # ENG-87 review-iter-7 m2: idempotency check matches the CURRENT
+  # dispatch id specifically. Pre-fix, `grep -qF '<!-- meta: dispatch id='`
+  # matched ANY dispatch marker — including STALE markers from prior
+  # dispatches (e.g., a body that already carries `id=ENG-N-d0050` from
+  # a re-apply with PIPELINE_DISPATCH_ID=ENG-N-d0099 would skip
+  # injection, leaving the operator-visible marker out of sync with
+  # the freshness rule). Trailing space avoids prefix collisions
+  # (id=ENG-N-d100 vs id=ENG-N-d10).
+  if grep -qF "<!-- meta: dispatch id=${PIPELINE_DISPATCH_ID-} " <<<"$body"; then
     printf '%s' "$body"
     return 0
   fi
@@ -625,7 +632,17 @@ add_or_update_comment() {
     existing_body="$(jq -r --arg id "$existing_id" \
       '[.data.issue.comments.nodes[]? | select(.id == $id) | .body] | first // ""' \
       <<<"$resp")"
-    strip_re='/^<!-- meta: reapplied at=[^>]* -->$/d'
+    # ENG-87 review-iter-7 Critical 4: extend the strip to ALSO remove
+    # `<!-- meta: dispatch id=… -->` lines. Post-ENG-87 every comment body
+    # carries an auto-injected dispatch marker (line-anchored, last
+    # line of body); a re-apply across two different dispatches now has
+    # different markers in existing vs new body, so the byte-equal arm
+    # would never fire and ENG-63's reapplied-footer + comment-reapplied
+    # metric signal would be silently absent for every halt re-apply
+    # post-cutover. Stripping both noise lines preserves ENG-63's
+    # byte-equal-modulo-meta-noise normalisation under dispatch-id
+    # rotation.
+    strip_re='/^<!-- meta: (reapplied at=|dispatch id=)[^>]* -->$/d'
     existing_norm="$(printf '%s' "$existing_body" | sed -E "$strip_re")"
     new_norm="$(printf '%s' "$body" | sed -E "$strip_re")"
     # Defensive trailing-newline trim. Shell `$()` already strips trailing

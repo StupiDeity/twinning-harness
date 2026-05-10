@@ -1012,11 +1012,17 @@ _eng87qa_out="$(_eng87_test_inject "$_eng87qa_quoted_body")"
 # substring; the d0008 marker is absent.
 _eng87qa_d8_count="$(grep -cF 'dispatch id=ENG-87QA-d0008' <<<"$_eng87qa_out")"
 _eng87qa_d7_count="$(grep -cF 'dispatch id=ENG-87QA-d0007' <<<"$_eng87qa_out")"
-if [[ "$_eng87qa_d8_count" == "0" && "$_eng87qa_d7_count" == "1" ]]; then
-  pass_at "ENG-87 QA-3: quoted prior-dispatch marker defeats injection (CURRENT behavior; follow-up needed for line-anchored idempotency check)"
+# Iter-7 m2 (post-fix): the idempotency check is now CURRENT-id-
+# specific (linear.sh::_inject_dispatch_marker matches
+# `<!-- meta: dispatch id=$PIPELINE_DISPATCH_ID `). The quoted prior
+# d0007 marker no longer satisfies the d0008 check, so injection
+# fires and the d0008 marker IS appended; the d0007 quoted prose
+# survives unchanged.
+if [[ "$_eng87qa_d8_count" == "1" && "$_eng87qa_d7_count" == "1" ]]; then
+  pass_at "ENG-87 QA-3 (post-iter-7 m2): quoted prior-dispatch marker no longer defeats current-dispatch injection"
 else
-  fail_at "ENG-87 QA-3: quoted-marker false-positive" \
-    "expected d0008-count=0 d0007-count=1; got d0008=$_eng87qa_d8_count d0007=$_eng87qa_d7_count out: $_eng87qa_out"
+  fail_at "ENG-87 QA-3: post-iter-7 m2 idempotency current-id" \
+    "expected d0008-count=1 (injected) d0007-count=1 (prose preserved); got d0008=$_eng87qa_d8_count d0007=$_eng87qa_d7_count out: $_eng87qa_out"
 fi
 unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
 unset _eng87qa_quoted_body _eng87qa_out _eng87qa_d8_count _eng87qa_d7_count
