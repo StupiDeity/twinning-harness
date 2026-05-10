@@ -243,33 +243,34 @@ fi
 # overwrite-every-dispatch rule in §5 so a future prompt edit can't
 # silently drop the contract.
 
-# §5 must say "overwrite on every dispatch" (case-insensitive on
-# "overwrite" since "overwritten" / "overwrite" are both reasonable).
-if printf '%s\n' "$s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
-  ok "§5 mandates 'overwrite on every dispatch' for the stage-summary file"
+# Iter-7 M4 (post-fix): the staleness mandate moved to §0's fenced block
+# as the SSOT. Test against the rendered §5 body (= §0 + §5) so we
+# verify the rule reaches review-stage agents via the same render path
+# every other stage uses. The legacy §5-only assertions broke when M4
+# hoisted the boilerplate; their behavior is preserved here against
+# rendered_stage_body output.
+rendered_s5="$(rendered_stage_body "## 5. Review Agent")"
+if printf '%s\n' "$rendered_s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+  ok "§5 (rendered, post-iter-7-M4): mandates 'overwrite on every dispatch' for the stage-summary file"
 else
-  nope "§5 mandates 'overwrite on every dispatch' for the stage-summary file" \
+  nope "§5 (rendered, post-iter-7-M4): mandates 'overwrite on every dispatch'" \
     "without this rule, the reviewer can re-emit verdicts without a fresh file write — orchestrator posts stale body, implement-loopback gets no new feedback (ENG-71 May 2026 cycle)"
 fi
 
-# §5 must explicitly reject the "read-then-conditionally-skip" misreading
-# (the way ENG-71's iters 6-9 actually behaved — agent read existing file,
-# decided findings unchanged, didn't re-write).
-if printf '%s\n' "$s5" | grep -qF 'read-then-conditionally-skip'; then
-  ok "§5 explicitly bans 'read-then-conditionally-skip' on the stage-summary file"
+if printf '%s\n' "$rendered_s5" | grep -qF 'read-then-conditionally-skip'; then
+  ok "§5 (rendered): bans 'read-then-conditionally-skip' on the stage-summary file"
 else
-  nope "§5 explicitly bans 'read-then-conditionally-skip' on the stage-summary file" \
+  nope "§5 (rendered): bans 'read-then-conditionally-skip'" \
     "the carve-out names the exact ENG-71 misreading; without it, agents may re-derive the same wrong behavior"
 fi
 
-# §5 must cite the ENG-71 incident as precedent so the rule's reason is
-# self-documenting.
-if printf '%s\n' "$s5" | grep -qE 'ENG-71.*(May|2026)'; then
-  ok "§5 cites the ENG-71 incident as the reason for the overwrite rule"
+if printf '%s\n' "$rendered_s5" | grep -qE 'ENG-71.*(May|2026)'; then
+  ok "§5 (rendered): cites the ENG-71 incident as the reason for the overwrite rule"
 else
-  nope "§5 cites the ENG-71 incident" \
+  nope "§5 (rendered): cites the ENG-71 incident" \
     "without the precedent, a future prompt-cleanup pass might decide the rule is overcautious and remove it"
 fi
+unset rendered_s5
 
 # ─── ENG-77 QA-adversarial: §5 invariant deepening (QA round) ──────────
 # Background: the existing three D-002 asserts (lines 211, 221, 230)
@@ -282,55 +283,61 @@ fi
 # the rendered-prompt-body subset and the negative-example evasion
 # vector the brainstorm §7 E-6 considered implausible.
 
-# Extract §5's fenced block — same content extract_block emits.
-in_fence_s5="$(awk '
-  /^## 5\. Review Agent/ { in_s = 1; next }
+# Iter-7 M4: the boilerplate moved to §0's fenced block. The QA-A/QA-B
+# evasion vector (rule outside §5's fenced block but still in §5) no
+# longer applies — §5 doesn't carry the rule directly. Pin against
+# §0's fenced block instead so a future edit that moves the contract
+# OUT of §0's fenced body still trips this guard.
+in_fence_s0="$(awk '
+  /^## 0\. Common rules/ { in_s = 1; next }
   /^## [0-9]+\./ && in_s { exit }
   in_s && /^```/ { in_f = !in_f; next }
   in_s && in_f { print }
 ' "$PROMPTS")"
 
-# QA-A: MANDATORY phrase falls INSIDE the rendered fenced block.
-# Catches a future cleanup that demotes the rule out of what the
-# agent sees (intro/outro prose) while leaving the literal phrase in
-# §5 — D-002 line 211's section-wide regex false-passes.
-if printf '%s\n' "$in_fence_s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
-  ok "§5 (QA-A): 'overwrite on every dispatch' falls INSIDE the rendered fenced block"
+if printf '%s\n' "$in_fence_s0" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+  ok "§0 (QA-A, post-M4): 'overwrite on every dispatch' falls INSIDE the rendered fenced block"
 else
-  nope "§5 (QA-A): 'overwrite on every dispatch' falls INSIDE the rendered fenced block" \
-    "phrase exists in §5 (D-002 line 211 still passes) but outside the fenced block — render-prompt.sh::extract_block does not deliver it to the agent"
+  nope "§0 (QA-A, post-M4): 'overwrite on every dispatch' falls INSIDE the rendered fenced block" \
+    "phrase exists in §0 prose but outside the fenced block — render-prompt.sh::extract_block does not deliver it to any agent"
 fi
 
-# QA-B: 'read-then-conditionally-skip' carve-out lands inside the
-# fenced block (companion check to QA-A on D-002 assert 2).
-if printf '%s\n' "$in_fence_s5" | grep -qF 'read-then-conditionally-skip'; then
-  ok "§5 (QA-B): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block"
+if printf '%s\n' "$in_fence_s0" | grep -qF 'read-then-conditionally-skip'; then
+  ok "§0 (QA-B, post-M4): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block"
 else
-  nope "§5 (QA-B): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block" \
-    "phrase exists in §5 (D-002 line 221 still passes) but outside the fenced block"
+  nope "§0 (QA-B, post-M4): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block" \
+    "phrase exists in §0 prose but outside the fenced block — render-prompt.sh::extract_block does not deliver it to any agent"
+fi
+unset in_fence_s0
+
+# Iter-7 M4 (post-fix): QA-C and QA-D moved with the boilerplate. Pin
+# the citation + negative-context guards on §0's fenced block (the new
+# SSOT). The §5-on-the-fenced-block evasion vector no longer applies
+# (§5 doesn't carry the mandate); the §0 vector replaces it.
+in_fence_s0_qa="$(awk '
+  /^## 0\. Common rules/ { in_s = 1; next }
+  /^## [0-9]+\./ && in_s { exit }
+  in_s && /^```/ { in_f = !in_f; next }
+  in_s && in_f { print }
+' "$PROMPTS")"
+
+# QA-C (post-M4): ENG-71/77 citation lives inside §0's fenced block.
+if printf '%s\n' "$in_fence_s0_qa" | grep -qE 'ENG-(71|77).*(May|2026)'; then
+  ok "§0 (QA-C, post-M4): ENG-71/77 citation falls INSIDE the rendered fenced block"
+else
+  nope "§0 (QA-C, post-M4): ENG-71/77 citation falls INSIDE the rendered fenced block" \
+    "citation exists in §0 prose but outside the fenced block — render-prompt.sh::extract_block does not deliver it to any agent"
 fi
 
-# QA-C: ENG-71 citation lands inside the fenced block.
-if printf '%s\n' "$in_fence_s5" | grep -qE 'ENG-71.*(May|2026)'; then
-  ok "§5 (QA-C): ENG-71 citation falls INSIDE the rendered fenced block"
+# QA-D (post-M4): no negative-example context preceding the MANDATORY
+# phrase inside §0's fenced block.
+if printf '%s\n' "$in_fence_s0_qa" | grep -qiE '\b(do not|don'\''t|never)[^.]*overwrite[ d]+on every dispatch'; then
+  nope "§0 (QA-D, post-M4): MANDATORY phrase not in same-line negative-example context" \
+    "found a negation (do not/don't/never) on the same line preceding 'overwrite on every dispatch' — literal-presence regex would false-pass against an anti-instruction"
 else
-  nope "§5 (QA-C): ENG-71 citation falls INSIDE the rendered fenced block" \
-    "citation exists in §5 (D-002 line 230 still passes) but outside the fenced block"
+  ok "§0 (QA-D, post-M4): MANDATORY phrase not in same-line negative-example context"
 fi
-
-# QA-D: MANDATORY phrase NOT introduced by a same-line negation. The
-# brainstorm §7 E-6 considered "DO NOT overwrite on every dispatch —
-# that wastes tokens" implausible because all three pinned phrases
-# would need to coexist with negative-context wording. Promote that
-# implausibility to enforcement. Per-line regex avoids false-positive
-# on the sibling 'do not read-then-conditionally-skip' clause that
-# legitimately sits one line below the MANDATORY phrase.
-if printf '%s\n' "$in_fence_s5" | grep -qiE '\b(do not|don'\''t|never)[^.]*overwrite[ d]+on every dispatch'; then
-  nope "§5 (QA-D): MANDATORY phrase not in same-line negative-example context" \
-    "found a negation (do not/don't/never) on the same line preceding 'overwrite on every dispatch' — D-002 line 211's literal-presence regex would false-pass against an anti-instruction"
-else
-  ok "§5 (QA-D): MANDATORY phrase not in same-line negative-example context"
-fi
+unset in_fence_s0_qa
 
 # ─── ENG-53 #11(a): every stage prompt has the no-probe + halt-instead ──
 # Pre-fix: agents routinely posted throwaway Linear comments (`test`,
@@ -982,33 +989,35 @@ else
   ok 'ENG-74 QA: no `env VAR=val bash bin/...` command shape anywhere in AGENT_PROMPTS.md'
 fi
 
-# ─── ENG-87: §§1-7 stage-summary mandate generalisation ────────────
-# Pre-fix, only §5 (Review) carried the "MANDATORY — overwrite on every
-# dispatch" clause + the "do not read-then-conditionally-skip" carve-out
-# + the ENG-71/77 incident citation. ENG-77 (May 2026) showed the same
-# stale-file failure mode is structural (any stage can hit it on any
-# loopback), so the contract must ship to every numbered stage.
-# Generalises ENG-71's §5 trio to §§1-7. Token-coverage asserts that
-# every `{...}` in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS.
+# ─── ENG-87 review-iter-7 M4: stage-summary mandate hoisted to §0 ────
+# Pre-iter-7, the "MANDATORY — overwrite on every dispatch" clause +
+# the "do not read-then-conditionally-skip" carve-out + the ENG-71/77
+# incident citation were duplicated across §§1-7 (~6 sites). Iter-7 M4
+# flagged that as a regression of the §0 SSOT consolidation. Post-fix,
+# §0 carries the contract once; every per-stage block inherits it via
+# render-prompt.sh::extract_block + main()'s `block="$common_block"$'\n'"$block"`
+# prepend. The rendered_stage_body helper exercises that exact path
+# (= §0 fenced block + per-stage fenced block); switching to it is
+# how this test now verifies the contract reaches every stage.
 assert_overwrite_mandate() {
   local section_name="$1" stage_key="$2"
-  local body; body="$(section_body "$section_name")"
+  local body; body="$(rendered_stage_body "$section_name")"
   if printf '%s\n' "$body" | grep -qiE 'overwrite[ d]+on every dispatch'; then
-    ok "${stage_key}: mandates 'overwrite on every dispatch'"
+    ok "${stage_key}: mandates 'overwrite on every dispatch' (delivered via §0)"
   else
-    nope "${stage_key}: mandates 'overwrite on every dispatch'" \
+    nope "${stage_key}: mandates 'overwrite on every dispatch' (delivered via §0)" \
       "without this rule, the ${stage_key} agent can re-emit verdicts without a fresh file write — orchestrator posts stale body, downstream loopback gets no new feedback (ENG-77/ENG-71 May 2026 cycle)"
   fi
   if printf '%s\n' "$body" | grep -qF 'read-then-conditionally-skip'; then
-    ok "${stage_key}: bans 'read-then-conditionally-skip'"
+    ok "${stage_key}: bans 'read-then-conditionally-skip' (delivered via §0)"
   else
-    nope "${stage_key}: bans 'read-then-conditionally-skip'" \
+    nope "${stage_key}: bans 'read-then-conditionally-skip' (delivered via §0)" \
       "the carve-out names the exact ENG-71 misreading; without it, agents may re-derive the same wrong behavior"
   fi
   if printf '%s\n' "$body" | grep -qE 'ENG-(71|77).*(May|2026)'; then
-    ok "${stage_key}: cites the ENG-71/77 incident"
+    ok "${stage_key}: cites the ENG-71/77 incident (delivered via §0)"
   else
-    nope "${stage_key}: cites the ENG-71/77 incident" \
+    nope "${stage_key}: cites the ENG-71/77 incident (delivered via §0)" \
       "without the precedent, a future prompt-cleanup pass might decide the rule is overcautious and remove it"
   fi
 }
