@@ -358,7 +358,12 @@ else
 fi
 
 # Case 5.2: re-run with valid profile present → discovery skipped (no claude invocation).
+# Seed a v2 profile directly so the ENG-93 v1→v2 backfill branch does
+# not fire and the "complete" branch (validator OK + no markers) skips
+# discovery as designed.
 rm -f "$sandbox/stubs/claude"  # if claude is invoked, require_bin will fail
+mkdir -p "$sandbox/harness-root/learned-rules/test-slug"
+printf '%s' "$V2_RUST_TAURI_PROFILE" > "$sandbox/harness-root/learned-rules/test-slug/project-profile.md"
 if run_phase "" >/dev/null 2>&1; then
   pass_at "case-5.2: skip-discovery when valid profile exists"
 else
@@ -494,12 +499,13 @@ else
 fi
 
 # ENG-93 — Case 5.11: V1→V2 backfill end-to-end with successful marker
-# resolution. Three answers (one per implementing/ui/qa) and the result
-# must be a valid v2 profile.
+# resolution. Three answers (one per implementing/ui/qa); the operator
+# is expected to paste backtick-fenced patterns (matching the validator's
+# pattern-shape gate). The result must be a valid v2 profile.
 rm -f "$profile"
 printf '%s' "$V1_LEGACY_PROFILE" > "$profile"
 rm -f "$sandbox/stubs/claude"
-if run_phase $'Bash(cargo:*)\nBash(npx:*)\nBash(cargo:*)\n' >/dev/null 2>&1; then
+if run_phase $'`Bash(cargo:*)`\n`Bash(npx:*)`\n`Bash(cargo:*)`\n' >/dev/null 2>&1; then
   if (
     export HARNESS_ROOT="$sandbox/harness-root"
     SCRIPT_DIR="$HARNESS_ROOT/bin"
