@@ -279,6 +279,66 @@ else
   fail_at "ENG-87 R5: token coverage" "missing resolvers: $missing_tokens"
 fi
 
+# ─── ENG-87 review-iter-7 M9: _resolve_dispatch_id reads _RENDER_DISPATCH_ID ──
+# Iter-7 M9 finding: _resolve_dispatch_id at render-prompt.sh:209-211
+# reads `${PIPELINE_DISPATCH_ID-}` directly while every other resolver
+# reads its `_RENDER_*` global (lines 198-208). Test isolation requires
+# `export PIPELINE_DISPATCH_ID` rather than `_RENDER_DISPATCH_ID=...` —
+# divergent pattern within the same registry. Post-fix: bind
+# `_RENDER_DISPATCH_ID="${PIPELINE_DISPATCH_ID-}"` in main() at the
+# resolver-side seeding stanza; have _resolve_dispatch_id read
+# _RENDER_DISPATCH_ID like its siblings.
+printf '\n--- ENG-87 R7: _resolve_dispatch_id reads _RENDER_DISPATCH_ID ---\n'
+
+# Source pin: the resolver's body should read $_RENDER_DISPATCH_ID,
+# not ambient $PIPELINE_DISPATCH_ID. Use awk to extract just the
+# resolver function body and grep that.
+_iter7_r7_body="$(awk '/^_resolve_dispatch_id\(\)/{flag=1} flag{print; if(/^}$/){exit}}' "$RP_SRC")"
+if printf '%s' "$_iter7_r7_body" | grep -qF '_RENDER_DISPATCH_ID'; then
+  pass_at "ENG-87 R7: _resolve_dispatch_id reads _RENDER_DISPATCH_ID (consistent with sibling resolvers)"
+else
+  fail_at "ENG-87 R7: _resolve_dispatch_id reads _RENDER_DISPATCH_ID" \
+    "function body does not reference _RENDER_DISPATCH_ID — divergent from issue_id/title/etc. resolvers. Bind _RENDER_DISPATCH_ID in main() and read it here."
+fi
+
+# Behavioral pin: _RENDER_DISPATCH_ID set, PIPELINE_DISPATCH_ID unset →
+# resolver returns the _RENDER_DISPATCH_ID value. Pre-fix: returns "".
+out="$(run_resolver_body '
+  _RENDER_DISPATCH_ID="ENG-87R7-d0042"
+  unset PIPELINE_DISPATCH_ID
+  resolve_block_tokens "id={dispatch_id}"
+' 2>&1)"
+if [[ "$out" == "id=ENG-87R7-d0042" ]]; then
+  pass_at "ENG-87 R7-behavioral: _RENDER_DISPATCH_ID populates {dispatch_id}"
+else
+  fail_at "ENG-87 R7-behavioral: _RENDER_DISPATCH_ID populates {dispatch_id}" \
+    "expected 'id=ENG-87R7-d0042', got '$out' — resolver is reading ambient PIPELINE_DISPATCH_ID, not _RENDER_DISPATCH_ID"
+fi
+unset _iter7_r7_body out
+
+# ─── ENG-87 review-iter-7 C1 fix: AGENT_RUNTIME_TOKENS skip-set ──
+# Pre-fix: _resolve_passthrough_file / _resolve_passthrough_pr_number
+# returned the literal {token} string; the bash literal substitution
+# was identity; the residual scan re-detected the token; the validator
+# died. Post-fix: render-prompt.sh defines an AGENT_RUNTIME_TOKENS set
+# (or equivalent) listing tokens that are agent-runtime placeholders;
+# resolve_block_tokens excludes those tokens from the residual check
+# AND removes the no-op _resolve_passthrough_* shims. Pin source-level.
+printf '\n--- ENG-87 R8: AGENT_RUNTIME_TOKENS skip-set + no passthrough shim ---\n'
+
+if grep -qE 'AGENT_RUNTIME_TOKENS' "$RP_SRC"; then
+  pass_at "ENG-87 R8: AGENT_RUNTIME_TOKENS declared in render-prompt.sh"
+else
+  fail_at "ENG-87 R8: AGENT_RUNTIME_TOKENS declared" \
+    "no AGENT_RUNTIME_TOKENS variable found — declare it as a runtime-token allowlist (e.g. file pr_number) and exclude those names from the residual unknown-token scan in resolve_block_tokens"
+fi
+if grep -qE '_resolve_passthrough_(file|pr_number)' "$RP_SRC"; then
+  fail_at "ENG-87 R8: passthrough shim removed" \
+    "_resolve_passthrough_* still present — the shim is a no-op that triggers the residual scan to fire on agent-runtime tokens. Remove the function bodies and registry entries; the AGENT_RUNTIME_TOKENS skip-set replaces them."
+else
+  pass_at "ENG-87 R8: _resolve_passthrough_* shim removed"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"

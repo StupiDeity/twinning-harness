@@ -2167,6 +2167,27 @@ else
   printf 'SKIP ENG-53#8: %s not present (CI or non-harness target) — skipping config drift check\n' "$HARNESS_CONFIG"
 fi
 
+# ─── ENG-87 review-iter-7 M6: PIPELINE_DISPATCH_ID propagation pin ──
+# bin/dispatch.sh's claude-invocation env-block carries PIPELINE_DISPATCH_ID
+# + PIPELINE_STAGE so that bin/linear.sh's chokepoint sees them in the
+# agent subprocess. The whole auto-injection contract collapses if a
+# refactor drops or renames either env var. Pin source-level: the
+# `env`-block / claude-invocation site must reference both names.
+printf '\n--- ENG-87 review-iter-7 M6: PIPELINE_DISPATCH_ID env propagation ---\n'
+
+DISP_SRC_FOR_M6="$SCRIPT_DIR/dispatch.sh"
+if [[ -f "$DISP_SRC_FOR_M6" ]]; then
+  if grep -qE 'PIPELINE_DISPATCH_ID' "$DISP_SRC_FOR_M6" && \
+     grep -qE 'PIPELINE_STAGE' "$DISP_SRC_FOR_M6"; then
+    pass_at "ENG-87 M6-iter7: dispatch.sh references PIPELINE_DISPATCH_ID and PIPELINE_STAGE (env-block pin)"
+  else
+    fail_at "ENG-87 M6-iter7: dispatch.sh references PIPELINE_DISPATCH_ID + PIPELINE_STAGE" \
+      "either env var missing — auto-injection chokepoint relies on these reaching the agent subprocess via dispatch.sh's env block (~line 439-441)"
+  fi
+else
+  printf 'SKIP ENG-87 M6-iter7: dispatch.sh not present at %s — skipping env-propagation pin\n' "$DISP_SRC_FOR_M6"
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

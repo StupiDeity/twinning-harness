@@ -1211,6 +1211,42 @@ else
 fi
 unset -f current_dispatch_id
 
+# ─── ENG-87 review-iter-7 m1: dispatch-id grep uses tail -1, not head -1 ──
+# resume_in_progress_transition's id-mismatch guard at
+# bin/verdict-handler.sh:408 reads the LAST transition's body and
+# extracts the dispatch_id via:
+#   grep -oE '<!-- meta: dispatch id=[^[:space:]>]+' <<<"$last_body" \
+#     | head -1 | sed -E 's/.*id=//'
+# `_inject_dispatch_marker` always APPENDS the marker (last line). The
+# reader's `head -1` is the WRONG bookend — for a body that legitimately
+# quotes a prior dispatch's marker (e.g., a halt-recap comment that
+# embeds an old marker substring as part of its prose), head -1 returns
+# the QUOTED id, while the auto-injected real marker is at the tail.
+# Switch to `tail -1` to match the writer's "always append" semantics
+# (the same pattern parse_pipeline_marker uses for marker family
+# precedence at common.sh:315).
+printf '\n--- ENG-87 m1-iter7: dispatch-id grep uses tail -1 ---\n'
+
+_iter7_m1_line="$(grep -nE 'grep -oE .*<!-- meta: dispatch id=' "$SCRIPT_DIR/verdict-handler.sh" \
+  | grep -F 'last_body' | head -1)"
+# The next line should be the head/tail filter. Read the surrounding
+# 3-line context.
+_iter7_m1_lineno="$(awk -F: '{print $1}' <<<"$_iter7_m1_line")"
+if [[ -z "$_iter7_m1_lineno" ]]; then
+  fail_at "ENG-87 m1-iter7: dispatch-id grep site present" \
+    "could not locate the grep + head/tail filter near 'last_body' in verdict-handler.sh — has the call site moved?"
+else
+  _iter7_m1_filter_line="$(awk -v ln="$((_iter7_m1_lineno + 1))" 'NR==ln' "$SCRIPT_DIR/verdict-handler.sh")"
+  if grep -qF 'tail -1' <<<"$_iter7_m1_filter_line"; then
+    pass_at "ENG-87 m1-iter7: dispatch-id grep at last_body uses tail -1 (matches writer's always-append semantics)"
+  else
+    fail_at "ENG-87 m1-iter7: dispatch-id grep at last_body uses tail -1" \
+      "filter line: $_iter7_m1_filter_line — should be 'tail -1' so the reader picks the auto-injected (last) marker, not a quoted prose marker (first)"
+  fi
+  unset _iter7_m1_filter_line
+fi
+unset _iter7_m1_line _iter7_m1_lineno
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

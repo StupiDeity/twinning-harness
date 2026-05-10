@@ -1021,50 +1021,80 @@ assert_overwrite_mandate "## 5. Review Agent"                   reviewing
 assert_overwrite_mandate "## 6. QA Agent"                       qa
 assert_overwrite_mandate "## 7. Build Agent"                    building
 
-# ─── ENG-87: agent-side preamble carries the dispatch-id contract ──
-# The preamble (content between the H1 and `## 1.`) must contain the
-# `### Dispatch identifier and freshness contract` heading. Without it,
-# agents lack the canonical reference for `{dispatch_id}` interpolation
-# and the no-mcp/no-curl mandates that the envelope validator enforces.
-preamble_body="$(awk '/^# / {h=1; next} /^## 1\./ {exit} h' "$PROMPTS")"
-if printf '%s' "$preamble_body" | grep -qF 'Dispatch identifier and freshness contract'; then
-  ok "preamble: cites Dispatch identifier and freshness contract"
+# ─── ENG-87 review-iter-7 C2: dispatch-id contract delivered to agents ──
+# Iter-4/5 review found that the `### Dispatch identifier and freshness
+# contract` subsection lived inside the unnumbered `## Verdict-marker
+# protocol` section of AGENT_PROMPTS.md. extract_block (render-prompt.sh)
+# only matches numbered `## N.` boundaries, so the unnumbered section is
+# invisible to renders — every agent received the per-stage block plus
+# §0's fenced block, and the dispatch-id contract was in NEITHER.
+# CLAUDE.md and the plan claim this preamble is "the prompt-side defense
+# for the chained-command blind spot in assert_no_tool_invocation"; the
+# defense was never delivered.
+#
+# Pre-iter-7 the assertion grepped raw source from H1 to `## 1.` (the
+# unnumbered section is in that range), so it false-passed. Post-fix:
+# the contract body lives INSIDE §0's fenced block, so rendered_stage_body
+# (= §0 + §N) carries it. Switch the assertion to rendered_stage_body
+# so it tests what agents actually receive at dispatch time.
+rendered_stage_body_implementing="$(rendered_stage_body "## 3. Implementation Agent (Backend)")"
+if printf '%s' "$rendered_stage_body_implementing" | grep -qF 'Dispatch identifier and freshness contract'; then
+  ok "rendered stage body: cites Dispatch identifier and freshness contract (delivered via §0)"
 else
-  nope "preamble: cites Dispatch identifier and freshness contract" \
-    "preamble subsection missing — agents have no canonical reference for {dispatch_id} interpolation and the no-mcp/no-curl mandates"
+  nope "rendered stage body: cites Dispatch identifier and freshness contract (delivered via §0)" \
+    "the heading is NOT in §0 + §3 (rendered stage body) — agents do not receive it. Move the contract body INTO §0's fenced block; the prior unnumbered placement was invisible to extract_block. Affected by review-iter-7 C2 (and iter-5 C2)."
 fi
 
-# Preamble must mention the auto-injection rule in some form so the
-# agent knows not to hand-craft `<!-- meta: dispatch id=... -->` markers.
-if printf '%s' "$preamble_body" | grep -qE 'auto-inject|chokepoint'; then
-  ok "preamble: cites auto-injection / chokepoint mechanism"
+# Auto-injection rule must reach agents via §0.
+if printf '%s' "$rendered_stage_body_implementing" | grep -qE 'auto-inject|chokepoint'; then
+  ok "rendered stage body: cites auto-injection / chokepoint mechanism"
 else
-  nope "preamble: cites auto-injection / chokepoint mechanism" \
-    "without naming the chokepoint, an agent reading the preamble might attempt manual marker emission"
+  nope "rendered stage body: cites auto-injection / chokepoint mechanism" \
+    "without naming the chokepoint, an agent reading the rendered prompt might attempt manual marker emission"
 fi
 
-# Preamble must name the envelope-violation halt class so agents know
-# the cost of bypassing bin/linear.sh.
-if printf '%s' "$preamble_body" | grep -qF 'dispatch-envelope-violation'; then
-  ok "preamble: names dispatch-envelope-violation halt class"
+# Envelope-violation halt class must reach agents via §0.
+if printf '%s' "$rendered_stage_body_implementing" | grep -qF 'dispatch-envelope-violation'; then
+  ok "rendered stage body: names dispatch-envelope-violation halt class"
 else
-  nope "preamble: names dispatch-envelope-violation halt class" \
+  nope "rendered stage body: names dispatch-envelope-violation halt class" \
     "without the halt-token reference, the no-mcp/no-curl rules read like style preferences instead of hard contracts"
 fi
 
-# Preamble must carry the no-carry-forward-state mandate (Task 14's
-# fourth bullet): agents MUST NOT read a previous dispatch's id to
-# "carry forward" any state. Each dispatch is a fresh slate; loopback
-# inputs come from the SOURCE stage's stage-summary file. Without this
-# rule, an agent reading the preamble could plausibly cache prior-
-# dispatch artifacts and re-emit them, defeating the clear-on-start
-# invariant (G-2).
-if printf '%s' "$preamble_body" | grep -qiE 'carry forward|fresh slate|previous (cycle|dispatch)'; then
-  ok "preamble: carries the no-carry-forward-state mandate"
+# No-carry-forward-state mandate must reach agents via §0.
+if printf '%s' "$rendered_stage_body_implementing" | grep -qiE 'carry forward|fresh slate|previous (cycle|dispatch)'; then
+  ok "rendered stage body: carries the no-carry-forward-state mandate"
 else
-  nope "preamble: carries the no-carry-forward-state mandate" \
-    "Task 14's fourth bullet (no-carry-forward-state) missing — without it, an agent could read prior-dispatch artifacts and defeat the clear-on-start invariant"
+  nope "rendered stage body: carries the no-carry-forward-state mandate" \
+    "Task 14's fourth bullet (no-carry-forward-state) missing from the rendered body — an agent could read prior-dispatch artifacts and defeat the clear-on-start invariant"
 fi
+unset rendered_stage_body_implementing
+
+# ─── ENG-87 review-iter-7 M4: stage-summary mandate hoisted to §0 ──
+# Pre-iter-7 the staleness mandate ("MANDATORY — overwrite on every
+# dispatch / read-then-conditionally-skip") was duplicated across §§1-7
+# (~6 sites). §0's design intent (per render-prompt.sh:25-30) is "single
+# source of truth … editing rules here lets operators avoid 9-place
+# edits in §§1-9." Iter-7 M4 flagged the 6-place duplication as a
+# regression of the §0 consolidation: ENG-46/53/57/74 each had to
+# swallow the multi-place-edit cost; re-incurring it now is the same
+# failure mode.
+#
+# Post-fix: §0 carries the mandate once; per-stage bullets reference
+# rather than re-state it. Allow ≤ 1 occurrence per stage of the legacy
+# 'MANDATORY — overwrite on every dispatch' phrase outside §0 (a
+# transitional reference is acceptable; full re-statement is not).
+_iter7_m4_total="$(grep -c 'MANDATORY — overwrite on every dispatch' "$PROMPTS" || true)"
+# §0 itself owns one canonical occurrence; per-stage bullets may leave
+# at most one short reference each. Strict pin: total ≤ 2 (§0 + at most
+# 1 transitional reference). The pre-fix count is ~7.
+if (( _iter7_m4_total <= 2 )); then
+  ok "ENG-87 M4-iter7: 'MANDATORY — overwrite on every dispatch' phrase appears ≤2× (hoisted to §0)"
+else
+  nope "ENG-87 M4-iter7: staleness mandate hoisted to §0" \
+    "phrase appears ${_iter7_m4_total}× — pre-iter-7 the mandate was duplicated across §§1-7 (~6 sites); §0 should be the SSOT. Hoist the boilerplate into §0's fenced block; leave one-line per-stage references."
+fi
+unset _iter7_m4_total
 
 # ─── ENG-87: token-coverage — every `{token}` in AGENT_PROMPTS.md
 # must be declared in bin/render-prompt.sh::PROMPT_RESOLVERS. Mirrors

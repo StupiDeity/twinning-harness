@@ -1070,6 +1070,114 @@ fi
 unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
 unset _eng87qa5_body _eng87qa5_out _eng87qa5_count
 
+# ─── ENG-87 review-iter-7 Critical 4: reapplied audit + dispatch-id strip ──
+# ENG-63's add_or_update_comment byte-equal-modulo-marker arm strips
+# `<!-- meta: reapplied at=… -->` lines before comparing existing vs
+# new. Post-ENG-87, every comment body now ends with
+# `<!-- meta: dispatch id=ENG-N-d<NNNN> stage=… -->` (auto-injected at
+# `_inject_dispatch_marker`). Two re-applies of the same logical halt
+# body across two different dispatches now carry different dispatch
+# markers → existing_norm != new_norm → byte-equal arm never fires → no
+# reapplied footer ever appears → metrics.sh comment-reapplied stays at
+# zero per re-apply post-cutover. ENG-63's audit signal is silently
+# regressed for every halt re-apply. Operator runbook (recovery.md §4)
+# instructs grepping `<!-- meta: reapplied at=` to find the latest
+# re-apply moment; that signal is now invisible.
+#
+# Fix: extend strip_re to remove BOTH `reapplied at=` and `dispatch id=`
+# lines so byte-equal-modulo-meta-noise normalisation works across
+# dispatch-id rotation.
+printf '\n--- ENG-87 review-iter-7 Critical 4: reapplied + dispatch-id strip ---\n'
+
+# Re-establish the linear_query stub + capture file used by the ENG-63
+# block above (which restored the originals at line ~752). Mirrors the
+# pattern from line 530-550.
+_iter7_l7_capture="$(mktemp -t eng87-l7-capture.XXXXXX)"
+_iter7_l7_canned_existing_body=""
+_iter7_l7_canned_existing_id="cmt-mock-l7"
+_iter7_l7_orig_linear_query="$(declare -f linear_query 2>/dev/null || true)"
+_iter7_l7_orig_resolve_uuid="$(declare -f _resolve_issue_uuid 2>/dev/null || true)"
+_iter7_l7_orig_dry_run="${PIPELINE_DRY_RUN-1}"
+_iter7_l7_orig_script_dir="$SCRIPT_DIR"
+SCRIPT_DIR="$SCRIPT_DIR_REAL"
+_resolve_issue_uuid() { printf 'uuid-mock'; }
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentUpdate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_iter7_l7_capture"
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
+  fi
+  if [[ "$query" =~ commentCreate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_iter7_l7_capture"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  jq -cn --arg id "$_iter7_l7_canned_existing_id" --arg body "$_iter7_l7_canned_existing_body" \
+    '{data:{issue:{comments:{nodes:[{id:$id,body:$body}]}}}}'
+}
+export PIPELINE_DRY_RUN=0
+
+# Case 87-L7-reapplied-audit: same byte body across two dispatches → footer.
+# Stub returns existing body whose body BYTES match the caller body BYTES
+# in everything except the trailing dispatch-id marker (auto-injected by
+# the prior dispatch). Post-fix: strip both noise lines → norms equal →
+# byte-equal arm fires → reapplied footer appended.
+: > "$_iter7_l7_capture"
+_iter7_l7_canned_existing_body=$'Halt body line 1\nHalt body line 2\n\n<!-- meta: dedup key=halt/reviewing/ENG-87L7 -->\n<!-- meta: dispatch id=ENG-87L7-d0007 stage=reviewing -->'
+PIPELINE_DISPATCH_ID="ENG-87L7-d0008" \
+PIPELINE_STAGE="reviewing" \
+add_or_update_comment "halt/reviewing/ENG-87L7" ENG-87L7 \
+  --body $'Halt body line 1\nHalt body line 2\n\n<!-- meta: dedup key=halt/reviewing/ENG-87L7 -->' \
+  >/dev/null 2>&1
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_iter7_l7_capture"; then
+  pass_at "ENG-87 L7 reapplied-audit: same body across dispatches → reapplied footer appended"
+else
+  fail_at "ENG-87 L7 reapplied-audit: footer appended" \
+    "captured: $(cat "$_iter7_l7_capture") — strip_re must remove both 'reapplied at=' AND 'dispatch id=' lines so byte-equal arm fires across dispatch_id rotation"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Restore originals before continuing (the L8 case below reads
+# _inject_dispatch_marker directly, no stub needed).
+rm -f "$_iter7_l7_capture"
+unset -f linear_query _resolve_issue_uuid 2>/dev/null || true
+[[ -n "$_iter7_l7_orig_linear_query" ]] && eval "$_iter7_l7_orig_linear_query"
+[[ -n "$_iter7_l7_orig_resolve_uuid" ]] && eval "$_iter7_l7_orig_resolve_uuid"
+export PIPELINE_DRY_RUN="$_iter7_l7_orig_dry_run"
+SCRIPT_DIR="$_iter7_l7_orig_script_dir"
+unset _iter7_l7_capture _iter7_l7_canned_existing_body _iter7_l7_canned_existing_id \
+      _iter7_l7_orig_linear_query _iter7_l7_orig_resolve_uuid \
+      _iter7_l7_orig_dry_run _iter7_l7_orig_script_dir
+
+# Case 87-L8-idempotency-current-id: a body carrying a STALE dispatch
+# marker (from a prior dispatch) should NOT short-circuit injection of
+# the current marker. Pre-fix: `_inject_dispatch_marker`'s idempotency
+# check `grep -qF '<!-- meta: dispatch id='` matches ANY marker, even
+# a stale one — re-apply preserves the stale marker, the strict-id
+# reader filters the comment OUT, and the operator-visible marker
+# disagrees with the freshness rule. Post-fix: idempotency check must
+# match the CURRENT id specifically.
+printf '\n--- ENG-87 L8 idempotency: current-id-specific check ---\n'
+
+# Use the existing _eng87_test_inject helper from linear-test.sh's
+# ENG-87 section. The helper invokes _inject_dispatch_marker directly.
+PIPELINE_DISPATCH_ID="ENG-87L8-d0099" \
+PIPELINE_STAGE="implementing" \
+_eng87_l8_input=$'body line 1\n\n<!-- meta: dispatch id=ENG-87L8-d0050 stage=reviewing -->'
+PIPELINE_DISPATCH_ID="ENG-87L8-d0099" \
+PIPELINE_STAGE="implementing" \
+_eng87_l8_out="$(_eng87_test_inject "$_eng87_l8_input")"
+# Post-fix invariant: the current marker (d0099) should now be present
+# in addition to the stale one (d0050). Pre-fix: only d0050 present.
+if grep -qF '<!-- meta: dispatch id=ENG-87L8-d0099 stage=implementing -->' <<<"$_eng87_l8_out"; then
+  pass_at "ENG-87 L8 idempotency: stale marker on body → new marker still injected (current-id-specific check)"
+else
+  fail_at "ENG-87 L8 idempotency: new marker injected" \
+    "expected d0099 marker appended despite stale d0050 already present, got: $_eng87_l8_out — idempotency check must look for the CURRENT \$PIPELINE_DISPATCH_ID, not any dispatch id= prefix"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng87_l8_input _eng87_l8_out
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
