@@ -145,6 +145,76 @@ else
   fail_at "case-4.4: nonexistent file → empty" "got=$v"
 fi
 
+# ─── _inject_tool_allowlist_section (ENG-93 T3) ────────────────────────
+echo "━━━ _inject_tool_allowlist_section ━━━"
+
+# Case 5.1: v1 file → bumps to v2 + inserts ## Tool allowlist with markers
+cp "$sandbox/good.md" "$sandbox/inject.md"
+if _inject_tool_allowlist_section "$sandbox/inject.md" 2>/dev/null; then
+  if grep -qx 'schema_version: 2' "$sandbox/inject.md" \
+     && grep -qx '## Tool allowlist' "$sandbox/inject.md"; then
+    # Order check: Tool allowlist must come AFTER Build & test gates and
+    # BEFORE File layout.
+    order="$(grep -E '^## (Build & test gates|Tool allowlist|File layout)$' "$sandbox/inject.md" | tr '\n' '|')"
+    expected_order='## Build & test gates|## Tool allowlist|## File layout|'
+    if [[ "$order" == "$expected_order" ]]; then
+      pass_at "case-5.1: v1→v2 inject inserts section in correct position + bumps version"
+    else
+      fail_at "case-5.1: v1→v2 inject section position" "got=[$order]"
+    fi
+  else
+    fail_at "case-5.1: v1→v2 inject" "missing schema_version: 2 or ## Tool allowlist"
+  fi
+else
+  fail_at "case-5.1: v1→v2 inject succeeds" "rc=$?"
+fi
+
+# Case 5.2: marker count under ## Tool allowlist == 3 (implementing/ui/qa)
+marker_count="$(grep -c '<<NEEDS-INPUT:' "$sandbox/inject.md" || true)"
+if [[ "$marker_count" == "3" ]]; then
+  pass_at "case-5.2: three NEEDS-INPUT markers injected"
+else
+  fail_at "case-5.2: three NEEDS-INPUT markers injected" "got=$marker_count"
+fi
+
+# Case 5.3: missing ## Build & test gates anchor → rc=1, stderr message
+cat > "$sandbox/no-anchor.md" <<'PROFILE'
+---
+slug: x
+schema_version: 1
+---
+
+# Project
+
+## Stack
+bash.
+
+## File layout
+- bin/
+
+## Language idioms
+- snake_case.
+
+## Don'ts
+(none observed)
+PROFILE
+if err="$(_inject_tool_allowlist_section "$sandbox/no-anchor.md" 2>&1)"; then
+  fail_at "case-5.3: missing anchor heading rejected" "returned 0"
+else
+  if grep -q 'missing anchor "## Build & test gates"' <<<"$err"; then
+    pass_at "case-5.3: missing anchor heading rejected"
+  else
+    fail_at "case-5.3: missing anchor heading rejected" "stderr=$err"
+  fi
+fi
+
+# Case 5.4: nonexistent path → rc=1
+if _inject_tool_allowlist_section "$sandbox/no-such.md" 2>/dev/null; then
+  fail_at "case-5.4: nonexistent path rejected" "returned 0"
+else
+  pass_at "case-5.4: nonexistent path rejected"
+fi
+
 # ─── _resolve_profile_markers ──────────────────────────────────────────
 echo "━━━ _resolve_profile_markers ━━━"
 
