@@ -115,23 +115,18 @@ classify_failure() {
   _cf_write_state "$state_file" "$body"
   log "classify-failure: wrote $state_file (policy=$effective_policy retry_count=$retry_count)"
 
-  # ENG-87 review M2: surface effective_policy to run-stage's
-  # dispatch_history end-row trap. No-op when the caller is not
-  # run-stage.sh::main (the global is unset / empty); set -u-safe via
-  # the `${var-}` form. Allocator-style coupling — same pattern as
-  # PIPELINE_DISPATCH_ID export from common.sh::_allocate_dispatch_id_locked.
-  #
-  # ENG-87 review-iter-7 M3: cross-file mutation of run-stage.sh's
-  # verdict_emitted global is gone — the writer in
-  # _append_dispatch_end_row reads find_fresh_verdict at trap-fire time,
-  # so the halt comment this function just posted (or is about to
-  # post via add-or-update-comment below) is picked up automatically.
-  # _END_ROW_POLICY stays here because it reflects this function's
-  # own decision (skip-until-* / retry-immediately), which is local
-  # information not derivable from Linear.
-  if [[ -n "${_END_ROW_HIST_FILE-}" ]]; then
-    _END_ROW_POLICY="$effective_policy"
-  fi
+  # ENG-87 review-iter-7 M1: cross-file _END_ROW_POLICY mutation is
+  # gone (last cross-file _END_ROW_* IPC). The writer in
+  # _append_dispatch_end_row reads .policy from issue-state.json at
+  # trap-fire time — the file is the canonical contract for policy
+  # (poll.sh reads .policy on every tick to decide skip-policy), and
+  # _cf_write_state populated it at line 115 a few microseconds before
+  # this point, so the writer's read sees the same value the
+  # eliminated assignment would have surfaced. Closes review-iter-7
+  # M1 on top of M3 (verdict_emitted derivation) and M2 (transcript_clean
+  # derivation): all three end-row schema fields the iter-7 fix targeted
+  # are now writer-derived, with no cross-file mutations of run-stage.sh
+  # globals from outside run-stage.sh.
 
   # Apply matching Linear label (skip policies only).
   case "$effective_policy" in

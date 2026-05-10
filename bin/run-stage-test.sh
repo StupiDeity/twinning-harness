@@ -4324,16 +4324,15 @@ _lines_after="$(wc -l < "$_eng87_m2_hist" | tr -d ' ')"
   && pass_at "ENG-87 M2: trap function is idempotent (sentinel prevents double-append)" \
   || fail_at "ENG-87 M2: idempotency" "lines before=$_lines_before after=$_lines_after"
 
-# M1' (review-iter-2 M1, superseded by iter-7 M3): halt-path
-# verdict_emitted is now derived in _append_dispatch_end_row (which
-# reads find_fresh_verdict from Linear at trap-fire time) rather than
-# seeded directly by classify_failure. The post-iter-7 invariant is
-# that classify_failure does NOT mutate _END_ROW_VERDICT_EMITTED at
-# all — cross-file IPC via run-stage's globals is gone. Both the halt
-# and retry paths now leave the global at its initial empty state;
-# the writer fills it in (or leaves it empty for retry, since
-# retry-immediately posts a `<!-- meta: metric ... -->` marker which
-# verdict_handler's filter excludes).
+# M1' (review-iter-2 M1, superseded by iter-7 M3 then iter-7 M1):
+# halt-path verdict_emitted AND policy are now derived in
+# _append_dispatch_end_row (which reads find_fresh_verdict from Linear
+# and .policy from issue-state.json at trap-fire time) rather than
+# seeded directly by classify_failure. Post-iter-7 invariant: classify_
+# failure mutates NEITHER _END_ROW_VERDICT_EMITTED nor _END_ROW_POLICY.
+# Cross-file IPC via run-stage's globals is gone. classify_failure's
+# durable contract is the issue-state.json file it writes; the writer
+# reads from that file (and from Linear for verdict) at end-row time.
 mkdir -p "$(issue_dir ENG-87M1)"
 _eng87_m1_hist="$(issue_dir ENG-87M1)/dispatch_history.jsonl"
 : > "$_eng87_m1_hist"
@@ -4349,16 +4348,24 @@ MOCK_PIPELINE_HASH="hM1" MOCK_BRANCH_SHA="sM1" \
   classify_failure "ENG-87M1" "implementing" "skip-until-human-acts" \
     "envelope-violation-test" 29 "" >/dev/null 2>&1 || true
 # Iter-7 M3: classify_failure leaves _END_ROW_VERDICT_EMITTED empty
-# (writer reads from Linear). _END_ROW_POLICY is still seeded by
-# classify_failure (local information not derivable from Linear).
+# (writer reads from Linear).
 [[ -z "$_END_ROW_VERDICT_EMITTED" ]] \
   && pass_at "ENG-87 M1'-iter7 (M3): classify_failure halt path leaves verdict_emitted empty (writer derives from Linear)" \
   || fail_at "ENG-87 M1'-iter7 (M3): classify_failure should not seed verdict_emitted" \
        "got: '$_END_ROW_VERDICT_EMITTED' (expected ''); _END_ROW_POLICY='$_END_ROW_POLICY'"
-[[ "$_END_ROW_POLICY" == "skip-until-human-acts" ]] \
-  && pass_at "ENG-87 M1'-iter7 (M3): classify_failure still seeds _END_ROW_POLICY (local-only info)" \
-  || fail_at "ENG-87 M1'-iter7 (M3): _END_ROW_POLICY should be set" \
-       "got: '$_END_ROW_POLICY' (expected 'skip-until-human-acts')"
+# Iter-7 M1: classify_failure leaves _END_ROW_POLICY empty too (writer
+# reads .policy from issue-state.json). The durable policy contract is
+# the issue-state.json file _cf_write_state populated.
+[[ -z "$_END_ROW_POLICY" ]] \
+  && pass_at "ENG-87 M1'-iter7 (M1): classify_failure halt path leaves _END_ROW_POLICY empty (writer derives from issue-state.json)" \
+  || fail_at "ENG-87 M1'-iter7 (M1): classify_failure should not seed _END_ROW_POLICY" \
+       "got: '$_END_ROW_POLICY' (expected '')"
+_eng87_m1_state="$(issue_dir ENG-87M1)/issue-state.json"
+[[ -s "$_eng87_m1_state" ]] \
+  && [[ "$(jq -r '.policy // ""' "$_eng87_m1_state" 2>/dev/null)" == "skip-until-human-acts" ]] \
+  && pass_at "ENG-87 M1'-iter7 (M1): classify_failure persists policy=skip-until-human-acts to issue-state.json (writer's read source)" \
+  || fail_at "ENG-87 M1'-iter7 (M1): issue-state.json policy persistence" \
+       "expected .policy='skip-until-human-acts' in $_eng87_m1_state; got: '$(jq -r '.policy // \"\"' "$_eng87_m1_state" 2>/dev/null)'"
 
 # M1'-retry: classify_failure with retry-immediately policy still
 # leaves verdict_emitted empty. Same shape as the halt arm post-

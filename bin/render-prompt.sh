@@ -52,6 +52,12 @@ stage_summary_path=_resolve_stage_summary_path
 learned_rules_dir=_resolve_learned_rules_dir
 dispatch_id=_resolve_dispatch_id
 '
+# ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
+# _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
+# before resolve_block_tokens runs, so test isolation uses the same
+# `_RENDER_*=...` setup as every other resolver. See line ~221 for the
+# resolver body and the M9 fix that closed the env-namespace divergence
+# (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
 
 # ENG-87 review-iter-7 C1: AGENT_RUNTIME_TOKENS — names the registry
 # does NOT resolve at render time because the agent fills them in at
@@ -301,11 +307,9 @@ main() {
   # Prepend §0 (common rules delivered to every stage). Token interpolation
   # below runs over the full concatenated block, so {issue_id} substitutions
   # inside §0's exit-ramp prose resolve uniformly. Released stage uses sed
-  # for substitution and only resolves {version}/{tag}/{prev_tag}; §0's
-  # {issue_id} reference there is left as a literal placeholder, which is
-  # acceptable because the released agent's main behavior is dictated by §8
-  # and the §0 preamble is an operational guardrail, not a primary control
-  # path.
+  # for substitution; the sed pipeline now also substitutes {issue_id} →
+  # `cross-issue-release-${tag}` so §0's exit-ramp prose ships a usable
+  # token to the released agent (review-iter-7 m5).
   local common_block
   common_block="$(extract_block "$COMMON_SECTION")"
   [[ -n "$common_block" ]] || die "could not extract common rules block (§0); check that AGENT_PROMPTS.md still has '## $COMMON_SECTION' with exactly two column-0 fences"
@@ -325,11 +329,19 @@ main() {
       prev_tag="$(git -C "$TARGET_REPO" describe --tags --abbrev=0 "${tag}^" 2>/dev/null \
         || git -C "$TARGET_REPO" rev-list --max-parents=0 HEAD | head -1)"
     fi
+    # ENG-87 review-iter-7 m5: substitute {issue_id} too. §0's
+    # agent-blocked exit-ramp prose carries `bash bin/pipeline.sh event
+    # {issue_id} verdict halt --reason agent-blocked`; without this
+    # substitution the released agent receives a literal `{issue_id}`
+    # token. Released is cross-issue (no single owning Linear issue);
+    # `cross-issue-release-${tag}` is a synthetic but human-greppable
+    # value the agent's halt comment can reference.
     printf '%s' "$block" \
       | sed \
         -e "s|{version}|$version|g" \
         -e "s|{tag}|$tag|g" \
         -e "s|{prev_tag}|$prev_tag|g" \
+        -e "s|{issue_id}|cross-issue-release-${tag}|g" \
       | append_project_profile "$stage"
     return 0
   fi

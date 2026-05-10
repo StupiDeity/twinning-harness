@@ -898,6 +898,21 @@ _append_dispatch_end_row() {
     fi
   fi
 
+  # ENG-87 review-iter-7 M1: derive policy from issue-state.json. The
+  # file is classify-failure.sh's durable artifact (poll.sh reads
+  # .policy on every tick to decide skip-policy), and _cf_write_state
+  # populated it microseconds before classify-failure returned. Reading
+  # here at end-row time eliminates the last cross-file _END_ROW_*
+  # mutation. Empty default when the file is absent (success path
+  # never invokes classify-failure) or when jq cannot parse it.
+  if [[ -z "$_END_ROW_POLICY" ]] && [[ -n "$_END_ROW_ISSUE" ]]; then
+    local _state_file
+    _state_file="$(issue_dir "$_END_ROW_ISSUE")/issue-state.json"
+    if [[ -s "$_state_file" ]]; then
+      _END_ROW_POLICY="$(jq -r '.policy // ""' "$_state_file" 2>/dev/null || printf '')"
+    fi
+  fi
+
   # ENG-87 review-iter-3 M1: envelope schema completeness. Plan §13.1.2
   # mandates 3 sub-fields — stage_summary_present, comments_stamped,
   # transcript_clean. comments_stamped ships as `[]` baseline (forensic-
