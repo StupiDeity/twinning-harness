@@ -438,6 +438,35 @@ else
   fail_at "case-6.4: discovery template documents Tool allowlist derivation" "missing rule"
 fi
 
+# ─── learned-rules/harness/project-profile.md (ENG-93 T8) ──────────────
+echo "━━━ harness profile dogfood ━━━"
+
+harness_profile="$SCRIPT_DIR/../learned-rules/harness/project-profile.md"
+
+# Case 7.1: harness profile validates as v2.
+if _validate_project_profile_schema "$harness_profile" 2>/dev/null; then
+  pass_at "case-7.1: harness profile passes v2 validator"
+else
+  fail_at "case-7.1: harness profile passes v2 validator" "rc=$?"
+fi
+
+# Case 7.2: harness profile reports schema_version: 2.
+v="$(_profile_schema_version "$harness_profile")"
+if [[ "$v" == "2" ]]; then
+  pass_at "case-7.2: harness profile reports schema_version: 2"
+else
+  fail_at "case-7.2: harness profile reports schema_version: 2" "got=$v"
+fi
+
+# Case 7.3: harness profile contains ## Tool allowlist with at least one
+# `Bash(bash bin/<name>:*)` pattern under implementing.
+if grep -qx '## Tool allowlist' "$harness_profile" \
+   && grep -q '`Bash(bash bin/' "$harness_profile"; then
+  pass_at "case-7.3: harness profile carries Tool allowlist patterns"
+else
+  fail_at "case-7.3: harness profile carries Tool allowlist patterns" "section or pattern missing"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
