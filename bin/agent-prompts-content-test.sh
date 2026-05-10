@@ -1117,6 +1117,18 @@ if [[ -f "$RENDER_PROMPT_SH" ]]; then
     in_block && /^[[:space:]]*'"'"'[[:space:]]*$/ {exit}
     in_block {print}
   ' "$RENDER_PROMPT_SH" | awk -F= '/^[a-z_]+=/{print $1}' | sort -u)"
+  # Iter-7 C1: AGENT_RUNTIME_TOKENS (space-separated names with leading
+  # + trailing spaces) names the tokens delivered to the agent as
+  # literal `{name}` text. Drift guard: a token in AGENT_PROMPTS.md
+  # must be in PROMPT_RESOLVERS, AGENT_RUNTIME_TOKENS, or the released-
+  # only set.
+  runtime_tokens="$(awk '/^AGENT_RUNTIME_TOKENS=/{
+    gsub(/^[^=]*='\''[ ]*/, "");
+    gsub(/[ ]*'\''[ ]*$/, "");
+    n=split($0, a, /[ ]+/);
+    for (i=1; i<=n; i++) if (a[i] != "") print a[i];
+    exit
+  }' "$RENDER_PROMPT_SH")"
   prompt_tokens="$(grep -oE '\{[a-z_]+\}' "$PROMPTS" | sed 's/^{//; s/}$//' | sort -u)"
   # Release-stage-only tokens handled by the legacy sed pass in
   # render-prompt.sh::main (they're not in PROMPT_RESOLVERS by design).
@@ -1127,15 +1139,18 @@ if [[ -f "$RENDER_PROMPT_SH" ]]; then
     if grep -qxF "$tok" <<<"$released_only_tokens"; then
       continue
     fi
+    if grep -qxF "$tok" <<<"$runtime_tokens"; then
+      continue
+    fi
     if ! grep -qxF "$tok" <<<"$resolver_tokens"; then
       missing+="$tok "
     fi
   done <<<"$prompt_tokens"
   if [[ -z "$missing" ]]; then
-    ok "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS"
+    ok "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS or AGENT_RUNTIME_TOKENS"
   else
-    nope "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS" \
-      "missing resolver entry for: $missing — render-prompt.sh would die at dispatch time"
+    nope "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS or AGENT_RUNTIME_TOKENS" \
+      "missing entry for: $missing — render-prompt.sh would die at dispatch time"
   fi
 else
   nope "ENG-87: bin/render-prompt.sh exists for PROMPT_RESOLVERS lookup" \

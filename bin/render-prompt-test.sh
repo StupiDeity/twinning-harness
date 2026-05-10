@@ -207,7 +207,7 @@ out="$(run_resolver_body '
   _RENDER_BRANCH_NAME="feat/eng-87r1-foo"
   _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-87R1/stage-summary-implementing.md"
   _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
-  PIPELINE_DISPATCH_ID="ENG-87R1-d0042"
+  _RENDER_DISPATCH_ID="ENG-87R1-d0042"
   resolve_block_tokens "{issue_id} {issue_id_lower} {issue_title} {date} {slug} {branch_name} {dispatch_id}"
 ' 2>&1)"
 expected="ENG-87R1 eng-87r1 Test title 2026-05-09 test-slug feat/eng-87r1-foo ENG-87R1-d0042"
@@ -229,43 +229,61 @@ else
   fail_at "ENG-87 R2: unknown token dies" "err=$err"
 fi
 
-# Case 87-R3: {dispatch_id} interpolates from $PIPELINE_DISPATCH_ID.
+# Case 87-R3: {dispatch_id} interpolates from _RENDER_DISPATCH_ID
+# (post-iter-7 M9 — resolver reads the _RENDER_* global, no longer
+# ambient $PIPELINE_DISPATCH_ID).
 out="$(run_resolver_body '
-  PIPELINE_DISPATCH_ID="ENG-87R3-d0042"
+  _RENDER_DISPATCH_ID="ENG-87R3-d0042"
   resolve_block_tokens "id={dispatch_id}"
 ' 2>&1)"
 if [[ "$out" == "id=ENG-87R3-d0042" ]]; then
-  pass_at "ENG-87 R3: {dispatch_id} interpolates from \$PIPELINE_DISPATCH_ID"
+  pass_at "ENG-87 R3: {dispatch_id} interpolates from \$_RENDER_DISPATCH_ID"
 else
   fail_at "ENG-87 R3: {dispatch_id} interpolation" "out=$out"
 fi
 
-# Case 87-R4: {dispatch_id} resolves to empty when env unset (acceptable
-# per resolver contract — release stage / direct-dispatch test paths).
+# Case 87-R4: {dispatch_id} resolves to empty when _RENDER_DISPATCH_ID
+# is unset (acceptable per resolver contract — release stage / direct-
+# dispatch test paths).
 out="$(run_resolver_body '
-  unset PIPELINE_DISPATCH_ID
+  unset _RENDER_DISPATCH_ID
   resolve_block_tokens "id={dispatch_id}|end"
 ' 2>&1)"
 if [[ "$out" == "id=|end" ]]; then
-  pass_at "ENG-87 R4: {dispatch_id} → empty when env unset (allowed by contract)"
+  pass_at "ENG-87 R4: {dispatch_id} → empty when _RENDER_DISPATCH_ID unset (allowed by contract)"
 else
   fail_at "ENG-87 R4: {dispatch_id} empty-env" "out=$out"
 fi
 
 # Case 87-R5: PROMPT_RESOLVERS registry covers every {token} in
-# AGENT_PROMPTS.md. Drift guard — if a new token enters the source
-# without a registered resolver, this test catches it before the
-# orchestrator's render-time validator fires at dispatch time.
+# AGENT_PROMPTS.md, EXCEPT for the released-only legacy-sed tokens and
+# the AGENT_RUNTIME_TOKENS allowlist (post-iter-7 C1 — agent-runtime
+# tokens are intentionally delivered as literal `{name}` text). Drift
+# guard — if a new token enters the source without a registered
+# resolver AND without an AGENT_RUNTIME_TOKENS entry, this test catches
+# it before the orchestrator's render-time validator fires at dispatch
+# time.
 agent_prompts_tokens="$(grep -oE '\{[a-z_]+\}' "$SCRIPT_DIR/../AGENT_PROMPTS.md" | sort -u)"
 registry_tokens="$(awk '/^PROMPT_RESOLVERS=/{flag=1; next} /^'"'"'$/ && flag {flag=0} flag' "$RP_SRC" \
   | grep -oE '^[a-z_]+=' | sed 's/=$//')"
-# Tokens used ONLY by the released-stage block (handled by the
-# legacy-sed pass in main(), not the resolver registry).
+# Released-stage-only tokens (handled by the legacy-sed pass in main()).
 released_tokens=$'{version}\n{tag}\n{prev_tag}'
+# AGENT_RUNTIME_TOKENS entries are space-separated with leading + trailing
+# spaces. Extract the names into a newline list.
+runtime_tokens="$(awk '/^AGENT_RUNTIME_TOKENS=/{
+  gsub(/^[^=]*='\''[ ]*/, "");
+  gsub(/[ ]*'\''[ ]*$/, "");
+  n=split($0, a, /[ ]+/);
+  for (i=1; i<=n; i++) if (a[i] != "") printf "{%s}\n", a[i];
+  exit
+}' "$RP_SRC")"
 missing_tokens=""
 while IFS= read -r tok; do
   [[ -z "$tok" ]] && continue
   if grep -qFx "$tok" <<<"$released_tokens"; then
+    continue
+  fi
+  if grep -qFx "$tok" <<<"$runtime_tokens"; then
     continue
   fi
   name="${tok#\{}"; name="${name%\}}"
@@ -274,7 +292,7 @@ while IFS= read -r tok; do
   fi
 done <<<"$agent_prompts_tokens"
 if [[ -z "$missing_tokens" ]]; then
-  pass_at "ENG-87 R5: every {token} in AGENT_PROMPTS.md has a resolver in PROMPT_RESOLVERS"
+  pass_at "ENG-87 R5: every {token} in AGENT_PROMPTS.md has a resolver, an AGENT_RUNTIME_TOKENS entry, or is released-only"
 else
   fail_at "ENG-87 R5: token coverage" "missing resolvers: $missing_tokens"
 fi

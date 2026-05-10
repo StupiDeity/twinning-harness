@@ -51,9 +51,21 @@ branch_name=_resolve_branch_name
 stage_summary_path=_resolve_stage_summary_path
 learned_rules_dir=_resolve_learned_rules_dir
 dispatch_id=_resolve_dispatch_id
-file=_resolve_passthrough_file
-pr_number=_resolve_passthrough_pr_number
 '
+
+# ENG-87 review-iter-7 C1: AGENT_RUNTIME_TOKENS — names the registry
+# does NOT resolve at render time because the agent fills them in at
+# runtime. Pre-iter-7 these were modelled as `_resolve_passthrough_*`
+# functions returning the literal `{name}` string; that produced an
+# identity substitution which the residual unknown-token validator
+# below then re-detected and died on. The cleaner shape is an explicit
+# allowlist: extract tokens, resolve registered ones, and skip
+# AGENT_RUNTIME_TOKENS in the residual scan.
+#
+# Format: space-separated names with leading + trailing spaces so
+# `[[ "$AGENT_RUNTIME_TOKENS" == *" $name "* ]]` substring tests are
+# unambiguous (no prefix collisions across names like file / file_x).
+AGENT_RUNTIME_TOKENS=' file pr_number '
 
 lookup_section() {
   local stage="$1"
@@ -206,17 +218,13 @@ _resolve_plan_file() { printf '%s' "$_RENDER_PLAN_FILE"; }
 _resolve_branch_name() { printf '%s' "$_RENDER_BRANCH_NAME"; }
 _resolve_stage_summary_path() { printf '%s' "$_RENDER_STAGE_SUMMARY_PATH"; }
 _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
-# Empty when the allocator hasn't run (e.g., release stage); agent-side
-# auto-injection is no-op when env is unset, so an empty token is OK.
-_resolve_dispatch_id() { printf '%s' "${PIPELINE_DISPATCH_ID-}"; }
-# Agent-runtime passthrough tokens. These appear in agent prompt bodies
-# as instructions for the agent to fill in at runtime ({file} = the
-# brainstorm-doc filename the agent just wrote; {pr_number} = the PR
-# number the agent reads via `gh pr view`). They are NOT render-time
-# substitutions; the registry resolves them to themselves so the agent
-# sees the literal token unchanged.
-_resolve_passthrough_file() { printf '{file}'; }
-_resolve_passthrough_pr_number() { printf '{pr_number}'; }
+# ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
+# resolvers (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
+# Test isolation now uses the same `_RENDER_*=...` setup pattern as
+# every other resolver. main() binds _RENDER_DISPATCH_ID before
+# calling resolve_block_tokens. Empty value is acceptable (agent-side
+# auto-injection is no-op when the resolved value is empty).
+_resolve_dispatch_id() { printf '%s' "${_RENDER_DISPATCH_ID-}"; }
 
 # Look up the resolver function name for a token (without surrounding braces).
 _lookup_resolver() {
@@ -240,6 +248,17 @@ resolve_block_tokens() {
   while IFS= read -r t; do
     [[ -z "$t" ]] && continue
     name="${t#\{}"; name="${name%\}}"
+    # ENG-87 review-iter-7 C1: agent-runtime tokens are NOT resolved
+    # here. They are intentionally delivered to the agent as literal
+    # `{name}` text (e.g., `{file}` is filled in by the agent at runtime
+    # to name the file it just wrote). Pre-iter-7 these had identity
+    # passthrough resolvers, but the residual scan below then re-detected
+    # them and the validator died — every brainstorming and reviewing
+    # render dropped to rc!=0. Skip resolution AND skip the residual
+    # scan for these names.
+    if [[ "$AGENT_RUNTIME_TOKENS" == *" $name "* ]]; then
+      continue
+    fi
     resolver="$(_lookup_resolver "$name")"
     [[ -n "$resolver" ]] \
       || die "render-prompt: unknown token '$t' in source — register a resolver in PROMPT_RESOLVERS"
@@ -251,11 +270,19 @@ resolve_block_tokens() {
     # interpreted literally, so unquoted is both correct and safe.
     rendered="${rendered//$t/$value}"
   done <<<"$tokens"
-  # Render-time validator: any remaining {<lowercase-snake>} is unresolved.
-  local _residual
-  _residual="$(grep -oE '\{[a-z_]+\}' <<<"$rendered" | head -1 || true)"
-  [[ -z "$_residual" ]] \
-    || die "render-prompt: unresolved token after registry pass: $_residual"
+  # Render-time validator: any remaining {<lowercase-snake>} is
+  # unresolved AND not on the agent-runtime allowlist. The list-membership
+  # check uses the same substring form as the resolver-skip above so a
+  # name added/removed from one site cannot drift from the other.
+  local _residual_name
+  while IFS= read -r _r; do
+    [[ -z "$_r" ]] && continue
+    _residual_name="${_r#\{}"; _residual_name="${_residual_name%\}}"
+    if [[ "$AGENT_RUNTIME_TOKENS" == *" $_residual_name "* ]]; then
+      continue
+    fi
+    die "render-prompt: unresolved token after registry pass: $_r"
+  done <<<"$(grep -oE '\{[a-z_]+\}' <<<"$rendered" | sort -u || true)"
   printf '%s' "$rendered"
 }
 
@@ -347,6 +374,12 @@ main() {
   _RENDER_BRANCH_NAME="$branch_name"
   _RENDER_STAGE_SUMMARY_PATH="$stage_summary_path"
   _RENDER_LEARNED_RULES_DIR="$learned_rules_dir"
+  # ENG-87 review-iter-7 M9: bind _RENDER_DISPATCH_ID like the sibling
+  # _RENDER_* globals so resolver test isolation is uniform across the
+  # registry. Falls through to empty when PIPELINE_DISPATCH_ID is unset
+  # (release-stage main() never reaches this stanza; direct test paths
+  # set _RENDER_DISPATCH_ID directly).
+  _RENDER_DISPATCH_ID="${PIPELINE_DISPATCH_ID-}"
 
   resolve_block_tokens "$block" | append_project_profile "$stage"
 }
