@@ -102,6 +102,49 @@ else
   pass_at "case-1.5: sections out of order rejected"
 fi
 
+# ─── _profile_schema_version (ENG-93 T2) ───────────────────────────────
+echo "━━━ _profile_schema_version ━━━"
+
+# Case 4.1: v1 profile reports "1"
+v="$(_profile_schema_version "$sandbox/good.md")"
+if [[ "$v" == "1" ]]; then
+  pass_at "case-4.1: v1 profile → 1"
+else
+  fail_at "case-4.1: v1 profile → 1" "got=$v"
+fi
+
+# Case 4.2: v2 profile reports "2"
+sed 's/schema_version: 1/schema_version: 2/' "$sandbox/good.md" > "$sandbox/v2.md"
+v="$(_profile_schema_version "$sandbox/v2.md")"
+if [[ "$v" == "2" ]]; then
+  pass_at "case-4.2: v2 profile → 2"
+else
+  fail_at "case-4.2: v2 profile → 2" "got=$v"
+fi
+
+# Case 4.3: file without schema_version line reports empty
+cat > "$sandbox/no-version.md" <<'P'
+---
+slug: x
+---
+
+# Body
+P
+v="$(_profile_schema_version "$sandbox/no-version.md")"
+if [[ -z "$v" ]]; then
+  pass_at "case-4.3: missing schema_version → empty"
+else
+  fail_at "case-4.3: missing schema_version → empty" "got=$v"
+fi
+
+# Case 4.4: nonexistent path → empty, rc=0
+v="$(_profile_schema_version "$sandbox/does-not-exist.md")"
+if [[ -z "$v" ]]; then
+  pass_at "case-4.4: nonexistent file → empty"
+else
+  fail_at "case-4.4: nonexistent file → empty" "got=$v"
+fi
+
 # ─── _resolve_profile_markers ──────────────────────────────────────────
 echo "━━━ _resolve_profile_markers ━━━"
 
