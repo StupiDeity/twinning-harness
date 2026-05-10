@@ -117,6 +117,38 @@ print_phase_header() {
   printf '\n=== %s ===\n' "$1" >&2
 }
 
+# _profile_pattern_shape_violation <path>
+# Walks the `## Tool allowlist` section (between its heading and the
+# next `^## ` heading) and returns "<NR>:<line>" on stdout for the
+# first line that carries a backtick-fenced Bash(...) pattern outside
+# the canonical shape. Empty stdout when all patterns are clean.
+#
+# The shape contract: leading whitespace (optional `-` bullet),
+# `` `Bash( ``, content drawn only from [A-Za-z0-9_./ :-], a trailing
+# `:*)` and closing backtick. Anything with shell metacharacters
+# ($, (), `, ", ', ;, |, &, etc.) violates and is reported.
+_profile_pattern_shape_violation() {
+  local path="$1"
+  local in_sec=0 nr=0 line content
+  local shape_re='^[[:space:]]*-?[[:space:]]*`Bash\(([-A-Za-z0-9_./ :]+):\*\)`'
+  while IFS='' read -r line || [[ -n "$line" ]]; do
+    nr=$((nr + 1))
+    if [[ "$line" == "## Tool allowlist" ]]; then
+      in_sec=1
+      continue
+    fi
+    if (( in_sec )) && [[ "$line" == "## "* ]]; then
+      break
+    fi
+    if (( in_sec )) && [[ "$line" == *'`Bash('* ]]; then
+      if [[ ! "$line" =~ $shape_re ]]; then
+        printf '%d:%s\n' "$nr" "$line"
+        return 0
+      fi
+    fi
+  done < "$path"
+}
+
 # _validate_project_profile_schema <path>
 # Returns 0 if path is a valid project-profile.md per the stack-aware
 # addendum spec §6:
@@ -138,24 +170,57 @@ _validate_project_profile_schema() {
   ' "$path")"
   [[ "$has_fm" == "yes" ]] || { printf '_validate_project_profile_schema: missing frontmatter\n' >&2; return 1; }
 
-  # schema_version: 1 must appear inside frontmatter
-  local has_ver
-  has_ver="$(awk '
-    NR==1 && $0=="---" { in_fm=1; next }
-    in_fm && $0=="---" { exit }
-    in_fm && /^schema_version:[[:space:]]+1[[:space:]]*$/ { print "yes"; exit }
-  ' "$path")"
-  [[ "$has_ver" == "yes" ]] || { printf '_validate_project_profile_schema: schema_version != 1\n' >&2; return 1; }
-
-  # Required H2 sections in exact order.
-  local sections
-  sections="$(grep -E '^## ' "$path" | head -5 | tr '\n' '|')"
-  local expected='## Stack|## Build & test gates|## File layout|## Language idioms|## Don'\''ts|'
-  if [[ "$sections" != "$expected" ]]; then
-    printf '_validate_project_profile_schema: expected sections [%s], got [%s]\n' "$expected" "$sections" >&2
+  # Read schema version (empty = missing / malformed).
+  local version
+  version="$(_profile_schema_version "$path")"
+  if [[ -z "$version" ]]; then
+    printf '_validate_project_profile_schema: schema_version missing\n' >&2
     return 1
   fi
-  return 0
+
+  local sections expected
+  case "$version" in
+    1)
+      sections="$(grep -E '^## ' "$path" | head -5 | tr '\n' '|')"
+      expected='## Stack|## Build & test gates|## File layout|## Language idioms|## Don'\''ts|'
+      if [[ "$sections" != "$expected" ]]; then
+        printf '_validate_project_profile_schema: schema_version=1 expected sections [%s], got [%s]\n' \
+          "$expected" "$sections" >&2
+        return 1
+      fi
+      return 0
+      ;;
+    2)
+      sections="$(grep -E '^## ' "$path" | head -6 | tr '\n' '|')"
+      expected='## Stack|## Build & test gates|## Tool allowlist|## File layout|## Language idioms|## Don'\''ts|'
+      if [[ "$sections" != "$expected" ]]; then
+        if ! grep -qE '^## Tool allowlist$' "$path"; then
+          printf '_validate_project_profile_schema: schema_version=2 but missing ## Tool allowlist\n' >&2
+        else
+          printf '_validate_project_profile_schema: schema_version=2 expected sections [%s], got [%s]\n' \
+            "$expected" "$sections" >&2
+        fi
+        return 1
+      fi
+      # D-7: pattern-shape gate. Walk lines under `## Tool allowlist`
+      # until the next `^## ` heading; for each line carrying a
+      # backtick-fenced `Bash(...)` pattern, assert the shape via a
+      # bash regex (BSD awk in macOS rejects bracket expressions that
+      # mix literal `-` with adjacent `:`, so the gate stays in shell).
+      local bad_line
+      bad_line="$(_profile_pattern_shape_violation "$path")"
+      if [[ -n "$bad_line" ]]; then
+        printf '_validate_project_profile_schema: pattern at line %s has shell metacharacters: %s\n' \
+          "${bad_line%%:*}" "${bad_line#*:}" >&2
+        return 1
+      fi
+      return 0
+      ;;
+    *)
+      printf '_validate_project_profile_schema: unsupported schema_version: %s\n' "$version" >&2
+      return 1
+      ;;
+  esac
 }
 
 # _profile_schema_version <path>
