@@ -357,6 +357,29 @@ else
   pass_at "ENG-87 R8: _resolve_passthrough_* shim removed"
 fi
 
+# ─── ENG-87 review-iter-7 m5: released-stage {issue_id} substitution ──
+# §0 (common rules) is prepended to every stage block, including released.
+# §0 carries `{issue_id}` references in the agent-blocked exit-ramp prose
+# (e.g. "bash bin/pipeline.sh event {issue_id} verdict halt..."). The
+# released branch sed-substitutes only {version}/{tag}/{prev_tag} and
+# never invokes resolve_block_tokens, so post-iter-7 fix the released-
+# stage rendered prompt would still ship a literal `{issue_id}` to the
+# agent. The reviewer's m5 fix: extend the sed pipeline with
+# -e "s|{issue_id}|cross-issue-release-${tag}|g" so a released agent
+# that hits the exit-ramp gets a usable issue_id literal.
+printf '\n--- ENG-87 review-iter-7 m5: released-stage {issue_id} resolved ---\n'
+
+# Pin source-level: the released-branch sed pipeline must contain a
+# substitution for {issue_id}. Asserted via a literal grep on render-
+# prompt.sh so a future refactor that drops the sed-pipeline arm fails
+# fast.
+if grep -qE 's\|\{issue_id\}\|cross-issue-release-' "$RP_SRC"; then
+  pass_at "ENG-87 m5-iter7: released-stage sed pipeline substitutes {issue_id}"
+else
+  fail_at "ENG-87 m5-iter7: released-stage {issue_id} resolution" \
+    'released branch sed pipeline substitutes only {version}/{tag}/{prev_tag}. §0 carries a {issue_id} reference (in the agent-blocked exit-ramp prose) which ships as a literal to the released agent. Fix: add a sed expression substituting {issue_id} -> cross-issue-release-${tag}.'
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"

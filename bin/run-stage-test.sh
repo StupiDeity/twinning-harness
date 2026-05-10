@@ -4731,6 +4731,74 @@ else
 fi
 unset _eng87_m3_count
 
+# ─── ENG-87 review-iter-7 M1: _END_ROW_POLICY derived from issue-state ──
+# Pre-iter-7 the only remaining cross-file _END_ROW_* mutation lives at
+# classify-failure.sh:133, where the helper reaches into run-stage.sh's
+# global namespace to surface effective_policy. The same effective_policy
+# is durably persisted to issue-state.json by _cf_write_state at line 115
+# (the file is the canonical contract — poll.sh reads .policy on every
+# tick to decide skip-policy). The cross-file global is therefore
+# redundant — the writer can read .policy from issue-state.json at
+# end-row time, eliminating the last cross-file IPC and closing the
+# review-iter-7 M1 loop on top of M3's verdict_emitted derivation.
+#
+# Post-fix invariant: classify-failure.sh has no `_END_ROW_POLICY=`
+# mutation; _append_dispatch_end_row reads policy from issue-state.json.
+printf '\n--- ENG-87 review-iter-7 M1: _END_ROW_POLICY derived ---\n'
+
+if grep -nE '_END_ROW_POLICY=' "$HARNESS_DIR/classify-failure.sh" >/dev/null; then
+  fail_at "ENG-87 M1-iter7: classify-failure.sh has no _END_ROW_POLICY= mutation" \
+    "cross-file IPC remains — classify-failure.sh writes a global owned by run-stage.sh. Remove the assignment block; the writer reads policy from issue-state.json (which _cf_write_state already populates)."
+else
+  pass_at "ENG-87 M1-iter7: classify-failure.sh has no _END_ROW_POLICY= mutation"
+fi
+
+# Behavioral pin: stand up an issue-state.json with .policy set, source
+# run-stage.sh, drive the writer, and assert the row carries the policy
+# read from disk.
+_eng87_m1_t0="$(mktemp -d)"
+trap "rm -rf '$_eng87_m1_t0'" EXIT
+
+(
+  set +e
+  unset _END_ROW_POLICY 2>/dev/null || true
+  export PROJECT_STATE_DIR="$_eng87_m1_t0/state"
+  export PROJECT_SLUG="test-m1-iter7"
+  mkdir -p "$PROJECT_STATE_DIR/ENG-87M1"
+  cat > "$PROJECT_STATE_DIR/ENG-87M1/issue-state.json" <<JSON
+{"issue":"ENG-87M1","stage":"implementing","policy":"skip-until-human-acts","reason":"agent-blocked","retry_count":0}
+JSON
+  source "$HARNESS_DIR/common.sh" 2>/dev/null
+  source "$HARNESS_DIR/run-stage.sh" 2>/dev/null
+  _hist="$_eng87_m1_t0/hist.jsonl"
+  _END_ROW_HIST_FILE="$_hist"
+  _END_ROW_DISPATCH_ID="ENG-87M1-d0001"
+  _END_ROW_STAGE="implementing"
+  _END_ROW_T0="$(date +%s)"
+  _END_ROW_ISSUE="ENG-87M1"
+  _END_ROW_VERDICT_EMITTED="halt"
+  _END_ROW_VERDICT_TARGET=""
+  unset _END_ROW_POLICY
+  _END_ROW_POLICY=""
+  _append_dispatch_end_row 25 2>/dev/null || true
+  _row="$(tail -1 "$_hist" 2>/dev/null || printf '')"
+  _policy="$(jq -r '.policy // ""' <<<"$_row" 2>/dev/null || printf '')"
+  if [[ "$_policy" == "skip-until-human-acts" ]]; then
+    printf 'PASS ENG-87 M1-iter7-behavior: writer reads policy=skip-until-human-acts from issue-state.json\n'
+  else
+    printf 'FAIL ENG-87 M1-iter7-behavior: expected policy=skip-until-human-acts, got "%s" (row=%s)\n' "$_policy" "$_row"
+    exit 1
+  fi
+)
+if [[ "$?" -eq 0 ]]; then
+  pass_at "ENG-87 M1-iter7-behavior: writer reads policy=skip-until-human-acts from issue-state.json"
+else
+  fail_at "ENG-87 M1-iter7-behavior: writer reads policy from issue-state.json" \
+    "policy field on dispatch-end row should be derived from issue-state.json::policy at trap-fire time, not from a cross-file _END_ROW_POLICY mutation. Update _append_dispatch_end_row to read \$(issue_dir \"\$_END_ROW_ISSUE\")/issue-state.json and parse .policy via jq when _END_ROW_POLICY is empty."
+fi
+unset _eng87_m1_t0
+trap - EXIT
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
