@@ -402,6 +402,42 @@ else
   fail_at "case-3.2: unknown token left intact" "rendered=$rendered2"
 fi
 
+# ─── discovery.md schema slot (ENG-93 T1) ──────────────────────────────
+echo "━━━ discovery.md schema slot ━━━"
+
+discovery_md="$SCRIPT_DIR/setup-prompts/discovery.md"
+
+# Case 6.1: discovery template advertises schema_version: 2.
+if grep -qx 'schema_version: 2' "$discovery_md"; then
+  pass_at "case-6.1: discovery template emits schema_version: 2"
+else
+  fail_at "case-6.1: discovery template emits schema_version: 2" "missing literal"
+fi
+
+# Case 6.2: discovery template includes ## Tool allowlist heading.
+if grep -qx '## Tool allowlist' "$discovery_md"; then
+  pass_at "case-6.2: discovery template includes ## Tool allowlist"
+else
+  fail_at "case-6.2: discovery template includes ## Tool allowlist" "missing heading"
+fi
+
+# Case 6.3: exactly one fenced markdown block (open + close = 2 occurrences
+# of column-0 ``` lines).
+fence_count="$(grep -c '^```' "$discovery_md" || true)"
+if [[ "$fence_count" == "2" ]]; then
+  pass_at "case-6.3: discovery template has exactly one fenced block"
+else
+  fail_at "case-6.3: discovery template has exactly one fenced block" "got=$fence_count"
+fi
+
+# Case 6.4: confidence-rules section gains the Tool allowlist derivation
+# bullet — operators must see the rule for tokenizing build commands.
+if grep -q '"Tool allowlist"' "$discovery_md"; then
+  pass_at "case-6.4: discovery template documents Tool allowlist derivation"
+else
+  fail_at "case-6.4: discovery template documents Tool allowlist derivation" "missing rule"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
