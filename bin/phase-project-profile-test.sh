@@ -572,6 +572,35 @@ else
   pass_at "case-5.12: v1→v2 backfill rejects unfenced prose answers"
 fi
 
+# QA adversarial — Case 5.13: Ctrl-C/empty-input resume path. The first
+# run mutates v1→v2 and leaves markers after abort; a later run must
+# resolve those markers without re-invoking claude.
+rm -f "$profile"
+printf '%s' "$V1_LEGACY_PROFILE" > "$profile"
+rm -f "$sandbox/stubs/claude"
+run_phase $'\n\n\n\n' >/dev/null 2>&1 || true
+if grep -qx 'schema_version: 2' "$profile" \
+   && grep -q '<<NEEDS-INPUT:' "$profile"; then
+  if run_phase $'`Bash(bash bin/setup-helpers-test.sh:*)`\n`Bash(bash bin/phase-project-profile-test.sh:*)`\n`Bash(bash bin/setup-helpers-test.sh:*)`\n' >/dev/null 2>&1; then
+    if (
+      export HARNESS_ROOT="$sandbox/harness-root"
+      SCRIPT_DIR="$HARNESS_ROOT/bin"
+      # shellcheck disable=SC1091
+      source "$HARNESS_ROOT/bin/setup-helpers.sh"
+      _validate_project_profile_schema "$profile" >/dev/null 2>&1
+    ) && ! grep -q '<<NEEDS-INPUT:' "$profile" \
+       && grep -q '`Bash(bash bin/setup-helpers-test.sh:\*)`' "$profile"; then
+      pass_at "case-5.13: v1→v2 backfill resumes after aborted marker resolution"
+    else
+      fail_at "case-5.13: v1→v2 backfill resume validation" "$(cat "$profile")"
+    fi
+  else
+    fail_at "case-5.13: v1→v2 backfill resume exits 0" "rc=$?"
+  fi
+else
+  fail_at "case-5.13: v1→v2 backfill resume seed" "$(cat "$profile")"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"

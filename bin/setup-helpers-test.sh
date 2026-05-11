@@ -225,6 +225,54 @@ else
   fi
 fi
 
+# QA adversarial: v2 profiles must keep Tool allowlist between Build &
+# test gates and File layout; presence alone is not enough.
+awk '
+  /^## Tool allowlist$/,/^## File layout$/ {
+    if ($0 == "## File layout") {
+      print
+      print ""
+      print tool
+      next
+    }
+    tool = tool $0 "\n"
+    next
+  }
+  { print }
+' "$sandbox/v2-good.md" > "$sandbox/v2-tool-allowlist-out-of-order.md"
+if err="$(_validate_project_profile_schema "$sandbox/v2-tool-allowlist-out-of-order.md" 2>&1)"; then
+  fail_at "case-1.10: v2 Tool allowlist out-of-order rejected" "returned 0"
+else
+  if grep -q 'schema_version=2 expected sections' <<<"$err"; then
+    pass_at "case-1.10: v2 Tool allowlist out-of-order rejected"
+  else
+    fail_at "case-1.10: v2 Tool allowlist out-of-order rejected" "stderr=$err"
+  fi
+fi
+
+# QA adversarial: a hand-edited v1 profile with Tool allowlist but no
+# schema bump must not slip through the legacy branch.
+awk '
+  /^## File layout$/ && !done {
+    print "## Tool allowlist"
+    print ""
+    print "- qa:"
+    print "  - `Bash(bash bin/foo-test.sh:*)`"
+    print ""
+    done=1
+  }
+  { print }
+' "$sandbox/good.md" > "$sandbox/v1-with-tool-allowlist.md"
+if err="$(_validate_project_profile_schema "$sandbox/v1-with-tool-allowlist.md" 2>&1)"; then
+  fail_at "case-1.11: v1 Tool allowlist without schema bump rejected" "returned 0"
+else
+  if grep -q 'schema_version=1 expected sections' <<<"$err"; then
+    pass_at "case-1.11: v1 Tool allowlist without schema bump rejected"
+  else
+    fail_at "case-1.11: v1 Tool allowlist without schema bump rejected" "stderr=$err"
+  fi
+fi
+
 # ─── _profile_schema_version (ENG-93 T2) ───────────────────────────────
 echo "━━━ _profile_schema_version ━━━"
 
