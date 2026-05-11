@@ -263,6 +263,23 @@ phase_project_profile() {
   local profile_path="$profile_dir/project-profile.md"
   mkdir -p "$profile_dir"
 
+  # ENG-93: v1→v2 backfill. Existing valid v1 profile, no markers, but
+  # missing the new ## Tool allowlist section. Inject the section with
+  # NEEDS-INPUT markers and bump schema_version to 2; the marker-resolution
+  # branch below picks up the mutated file on the next conditional check.
+  # MUST run BEFORE the "complete" check; otherwise v1 profiles return
+  # early and never get upgraded.
+  if [[ -f "$profile_path" ]] \
+     && _validate_project_profile_schema "$profile_path" 2>/dev/null \
+     && ! grep -q '<<NEEDS-INPUT:' "$profile_path" \
+     && [[ "$(_profile_schema_version "$profile_path")" == "1" ]]; then
+    log "project-profile: detected v1 profile at $profile_path"
+    log "project-profile: upgrading to v2 (Tool allowlist) — 3 prompts will follow"
+    log "project-profile: Ctrl-C now to defer; file is NOT mutated until you continue"
+    _inject_tool_allowlist_section "$profile_path" \
+      || die "project-profile: v1→v2 backfill failed (file unchanged via atomic_write)"
+  fi
+
   # Skip-discovery rule: file exists with valid schema and no markers → done.
   if [[ -f "$profile_path" ]] \
      && _validate_project_profile_schema "$profile_path" 2>/dev/null \
@@ -276,6 +293,8 @@ phase_project_profile() {
     log "project-profile: $profile_path has markers; skipping discovery, resolving markers"
     _resolve_profile_markers "$profile_path" \
       || die "project-profile: marker resolution aborted"
+    _validate_project_profile_schema "$profile_path" \
+      || die "project-profile: marker-resolved profile failed schema validation"
     return 0
   fi
 
@@ -345,6 +364,8 @@ phase_project_profile() {
     log "project-profile: resolving markers"
     _resolve_profile_markers "$profile_path" \
       || die "project-profile: marker resolution aborted (file retains markers)"
+    _validate_project_profile_schema "$profile_path" \
+      || die "project-profile: marker-resolved profile failed schema validation"
   fi
 
   # Optional editor review.

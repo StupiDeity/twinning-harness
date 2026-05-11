@@ -138,24 +138,154 @@ _validate_project_profile_schema() {
   ' "$path")"
   [[ "$has_fm" == "yes" ]] || { printf '_validate_project_profile_schema: missing frontmatter\n' >&2; return 1; }
 
-  # schema_version: 1 must appear inside frontmatter
-  local has_ver
-  has_ver="$(awk '
-    NR==1 && $0=="---" { in_fm=1; next }
-    in_fm && $0=="---" { exit }
-    in_fm && /^schema_version:[[:space:]]+1[[:space:]]*$/ { print "yes"; exit }
-  ' "$path")"
-  [[ "$has_ver" == "yes" ]] || { printf '_validate_project_profile_schema: schema_version != 1\n' >&2; return 1; }
-
-  # Required H2 sections in exact order.
-  local sections
-  sections="$(grep -E '^## ' "$path" | head -5 | tr '\n' '|')"
-  local expected='## Stack|## Build & test gates|## File layout|## Language idioms|## Don'\''ts|'
-  if [[ "$sections" != "$expected" ]]; then
-    printf '_validate_project_profile_schema: expected sections [%s], got [%s]\n' "$expected" "$sections" >&2
+  # Read schema version (empty = missing / malformed).
+  local version
+  version="$(_profile_schema_version "$path")"
+  if [[ -z "$version" ]]; then
+    printf '_validate_project_profile_schema: schema_version missing\n' >&2
     return 1
   fi
-  return 0
+
+  local sections expected
+  case "$version" in
+    1)
+      sections="$(grep -E '^## ' "$path" | head -5 | tr '\n' '|')"
+      expected='## Stack|## Build & test gates|## File layout|## Language idioms|## Don'\''ts|'
+      if [[ "$sections" != "$expected" ]]; then
+        printf '_validate_project_profile_schema: schema_version=1 expected sections [%s], got [%s]\n' \
+          "$expected" "$sections" >&2
+        return 1
+      fi
+      return 0
+      ;;
+    2)
+      sections="$(grep -E '^## ' "$path" | head -6 | tr '\n' '|')"
+      expected='## Stack|## Build & test gates|## Tool allowlist|## File layout|## Language idioms|## Don'\''ts|'
+      if [[ "$sections" != "$expected" ]]; then
+        if ! grep -qE '^## Tool allowlist$' "$path"; then
+          printf '_validate_project_profile_schema: schema_version=2 but missing ## Tool allowlist\n' >&2
+        else
+          printf '_validate_project_profile_schema: schema_version=2 expected sections [%s], got [%s]\n' \
+            "$expected" "$sections" >&2
+        fi
+        return 1
+      fi
+      # D-7: pattern-shape gate. Walk lines under `## Tool allowlist`
+      # until the next `^## ` heading. Nested bullets must be either
+      # unresolved markers or backtick-fenced canonical Bash(...:*)
+      # patterns. The regex stays in bash because macOS awk rejects
+      # bracket expressions mixing literal `-` adjacent to `:`.
+      local in_sec=0 nr=0 line bad_line="" bad_reason=""
+      local shape_re='^[[:space:]]+-[[:space:]]*`Bash\(([-A-Za-z0-9_./ :]+):\*\)`$'
+      while IFS='' read -r line || [[ -n "$line" ]]; do
+        nr=$((nr + 1))
+        if [[ "$line" == "## Tool allowlist" ]]; then
+          in_sec=1
+          continue
+        fi
+        if (( in_sec )) && [[ "$line" == "## "* ]]; then
+          break
+        fi
+        if (( ! in_sec )); then
+          continue
+        fi
+        if [[ "$line" == *'<<NEEDS-INPUT:'* ]]; then
+          continue
+        fi
+        if [[ "$line" == *'`Bash('* ]]; then
+          if [[ ! "$line" =~ $shape_re ]]; then
+            bad_line="$nr:$line"
+            bad_reason="has shell metacharacters"
+            break
+          fi
+          continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]+-[[:space:]]+ ]]; then
+          bad_line="$nr:$line"
+          bad_reason="must be backtick-fenced Bash(...:*)"
+          break
+        fi
+      done < "$path"
+      if [[ -n "$bad_line" ]]; then
+        printf '_validate_project_profile_schema: pattern at line %s %s: %s\n' \
+          "${bad_line%%:*}" "$bad_reason" "${bad_line#*:}" >&2
+        return 1
+      fi
+      return 0
+      ;;
+    *)
+      printf '_validate_project_profile_schema: unsupported schema_version: %s\n' "$version" >&2
+      return 1
+      ;;
+  esac
+}
+
+# _profile_schema_version <path>
+# Emits the integer value of `schema_version:` from the YAML frontmatter
+# on stdout, or empty string on miss. Always returns 0; caller decides
+# whether empty is fatal.
+_profile_schema_version() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf ''; return 0; }
+  awk '
+    NR==1 && $0=="---" { in_fm=1; next }
+    in_fm && $0=="---" { exit }
+    in_fm && /^schema_version:[[:space:]]+[0-9]+[[:space:]]*$/ {
+      sub(/^schema_version:[[:space:]]+/, "")
+      sub(/[[:space:]]*$/, "")
+      print
+      exit
+    }
+  ' "$path"
+}
+
+# _inject_tool_allowlist_section <path>
+# Splices a `## Tool allowlist` section with <<NEEDS-INPUT:>> markers
+# into a valid v1 profile after the `## Build & test gates` heading and
+# bumps the frontmatter schema_version from 1 to 2. Atomic write.
+# Returns rc=1 with one-line stderr on missing anchor or missing file.
+#
+# Pipeline safety: `awk … "$path" | atomic_write_file "$path"` is safe
+# because awk opens "$path" for reading at start and the kernel holds
+# the file descriptor across the rename atomic_write_file performs.
+_inject_tool_allowlist_section() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf '_inject_tool_allowlist_section: not a file: %s\n' "$path" >&2; return 1; }
+  if ! grep -qE '^## Build & test gates$' "$path"; then
+    printf '_inject_tool_allowlist_section: missing anchor "## Build & test gates" in %s\n' "$path" >&2
+    return 1
+  fi
+  awk '
+    BEGIN { fm=0; past_btg=0; injected=0 }
+    NR==1 && $0=="---" { fm=1; print; next }
+    fm==1 && $0=="---" { fm=2; print; next }
+    fm==1 && /^schema_version:[[:space:]]+1[[:space:]]*$/ { print "schema_version: 2"; next }
+    fm==2 && /^## Build & test gates$/ { past_btg=1; print; next }
+    fm==2 && past_btg==1 && injected==0 && /^## / {
+      print "## Tool allowlist"
+      print ""
+      print "Per-stage Bash patterns the orchestrator grants to `claude -p` at dispatch."
+      print "Stage-agnostic core tools (Read, Write, Edit, Grep, Glob, TaskCreate,"
+      print "git family, `bash bin/linear.sh`, `bash bin/pipeline.sh`,"
+      print "`bash bin/guards.sh`, `bash bin/slack.sh`, `bash bin/metrics.sh`)"
+      print "are implicit and not declared here."
+      print ""
+      print "- brainstorming: (none)"
+      print "- planning: (none)"
+      print "- implementing:"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the implementing stage need? Paste backtick-fenced patterns, one per line, e.g. `Bash(cargo:*)`; see bin/setup-prompts/discovery.md derivation rule.>>"
+      print "- ui:"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the ui stage need? Paste backtick-fenced patterns, one per line, e.g. `Bash(cargo:*)`; see bin/setup-prompts/discovery.md derivation rule.>>"
+      print "- reviewing: (none)"
+      print "- qa:"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the qa stage need? Paste backtick-fenced patterns, one per line, e.g. `Bash(cargo:*)`; see bin/setup-prompts/discovery.md derivation rule.>>"
+      print "- building: (none)"
+      print "- released: (none)"
+      print ""
+      injected=1
+    }
+    { print }
+  ' "$path" | atomic_write_file "$path"
 }
 
 # _resolve_profile_markers <path>

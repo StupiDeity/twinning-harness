@@ -34,7 +34,7 @@ the stack, conventions, and gates of this specific repo.
 slug: {slug}
 generated_at: {date}T00:00:00Z
 generated_by: discovery-agent
-schema_version: 1
+schema_version: 2
 ---
 
 # Project profile — <project name>
@@ -49,6 +49,25 @@ schema_version: 1
 - Test: `<command>` *(runs the full unit suite)*
 - Lint/check: `<command>` *(types, format, static analysis)*
 - Integration/E2E: `<command>` *(or `(n/a) — reason`)*
+
+## Tool allowlist
+
+Per-stage Bash patterns the orchestrator grants to `claude -p` at dispatch.
+Stage-agnostic core tools (Read, Write, Edit, Grep, Glob, TaskCreate, git family,
+`bash bin/linear.sh`, `bash bin/pipeline.sh`, `bash bin/guards.sh`,
+`bash bin/slack.sh`, `bash bin/metrics.sh`) are implicit and not declared here.
+
+- brainstorming: (none)
+- planning: (none)
+- implementing:
+  - `Bash(<binary>:*)`
+- ui:
+  - `Bash(<binary>:*)`
+- reviewing: (none)
+- qa:
+  - `Bash(<binary>:*)`
+- building: (none)
+- released: (none)
 
 ## File layout
 
@@ -69,6 +88,7 @@ schema_version: 1
 - "Build & test gates": prefer commands found in CI workflows over README. If CI has none, fall back to README; if neither exists, emit a marker.
 - "Don'ts": only emit findings backed by evidence (a CONTRIBUTING.md note, a CODEOWNERS warning, an obvious anti-pattern fixed in the last 50 commits via `git log --oneline -50`). Otherwise leave the section as `(none observed)` — do NOT invent don'ts.
 - "File layout": list 3–8 directories; do not enumerate every dir.
+- "Tool allowlist": for each stage that runs build/test/lint commands (implementing, ui, qa), tokenize the canonical commands in §"Build & test gates" by whitespace, take the first token of each, and emit `` `Bash(<token>:*)` `` (backtick-fenced). Drop tokens that name shell built-ins (`bash`, `sh`, `env`) UNLESS they invoke an allowlisted harness script under `bin/` (the only carve-in: `bash bin/<name>.sh` → `` `Bash(bash bin/<name>.sh:*)` ``, where `<name>` is a literal filename with no leading `-`). The carve-in does NOT extend to `bash -c`, `bash -l`, `bash -x`, `bash <other-path>/...`, `bash -<flag> ...`, or any form where the second token starts with `-` — emit `<<NEEDS-INPUT:>>` for those instead. Stages that don't run code (brainstorming, planning) emit `(none)`. Reviewing emits `(none)` UNLESS the project's lint command requires invocation under review (rare). Building emits `(none)` — it uses `gh` exclusively, which is in the implicit base. Released emits `(none)`. Patterns must be ASCII-only (no smart quotes, no trailing `\r`); the trailing `:*` is mandatory. If you cannot confidently tokenize a command, emit `<<NEEDS-INPUT: which binaries does '<command>' invoke?>>` for that stage.
 
 ## Self-twinning detection
 

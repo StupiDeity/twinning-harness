@@ -2,7 +2,7 @@
 slug: harness
 generated_at: 2026-04-29T00:00:00Z
 generated_by: discovery-agent
-schema_version: 1
+schema_version: 2
 ---
 
 # Project profile — twinning-harness
@@ -17,6 +17,99 @@ Bash 3.2+ orchestration scripts (macOS-compatible). The repo contains no applica
 - Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner)*
 - Lint/check: `bash -n bin/*.sh` *(syntax check only; no shellcheck in CI today)*
 - Integration/E2E: `PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/dry-run.sh`
+
+## Tool allowlist
+
+Per-stage Bash patterns the orchestrator grants to `claude -p` at dispatch.
+Stage-agnostic core tools (Read, Write, Edit, Grep, Glob, TaskCreate,
+git family, `bash bin/linear.sh`, `bash bin/pipeline.sh`,
+`bash bin/guards.sh`, `bash bin/slack.sh`, `bash bin/metrics.sh`)
+are implicit and not declared here.
+
+- brainstorming: (none)
+- planning: (none)
+- implementing:
+  - `Bash(bash .githooks/pre-commit:*)`
+  - `Bash(bash bin/secret-probe-lint.sh:*)`
+  - `Bash(bash bin/agent-prompts-content-test.sh:*)`
+  - `Bash(bash bin/classify-failure-test.sh:*)`
+  - `Bash(bash bin/cleanup-worktrees-test.sh:*)`
+  - `Bash(bash bin/common-test.sh:*)`
+  - `Bash(bash bin/dispatch-test.sh:*)`
+  - `Bash(bash bin/entry-conditions-test.sh:*)`
+  - `Bash(bash bin/halt-sprawl-adversarial-test.sh:*)`
+  - `Bash(bash bin/halt-sprawl-test.sh:*)`
+  - `Bash(bash bin/install-launchd-test.sh:*)`
+  - `Bash(bash bin/linear-test.sh:*)`
+  - `Bash(bash bin/metrics-test.sh:*)`
+  - `Bash(bash bin/mutex-test.sh:*)`
+  - `Bash(bash bin/phase-project-profile-test.sh:*)`
+  - `Bash(bash bin/pipeline-test.sh:*)`
+  - `Bash(bash bin/poll-slot-test.sh:*)`
+  - `Bash(bash bin/profile-allowlist-test.sh:*)`
+  - `Bash(bash bin/reconcile-test.sh:*)`
+  - `Bash(bash bin/render-pr-body-test.sh:*)`
+  - `Bash(bash bin/render-prompt-slug-test.sh:*)`
+  - `Bash(bash bin/render-prompt-test.sh:*)`
+  - `Bash(bash bin/review-poll-test.sh:*)`
+  - `Bash(bash bin/review-state-test.sh:*)`
+  - `Bash(bash bin/run-local-content-adversarial-test.sh:*)`
+  - `Bash(bash bin/run-local-content-test.sh:*)`
+  - `Bash(bash bin/run-local-helpers-adversarial-test.sh:*)`
+  - `Bash(bash bin/run-local-sweep-test.sh:*)`
+  - `Bash(bash bin/run-stage-test.sh:*)`
+  - `Bash(bash bin/scope-check-test.sh:*)`
+  - `Bash(bash bin/secret-probe-lint-adversarial-test.sh:*)`
+  - `Bash(bash bin/secret-probe-lint-test.sh:*)`
+  - `Bash(bash bin/setup-helpers-test.sh:*)`
+  - `Bash(bash bin/setup-test.sh:*)`
+  - `Bash(bash bin/test-isolation-test.sh:*)`
+  - `Bash(bash bin/verdict-adversarial-test.sh:*)`
+  - `Bash(bash bin/verdict-handler-test.sh:*)`
+  - `Bash(bash bin/vocabulary-cleanliness-test.sh:*)`
+- ui: (none)
+- reviewing: (none)
+- qa:
+  - `Bash(bash .githooks/pre-commit:*)`
+  - `Bash(bash bin/secret-probe-lint.sh:*)`
+  - `Bash(bash bin/agent-prompts-content-test.sh:*)`
+  - `Bash(bash bin/classify-failure-test.sh:*)`
+  - `Bash(bash bin/cleanup-worktrees-test.sh:*)`
+  - `Bash(bash bin/common-test.sh:*)`
+  - `Bash(bash bin/dispatch-test.sh:*)`
+  - `Bash(bash bin/entry-conditions-test.sh:*)`
+  - `Bash(bash bin/halt-sprawl-adversarial-test.sh:*)`
+  - `Bash(bash bin/halt-sprawl-test.sh:*)`
+  - `Bash(bash bin/install-launchd-test.sh:*)`
+  - `Bash(bash bin/linear-test.sh:*)`
+  - `Bash(bash bin/metrics-test.sh:*)`
+  - `Bash(bash bin/mutex-test.sh:*)`
+  - `Bash(bash bin/phase-project-profile-test.sh:*)`
+  - `Bash(bash bin/pipeline-test.sh:*)`
+  - `Bash(bash bin/poll-slot-test.sh:*)`
+  - `Bash(bash bin/profile-allowlist-test.sh:*)`
+  - `Bash(bash bin/reconcile-test.sh:*)`
+  - `Bash(bash bin/render-pr-body-test.sh:*)`
+  - `Bash(bash bin/render-prompt-slug-test.sh:*)`
+  - `Bash(bash bin/render-prompt-test.sh:*)`
+  - `Bash(bash bin/review-poll-test.sh:*)`
+  - `Bash(bash bin/review-state-test.sh:*)`
+  - `Bash(bash bin/run-local-content-adversarial-test.sh:*)`
+  - `Bash(bash bin/run-local-content-test.sh:*)`
+  - `Bash(bash bin/run-local-helpers-adversarial-test.sh:*)`
+  - `Bash(bash bin/run-local-sweep-test.sh:*)`
+  - `Bash(bash bin/run-stage-test.sh:*)`
+  - `Bash(bash bin/scope-check-test.sh:*)`
+  - `Bash(bash bin/secret-probe-lint-adversarial-test.sh:*)`
+  - `Bash(bash bin/secret-probe-lint-test.sh:*)`
+  - `Bash(bash bin/setup-helpers-test.sh:*)`
+  - `Bash(bash bin/setup-test.sh:*)`
+  - `Bash(bash bin/test-isolation-test.sh:*)`
+  - `Bash(bash bin/verdict-adversarial-test.sh:*)`
+  - `Bash(bash bin/verdict-handler-test.sh:*)`
+  - `Bash(bash bin/vocabulary-cleanliness-test.sh:*)`
+- building: (none)
+- released: (none)
 
 ## File layout
 
