@@ -181,16 +181,47 @@ else
   fi
 fi
 
-# Case 1.8: v2 with shell-metachar pattern under Tool allowlist → fails
-sed 's|`Bash(bash bin/foo-test.sh:\*)`|`Bash($(curl evil):*)`|' \
-  "$sandbox/v2-good.md" > "$sandbox/v2-bad-pattern.md"
-if err="$(_validate_project_profile_schema "$sandbox/v2-bad-pattern.md" 2>&1)"; then
-  fail_at "case-1.8: v2 shell-metachar pattern rejected" "returned 0"
-else
-  if grep -q 'pattern at line' <<<"$err" && grep -q 'shell metacharacters' <<<"$err"; then
-    pass_at "case-1.8: v2 shell-metachar pattern rejected"
+# Case 1.8: v2 with shell-metachar patterns under Tool allowlist → fails.
+bad_patterns=(
+  '`Bash($(curl evil):*)`'
+  '`Bash(echo `id`:*)`'
+  '`Bash(cargo;rm:*)`'
+  '`Bash(cargo&&rm:*)`'
+  '`Bash(cargo||rm:*)`'
+  '`Bash(cargo|tee:*)`'
+  '`Bash(cargo>out:*)`'
+  '`Bash(cargo<in:*)`'
+  $'`Bash(‘cargo’:*)`'
+  $'`Bash(cargo:*)`\r'
+)
+for idx in "${!bad_patterns[@]}"; do
+  awk -v replacement="  - ${bad_patterns[$idx]}" '
+    /`Bash\(bash bin\/foo-test.sh:\*\)`/ && !done { print replacement; done=1; next }
+    { print }
+  ' "$sandbox/v2-good.md" > "$sandbox/v2-bad-pattern-$idx.md"
+  if err="$(_validate_project_profile_schema "$sandbox/v2-bad-pattern-$idx.md" 2>&1)"; then
+    fail_at "case-1.8.$idx: v2 shell-metachar pattern rejected" "returned 0 pattern=${bad_patterns[$idx]}"
   else
-    fail_at "case-1.8: v2 shell-metachar pattern rejected" "stderr=$err"
+    if grep -q 'pattern at line' <<<"$err" && grep -q 'shell metacharacters' <<<"$err"; then
+      pass_at "case-1.8.$idx: v2 shell-metachar pattern rejected"
+    else
+      fail_at "case-1.8.$idx: v2 shell-metachar pattern rejected" "stderr=$err"
+    fi
+  fi
+done
+
+# Case 1.9: v2 nested Tool allowlist prose answer must be fenced Bash(...)
+awk '
+  /`Bash\(bash bin\/foo-test.sh:\*\)`/ && !done { print "  - cargo and bun"; done=1; next }
+  { print }
+' "$sandbox/v2-good.md" > "$sandbox/v2-unfenced-prose.md"
+if err="$(_validate_project_profile_schema "$sandbox/v2-unfenced-prose.md" 2>&1)"; then
+  fail_at "case-1.9: v2 unfenced Tool allowlist prose rejected" "returned 0"
+else
+  if grep -q 'pattern at line' <<<"$err" && grep -q 'must be backtick-fenced Bash' <<<"$err"; then
+    pass_at "case-1.9: v2 unfenced Tool allowlist prose rejected"
+  else
+    fail_at "case-1.9: v2 unfenced Tool allowlist prose rejected" "stderr=$err"
   fi
 fi
 
@@ -267,6 +298,14 @@ if [[ "$marker_count" == "3" ]]; then
   pass_at "case-5.2: three NEEDS-INPUT markers injected"
 else
   fail_at "case-5.2: three NEEDS-INPUT markers injected" "got=$marker_count"
+fi
+
+# Case 5.2b: all Tool allowlist marker prompts consistently require fenced Bash patterns
+marker_prompt_count="$(grep -F -c 'Paste backtick-fenced patterns, one per line, e.g. `Bash(cargo:*)`; see bin/setup-prompts/discovery.md derivation rule.' "$sandbox/inject.md" || true)"
+if [[ "$marker_prompt_count" == "3" ]]; then
+  pass_at "case-5.2b: all Tool allowlist marker prompts require fenced Bash patterns"
+else
+  fail_at "case-5.2b: all Tool allowlist marker prompts require fenced Bash patterns" "got=$marker_prompt_count"
 fi
 
 # Case 5.3: missing ## Build & test gates anchor → rc=1, stderr message

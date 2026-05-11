@@ -117,38 +117,6 @@ print_phase_header() {
   printf '\n=== %s ===\n' "$1" >&2
 }
 
-# _profile_pattern_shape_violation <path>
-# Walks the `## Tool allowlist` section (between its heading and the
-# next `^## ` heading) and returns "<NR>:<line>" on stdout for the
-# first line that carries a backtick-fenced Bash(...) pattern outside
-# the canonical shape. Empty stdout when all patterns are clean.
-#
-# The shape contract: leading whitespace (optional `-` bullet),
-# `` `Bash( ``, content drawn only from [A-Za-z0-9_./ :-], a trailing
-# `:*)` and closing backtick. Anything with shell metacharacters
-# ($, (), `, ", ', ;, |, &, etc.) violates and is reported.
-_profile_pattern_shape_violation() {
-  local path="$1"
-  local in_sec=0 nr=0 line content
-  local shape_re='^[[:space:]]*-?[[:space:]]*`Bash\(([-A-Za-z0-9_./ :]+):\*\)`'
-  while IFS='' read -r line || [[ -n "$line" ]]; do
-    nr=$((nr + 1))
-    if [[ "$line" == "## Tool allowlist" ]]; then
-      in_sec=1
-      continue
-    fi
-    if (( in_sec )) && [[ "$line" == "## "* ]]; then
-      break
-    fi
-    if (( in_sec )) && [[ "$line" == *'`Bash('* ]]; then
-      if [[ ! "$line" =~ $shape_re ]]; then
-        printf '%d:%s\n' "$nr" "$line"
-        return 0
-      fi
-    fi
-  done < "$path"
-}
-
 # _validate_project_profile_schema <path>
 # Returns 0 if path is a valid project-profile.md per the stack-aware
 # addendum spec §6:
@@ -203,15 +171,44 @@ _validate_project_profile_schema() {
         return 1
       fi
       # D-7: pattern-shape gate. Walk lines under `## Tool allowlist`
-      # until the next `^## ` heading; for each line carrying a
-      # backtick-fenced `Bash(...)` pattern, assert the shape via a
-      # bash regex (BSD awk in macOS rejects bracket expressions that
-      # mix literal `-` with adjacent `:`, so the gate stays in shell).
-      local bad_line
-      bad_line="$(_profile_pattern_shape_violation "$path")"
+      # until the next `^## ` heading. Nested bullets must be either
+      # unresolved markers or backtick-fenced canonical Bash(...:*)
+      # patterns. The regex stays in bash because macOS awk rejects
+      # bracket expressions mixing literal `-` adjacent to `:`.
+      local in_sec=0 nr=0 line bad_line="" bad_reason=""
+      local shape_re='^[[:space:]]+-[[:space:]]*`Bash\(([-A-Za-z0-9_./ :]+):\*\)`$'
+      while IFS='' read -r line || [[ -n "$line" ]]; do
+        nr=$((nr + 1))
+        if [[ "$line" == "## Tool allowlist" ]]; then
+          in_sec=1
+          continue
+        fi
+        if (( in_sec )) && [[ "$line" == "## "* ]]; then
+          break
+        fi
+        if (( ! in_sec )); then
+          continue
+        fi
+        if [[ "$line" == *'<<NEEDS-INPUT:'* ]]; then
+          continue
+        fi
+        if [[ "$line" == *'`Bash('* ]]; then
+          if [[ ! "$line" =~ $shape_re ]]; then
+            bad_line="$nr:$line"
+            bad_reason="has shell metacharacters"
+            break
+          fi
+          continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]+-[[:space:]]+ ]]; then
+          bad_line="$nr:$line"
+          bad_reason="must be backtick-fenced Bash(...:*)"
+          break
+        fi
+      done < "$path"
       if [[ -n "$bad_line" ]]; then
-        printf '_validate_project_profile_schema: pattern at line %s has shell metacharacters: %s\n' \
-          "${bad_line%%:*}" "${bad_line#*:}" >&2
+        printf '_validate_project_profile_schema: pattern at line %s %s: %s\n' \
+          "${bad_line%%:*}" "$bad_reason" "${bad_line#*:}" >&2
         return 1
       fi
       return 0
@@ -276,12 +273,12 @@ _inject_tool_allowlist_section() {
       print "- brainstorming: (none)"
       print "- planning: (none)"
       print "- implementing:"
-      print "  - <<NEEDS-INPUT: which Bash patterns does the implementing stage need? List one per line, e.g. Bash(cargo:*) — see bin/setup-prompts/discovery.md derivation rule.>>"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the implementing stage need? Paste backtick-fenced patterns, one per line, e.g. `Bash(cargo:*)`; see bin/setup-prompts/discovery.md derivation rule.>>"
       print "- ui:"
-      print "  - <<NEEDS-INPUT: which Bash patterns does the ui stage need?>>"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the ui stage need? Paste backtick-fenced patterns, one per line, e.g. `Bash(cargo:*)`; see bin/setup-prompts/discovery.md derivation rule.>>"
       print "- reviewing: (none)"
       print "- qa:"
-      print "  - <<NEEDS-INPUT: which Bash patterns does the qa stage need?>>"
+      print "  - <<NEEDS-INPUT: which Bash patterns does the qa stage need? Paste backtick-fenced patterns, one per line, e.g. `Bash(cargo:*)`; see bin/setup-prompts/discovery.md derivation rule.>>"
       print "- building: (none)"
       print "- released: (none)"
       print ""

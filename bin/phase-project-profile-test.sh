@@ -349,6 +349,15 @@ run_phase() {
   )
 }
 
+allowlist_pattern_lines() {
+  local path="$1"
+  awk '
+    /^## Tool allowlist$/ { in_sec=1; next }
+    in_sec && /^## / { exit }
+    in_sec && /^[[:space:]]+-[[:space:]]+`Bash\(/ { print }
+  ' "$path"
+}
+
 # Case 5.1: happy path — stub-claude writes good profile, no markers.
 write_claude_stub "$sandbox/harness-root/learned-rules/test-slug" "$GOOD_PROFILE"
 if run_phase "" >/dev/null 2>&1; then
@@ -404,16 +413,30 @@ profile="$sandbox/harness-root/learned-rules/test-slug/project-profile.md"
 rm -f "$profile"
 write_claude_stub "$sandbox/harness-root/learned-rules/test-slug" "$V2_RUST_TAURI_PROFILE"
 if run_phase "" >/dev/null 2>&1; then
+  expected_patterns="$(cat <<'EXPECTED'
+  - `Bash(cargo:*)`
+  - `Bash(bun:*)`
+  - `Bash(rustc:*)`
+  - `Bash(cargo:*)`
+  - `Bash(bun:*)`
+  - `Bash(npx:*)`
+  - `Bash(node:*)`
+  - `Bash(cargo:*)`
+  - `Bash(bun:*)`
+  - `Bash(npx:*)`
+  - `Bash(node:*)`
+EXPECTED
+)"
   if (
     export HARNESS_ROOT="$sandbox/harness-root"
     SCRIPT_DIR="$HARNESS_ROOT/bin"
     # shellcheck disable=SC1091
     source "$HARNESS_ROOT/bin/setup-helpers.sh"
     _validate_project_profile_schema "$profile" >/dev/null 2>&1
-  ) && grep -qx '## Tool allowlist' "$profile"; then
-    pass_at "case-5.5: v2 Rust+Bun profile passes phase + validator"
+  ) && [[ "$(allowlist_pattern_lines "$profile")" == "$expected_patterns" ]]; then
+    pass_at "case-5.5: v2 Rust+Bun profile preserves Tool allowlist patterns"
   else
-    fail_at "case-5.5: v2 Rust+Bun profile" "validator rejected or missing heading"
+    fail_at "case-5.5: v2 Rust+Bun profile" "validator rejected or patterns changed: $(allowlist_pattern_lines "$profile")"
   fi
 else
   fail_at "case-5.5: v2 Rust+Bun phase exits 0" "rc=$?"
@@ -423,16 +446,26 @@ fi
 rm -f "$profile"
 write_claude_stub "$sandbox/harness-root/learned-rules/test-slug" "$V2_PYTHON_PYTEST_PROFILE"
 if run_phase "" >/dev/null 2>&1; then
+  expected_patterns="$(cat <<'EXPECTED'
+  - `Bash(python:*)`
+  - `Bash(pytest:*)`
+  - `Bash(pip:*)`
+  - `Bash(ruff:*)`
+  - `Bash(mypy:*)`
+  - `Bash(python:*)`
+  - `Bash(pytest:*)`
+EXPECTED
+)"
   if (
     export HARNESS_ROOT="$sandbox/harness-root"
     SCRIPT_DIR="$HARNESS_ROOT/bin"
     # shellcheck disable=SC1091
     source "$HARNESS_ROOT/bin/setup-helpers.sh"
     _validate_project_profile_schema "$profile" >/dev/null 2>&1
-  ); then
-    pass_at "case-5.6: v2 Python+pytest profile passes"
+  ) && [[ "$(allowlist_pattern_lines "$profile")" == "$expected_patterns" ]]; then
+    pass_at "case-5.6: v2 Python+pytest profile preserves Tool allowlist patterns"
   else
-    fail_at "case-5.6: v2 Python+pytest profile" "validator rejected"
+    fail_at "case-5.6: v2 Python+pytest profile" "validator rejected or patterns changed: $(allowlist_pattern_lines "$profile")"
   fi
 else
   fail_at "case-5.6: v2 Python+pytest phase exits 0" "rc=$?"
@@ -442,16 +475,22 @@ fi
 rm -f "$profile"
 write_claude_stub "$sandbox/harness-root/learned-rules/test-slug" "$V2_GO_GOTEST_PROFILE"
 if run_phase "" >/dev/null 2>&1; then
+  expected_patterns="$(cat <<'EXPECTED'
+  - `Bash(go:*)`
+  - `Bash(golangci-lint:*)`
+  - `Bash(go:*)`
+EXPECTED
+)"
   if (
     export HARNESS_ROOT="$sandbox/harness-root"
     SCRIPT_DIR="$HARNESS_ROOT/bin"
     # shellcheck disable=SC1091
     source "$HARNESS_ROOT/bin/setup-helpers.sh"
     _validate_project_profile_schema "$profile" >/dev/null 2>&1
-  ); then
-    pass_at "case-5.7: v2 Go+go-test profile passes"
+  ) && [[ "$(allowlist_pattern_lines "$profile")" == "$expected_patterns" ]]; then
+    pass_at "case-5.7: v2 Go+go-test profile preserves Tool allowlist patterns"
   else
-    fail_at "case-5.7: v2 Go+go-test profile" "validator rejected"
+    fail_at "case-5.7: v2 Go+go-test profile" "validator rejected or patterns changed: $(allowlist_pattern_lines "$profile")"
   fi
 else
   fail_at "case-5.7: v2 Go+go-test phase exits 0" "rc=$?"
@@ -464,12 +503,13 @@ fi
 rm -f "$profile"
 printf '%s' "$V1_LEGACY_PROFILE" > "$profile"
 rm -f "$sandbox/stubs/claude"
-run_phase $'\n\n\n\n' >/dev/null 2>&1 || true
+run_phase $'\n\n\n\n' > "$sandbox/backfill-log.out" 2>&1 || true
 if grep -qx 'schema_version: 2' "$profile" \
-   && grep -qx '## Tool allowlist' "$profile"; then
-  pass_at "case-5.8: v1→v2 backfill injected new section + bumped version"
+   && grep -qx '## Tool allowlist' "$profile" \
+   && grep -q 'project-profile: Ctrl-C now to defer; file is NOT mutated until you continue' "$sandbox/backfill-log.out"; then
+  pass_at "case-5.8: v1→v2 backfill injected section + logged Ctrl-C window"
 else
-  fail_at "case-5.8: v1→v2 backfill" "$(cat "$profile")"
+  fail_at "case-5.8: v1→v2 backfill" "profile=$(cat "$profile") log=$(cat "$sandbox/backfill-log.out")"
 fi
 
 # ENG-93 — Case 5.9: V2 missing ## Tool allowlist → die, file removed.
@@ -520,6 +560,16 @@ if run_phase $'`Bash(cargo:*)`\n`Bash(npx:*)`\n`Bash(cargo:*)`\n' >/dev/null 2>&
   fi
 else
   fail_at "case-5.11: v1→v2 backfill end-to-end exits 0" "rc=$?"
+fi
+
+# ENG-93 — Case 5.12: V1→V2 backfill rejects unfenced prose answers.
+rm -f "$profile"
+printf '%s' "$V1_LEGACY_PROFILE" > "$profile"
+rm -f "$sandbox/stubs/claude"
+if run_phase $'cargo and bun\nnpx\ncargo\n' >/dev/null 2>&1; then
+  fail_at "case-5.12: v1→v2 backfill rejects unfenced prose answers" "returned 0"
+else
+  pass_at "case-5.12: v1→v2 backfill rejects unfenced prose answers"
 fi
 
 echo
