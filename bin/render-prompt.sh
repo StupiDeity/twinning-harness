@@ -30,6 +30,49 @@ retrospective=9. Retrospective Agent (Scheduled)
 # ENG-53#11, ENG-57, ENG-74 each had to swallow before this consolidation).
 COMMON_SECTION='0. Common rules (delivered to every stage)'
 
+# ENG-87: prompt-token resolver registry. Every {token} in
+# AGENT_PROMPTS.md is resolved at render time by a function registered
+# here. ENG-79 introduced bin/branch-name.sh (a single dedicated helper
+# for the {branch} token); ENG-87 extends that one-helper precedent to
+# a registry covering all {token}s. Render-time validator dies on any
+# unknown {token} encountered in the source. Adding a new token =
+# (a) register here, (b) add the resolver function below, (c) emit
+# the {token} in AGENT_PROMPTS.md.
+PROMPT_RESOLVERS='
+issue_id=_resolve_issue_id
+issue_id_lower=_resolve_issue_id_lower
+issue_title=_resolve_issue_title
+issue_description=_resolve_issue_description
+date=_resolve_date
+slug=_resolve_slug
+brainstorm_file=_resolve_brainstorm_file
+plan_file=_resolve_plan_file
+branch_name=_resolve_branch_name
+stage_summary_path=_resolve_stage_summary_path
+learned_rules_dir=_resolve_learned_rules_dir
+dispatch_id=_resolve_dispatch_id
+'
+# ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
+# _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
+# before resolve_block_tokens runs, so test isolation uses the same
+# `_RENDER_*=...` setup as every other resolver. See line ~221 for the
+# resolver body and the M9 fix that closed the env-namespace divergence
+# (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
+
+# ENG-87 review-iter-7 C1: AGENT_RUNTIME_TOKENS — names the registry
+# does NOT resolve at render time because the agent fills them in at
+# runtime. Pre-iter-7 these were modelled as `_resolve_passthrough_*`
+# functions returning the literal `{name}` string; that produced an
+# identity substitution which the residual unknown-token validator
+# below then re-detected and died on. The cleaner shape is an explicit
+# allowlist: extract tokens, resolve registered ones, and skip
+# AGENT_RUNTIME_TOKENS in the residual scan.
+#
+# Format: space-separated names with leading + trailing spaces so
+# `[[ "$AGENT_RUNTIME_TOKENS" == *" $name "* ]]` substring tests are
+# unambiguous (no prefix collisions across names like file / file_x).
+AGENT_RUNTIME_TOKENS=' file pr_number '
+
 lookup_section() {
   local stage="$1"
   grep -E "^${stage}=" <<<"$STAGE_TO_SECTION" | head -1 | cut -d= -f2-
@@ -166,6 +209,89 @@ append_project_profile() {
   printf '\n'
 }
 
+# ENG-87: per-token resolver functions. Each takes the rendering context
+# as global vars (issue_id, stage, etc. — set by main() before calling)
+# and prints the resolved value on stdout. The registry's lookup-and-
+# call pass treats unknown tokens as a die() — see resolve_block_tokens.
+_resolve_issue_id() { printf '%s' "$_RENDER_ISSUE_ID"; }
+_resolve_issue_id_lower() { printf '%s' "$_RENDER_ISSUE_ID_LOWER"; }
+_resolve_issue_title() { printf '%s' "$_RENDER_TITLE"; }
+_resolve_issue_description() { printf '%s' "$_RENDER_DESCRIPTION"; }
+_resolve_date() { printf '%s' "$_RENDER_DATE"; }
+_resolve_slug() { printf '%s' "$_RENDER_SLUG"; }
+_resolve_brainstorm_file() { printf '%s' "$_RENDER_BRAINSTORM_FILE"; }
+_resolve_plan_file() { printf '%s' "$_RENDER_PLAN_FILE"; }
+_resolve_branch_name() { printf '%s' "$_RENDER_BRANCH_NAME"; }
+_resolve_stage_summary_path() { printf '%s' "$_RENDER_STAGE_SUMMARY_PATH"; }
+_resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
+# ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
+# resolvers (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
+# Test isolation now uses the same `_RENDER_*=...` setup pattern as
+# every other resolver. main() binds _RENDER_DISPATCH_ID before
+# calling resolve_block_tokens. Empty value is acceptable (agent-side
+# auto-injection is no-op when the resolved value is empty).
+_resolve_dispatch_id() { printf '%s' "${_RENDER_DISPATCH_ID-}"; }
+
+# Look up the resolver function name for a token (without surrounding braces).
+_lookup_resolver() {
+  local token="$1"
+  grep -E "^${token}=" <<<"$PROMPT_RESOLVERS" | head -1 | cut -d= -f2-
+}
+
+# resolve_block_tokens <block-text>
+#   Substitute every {token} in $block via the PROMPT_RESOLVERS registry.
+#   Dies on an unknown {token} (render-time validator). Uses bash literal
+#   substitution (${var//pat/repl}) — glob-immune for {token} shapes
+#   because {} contains no glob metachars; the resolver's value (which
+#   may carry sed metachars in title/description) goes through bash
+#   string substitution, NOT sed.
+resolve_block_tokens() {
+  local rendered="$1"
+  local tokens t name resolver value
+  # Extract distinct tokens from the source. \{[a-z_]+\} matches the
+  # established convention in AGENT_PROMPTS.md.
+  tokens="$(grep -oE '\{[a-z_]+\}' <<<"$rendered" | sort -u || true)"
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    name="${t#\{}"; name="${name%\}}"
+    # ENG-87 review-iter-7 C1: agent-runtime tokens are NOT resolved
+    # here. They are intentionally delivered to the agent as literal
+    # `{name}` text (e.g., `{file}` is filled in by the agent at runtime
+    # to name the file it just wrote). Pre-iter-7 these had identity
+    # passthrough resolvers, but the residual scan below then re-detected
+    # them and the validator died — every brainstorming and reviewing
+    # render dropped to rc!=0. Skip resolution AND skip the residual
+    # scan for these names.
+    if [[ "$AGENT_RUNTIME_TOKENS" == *" $name "* ]]; then
+      continue
+    fi
+    resolver="$(_lookup_resolver "$name")"
+    [[ -n "$resolver" ]] \
+      || die "render-prompt: unknown token '$t' in source — register a resolver in PROMPT_RESOLVERS"
+    value="$("$resolver" 2>/dev/null || printf '')"
+    # Inner expansions are deliberately unquoted: bash 3.2 (macOS system
+    # bash) treats double-quotes inside ${var//pat/rep} as literal pattern
+    # / replacement characters, wrapping the substituted value in literal
+    # quotes. {token} contains no glob metachars and replacements are
+    # interpreted literally, so unquoted is both correct and safe.
+    rendered="${rendered//$t/$value}"
+  done <<<"$tokens"
+  # Render-time validator: any remaining {<lowercase-snake>} is
+  # unresolved AND not on the agent-runtime allowlist. The list-membership
+  # check uses the same substring form as the resolver-skip above so a
+  # name added/removed from one site cannot drift from the other.
+  local _residual_name
+  while IFS= read -r _r; do
+    [[ -z "$_r" ]] && continue
+    _residual_name="${_r#\{}"; _residual_name="${_residual_name%\}}"
+    if [[ "$AGENT_RUNTIME_TOKENS" == *" $_residual_name "* ]]; then
+      continue
+    fi
+    die "render-prompt: unresolved token after registry pass: $_r"
+  done <<<"$(grep -oE '\{[a-z_]+\}' <<<"$rendered" | sort -u || true)"
+  printf '%s' "$rendered"
+}
+
 main() {
   local stage="${1:-}" issue_id="${2:-}"
   [[ -n "$stage" ]] || die "usage: render-prompt.sh <stage> <issue_id|release-meta>"
@@ -181,11 +307,9 @@ main() {
   # Prepend §0 (common rules delivered to every stage). Token interpolation
   # below runs over the full concatenated block, so {issue_id} substitutions
   # inside §0's exit-ramp prose resolve uniformly. Released stage uses sed
-  # for substitution and only resolves {version}/{tag}/{prev_tag}; §0's
-  # {issue_id} reference there is left as a literal placeholder, which is
-  # acceptable because the released agent's main behavior is dictated by §8
-  # and the §0 preamble is an operational guardrail, not a primary control
-  # path.
+  # for substitution; the sed pipeline now also substitutes {issue_id} →
+  # `cross-issue-release-${tag}` so §0's exit-ramp prose ships a usable
+  # token to the released agent (review-iter-7 m5).
   local common_block
   common_block="$(extract_block "$COMMON_SECTION")"
   [[ -n "$common_block" ]] || die "could not extract common rules block (§0); check that AGENT_PROMPTS.md still has '## $COMMON_SECTION' with exactly two column-0 fences"
@@ -193,6 +317,8 @@ main() {
 
   # Released stage is cross-issue: it has no single owning Linear issue. Render with
   # release metadata (version/tag/prev_tag) supplied via env by run-release-observer.sh.
+  # The release block uses {version}/{tag}/{prev_tag} tokens; these are
+  # NOT in PROMPT_RESOLVERS (release-only) and use the legacy sed pass.
   if [[ "$stage" == "released" ]]; then
     local version="${PIPELINE_RELEASE_VERSION:-}"
     local tag="${PIPELINE_RELEASE_TAG:-}"
@@ -203,11 +329,19 @@ main() {
       prev_tag="$(git -C "$TARGET_REPO" describe --tags --abbrev=0 "${tag}^" 2>/dev/null \
         || git -C "$TARGET_REPO" rev-list --max-parents=0 HEAD | head -1)"
     fi
+    # ENG-87 review-iter-7 m5: substitute {issue_id} too. §0's
+    # agent-blocked exit-ramp prose carries `bash bin/pipeline.sh event
+    # {issue_id} verdict halt --reason agent-blocked`; without this
+    # substitution the released agent receives a literal `{issue_id}`
+    # token. Released is cross-issue (no single owning Linear issue);
+    # `cross-issue-release-${tag}` is a synthetic but human-greppable
+    # value the agent's halt comment can reference.
     printf '%s' "$block" \
       | sed \
         -e "s|{version}|$version|g" \
         -e "s|{tag}|$tag|g" \
         -e "s|{prev_tag}|$prev_tag|g" \
+        -e "s|{issue_id}|cross-issue-release-${tag}|g" \
       | append_project_profile "$stage"
     return 0
   fi
@@ -226,66 +360,40 @@ main() {
   brainstorm_file="$(find_doc "$TARGET_REPO/docs/brainstorms" "$issue_id" "$slug")"
   plan_file="$(find_doc "$TARGET_REPO/docs/plans" "$issue_id" "$slug")"
 
-  # Interpolate. Using python for safe substitution (handles multiline description).
-  # Falls back to sed if python unavailable.
   local issue_id_lower branch_name stage_summary_path learned_rules_dir
   issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
   # ENG-79: source the canonical branch-name resolver instead of hand-rolling
-  # the form `feature/<lower>-<slug>`. The hand-rolled form drifted from
-  # `bin/branch-name.sh:31` (which emits `feat/eng-N-…` for Feature/Improvement
-  # issues and `fix/eng-N-…` for Bug issues, per AGENT_PROMPTS.md "Branch-name
-  # convention"). Pre-ENG-67, the orchestrator's legacy `feature/*` coexistence
-  # path silently accommodated the drift; post-ENG-67 the orchestrator strictly
-  # uses `feat/...`, so the prompt's interpolated `{branch_name}` value
-  # (`feature/...`) cannot match the actual checked-out branch. ENG-74 (May 2026)
-  # demonstrated the failure: a build-stage agent ran
-  # `gh pr list --head feature/eng-74-…` from the prompt interpolation, got an
-  # empty result, and emitted `verdict halt reason=agent-blocked` for P1 even
-  # though PR was open on canonical `feat/eng-74-…`.
+  # the form `feature/<lower>-<slug>`. See git history for context (ENG-74).
   branch_name="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id" 2>/dev/null || printf '')"
   [[ -n "$branch_name" ]] \
     || die "render-prompt: branch-name.sh returned empty for $issue_id (Linear-API outage or bug-label resolution failed). Cannot render prompt without a canonical branch name."
   stage_summary_path="$(issue_dir "$issue_id")/stage-summary-${stage}.md"
   learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
 
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$block" "$issue_id" "$issue_id_lower" "$title" "$description" "$date" "$slug" "$brainstorm_file" "$plan_file" "$branch_name" "$stage_summary_path" "$learned_rules_dir" <<'PY' \
-      | append_project_profile "$stage"
-import sys
-tmpl, issue_id, issue_id_lower, title, description, date, slug, brainstorm_file, plan_file, branch_name, stage_summary_path, learned_rules_dir = sys.argv[1:]
-out = tmpl
-repl = {
-  "{issue_id}": issue_id,
-  "{issue_id_lower}": issue_id_lower,
-  "{issue_title}": title,
-  "{issue_description}": description,
-  "{date}": date,
-  "{slug}": slug,
-  "{brainstorm_file}": brainstorm_file,
-  "{plan_file}": plan_file,
-  "{branch_name}": branch_name,
-  "{stage_summary_path}": stage_summary_path,
-  "{learned_rules_dir}": learned_rules_dir,
-}
-for k, v in repl.items():
-  out = out.replace(k, v)
-sys.stdout.write(out)
-PY
-  else
-    printf '%s' "$block" \
-      | sed \
-        -e "s|{issue_id}|$issue_id|g" \
-        -e "s|{issue_id_lower}|$issue_id_lower|g" \
-        -e "s|{date}|$date|g" \
-        -e "s|{slug}|$slug|g" \
-        -e "s|{brainstorm_file}|$brainstorm_file|g" \
-        -e "s|{plan_file}|$plan_file|g" \
-        -e "s|{branch_name}|$branch_name|g" \
-        -e "s|{stage_summary_path}|$stage_summary_path|g" \
-        -e "s|{learned_rules_dir}|$learned_rules_dir|g" \
-      | append_project_profile "$stage"
-    # title and description may contain sed metacharacters — fall back users: install python3.
-  fi
+  # Bind to the resolver-side globals before calling resolve_block_tokens.
+  # The bash literal-substitution path (${var//pat/repl}) is glob-immune
+  # for {token} shapes (no glob metachars in `{name}`) and metacharacter-
+  # safe for resolver values containing sed-meta chars (titles,
+  # descriptions) — replaces the prior python-or-sed branch.
+  _RENDER_ISSUE_ID="$issue_id"
+  _RENDER_ISSUE_ID_LOWER="$issue_id_lower"
+  _RENDER_TITLE="$title"
+  _RENDER_DESCRIPTION="$description"
+  _RENDER_DATE="$date"
+  _RENDER_SLUG="$slug"
+  _RENDER_BRAINSTORM_FILE="$brainstorm_file"
+  _RENDER_PLAN_FILE="$plan_file"
+  _RENDER_BRANCH_NAME="$branch_name"
+  _RENDER_STAGE_SUMMARY_PATH="$stage_summary_path"
+  _RENDER_LEARNED_RULES_DIR="$learned_rules_dir"
+  # ENG-87 review-iter-7 M9: bind _RENDER_DISPATCH_ID like the sibling
+  # _RENDER_* globals so resolver test isolation is uniform across the
+  # registry. Falls through to empty when PIPELINE_DISPATCH_ID is unset
+  # (release-stage main() never reaches this stanza; direct test paths
+  # set _RENDER_DISPATCH_ID directly).
+  _RENDER_DISPATCH_ID="${PIPELINE_DISPATCH_ID-}"
+
+  resolve_block_tokens "$block" | append_project_profile "$stage"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

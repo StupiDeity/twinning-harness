@@ -988,6 +988,265 @@ else
   pass_at "T213: pipeline:abandoned not in drain list"
 fi
 
+# ─── ENG-87: dispatch_id-primary filter (Tasks 11+12) ─────────────────
+# find_fresh_verdict and resume_in_progress_transition gain a strict
+# id-match filter ABOVE the existing timestamp-window code. Legacy
+# issues (no markers anywhere) fall through to the existing behavior
+# per D-005.
+printf '\n--- ENG-87: dispatch_id-primary filter ---\n'
+
+# Override current_dispatch_id with a test-controlled stub. The
+# production helper reads PROJECT_STATE_DIR/<ident>/issue-state.json;
+# overriding here keeps the test self-contained without standing up
+# the per-issue state dir.
+_VH_TEST_DISPATCH_ID=""
+current_dispatch_id() {
+  printf '%s' "$_VH_TEST_DISPATCH_ID"
+}
+
+# Case 87-V1: find_fresh_verdict prefers id-match when markers present.
+# Two verdicts on the issue: an OLDER d0010 pass (createdAt earlier),
+# a NEWER d0011 fail (createdAt later). Current dispatch_id = d0011.
+# The id-match path filters by exact id == current; returns the d0011
+# fail-marker. Pre-ENG-87 timestamp-window logic would also pick d0011
+# here (newer wins), so this case alone doesn't distinguish — but the
+# next case does.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87V1-d0011"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=qa to=building --><!-- meta: dispatch id=ENG-87V1-d0009 stage=qa -->|2026-05-09T08:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=reviewing --><!-- meta: dispatch id=ENG-87V1-d0010 stage=reviewing -->|2026-05-09T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=fail target=implementing --><!-- meta: dispatch id=ENG-87V1-d0011 stage=reviewing -->|2026-05-09T10:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87V1" 2>/dev/null || printf '')"
+if [[ -n "$result" ]] \
+   && [[ "$(jq -r '.event.result' <<<"$result")" == "fail" ]] \
+   && [[ "$(jq -r '.event.target' <<<"$result")" == "implementing" ]]; then
+  pass_at "ENG-87 V1: find_fresh_verdict picks current-dispatch verdict (d0011 fail)"
+else
+  fail_at "ENG-87 V1: find_fresh_verdict id-match" "got: $result"
+fi
+
+# Case 87-V1b: id-match filter rejects unstamped decoy. Three comments:
+# stamped pass (d0010, older), stamped fail (d0011, mid), UNSTAMPED
+# decoy comment with newer createdAt. Pre-ENG-87 timestamp-window logic
+# would pick the unstamped decoy (newest by createdAt). With ENG-87 id
+# filter active, the unstamped decoy is filtered out (markers exist on
+# the issue, so id-match path is taken; the decoy lacks the current id
+# marker → excluded). Returns d0011 fail.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87V1b-d0011"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=qa to=building --><!-- meta: dispatch id=ENG-87V1b-d0009 stage=qa -->|2026-05-09T08:00:00.000Z" \
+  "<!-- pipeline: verdict result=fail target=implementing --><!-- meta: dispatch id=ENG-87V1b-d0011 stage=reviewing -->|2026-05-09T09:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=reviewing -->|2026-05-09T11:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87V1b" 2>/dev/null || printf '')"
+if [[ -n "$result" ]] \
+   && [[ "$(jq -r '.event.result' <<<"$result")" == "fail" ]]; then
+  pass_at "ENG-87 V1b: id-match filter excludes unstamped decoy by createdAt"
+else
+  fail_at "ENG-87 V1b: id-match filter — unstamped decoy" \
+    "expected current-dispatch (d0011) fail, got: $result"
+fi
+
+# Case 87-V2: legacy fallback — no markers anywhere on the issue.
+# find_fresh_verdict falls through to the existing timestamp-window
+# code (per D-005). Returns the latest verdict.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87V2-d0001"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=implementing to=ui -->|2026-05-09T08:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=ui -->|2026-05-09T09:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87V2" 2>/dev/null || printf '')"
+if [[ -n "$result" ]] \
+   && [[ "$(jq -r '.event.result' <<<"$result")" == "pass" ]] \
+   && [[ "$(jq -r '.event.stage' <<<"$result")" == "ui" ]]; then
+  pass_at "ENG-87 V2: legacy fallback — no markers → timestamp-window picks latest verdict"
+else
+  fail_at "ENG-87 V2: legacy fallback" "got: $result"
+fi
+
+# Case 87-V3: id-match path returns empty when markers exist on the
+# issue but none match the current dispatch (i.e., we're a fresh
+# dispatch that hasn't emitted a verdict yet — markers belong to prior
+# cycles only). Strict id-match: NOT timestamp fallback.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87V3-d0042"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=qa to=building --><!-- meta: dispatch id=ENG-87V3-d0040 stage=qa -->|2026-05-09T08:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=reviewing --><!-- meta: dispatch id=ENG-87V3-d0041 stage=reviewing -->|2026-05-09T09:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87V3" 2>/dev/null || printf '')"
+if [[ -z "$result" ]]; then
+  pass_at "ENG-87 V3: strict id-match → empty when current dispatch has not yet emitted (prior-cycle verdicts ignored)"
+else
+  fail_at "ENG-87 V3: strict id-match empty" "got: $result"
+fi
+
+# Case 87-V4: resume_in_progress_transition rejects stale-id transition.
+# Latest transition carries d0008 marker; current_dispatch_id = d0010.
+# The id-mismatch guard fires BEFORE the existing labels-cross-check.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87V4-d0010"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=ENG-87V4-d0008 stage=planning -->|2026-05-09T08:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:planning"
+VH_CURRENT_LABELS="stage:planning pipeline:halted"
+rc=0; resume_in_progress_transition "ENG-87V4" 2>/dev/null || rc=$?
+if [[ "$rc" == "1" ]] && ! calls_contains "add-label ENG-87V4 stage:implementing"; then
+  pass_at "ENG-87 V4: resume_in_progress_transition rejects stale-id transition (d0008 != d0010)"
+else
+  fail_at "ENG-87 V4: stale-id reject" "rc=$rc calls=$(cat "$STUB_LOG")"
+fi
+
+# Case 87-V5: resume_in_progress_transition accepts matching-id transition.
+# Latest transition carries d0010 marker; current_dispatch_id = d0010.
+# Falls through to existing guards (current_stage == from); since
+# stage:planning == from=planning, halted, it should resume.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87V5-d0010"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=ENG-87V5-d0010 stage=planning -->|2026-05-09T08:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:planning"
+VH_CURRENT_LABELS="stage:planning pipeline:halted"
+rc=0; resume_in_progress_transition "ENG-87V5" 2>/dev/null || rc=$?
+if [[ "$rc" == "0" ]] && calls_contains "add-label ENG-87V5 stage:implementing"; then
+  pass_at "ENG-87 V5: resume_in_progress_transition accepts matching-id transition"
+else
+  fail_at "ENG-87 V5: matching-id accept" "rc=$rc calls=$(cat "$STUB_LOG")"
+fi
+
+# Case 87-V6: resume_in_progress_transition legacy fallback — no marker
+# on transition; existing labels-cross-check stays as-is (ENG-41 §4.2).
+# stage:brainstorming ≠ from=planning → existing guard fires → return 1.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87V6-d0001"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-05-09T08:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:brainstorming"
+VH_CURRENT_LABELS="stage:brainstorming pipeline:halted"
+rc=0; resume_in_progress_transition "ENG-87V6" 2>/dev/null || rc=$?
+if [[ "$rc" == "1" ]] && ! calls_contains "add-label ENG-87V6 stage:implementing"; then
+  pass_at "ENG-87 V6: legacy fallback — labels-cross-check fires when transition lacks dispatch marker"
+else
+  fail_at "ENG-87 V6: legacy labels-cross-check" "rc=$rc calls=$(cat "$STUB_LOG")"
+fi
+
+# Restore the production current_dispatch_id (in case more tests follow).
+unset -f current_dispatch_id
+
+# ─── ENG-87 QA-adversarial: cutover + visibility edges ───────────────
+# The strict id-match path activates the moment ANY comment on the
+# issue carries a `<!-- meta: dispatch id=` marker (substring-match
+# against the entire concatenated comments JSON). This creates a
+# silent visibility blind spot during cutover: an issue that already
+# has a legitimate pre-ENG-87 verdict (no marker) gets a marker-bearing
+# comment posted by an unrelated tick (e.g., an operator triage note
+# auto-stamped by a fresh dispatch) — the legacy verdict immediately
+# becomes invisible to find_fresh_verdict because the strict path is
+# now active and the legacy verdict carries no current-dispatch
+# marker.
+#
+# Pin CURRENT behavior: mixed (legacy verdict + new marker on a
+# transition) → strict path activates → legacy verdict filtered out
+# → find_fresh_verdict returns empty → orchestrator may NOT advance
+# the issue based on the legacy verdict.
+#
+# Restore the test stub for current_dispatch_id (was unset above).
+current_dispatch_id() { printf '%s' "${_VH_TEST_DISPATCH_ID:-}"; }
+
+# Re-create stub log used by resume_in_progress_transition.
+reset_calls
+
+# Case 87-QA-CUTOVER-1: legacy verdict (no marker) + a NEW transition
+# marker present on the issue → strict path activates → legacy
+# verdict invisible.
+_VH_TEST_DISPATCH_ID="ENG-87QA-CUT-d0001"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: verdict result=pass stage=reviewing -->|2026-05-08T10:00:00.000Z" \
+  "<!-- pipeline: transition from=reviewing to=qa --><!-- meta: dispatch id=ENG-87QA-CUT-d0001 stage=reviewing -->|2026-05-09T09:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87QA-CUT" 2>/dev/null || printf '')"
+if [[ -z "$result" ]]; then
+  pass_at "ENG-87 QA-CUT-1: cutover blind spot — legacy verdict (no marker) invisible once any marker exists on issue (CURRENT behavior; documented D-005 trade-off)"
+else
+  fail_at "ENG-87 QA-CUT-1: cutover blind spot pin" \
+    "expected empty (legacy filtered), got: $result"
+fi
+
+# Case 87-QA-CUTOVER-2: post-cutover, the legacy verdict's stage CAN
+# still be resumed via the fresh dispatch's own verdict comment. Ship
+# a current-dispatch verdict comment alongside the legacy one →
+# find_fresh_verdict picks the current-dispatch verdict, ignoring the
+# legacy one's freshness. Pin: D-005's "first dispatch post-cutover
+# auto-stamps and unblocks" actually works.
+_VH_TEST_DISPATCH_ID="ENG-87QA-CUT2-d0002"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: verdict result=pass stage=reviewing -->|2026-05-08T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=fail target=implementing --><!-- meta: dispatch id=ENG-87QA-CUT2-d0002 stage=reviewing -->|2026-05-09T11:00:00.000Z")"
+result="$(find_fresh_verdict "ENG-87QA-CUT2" 2>/dev/null || printf '')"
+if [[ -n "$result" ]] \
+   && [[ "$(jq -r '.event.result' <<<"$result")" == "fail" ]]; then
+  pass_at "ENG-87 QA-CUT-2: post-cutover unblock — current-dispatch verdict picked, legacy filtered (D-005 recovery path)"
+else
+  fail_at "ENG-87 QA-CUT-2: post-cutover unblock" \
+    "expected fail verdict (current dispatch), got: $result"
+fi
+
+# Case 87-QA-RESUME-3: resume_in_progress_transition rejects a
+# transition whose marker carries an issue-id mismatch (e.g., another
+# project's ENG-87 leaks a marker via copy-paste in the body). The
+# guard at bin/verdict-handler.sh:408 extracts via grep -oE
+# `<!-- meta: dispatch id=[^[:space:]>]+`; pin current behavior on a
+# fully-different id token (different prefix entirely).
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-87QA-R3-d0010"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=DIFFERENT-PROJECT-X-d0008 stage=planning -->|2026-05-09T08:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:planning"
+VH_CURRENT_LABELS="stage:planning pipeline:halted"
+rc=0; resume_in_progress_transition "ENG-87QA-R3" 2>/dev/null || rc=$?
+if [[ "$rc" == "1" ]]; then
+  pass_at "ENG-87 QA-R3: cross-project foreign id-token (DIFFERENT-PROJECT-X-d0008) rejected as stale (id-mismatch guard fires)"
+else
+  fail_at "ENG-87 QA-R3: cross-project foreign id" \
+    "rc=$rc calls=$(cat "$STUB_LOG") — expected guard to fire on non-matching id"
+fi
+unset -f current_dispatch_id
+
+# ─── ENG-87 review-iter-7 m1: dispatch-id grep uses tail -1, not head -1 ──
+# resume_in_progress_transition's id-mismatch guard at
+# bin/verdict-handler.sh:408 reads the LAST transition's body and
+# extracts the dispatch_id via:
+#   grep -oE '<!-- meta: dispatch id=[^[:space:]>]+' <<<"$last_body" \
+#     | head -1 | sed -E 's/.*id=//'
+# `_inject_dispatch_marker` always APPENDS the marker (last line). The
+# reader's `head -1` is the WRONG bookend — for a body that legitimately
+# quotes a prior dispatch's marker (e.g., a halt-recap comment that
+# embeds an old marker substring as part of its prose), head -1 returns
+# the QUOTED id, while the auto-injected real marker is at the tail.
+# Switch to `tail -1` to match the writer's "always append" semantics
+# (the same pattern parse_pipeline_marker uses for marker family
+# precedence at common.sh:315).
+printf '\n--- ENG-87 m1-iter7: dispatch-id grep uses tail -1 ---\n'
+
+_iter7_m1_line="$(grep -nE 'grep -oE .*<!-- meta: dispatch id=' "$SCRIPT_DIR/verdict-handler.sh" \
+  | grep -F 'last_body' | head -1)"
+# The next line should be the head/tail filter. Read the surrounding
+# 3-line context.
+_iter7_m1_lineno="$(awk -F: '{print $1}' <<<"$_iter7_m1_line")"
+if [[ -z "$_iter7_m1_lineno" ]]; then
+  fail_at "ENG-87 m1-iter7: dispatch-id grep site present" \
+    "could not locate the grep + head/tail filter near 'last_body' in verdict-handler.sh — has the call site moved?"
+else
+  _iter7_m1_filter_line="$(awk -v ln="$((_iter7_m1_lineno + 1))" 'NR==ln' "$SCRIPT_DIR/verdict-handler.sh")"
+  if grep -qF 'tail -1' <<<"$_iter7_m1_filter_line"; then
+    pass_at "ENG-87 m1-iter7: dispatch-id grep at last_body uses tail -1 (matches writer's always-append semantics)"
+  else
+    fail_at "ENG-87 m1-iter7: dispatch-id grep at last_body uses tail -1" \
+      "filter line: $_iter7_m1_filter_line — should be 'tail -1' so the reader picks the auto-injected (last) marker, not a quoted prose marker (first)"
+  fi
+  unset _iter7_m1_filter_line
+fi
+unset _iter7_m1_line _iter7_m1_lineno
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

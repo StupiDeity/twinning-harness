@@ -440,6 +440,111 @@ transcript (the `entry-conditions: skip` log line) and
 via Linear comments (D-003 trade-off: cost-recovery vs Linear-thread
 silence).
 
+## Cross-dispatch staleness contract (ENG-87)
+
+Six prior tickets (ENG-77, ENG-41 §1.1+§1.2, ENG-78, ENG-79, ENG-67)
+each manifested the same structural failure: a fresh dispatch's reader
+treats data written by a PRIOR dispatch as if it were current. Each
+prior fix patched one medium (per-issue file, Linear comment freshness,
+Linear label, prompt token, worktree path) with that medium's natural
+primitive. ENG-87 ships a unified hard hand-off contract.
+
+**Glue: `PIPELINE_DISPATCH_ID`.** Allocated by `bin/run-stage.sh::main`
+once per dispatch via `bin/common.sh::allocate_dispatch_id`. Format:
+`ENG-N-d<NNNN>` (4-digit zero-padded; monotonic per issue). Persisted
+in `$PROJECT_STATE_DIR/<ident>/issue-state.json::current_dispatch_id`
++ `current_dispatch_seq`. Exported as `PIPELINE_DISPATCH_ID` and
+inherited by `bin/dispatch.sh`'s `env`-block subshell, the agent's
+`bash bin/linear.sh` calls, and the orchestrator's post-dispatch
+envelope validator. The reader-side helper `current_dispatch_id <issue>`
+returns the persisted id (or empty string if unallocated, e.g. legacy
+pre-cutover issues).
+
+**Per-medium primitives.** Each cheapest for its medium:
+
+| Medium | Primitive | Site |
+|---|---|---|
+| Per-issue local files | clear-on-dispatch-start | `bin/run-stage.sh::_clear_current_stage_slots` (current-stage `stage-summary-*.md` + `wait-*.json`; OTHER stages preserved for loopback reads) |
+| Linear comments | auto-inject `<!-- meta: dispatch id=… stage=… -->` at chokepoint | `bin/linear.sh::_inject_dispatch_marker` (idempotent; skipped when env unset → operator-manual lane) |
+| Linear labels | lane fence | `bin/linear.sh::_check_lane` (ENG-41 — already shipped) |
+| Prompt tokens | resolver registry + render-time validator | `bin/render-prompt.sh::PROMPT_RESOLVERS` (twelve resolvers; unknown `{token}` dies loud) |
+
+**Reader-side filters.** `bin/verdict-handler.sh::find_fresh_verdict`
+prefers a `dispatch_id`-equality match over the timestamp window when
+ANY comment on the issue carries a `meta: dispatch id=` marker.
+`bin/verdict-handler.sh::resume_in_progress_transition` rejects a
+`pipeline: transition` whose `meta: dispatch id=` disagrees with the
+current dispatch id. **Soft-fallback (D-005):** legacy issues with no
+markers anywhere fall through to the existing timestamp-window /
+labels-cross-check code (preserves ENG-41 §4.2's guard); the fallback
+expires the first time the orchestrator dispatches the issue
+post-cutover (the dispatch's auto-injection puts a marker on the next
+comment, and subsequent ticks take the strict id-match path).
+
+**Detective backstop.** `bin/run-stage.sh::_validate_dispatch_envelope`
+runs after the rc=25 agent-contract validator and before
+`post_completion_comment`. It scans the per-stage transcript sidecar
+(`$(issue_dir)/.envelope-transcript-<stage>`) for invocations matching
+`mcp__plugin_linear` (Linear MCP forks) or `curl https://api.linear.app`
+(direct Linear HTTP). On any match: emits
+`<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->`
+via `bin/pipeline.sh event` and exits 29. The validator is fail-open
+on a missing sidecar (detective-only; not a primary defense). Halt
+reason `dispatch-envelope-violation` (registered in
+`bin/pipeline-events.json::halt_reasons`) and exit code 29
+(`envelope-violation` in `failure_outcome_for_exit`).
+
+**`dispatch_history.jsonl`.** New per-issue append-only forensic log
+at `$(issue_dir)/dispatch_history.jsonl`. Two rows per dispatch
+(start + end). NEVER cleared; never read at runtime by decision-making
+code. Consumed by retrospective + manual triage; surfacing in
+`bin/status.sh` is a separate ticket. **Accepted YAGNI cost.** The
+~95 LOC writer + 8 module globals + idempotency sentinel ship without
+a runtime consumer (the retrospective is the first reader, and that
+ticket is open as ENG-92). Trade-off: paying the maintenance cost now
+to capture forensic data starting at iter-1 of the contract avoids
+having to back-fill missing `dispatch_id`-stamped history rows the
+moment a real incident lands. Reviewers should NOT trim the writer
+absent a separate decision to defer the forensic capture surface.
+
+**Recovery.** `bash bin/pipeline.sh decide ENG-N --action continue`
+(see "Failure-mode quick reference" §) clears the halt label and
+re-allocates a fresh `dispatch_id` on the next tick. The transcript
+sidecar at `$(issue_dir)/.envelope-transcript-<stage>` is preserved
+across the halt for forensic review and removed by the next dispatch's
+pre-clean at `bin/dispatch.sh::_render_and_capture_stream` (line 83).
+The `dispatch_history.jsonl` audit log carries the halted dispatch's
+start+end rows past the resume.
+
+**Forensic asymmetry post-resume.** After `--action continue` allocates
+a fresh `dispatch_id` (e.g. d0008 supersedes d0007), the strict
+id-match path in `find_fresh_verdict` filters the d0007 halt comment
+OUT — its `meta: dispatch id=d0007` marker mismatches the current d0008.
+The issue resumes correctly (the next dispatch's verdict is auto-
+injected with d0008 and surfaces normally), but operator-triage tools
+that read verdict history (`bin/status.sh`, manual `find_fresh_verdict`
+grep) will see "no fresh verdict" between the resume and the next
+dispatch's first verdict. Inspect prior halts directly via
+`bin/linear.sh get-comments` + a `verdict result=halt` filter; the
+`dispatch_history.jsonl` audit log is also intact across resume.
+Trade-off accepted (D-005): forensic regression is the cost of strict
+id-match; loosening to accept "previous-dispatch-id" halts as visible-
+but-superseded would re-introduce the V3 vulnerability the strict path
+prevents.
+
+**Operator gotchas.** A dispatch that crashes mid-flight between
+`allocate_dispatch_id` and `_clear_current_stage_slots` leaves a
+`dispatch_history.jsonl` start row without an end row; the next tick's
+allocator increments past it monotonically. The clear-on-start fires
+unconditionally on every fresh dispatch, so a stale `stage-summary-*.md`
+or `wait-*.json` from the crashed dispatch is gone before the agent
+starts. The chained-command blind spot in `assert_no_tool_invocation`
+(documented at `bin/run-stage.sh:867-881` and `A-020` in the plan)
+applies to the envelope validator too — `bash bin/linear.sh add-comment …; mcp__plugin_linear …`
+inside a single `tool_use.input.command` string evades the startswith
+prefix match. AGENT_PROMPTS.md preamble's "Dispatch identifier and
+freshness contract" subsection is the prompt-side defense for that gap.
+
 ## When wiring a new script
 
 - `source "$SCRIPT_DIR/common.sh"` first, before anything else. It enforces `TARGET_REPO`

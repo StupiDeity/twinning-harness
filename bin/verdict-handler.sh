@@ -56,6 +56,10 @@ _vh_protocol_violation() {
   bash "$_VH_SCRIPT_DIR/linear.sh" add-or-update-comment \
     "protocol-violation/$case_id/$issue" "$issue" "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
+  # ENG-87 review-iter-7 M3: cross-file mutation of run-stage.sh's
+  # verdict_emitted global is gone — _append_dispatch_end_row reads
+  # find_fresh_verdict at trap-fire time and picks up the halt comment
+  # this function just posted via add-or-update-comment.
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
 }
 
@@ -87,34 +91,69 @@ find_fresh_verdict() {
   comments="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-comments "$issue")"
   [[ -z "$comments" || "$comments" == "null" ]] && { printf ''; return 0; }
 
-  # Find the most recent transition-event timestamp to set freshness floor.
-  # Iterate comments through parse_pipeline_marker; pick max createdAt where
-  # event=transition. Comments without a recognizable marker are skipped.
-  local last_transition_ts=""
-  local row body ts ev
-  while IFS=$'\t' read -r ts body; do
-    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
-    [[ -z "$ev" ]] && continue
-    if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]]; then
-      [[ "$ts" > "$last_transition_ts" ]] && last_transition_ts="$ts"
-    fi
-  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+  # ENG-87: dispatch_id-primary filter (D-005). When ANY comment on the
+  # issue carries a dispatch marker, filter strictly by current
+  # dispatch_id; legacy issues (no markers anywhere) fall through to the
+  # timestamp-window code below.
+  local _curr_id _has_any_marker
+  _curr_id="$(current_dispatch_id "$issue" 2>/dev/null || printf '')"
+  _has_any_marker=0
+  if grep -qF '<!-- meta: dispatch id=' <<<"$comments"; then
+    _has_any_marker=1
+  fi
 
-  # Pick the latest actionable verdict event (pass/fail/halt — NOT wait) with
-  # createdAt > last_transition_ts. pipeline-wait is intentionally excluded:
-  # the wait shape signals a soft re-dispatch, not a state transition.
   local fresh_ts="" fresh_body="" fresh_id=""
-  while IFS=$'\t' read -r ts id body; do
-    [[ -n "$last_transition_ts" && ! "$ts" > "$last_transition_ts" ]] && continue
-    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
-    [[ -z "$ev" ]] && continue
-    [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
-    # Exclude wait — not an actionable transition trigger.
-    [[ "$(jq -r '.result' <<<"$ev")" == "wait" ]] && continue
-    if [[ "$ts" > "$fresh_ts" ]]; then
-      fresh_ts="$ts"; fresh_body="$body"; fresh_id="$id"
+
+  if [[ -n "$_curr_id" && "$_has_any_marker" == "1" ]]; then
+    # Strict id-match path. Iterate verdict-event comments whose body
+    # carries the current dispatch_id marker; pick the latest by ts.
+    # Wait verdicts are excluded (not actionable).
+    local _id_ts="" _id_body="" _id_id="" body ts id ev
+    while IFS=$'\t' read -r ts id body; do
+      ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+      [[ -z "$ev" ]] && continue
+      [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+      [[ "$(jq -r '.result' <<<"$ev")" == "wait" ]] && continue
+      # Comment body must carry the current dispatch_id marker.
+      if ! grep -qF "<!-- meta: dispatch id=$_curr_id" <<<"$body"; then
+        continue
+      fi
+      if [[ "$ts" > "$_id_ts" ]]; then
+        _id_ts="$ts"; _id_body="$body"; _id_id="$id"
+      fi
+    done < <(jq -r '.[] | "\(.createdAt)\t\(.id)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+    if [[ -n "$_id_body" ]]; then
+      fresh_ts="$_id_ts"; fresh_body="$_id_body"; fresh_id="$_id_id"
+    else
+      # Markers exist but none match current → strict empty (no fresh
+      # verdict from THIS dispatch yet). Caller treats as "no marker".
+      printf ''
+      return 0
     fi
-  done < <(jq -r '.[] | "\(.createdAt)\t\(.id)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+  else
+    # Legacy fallback (no markers on issue, or current_dispatch_id
+    # unset): existing timestamp-window logic.
+    local last_transition_ts=""
+    local body ts id ev
+    while IFS=$'\t' read -r ts body; do
+      ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+      [[ -z "$ev" ]] && continue
+      if [[ "$(jq -r '.event' <<<"$ev")" == "transition" ]]; then
+        [[ "$ts" > "$last_transition_ts" ]] && last_transition_ts="$ts"
+      fi
+    done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+
+    while IFS=$'\t' read -r ts id body; do
+      [[ -n "$last_transition_ts" && ! "$ts" > "$last_transition_ts" ]] && continue
+      ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+      [[ -z "$ev" ]] && continue
+      [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+      [[ "$(jq -r '.result' <<<"$ev")" == "wait" ]] && continue
+      if [[ "$ts" > "$fresh_ts" ]]; then
+        fresh_ts="$ts"; fresh_body="$body"; fresh_id="$id"
+      fi
+    done < <(jq -r '.[] | "\(.createdAt)\t\(.id)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
+  fi
 
   [[ -z "$fresh_body" ]] && { printf ''; return 0; }
 
@@ -335,8 +374,9 @@ resume_in_progress_transition() {
 
   # Iterate comments through parse_pipeline_marker; pick the latest event=transition
   # by createdAt and extract its from/to. Comments without a recognizable marker
-  # are skipped.
-  local last_ts="" ts body ev
+  # are skipped. Capture the body itself (last_body) for the ENG-87 dispatch_id
+  # mismatch guard below.
+  local last_ts="" last_body="" ts body ev
   from=""; to=""
   while IFS=$'\t' read -r ts body; do
     ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
@@ -344,11 +384,35 @@ resume_in_progress_transition() {
     [[ "$(jq -r '.event' <<<"$ev")" != "transition" ]] && continue
     if [[ "$ts" > "$last_ts" ]]; then
       last_ts="$ts"
+      last_body="$body"
       from="$(jq -r '.from // ""' <<<"$ev")"
       to="$(jq -r '.to // ""' <<<"$ev")"
     fi
   done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments")
   [[ -z "$from" || -z "$to" ]] && return 1
+
+  # ENG-87 §4.3: dispatch_id-mismatch guard. When the latest transition
+  # comment carries a dispatch marker, compare against the current
+  # dispatch id. A mismatch means the transition is from a prior cycle —
+  # refuse to compound. Strictly stronger than the existing labels-
+  # cross-check (which stays as legacy fallback for unmarked transitions
+  # per D-005).
+  local _curr_id _last_dispatch_id
+  _curr_id="$(current_dispatch_id "$issue" 2>/dev/null || printf '')"
+  if [[ -n "$_curr_id" ]]; then
+    # ENG-87 review-iter-7 m1: tail -1 (not head -1). _inject_dispatch_marker
+    # always APPENDS its marker (last line), so the writer's contract is
+    # "last marker is canonical." Pre-iter-7 the reader used head -1
+    # which on a body that legitimately quotes a prior marker (e.g., a
+    # halt body diagnosing cross-dispatch staleness) would return the
+    # quoted-prose id, not the auto-injected real id at the tail.
+    _last_dispatch_id="$(grep -oE '<!-- meta: dispatch id=[^[:space:]>]+' <<<"$last_body" \
+      | tail -1 | sed -E 's/.*id=//')"
+    if [[ -n "$_last_dispatch_id" && "$_last_dispatch_id" != "$_curr_id" ]]; then
+      log "verdict-handler: skipping resume — transition dispatch_id ($_last_dispatch_id) != current ($_curr_id)"
+      return 1
+    fi
+  fi
 
   current_stage="$(bash "$_VH_SCRIPT_DIR/linear.sh" stage-of "$issue")"
   current_stage="${current_stage#stage:}"

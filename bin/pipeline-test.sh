@@ -464,6 +464,95 @@ else
 fi
 _ar_clear "ENG-5815"
 
+# ── PR-Z1 (ENG-87 review-iter-2 C1'): drain preserves dispatch_id allocator
+# fields when removing classify-set fields. Pre-fix, the drain did rm -f on
+# the file for skip-until-human-acts policy, so the next allocator read
+# prior_seq=0 and re-emitted d0001 — colliding with the original first
+# dispatch's id and re-introducing the V3 vulnerability the strict id-match
+# path was designed to prevent. The fix: write a stripped JSON that keeps
+# only current_dispatch_seq / current_dispatch_id / current_stage.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+mkdir -p "$PROJECT_STATE_DIR/ENG-5820"
+jq -cn '{
+  policy: "skip-until-human-acts",
+  reason: "test-classify-fields-must-be-stripped",
+  retry_count: 3,
+  evidence: {pipeline_content_hash: "abc", branch_head_sha: "def"},
+  current_dispatch_seq: 7,
+  current_dispatch_id: "ENG-5820-d0007",
+  current_stage: "implementing"
+}' > "$PROJECT_STATE_DIR/ENG-5820/issue-state.json"
+LABELS_ON="pipeline:halted,pipeline:skip-until-human-acts" STAGE_OF="stage:implementing" \
+  _ar_decide "ENG-5820" --action continue || true
+state_present=0; [[ -e "$PROJECT_STATE_DIR/ENG-5820/issue-state.json" ]] && state_present=1
+got_seq="$(jq -r '.current_dispatch_seq // ""' "$PROJECT_STATE_DIR/ENG-5820/issue-state.json" 2>/dev/null || printf '')"
+got_id="$(jq -r '.current_dispatch_id // ""' "$PROJECT_STATE_DIR/ENG-5820/issue-state.json" 2>/dev/null || printf '')"
+got_stage="$(jq -r '.current_stage // ""' "$PROJECT_STATE_DIR/ENG-5820/issue-state.json" 2>/dev/null || printf '')"
+got_policy="$(jq -r '.policy // ""' "$PROJECT_STATE_DIR/ENG-5820/issue-state.json" 2>/dev/null || printf '')"
+got_reason="$(jq -r '.reason // ""' "$PROJECT_STATE_DIR/ENG-5820/issue-state.json" 2>/dev/null || printf '')"
+got_retry="$(jq -r '.retry_count // ""' "$PROJECT_STATE_DIR/ENG-5820/issue-state.json" 2>/dev/null || printf '')"
+if [[ "$state_present" == "1" \
+      && "$got_seq" == "7" \
+      && "$got_id" == "ENG-5820-d0007" \
+      && "$got_stage" == "implementing" \
+      && "$got_policy" == "" \
+      && "$got_reason" == "" \
+      && "$got_retry" == "" ]]; then
+  pass_at "PR-Z1: drain preserves dispatch_id allocator fields, strips classify-set fields"
+else
+  fail_at "PR-Z1: drain dispatch_id preservation" \
+    "state=$state_present seq=$got_seq id=$got_id stage=$got_stage policy=$got_policy reason=$got_reason retry=$got_retry"
+fi
+_ar_clear "ENG-5820"
+
+# ── PR-Z2 (ENG-87 review-iter-2 C1'): post-drain, allocate_dispatch_id
+# increments past the preserved seq instead of resetting to d0001. This
+# is the actual collision-prevention contract the C1' fix targets:
+# operator runs --action continue on a halt; next dispatch must NOT
+# re-emit a previously-used id.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+mkdir -p "$PROJECT_STATE_DIR/ENG-5821"
+jq -cn '{
+  policy: "skip-until-human-acts",
+  reason: "envelope-violation",
+  evidence: {pipeline_content_hash: "h", branch_head_sha: "s"},
+  current_dispatch_seq: 7,
+  current_dispatch_id: "ENG-5821-d0007",
+  current_stage: "implementing"
+}' > "$PROJECT_STATE_DIR/ENG-5821/issue-state.json"
+LABELS_ON="pipeline:halted,pipeline:skip-until-human-acts" STAGE_OF="stage:implementing" \
+  _ar_decide "ENG-5821" --action continue || true
+# Source common.sh to call allocate_dispatch_id directly; mimic next-tick allocator.
+PIPELINE_STAGE="implementing" next_id="$(allocate_dispatch_id "ENG-5821" 2>/dev/null || printf '')"
+if [[ "$next_id" == "ENG-5821-d0008" ]]; then
+  pass_at "PR-Z2: post-drain allocator monotonically increments to d0008 (no d0001 collision)"
+else
+  fail_at "PR-Z2: post-drain monotonic seq" "expected ENG-5821-d0008, got: $next_id"
+fi
+_ar_clear "ENG-5821"
+
+# ── PR-Z3 (ENG-87 review-iter-2 C1'): drain on file that has ONLY
+# allocator fields (no classify-set fields, e.g. an early-halt before
+# classify_failure ever ran) is a no-op — preserves file unchanged
+# and prints "false" so the metric reports state_file=false honestly.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+mkdir -p "$PROJECT_STATE_DIR/ENG-5822"
+jq -cn '{
+  current_dispatch_seq: 4,
+  current_dispatch_id: "ENG-5822-d0004",
+  current_stage: "implementing"
+}' > "$PROJECT_STATE_DIR/ENG-5822/issue-state.json"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
+  _ar_decide "ENG-5822" --action continue || true
+metric_line="$(grep "^halt-resume ENG-5822 implementing atomic-reset 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+got_seq="$(jq -r '.current_dispatch_seq // ""' "$PROJECT_STATE_DIR/ENG-5822/issue-state.json" 2>/dev/null || printf '')"
+if [[ "$got_seq" == "4" && "$metric_line" == *"state_file=false"* ]]; then
+  pass_at "PR-Z3: drain no-op when no classify-set fields present (state_file=false; allocator preserved)"
+else
+  fail_at "PR-Z3: drain no-op semantics" "seq=$got_seq metric='$metric_line'"
+fi
+_ar_clear "ENG-5822"
+
 # ── PR-X6 (ENG-69): continue clears the per-issue consecutive-failures counter
 # Plant a non-empty $(issue_dir)/.consecutive-failures (set by
 # tally_leaked_in_scope_failure or route_run_stage_exit's per-issue arm) AND

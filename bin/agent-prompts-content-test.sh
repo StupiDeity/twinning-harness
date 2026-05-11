@@ -243,33 +243,34 @@ fi
 # overwrite-every-dispatch rule in §5 so a future prompt edit can't
 # silently drop the contract.
 
-# §5 must say "overwrite on every dispatch" (case-insensitive on
-# "overwrite" since "overwritten" / "overwrite" are both reasonable).
-if printf '%s\n' "$s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
-  ok "§5 mandates 'overwrite on every dispatch' for the stage-summary file"
+# Iter-7 M4 (post-fix): the staleness mandate moved to §0's fenced block
+# as the SSOT. Test against the rendered §5 body (= §0 + §5) so we
+# verify the rule reaches review-stage agents via the same render path
+# every other stage uses. The legacy §5-only assertions broke when M4
+# hoisted the boilerplate; their behavior is preserved here against
+# rendered_stage_body output.
+rendered_s5="$(rendered_stage_body "## 5. Review Agent")"
+if printf '%s\n' "$rendered_s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+  ok "§5 (rendered, post-iter-7-M4): mandates 'overwrite on every dispatch' for the stage-summary file"
 else
-  nope "§5 mandates 'overwrite on every dispatch' for the stage-summary file" \
+  nope "§5 (rendered, post-iter-7-M4): mandates 'overwrite on every dispatch'" \
     "without this rule, the reviewer can re-emit verdicts without a fresh file write — orchestrator posts stale body, implement-loopback gets no new feedback (ENG-71 May 2026 cycle)"
 fi
 
-# §5 must explicitly reject the "read-then-conditionally-skip" misreading
-# (the way ENG-71's iters 6-9 actually behaved — agent read existing file,
-# decided findings unchanged, didn't re-write).
-if printf '%s\n' "$s5" | grep -qF 'read-then-conditionally-skip'; then
-  ok "§5 explicitly bans 'read-then-conditionally-skip' on the stage-summary file"
+if printf '%s\n' "$rendered_s5" | grep -qF 'read-then-conditionally-skip'; then
+  ok "§5 (rendered): bans 'read-then-conditionally-skip' on the stage-summary file"
 else
-  nope "§5 explicitly bans 'read-then-conditionally-skip' on the stage-summary file" \
+  nope "§5 (rendered): bans 'read-then-conditionally-skip'" \
     "the carve-out names the exact ENG-71 misreading; without it, agents may re-derive the same wrong behavior"
 fi
 
-# §5 must cite the ENG-71 incident as precedent so the rule's reason is
-# self-documenting.
-if printf '%s\n' "$s5" | grep -qE 'ENG-71.*(May|2026)'; then
-  ok "§5 cites the ENG-71 incident as the reason for the overwrite rule"
+if printf '%s\n' "$rendered_s5" | grep -qE 'ENG-71.*(May|2026)'; then
+  ok "§5 (rendered): cites the ENG-71 incident as the reason for the overwrite rule"
 else
-  nope "§5 cites the ENG-71 incident" \
+  nope "§5 (rendered): cites the ENG-71 incident" \
     "without the precedent, a future prompt-cleanup pass might decide the rule is overcautious and remove it"
 fi
+unset rendered_s5
 
 # ─── ENG-77 QA-adversarial: §5 invariant deepening (QA round) ──────────
 # Background: the existing three D-002 asserts (lines 211, 221, 230)
@@ -282,55 +283,61 @@ fi
 # the rendered-prompt-body subset and the negative-example evasion
 # vector the brainstorm §7 E-6 considered implausible.
 
-# Extract §5's fenced block — same content extract_block emits.
-in_fence_s5="$(awk '
-  /^## 5\. Review Agent/ { in_s = 1; next }
+# Iter-7 M4: the boilerplate moved to §0's fenced block. The QA-A/QA-B
+# evasion vector (rule outside §5's fenced block but still in §5) no
+# longer applies — §5 doesn't carry the rule directly. Pin against
+# §0's fenced block instead so a future edit that moves the contract
+# OUT of §0's fenced body still trips this guard.
+in_fence_s0="$(awk '
+  /^## 0\. Common rules/ { in_s = 1; next }
   /^## [0-9]+\./ && in_s { exit }
   in_s && /^```/ { in_f = !in_f; next }
   in_s && in_f { print }
 ' "$PROMPTS")"
 
-# QA-A: MANDATORY phrase falls INSIDE the rendered fenced block.
-# Catches a future cleanup that demotes the rule out of what the
-# agent sees (intro/outro prose) while leaving the literal phrase in
-# §5 — D-002 line 211's section-wide regex false-passes.
-if printf '%s\n' "$in_fence_s5" | grep -qiE 'overwrite[ d]+on every dispatch'; then
-  ok "§5 (QA-A): 'overwrite on every dispatch' falls INSIDE the rendered fenced block"
+if printf '%s\n' "$in_fence_s0" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+  ok "§0 (QA-A, post-M4): 'overwrite on every dispatch' falls INSIDE the rendered fenced block"
 else
-  nope "§5 (QA-A): 'overwrite on every dispatch' falls INSIDE the rendered fenced block" \
-    "phrase exists in §5 (D-002 line 211 still passes) but outside the fenced block — render-prompt.sh::extract_block does not deliver it to the agent"
+  nope "§0 (QA-A, post-M4): 'overwrite on every dispatch' falls INSIDE the rendered fenced block" \
+    "phrase exists in §0 prose but outside the fenced block — render-prompt.sh::extract_block does not deliver it to any agent"
 fi
 
-# QA-B: 'read-then-conditionally-skip' carve-out lands inside the
-# fenced block (companion check to QA-A on D-002 assert 2).
-if printf '%s\n' "$in_fence_s5" | grep -qF 'read-then-conditionally-skip'; then
-  ok "§5 (QA-B): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block"
+if printf '%s\n' "$in_fence_s0" | grep -qF 'read-then-conditionally-skip'; then
+  ok "§0 (QA-B, post-M4): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block"
 else
-  nope "§5 (QA-B): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block" \
-    "phrase exists in §5 (D-002 line 221 still passes) but outside the fenced block"
+  nope "§0 (QA-B, post-M4): 'read-then-conditionally-skip' carve-out falls INSIDE the rendered fenced block" \
+    "phrase exists in §0 prose but outside the fenced block — render-prompt.sh::extract_block does not deliver it to any agent"
+fi
+unset in_fence_s0
+
+# Iter-7 M4 (post-fix): QA-C and QA-D moved with the boilerplate. Pin
+# the citation + negative-context guards on §0's fenced block (the new
+# SSOT). The §5-on-the-fenced-block evasion vector no longer applies
+# (§5 doesn't carry the mandate); the §0 vector replaces it.
+in_fence_s0_qa="$(awk '
+  /^## 0\. Common rules/ { in_s = 1; next }
+  /^## [0-9]+\./ && in_s { exit }
+  in_s && /^```/ { in_f = !in_f; next }
+  in_s && in_f { print }
+' "$PROMPTS")"
+
+# QA-C (post-M4): ENG-71/77 citation lives inside §0's fenced block.
+if printf '%s\n' "$in_fence_s0_qa" | grep -qE 'ENG-(71|77).*(May|2026)'; then
+  ok "§0 (QA-C, post-M4): ENG-71/77 citation falls INSIDE the rendered fenced block"
+else
+  nope "§0 (QA-C, post-M4): ENG-71/77 citation falls INSIDE the rendered fenced block" \
+    "citation exists in §0 prose but outside the fenced block — render-prompt.sh::extract_block does not deliver it to any agent"
 fi
 
-# QA-C: ENG-71 citation lands inside the fenced block.
-if printf '%s\n' "$in_fence_s5" | grep -qE 'ENG-71.*(May|2026)'; then
-  ok "§5 (QA-C): ENG-71 citation falls INSIDE the rendered fenced block"
+# QA-D (post-M4): no negative-example context preceding the MANDATORY
+# phrase inside §0's fenced block.
+if printf '%s\n' "$in_fence_s0_qa" | grep -qiE '\b(do not|don'\''t|never)[^.]*overwrite[ d]+on every dispatch'; then
+  nope "§0 (QA-D, post-M4): MANDATORY phrase not in same-line negative-example context" \
+    "found a negation (do not/don't/never) on the same line preceding 'overwrite on every dispatch' — literal-presence regex would false-pass against an anti-instruction"
 else
-  nope "§5 (QA-C): ENG-71 citation falls INSIDE the rendered fenced block" \
-    "citation exists in §5 (D-002 line 230 still passes) but outside the fenced block"
+  ok "§0 (QA-D, post-M4): MANDATORY phrase not in same-line negative-example context"
 fi
-
-# QA-D: MANDATORY phrase NOT introduced by a same-line negation. The
-# brainstorm §7 E-6 considered "DO NOT overwrite on every dispatch —
-# that wastes tokens" implausible because all three pinned phrases
-# would need to coexist with negative-context wording. Promote that
-# implausibility to enforcement. Per-line regex avoids false-positive
-# on the sibling 'do not read-then-conditionally-skip' clause that
-# legitimately sits one line below the MANDATORY phrase.
-if printf '%s\n' "$in_fence_s5" | grep -qiE '\b(do not|don'\''t|never)[^.]*overwrite[ d]+on every dispatch'; then
-  nope "§5 (QA-D): MANDATORY phrase not in same-line negative-example context" \
-    "found a negation (do not/don't/never) on the same line preceding 'overwrite on every dispatch' — D-002 line 211's literal-presence regex would false-pass against an anti-instruction"
-else
-  ok "§5 (QA-D): MANDATORY phrase not in same-line negative-example context"
-fi
+unset in_fence_s0_qa
 
 # ─── ENG-53 #11(a): every stage prompt has the no-probe + halt-instead ──
 # Pre-fix: agents routinely posted throwaway Linear comments (`test`,
@@ -980,6 +987,174 @@ if grep -qE '\benv[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+ba
        '`env VAR=val bash bin/...` is also unmatchable (first token is env, not bash); a copy-pasteable example would re-trigger the ENG-64 sandbox denial under a different shape'
 else
   ok 'ENG-74 QA: no `env VAR=val bash bin/...` command shape anywhere in AGENT_PROMPTS.md'
+fi
+
+# ─── ENG-87 review-iter-7 M4: stage-summary mandate hoisted to §0 ────
+# Pre-iter-7, the "MANDATORY — overwrite on every dispatch" clause +
+# the "do not read-then-conditionally-skip" carve-out + the ENG-71/77
+# incident citation were duplicated across §§1-7 (~6 sites). Iter-7 M4
+# flagged that as a regression of the §0 SSOT consolidation. Post-fix,
+# §0 carries the contract once; every per-stage block inherits it via
+# render-prompt.sh::extract_block + main()'s `block="$common_block"$'\n'"$block"`
+# prepend. The rendered_stage_body helper exercises that exact path
+# (= §0 fenced block + per-stage fenced block); switching to it is
+# how this test now verifies the contract reaches every stage.
+assert_overwrite_mandate() {
+  local section_name="$1" stage_key="$2"
+  local body; body="$(rendered_stage_body "$section_name")"
+  if printf '%s\n' "$body" | grep -qiE 'overwrite[ d]+on every dispatch'; then
+    ok "${stage_key}: mandates 'overwrite on every dispatch' (delivered via §0)"
+  else
+    nope "${stage_key}: mandates 'overwrite on every dispatch' (delivered via §0)" \
+      "without this rule, the ${stage_key} agent can re-emit verdicts without a fresh file write — orchestrator posts stale body, downstream loopback gets no new feedback (ENG-77/ENG-71 May 2026 cycle)"
+  fi
+  if printf '%s\n' "$body" | grep -qF 'read-then-conditionally-skip'; then
+    ok "${stage_key}: bans 'read-then-conditionally-skip' (delivered via §0)"
+  else
+    nope "${stage_key}: bans 'read-then-conditionally-skip' (delivered via §0)" \
+      "the carve-out names the exact ENG-71 misreading; without it, agents may re-derive the same wrong behavior"
+  fi
+  if printf '%s\n' "$body" | grep -qE 'ENG-(71|77).*(May|2026)'; then
+    ok "${stage_key}: cites the ENG-71/77 incident (delivered via §0)"
+  else
+    nope "${stage_key}: cites the ENG-71/77 incident (delivered via §0)" \
+      "without the precedent, a future prompt-cleanup pass might decide the rule is overcautious and remove it"
+  fi
+}
+
+assert_overwrite_mandate "## 1. Brainstorm Agent"               brainstorming
+assert_overwrite_mandate "## 2. Plan Agent"                     planning
+assert_overwrite_mandate "## 3. Implementation Agent (Backend)" implementing
+assert_overwrite_mandate "## 4. UI Agent (Frontend)"            ui
+assert_overwrite_mandate "## 5. Review Agent"                   reviewing
+assert_overwrite_mandate "## 6. QA Agent"                       qa
+assert_overwrite_mandate "## 7. Build Agent"                    building
+
+# ─── ENG-87 review-iter-7 C2: dispatch-id contract delivered to agents ──
+# Iter-4/5 review found that the `### Dispatch identifier and freshness
+# contract` subsection lived inside the unnumbered `## Verdict-marker
+# protocol` section of AGENT_PROMPTS.md. extract_block (render-prompt.sh)
+# only matches numbered `## N.` boundaries, so the unnumbered section is
+# invisible to renders — every agent received the per-stage block plus
+# §0's fenced block, and the dispatch-id contract was in NEITHER.
+# CLAUDE.md and the plan claim this preamble is "the prompt-side defense
+# for the chained-command blind spot in assert_no_tool_invocation"; the
+# defense was never delivered.
+#
+# Pre-iter-7 the assertion grepped raw source from H1 to `## 1.` (the
+# unnumbered section is in that range), so it false-passed. Post-fix:
+# the contract body lives INSIDE §0's fenced block, so rendered_stage_body
+# (= §0 + §N) carries it. Switch the assertion to rendered_stage_body
+# so it tests what agents actually receive at dispatch time.
+rendered_stage_body_implementing="$(rendered_stage_body "## 3. Implementation Agent (Backend)")"
+if printf '%s' "$rendered_stage_body_implementing" | grep -qF 'Dispatch identifier and freshness contract'; then
+  ok "rendered stage body: cites Dispatch identifier and freshness contract (delivered via §0)"
+else
+  nope "rendered stage body: cites Dispatch identifier and freshness contract (delivered via §0)" \
+    "the heading is NOT in §0 + §3 (rendered stage body) — agents do not receive it. Move the contract body INTO §0's fenced block; the prior unnumbered placement was invisible to extract_block. Affected by review-iter-7 C2 (and iter-5 C2)."
+fi
+
+# Auto-injection rule must reach agents via §0.
+if printf '%s' "$rendered_stage_body_implementing" | grep -qE 'auto-inject|chokepoint'; then
+  ok "rendered stage body: cites auto-injection / chokepoint mechanism"
+else
+  nope "rendered stage body: cites auto-injection / chokepoint mechanism" \
+    "without naming the chokepoint, an agent reading the rendered prompt might attempt manual marker emission"
+fi
+
+# Envelope-violation halt class must reach agents via §0.
+if printf '%s' "$rendered_stage_body_implementing" | grep -qF 'dispatch-envelope-violation'; then
+  ok "rendered stage body: names dispatch-envelope-violation halt class"
+else
+  nope "rendered stage body: names dispatch-envelope-violation halt class" \
+    "without the halt-token reference, the no-mcp/no-curl rules read like style preferences instead of hard contracts"
+fi
+
+# No-carry-forward-state mandate must reach agents via §0.
+if printf '%s' "$rendered_stage_body_implementing" | grep -qiE 'carry forward|fresh slate|previous (cycle|dispatch)'; then
+  ok "rendered stage body: carries the no-carry-forward-state mandate"
+else
+  nope "rendered stage body: carries the no-carry-forward-state mandate" \
+    "Task 14's fourth bullet (no-carry-forward-state) missing from the rendered body — an agent could read prior-dispatch artifacts and defeat the clear-on-start invariant"
+fi
+unset rendered_stage_body_implementing
+
+# ─── ENG-87 review-iter-7 M4: stage-summary mandate hoisted to §0 ──
+# Pre-iter-7 the staleness mandate ("MANDATORY — overwrite on every
+# dispatch / read-then-conditionally-skip") was duplicated across §§1-7
+# (~6 sites). §0's design intent (per render-prompt.sh:25-30) is "single
+# source of truth … editing rules here lets operators avoid 9-place
+# edits in §§1-9." Iter-7 M4 flagged the 6-place duplication as a
+# regression of the §0 consolidation: ENG-46/53/57/74 each had to
+# swallow the multi-place-edit cost; re-incurring it now is the same
+# failure mode.
+#
+# Post-fix: §0 carries the mandate once; per-stage bullets reference
+# rather than re-state it. Allow ≤ 1 occurrence per stage of the legacy
+# 'MANDATORY — overwrite on every dispatch' phrase outside §0 (a
+# transitional reference is acceptable; full re-statement is not).
+_iter7_m4_total="$(grep -c 'MANDATORY — overwrite on every dispatch' "$PROMPTS" || true)"
+# §0 itself owns one canonical occurrence; per-stage bullets may leave
+# at most one short reference each. Strict pin: total ≤ 2 (§0 + at most
+# 1 transitional reference). The pre-fix count is ~7.
+if (( _iter7_m4_total <= 2 )); then
+  ok "ENG-87 M4-iter7: 'MANDATORY — overwrite on every dispatch' phrase appears ≤2× (hoisted to §0)"
+else
+  nope "ENG-87 M4-iter7: staleness mandate hoisted to §0" \
+    "phrase appears ${_iter7_m4_total}× — pre-iter-7 the mandate was duplicated across §§1-7 (~6 sites); §0 should be the SSOT. Hoist the boilerplate into §0's fenced block; leave one-line per-stage references."
+fi
+unset _iter7_m4_total
+
+# ─── ENG-87: token-coverage — every `{token}` in AGENT_PROMPTS.md
+# must be declared in bin/render-prompt.sh::PROMPT_RESOLVERS. Mirrors
+# the render-time validator; defense-in-depth so a token added to
+# AGENT_PROMPTS.md without a resolver entry fails fast at content-test
+# time (instead of at the next dispatch's render).
+RENDER_PROMPT_SH="$HARNESS_ROOT/bin/render-prompt.sh"
+if [[ -f "$RENDER_PROMPT_SH" ]]; then
+  resolver_tokens="$(awk '
+    /^PROMPT_RESOLVERS=/{in_block=1; next}
+    in_block && /^[[:space:]]*'"'"'[[:space:]]*$/ {exit}
+    in_block {print}
+  ' "$RENDER_PROMPT_SH" | awk -F= '/^[a-z_]+=/{print $1}' | sort -u)"
+  # Iter-7 C1: AGENT_RUNTIME_TOKENS (space-separated names with leading
+  # + trailing spaces) names the tokens delivered to the agent as
+  # literal `{name}` text. Drift guard: a token in AGENT_PROMPTS.md
+  # must be in PROMPT_RESOLVERS, AGENT_RUNTIME_TOKENS, or the released-
+  # only set.
+  runtime_tokens="$(awk '/^AGENT_RUNTIME_TOKENS=/{
+    gsub(/^[^=]*='\''[ ]*/, "");
+    gsub(/[ ]*'\''[ ]*$/, "");
+    n=split($0, a, /[ ]+/);
+    for (i=1; i<=n; i++) if (a[i] != "") print a[i];
+    exit
+  }' "$RENDER_PROMPT_SH")"
+  prompt_tokens="$(grep -oE '\{[a-z_]+\}' "$PROMPTS" | sed 's/^{//; s/}$//' | sort -u)"
+  # Release-stage-only tokens handled by the legacy sed pass in
+  # render-prompt.sh::main (they're not in PROMPT_RESOLVERS by design).
+  released_only_tokens=$'version\ntag\nprev_tag'
+  missing=""
+  while IFS= read -r tok; do
+    [[ -z "$tok" ]] && continue
+    if grep -qxF "$tok" <<<"$released_only_tokens"; then
+      continue
+    fi
+    if grep -qxF "$tok" <<<"$runtime_tokens"; then
+      continue
+    fi
+    if ! grep -qxF "$tok" <<<"$resolver_tokens"; then
+      missing+="$tok "
+    fi
+  done <<<"$prompt_tokens"
+  if [[ -z "$missing" ]]; then
+    ok "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS or AGENT_RUNTIME_TOKENS"
+  else
+    nope "ENG-87: every {token} in AGENT_PROMPTS.md is declared in PROMPT_RESOLVERS or AGENT_RUNTIME_TOKENS" \
+      "missing entry for: $missing — render-prompt.sh would die at dispatch time"
+  fi
+else
+  nope "ENG-87: bin/render-prompt.sh exists for PROMPT_RESOLVERS lookup" \
+    "render-prompt.sh missing — token-coverage assert cannot run"
 fi
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"

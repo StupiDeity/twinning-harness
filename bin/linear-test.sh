@@ -761,6 +761,429 @@ unset _eng63_orig_linear_query _eng63_orig_resolve_uuid _eng63_orig_dry_run \
       _eng63_metric_count_before _eng63_metric_count_after _eng63_metric_delta \
       _eng63_ad002_count _eng63_ad002_old_jan _eng63_ad002_old_feb _eng63_ad002_old_mar
 
+# ─── ENG-87: dispatch_id auto-injection in add_comment / add_or_update_comment ─
+# bin/linear.sh's _inject_dispatch_marker is the chokepoint where every
+# Linear comment body gets stamped with the current dispatch_id. Tests
+# pin: env-set → marker appended; env-unset → no injection (operator
+# lane); idempotent re-apply; coexists with dedup-marker footer.
+printf '\n--- ENG-87: dispatch_id auto-injection ---\n'
+
+# Capture file for inspecting bodies via a stubbed log path. Use the
+# existing PIPELINE_DRY_RUN=1 path: add_comment in dry-run mode emits
+# `[DRY_RUN] would comment on <ident>: <first 80 chars>...` via log()
+# (writes to stderr). We stub the log function to capture full bodies.
+_eng87_lin_log="$_TEST_STUB_DIR/eng87-lin-log.txt"
+
+# Override the production log function with a body-capturing stub.
+# We can't see the full body via the normal log(), so we tap the
+# _inject_dispatch_marker invocation directly.
+_eng87_test_inject() {
+  local body="$1"
+  _inject_dispatch_marker "$body"
+}
+
+# Case 87-L1: env set → add-comment body carries the marker. Direct
+# invocation of _inject_dispatch_marker is the unit-test surface; the
+# add_comment wrapper invokes it before the dry-run short-circuit (Task
+# 7 placement).
+PIPELINE_DISPATCH_ID="ENG-87L-d0007" \
+PIPELINE_STAGE="implementing" \
+PIPELINE_DRY_RUN=1 \
+_eng87_l1_out="$(_eng87_test_inject "agent body line 1")"
+if grep -qF '<!-- meta: dispatch id=ENG-87L-d0007 stage=implementing -->' <<<"$_eng87_l1_out"; then
+  pass_at "ENG-87 L1: env set → marker appended to body"
+else
+  fail_at "ENG-87 L1: env set → marker appended to body" \
+    "expected marker in body, got: $_eng87_l1_out"
+fi
+
+# Case 87-L2: env unset → no injection (operator-manual lane bypass).
+unset PIPELINE_DISPATCH_ID
+unset PIPELINE_STAGE
+_eng87_l2_out="$(_eng87_test_inject "operator-direct comment")"
+if [[ "$_eng87_l2_out" == "operator-direct comment" ]]; then
+  pass_at "ENG-87 L2: env unset → body unchanged (operator-lane bypass)"
+else
+  fail_at "ENG-87 L2: env unset → body unchanged" \
+    "expected unchanged body, got: $_eng87_l2_out"
+fi
+
+# Case 87-L3: idempotent re-apply (body already carries marker).
+PIPELINE_DISPATCH_ID="ENG-87L-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l3_input=$'pre-stamped body line 1\n\n<!-- meta: dispatch id=ENG-87L-d0007 stage=implementing -->'
+PIPELINE_DISPATCH_ID="ENG-87L-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l3_out="$(_eng87_test_inject "$_eng87_l3_input")"
+# Count occurrences of the marker — must be exactly one (idempotent).
+_eng87_l3_count="$(grep -cF '<!-- meta: dispatch id=ENG-87L-d0007 stage=implementing -->' <<<"$_eng87_l3_out")"
+if [[ "$_eng87_l3_count" == "1" ]]; then
+  pass_at "ENG-87 L3: re-apply with marker present → exactly one marker (idempotent)"
+else
+  fail_at "ENG-87 L3: idempotent re-apply" \
+    "expected 1 marker, got $_eng87_l3_count occurrences in: $_eng87_l3_out"
+fi
+
+# Case 87-L4: dispatch marker AND dedup marker coexist on the same body.
+# Plan §Task 10 L4 (Failure-Mode row "Auto-injection breaks dedup-marker
+# placement") asserts that `_inject_dispatch_marker` does NOT remove or
+# clobber the existing `<!-- meta: dedup key=... -->` footer. Both
+# markers must be present after injection.
+PIPELINE_DISPATCH_ID="ENG-87L4-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l4_input=$'completion summary body\n\nmore prose.\n\n<!-- meta: dedup key=completion/implementing/ENG-87L4 -->'
+PIPELINE_DISPATCH_ID="ENG-87L4-d0007" \
+PIPELINE_STAGE="implementing" \
+_eng87_l4_out="$(_eng87_test_inject "$_eng87_l4_input")"
+if grep -qF '<!-- meta: dispatch id=ENG-87L4-d0007 stage=implementing -->' <<<"$_eng87_l4_out" \
+   && grep -qF '<!-- meta: dedup key=completion/implementing/ENG-87L4 -->' <<<"$_eng87_l4_out"; then
+  pass_at "ENG-87 L4: dispatch marker + dedup marker coexist after injection"
+else
+  fail_at "ENG-87 L4: dispatch + dedup coexistence" "got: $_eng87_l4_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Case 87-L4b: empty PIPELINE_STAGE produces stage="" but still injects.
+# Documents env-consistency contract: orchestrator owns env setup; if
+# PIPELINE_DISPATCH_ID is set but PIPELINE_STAGE is empty, the marker
+# carries `stage=` (empty value). Pins behavior because dispatch.sh
+# always sets both, but a future caller might not.
+PIPELINE_DISPATCH_ID="ENG-87L4b-d0001" \
+PIPELINE_STAGE="" \
+_eng87_l4b_out="$(_eng87_test_inject "test body")"
+if grep -qF '<!-- meta: dispatch id=ENG-87L4b-d0001 stage= -->' <<<"$_eng87_l4b_out"; then
+  pass_at "ENG-87 L4b: env partial (stage empty) → marker still appended with empty stage value"
+else
+  fail_at "ENG-87 L4b: empty stage value" "got: $_eng87_l4b_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Case 87-L5: integration — call add_comment directly under PIPELINE_DRY_RUN=1
+# and assert the captured `[DRY_RUN] would comment` log line shows the
+# body ends with `<!-- meta: dispatch id=… -->`. Pins the wiring at
+# bin/linear.sh::add_comment (line 507-ish): a future refactor that
+# drops `body=$(_inject_dispatch_marker "$body")` would not be caught
+# by L1/L3/L4 (those test the helper directly).
+_eng87_l5_log="$_TEST_STUB_DIR/eng87-l5-add-comment.log"
+: > "$_eng87_l5_log"
+
+# Stub `log` to capture lines into our file (production log writes to
+# stderr; we want stdout-style capture for the assertion).
+_eng87_l5_orig_log="$(declare -f log 2>/dev/null || printf '')"
+log() {
+  local m="$*"
+  printf '%s\n' "$m" >> "$_eng87_l5_log"
+}
+
+# Stub `_resolve_issue_uuid` so add_comment's pre-flight passes without
+# hitting Linear (linear-test.sh's existing pattern; see ENG-63 cases).
+_eng87_l5_orig_resolve="$(declare -f _resolve_issue_uuid 2>/dev/null || printf '')"
+_resolve_issue_uuid() {
+  printf 'mock-uuid-eng87-l5'
+}
+export PIPELINE_DRY_RUN=1
+PIPELINE_DISPATCH_ID="ENG-87L5-d0011" \
+PIPELINE_STAGE="reviewing" \
+add_comment ENG-87L5 "agent body line 1" >/dev/null 2>&1 || true
+
+# Restore original behaviour so subsequent tests are not contaminated.
+if [[ -n "$_eng87_l5_orig_log" ]]; then
+  unset -f log
+  eval "$_eng87_l5_orig_log"
+fi
+unset -f _resolve_issue_uuid
+[[ -n "$_eng87_l5_orig_resolve" ]] && eval "$_eng87_l5_orig_resolve"
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Assert the captured log line shows the marker — confirms add_comment
+# threads the body through _inject_dispatch_marker before the dry-run
+# short-circuit fires.
+if grep -qF '<!-- meta: dispatch id=ENG-87L5-d0011 stage=reviewing -->' "$_eng87_l5_log"; then
+  pass_at "ENG-87 L5: add_comment invokes _inject_dispatch_marker (integration)"
+else
+  fail_at "ENG-87 L5: add_comment integration" \
+    "expected dispatch marker in dry-run log, got: $(cat "$_eng87_l5_log")"
+fi
+rm -f "$_eng87_l5_log"
+unset _eng87_l5_log _eng87_l5_orig_log _eng87_l5_orig_resolve
+
+# Case 87-L4-int (review-iter-2 M6): integration test for
+# add_or_update_comment — pre-fix, Case-87-L4 only invoked the
+# _inject_dispatch_marker helper directly with a hand-crafted body
+# containing the dedup marker. That asserts the helper is dedup-marker-
+# aware but NOT the production assembly (line 588 inject vs line 597
+# dedup-append). A regression that swapped the two assembly steps
+# (dedup-append before inject) would silently false-pass L4 because
+# the helper invocation is unchanged. This integration test drives
+# add_or_update_comment end-to-end under PIPELINE_DRY_RUN=1 and asserts
+# both markers appear in the production-written body in the documented
+# source-order: dispatch BEFORE dedup.
+#
+# Two-pronged approach: (a) capture-via-log integration test (uses a
+# body short enough that both markers fit in the 80-char truncation
+# the dry-run path applies); (b) source-text grep that pins the
+# inject-before-dedup ordering directly.
+_eng87_l4i_log="$_TEST_STUB_DIR/eng87-l4int.log"
+: > "$_eng87_l4i_log"
+_eng87_l4i_orig_log="$(declare -f log 2>/dev/null || printf '')"
+log() { printf '%s\n' "$*" >> "$_eng87_l4i_log"; }
+# Use very short id + sig so both markers fit in the 80-char dry-run
+# truncation: body(1) + \n\n(2) + dispatch(46) + \n\n(2) + dedup(26) = 77.
+PIPELINE_DISPATCH_ID="ENG-X-d0001" \
+PIPELINE_STAGE="ui" \
+PIPELINE_DRY_RUN=1 \
+add_or_update_comment "t" "ENG-X" "x" >/dev/null 2>&1 || true
+unset -f log
+[[ -n "$_eng87_l4i_orig_log" ]] && eval "$_eng87_l4i_orig_log"
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE PIPELINE_DRY_RUN
+_eng87_l4i_line="$(cat "$_eng87_l4i_log")"
+# (a) Both markers present.
+if grep -qF '<!-- meta: dispatch id=ENG-X-d0001 stage=ui -->' <<<"$_eng87_l4i_line" \
+   && grep -qF '<!-- meta: dedup key=t -->' <<<"$_eng87_l4i_line"; then
+  pass_at "ENG-87 L4-int (review-iter-2 M6): add_or_update_comment dry-run carries BOTH dispatch + dedup markers"
+else
+  fail_at "ENG-87 L4-int: dual-marker presence" "log=$_eng87_l4i_line"
+fi
+# Source-order: dispatch index < dedup index (dispatch injected first;
+# dedup appended last). Production code at lines 588 (inject) and 597
+# (append) — pin via byte-position arithmetic.
+_eng87_l4i_disp_at="$(grep -nF '<!-- meta: dispatch id=ENG-X-d0001' <<<"$_eng87_l4i_line" | head -1 | cut -d: -f1)"
+_eng87_l4i_dedup_at="$(grep -nF '<!-- meta: dedup key=t -->' <<<"$_eng87_l4i_line" | head -1 | cut -d: -f1)"
+_eng87_l4i_disp_at="${_eng87_l4i_disp_at:-0}"
+_eng87_l4i_dedup_at="${_eng87_l4i_dedup_at:-0}"
+if (( _eng87_l4i_disp_at > 0 )) && (( _eng87_l4i_dedup_at > 0 )) \
+   && (( _eng87_l4i_disp_at < _eng87_l4i_dedup_at )); then
+  pass_at "ENG-87 L4-int (review-iter-2 M6): dispatch marker precedes dedup marker (production source-order preserved)"
+else
+  fail_at "ENG-87 L4-int: source-order" \
+    "disp_at=$_eng87_l4i_disp_at dedup_at=$_eng87_l4i_dedup_at log=$_eng87_l4i_line"
+fi
+# Source-text pin: linear.sh::add_or_update_comment must call
+# _inject_dispatch_marker BEFORE the dedup-marker append. A behavioral
+# test alone cannot detect a refactor that re-orders these (because
+# both markers would still appear in the body); the source pin closes
+# that gap.
+_eng87_l4i_src="$SCRIPT_DIR_REAL/linear.sh"
+_eng87_l4i_block="$(awk '/^add_or_update_comment\(\)/,/^}/' "$_eng87_l4i_src")"
+_eng87_l4i_inject_line="$(grep -n 'body="$(_inject_dispatch_marker' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
+_eng87_l4i_dedup_line="$(grep -n 'body+=\$.\\n\\n.\"\$marker\"' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
+if [[ -z "$_eng87_l4i_dedup_line" ]]; then
+  _eng87_l4i_dedup_line="$(grep -n 'body+=' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
+fi
+if [[ -n "$_eng87_l4i_inject_line" ]] && [[ -n "$_eng87_l4i_dedup_line" ]] \
+   && (( _eng87_l4i_inject_line < _eng87_l4i_dedup_line )); then
+  pass_at "ENG-87 L4-int (review-iter-2 M6): linear.sh source-text pins inject-before-dedup ordering"
+else
+  fail_at "ENG-87 L4-int: source-text order" \
+    "inject_line=$_eng87_l4i_inject_line dedup_line=$_eng87_l4i_dedup_line"
+fi
+rm -f "$_eng87_l4i_log"
+unset _eng87_l4i_log _eng87_l4i_orig_log _eng87_l4i_line _eng87_l4i_disp_at _eng87_l4i_dedup_at _eng87_l4i_src _eng87_l4i_block _eng87_l4i_inject_line _eng87_l4i_dedup_line
+
+# ─── ENG-87 QA-adversarial: _inject_dispatch_marker edge cases ────────
+# Defensive: relax `set -e` so a single failing `if` predicate (e.g.
+# grep returning 1) cannot abort the whole test file early.
+set +e
+
+# QA-1 (idempotency false-positive on quoted-marker substring).
+# `_inject_dispatch_marker` checks for marker presence via `grep -qF
+# '<!-- meta: dispatch id='` against the entire body. If the body
+# legitimately *quotes* a prior dispatch's marker (e.g., a halt comment
+# diagnosing cross-dispatch staleness, or a fenced code block in
+# documentation), the substring match fires → injector skips → real
+# trailing marker NEVER appended → reader-side strict id-match path at
+# bin/verdict-handler.sh:123 looks for the CURRENT id and finds only
+# the quoted PRIOR id → comment filtered out as stale.
+#
+# This pins the CURRENT (false-positive) behavior so a reader can see
+# at-a-glance the gap. A targeted fix should anchor the idempotency
+# check to a trailing-on-its-own-line marker (line-anchored regex) so a
+# quoted-mid-body marker does NOT defeat injection. Test stays green;
+# the operator-visible cost is a follow-up Linear bug citing this case.
+printf '\n--- ENG-87 QA-adversarial: marker-injection edges ---\n'
+PIPELINE_DISPATCH_ID="ENG-87QA-d0008" \
+PIPELINE_STAGE="qa" \
+_eng87qa_quoted_body=$'Diagnostic for cross-dispatch staleness:\n\nThe prior cycle posted `<!-- meta: dispatch id=ENG-87QA-d0007 stage=qa -->` (cited here).\n\nMore body text.'
+PIPELINE_DISPATCH_ID="ENG-87QA-d0008" \
+PIPELINE_STAGE="qa" \
+_eng87qa_out="$(_eng87_test_inject "$_eng87qa_quoted_body")"
+# Pin current behavior: substring match fires, no current-dispatch
+# marker injected. The body still carries ONLY the quoted d0007
+# substring; the d0008 marker is absent.
+_eng87qa_d8_count="$(grep -cF 'dispatch id=ENG-87QA-d0008' <<<"$_eng87qa_out")"
+_eng87qa_d7_count="$(grep -cF 'dispatch id=ENG-87QA-d0007' <<<"$_eng87qa_out")"
+# Iter-7 m2 (post-fix): the idempotency check is now CURRENT-id-
+# specific (linear.sh::_inject_dispatch_marker matches
+# `<!-- meta: dispatch id=$PIPELINE_DISPATCH_ID `). The quoted prior
+# d0007 marker no longer satisfies the d0008 check, so injection
+# fires and the d0008 marker IS appended; the d0007 quoted prose
+# survives unchanged.
+if [[ "$_eng87qa_d8_count" == "1" && "$_eng87qa_d7_count" == "1" ]]; then
+  pass_at "ENG-87 QA-3 (post-iter-7 m2): quoted prior-dispatch marker no longer defeats current-dispatch injection"
+else
+  fail_at "ENG-87 QA-3: post-iter-7 m2 idempotency current-id" \
+    "expected d0008-count=1 (injected) d0007-count=1 (prose preserved); got d0008=$_eng87qa_d8_count d0007=$_eng87qa_d7_count out: $_eng87qa_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+unset _eng87qa_quoted_body _eng87qa_out _eng87qa_d8_count _eng87qa_d7_count
+
+# QA-4 (foreign-dispatch update via add_or_update_comment).
+# add_or_update_comment finds an in-flight comment under the same
+# `meta: dedup key=...` and updates it with a new body. If the existing
+# comment carries a *prior* dispatch's `meta: dispatch id=` marker (the
+# dedup-found comment was originally posted under d0006), invoking
+# add_or_update_comment now under d0009 with a fresh body will:
+#   - inject d0009 marker into the new body (current dispatch's stamp)
+#   - the orchestrator-side update code path sends the current body
+# The test pins that the NEW body posted carries the CURRENT dispatch's
+# marker, not the prior one's. (Pre-fix bodies that quoted the OLD
+# dispatch id mid-text would have skipped injection — but a clean new
+# body posts cleanly under the current id.)
+PIPELINE_DISPATCH_ID="ENG-87QA-d0009" \
+PIPELINE_STAGE="qa" \
+_eng87qa4_clean_body="status update — dispatch context changed since last apply"
+PIPELINE_DISPATCH_ID="ENG-87QA-d0009" \
+PIPELINE_STAGE="qa" \
+_eng87qa4_out="$(_eng87_test_inject "$_eng87qa4_clean_body")"
+if grep -qF '<!-- meta: dispatch id=ENG-87QA-d0009 stage=qa -->' <<<"$_eng87qa4_out"; then
+  pass_at "ENG-87 QA-4: clean re-apply body under new dispatch_id stamps with current id (no prior-id leak)"
+else
+  fail_at "ENG-87 QA-4: foreign-dispatch update" \
+    "expected current-id stamp, got: $_eng87qa4_out"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+unset _eng87qa4_clean_body _eng87qa4_out
+
+# QA-5 (multi-line body with embedded marker-lookalike near end).
+# Pin: when the body's last line is the actual marker (correct shape),
+# injection skips. When the body's last line LOOKS like a marker but is
+# actually e.g. an HTML comment continuing onto the same line ending,
+# pin the substring-grep behavior (current). A line-anchored fix would
+# distinguish these; documenting current behavior so the contrast is
+# visible at fix time.
+PIPELINE_DISPATCH_ID="ENG-87QA-d0010" \
+PIPELINE_STAGE="implementing" \
+_eng87qa5_body="line one\n\n<!-- meta: dispatch id=ENG-87QA-d0010 stage=implementing -->"
+PIPELINE_DISPATCH_ID="ENG-87QA-d0010" \
+PIPELINE_STAGE="implementing" \
+_eng87qa5_out="$(_eng87_test_inject "$_eng87qa5_body")"
+_eng87qa5_count="$(grep -cF 'dispatch id=ENG-87QA-d0010' <<<"$_eng87qa5_out")"
+if [[ "$_eng87qa5_count" == "1" ]]; then
+  pass_at "ENG-87 QA-5: body with single trailing real marker → idempotent (count=1)"
+else
+  fail_at "ENG-87 QA-5: trailing-marker idempotency" "expected count=1, got: $_eng87qa5_count"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+unset _eng87qa5_body _eng87qa5_out _eng87qa5_count
+
+# ─── ENG-87 review-iter-7 Critical 4: reapplied audit + dispatch-id strip ──
+# ENG-63's add_or_update_comment byte-equal-modulo-marker arm strips
+# `<!-- meta: reapplied at=… -->` lines before comparing existing vs
+# new. Post-ENG-87, every comment body now ends with
+# `<!-- meta: dispatch id=ENG-N-d<NNNN> stage=… -->` (auto-injected at
+# `_inject_dispatch_marker`). Two re-applies of the same logical halt
+# body across two different dispatches now carry different dispatch
+# markers → existing_norm != new_norm → byte-equal arm never fires → no
+# reapplied footer ever appears → metrics.sh comment-reapplied stays at
+# zero per re-apply post-cutover. ENG-63's audit signal is silently
+# regressed for every halt re-apply. Operator runbook (recovery.md §4)
+# instructs grepping `<!-- meta: reapplied at=` to find the latest
+# re-apply moment; that signal is now invisible.
+#
+# Fix: extend strip_re to remove BOTH `reapplied at=` and `dispatch id=`
+# lines so byte-equal-modulo-meta-noise normalisation works across
+# dispatch-id rotation.
+printf '\n--- ENG-87 review-iter-7 Critical 4: reapplied + dispatch-id strip ---\n'
+
+# Re-establish the linear_query stub + capture file used by the ENG-63
+# block above (which restored the originals at line ~752). Mirrors the
+# pattern from line 530-550.
+_iter7_l7_capture="$(mktemp -t eng87-l7-capture.XXXXXX)"
+_iter7_l7_canned_existing_body=""
+_iter7_l7_canned_existing_id="cmt-mock-l7"
+_iter7_l7_orig_linear_query="$(declare -f linear_query 2>/dev/null || true)"
+_iter7_l7_orig_resolve_uuid="$(declare -f _resolve_issue_uuid 2>/dev/null || true)"
+_iter7_l7_orig_dry_run="${PIPELINE_DRY_RUN-1}"
+_iter7_l7_orig_script_dir="$SCRIPT_DIR"
+SCRIPT_DIR="$SCRIPT_DIR_REAL"
+_resolve_issue_uuid() { printf 'uuid-mock'; }
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentUpdate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_iter7_l7_capture"
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
+  fi
+  if [[ "$query" =~ commentCreate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_iter7_l7_capture"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  jq -cn --arg id "$_iter7_l7_canned_existing_id" --arg body "$_iter7_l7_canned_existing_body" \
+    '{data:{issue:{comments:{nodes:[{id:$id,body:$body}]}}}}'
+}
+export PIPELINE_DRY_RUN=0
+
+# Case 87-L7-reapplied-audit: same byte body across two dispatches → footer.
+# Stub returns existing body whose body BYTES match the caller body BYTES
+# in everything except the trailing dispatch-id marker (auto-injected by
+# the prior dispatch). Post-fix: strip both noise lines → norms equal →
+# byte-equal arm fires → reapplied footer appended.
+: > "$_iter7_l7_capture"
+_iter7_l7_canned_existing_body=$'Halt body line 1\nHalt body line 2\n\n<!-- meta: dedup key=halt/reviewing/ENG-87L7 -->\n<!-- meta: dispatch id=ENG-87L7-d0007 stage=reviewing -->'
+PIPELINE_DISPATCH_ID="ENG-87L7-d0008" \
+PIPELINE_STAGE="reviewing" \
+add_or_update_comment "halt/reviewing/ENG-87L7" ENG-87L7 \
+  --body $'Halt body line 1\nHalt body line 2\n\n<!-- meta: dedup key=halt/reviewing/ENG-87L7 -->' \
+  >/dev/null 2>&1
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_iter7_l7_capture"; then
+  pass_at "ENG-87 L7 reapplied-audit: same body across dispatches → reapplied footer appended"
+else
+  fail_at "ENG-87 L7 reapplied-audit: footer appended" \
+    "captured: $(cat "$_iter7_l7_capture") — strip_re must remove both 'reapplied at=' AND 'dispatch id=' lines so byte-equal arm fires across dispatch_id rotation"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# Restore originals before continuing (the L8 case below reads
+# _inject_dispatch_marker directly, no stub needed).
+rm -f "$_iter7_l7_capture"
+unset -f linear_query _resolve_issue_uuid 2>/dev/null || true
+[[ -n "$_iter7_l7_orig_linear_query" ]] && eval "$_iter7_l7_orig_linear_query"
+[[ -n "$_iter7_l7_orig_resolve_uuid" ]] && eval "$_iter7_l7_orig_resolve_uuid"
+export PIPELINE_DRY_RUN="$_iter7_l7_orig_dry_run"
+SCRIPT_DIR="$_iter7_l7_orig_script_dir"
+unset _iter7_l7_capture _iter7_l7_canned_existing_body _iter7_l7_canned_existing_id \
+      _iter7_l7_orig_linear_query _iter7_l7_orig_resolve_uuid \
+      _iter7_l7_orig_dry_run _iter7_l7_orig_script_dir
+
+# Case 87-L8-idempotency-current-id: a body carrying a STALE dispatch
+# marker (from a prior dispatch) should NOT short-circuit injection of
+# the current marker. Pre-fix: `_inject_dispatch_marker`'s idempotency
+# check `grep -qF '<!-- meta: dispatch id='` matches ANY marker, even
+# a stale one — re-apply preserves the stale marker, the strict-id
+# reader filters the comment OUT, and the operator-visible marker
+# disagrees with the freshness rule. Post-fix: idempotency check must
+# match the CURRENT id specifically.
+printf '\n--- ENG-87 L8 idempotency: current-id-specific check ---\n'
+
+# Use the existing _eng87_test_inject helper from linear-test.sh's
+# ENG-87 section. The helper invokes _inject_dispatch_marker directly.
+PIPELINE_DISPATCH_ID="ENG-87L8-d0099" \
+PIPELINE_STAGE="implementing" \
+_eng87_l8_input=$'body line 1\n\n<!-- meta: dispatch id=ENG-87L8-d0050 stage=reviewing -->'
+PIPELINE_DISPATCH_ID="ENG-87L8-d0099" \
+PIPELINE_STAGE="implementing" \
+_eng87_l8_out="$(_eng87_test_inject "$_eng87_l8_input")"
+# Post-fix invariant: the current marker (d0099) should now be present
+# in addition to the stale one (d0050). Pre-fix: only d0050 present.
+if grep -qF '<!-- meta: dispatch id=ENG-87L8-d0099 stage=implementing -->' <<<"$_eng87_l8_out"; then
+  pass_at "ENG-87 L8 idempotency: stale marker on body → new marker still injected (current-id-specific check)"
+else
+  fail_at "ENG-87 L8 idempotency: new marker injected" \
+    "expected d0099 marker appended despite stale d0050 already present, got: $_eng87_l8_out — idempotency check must look for the CURRENT \$PIPELINE_DISPATCH_ID, not any dispatch id= prefix"
+fi
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng87_l8_input _eng87_l8_out
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

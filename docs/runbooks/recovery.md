@@ -422,6 +422,131 @@ After `--action continue`:
 
 ---
 
+## 8. Dispatch envelope violation (ENG-87)
+
+A stage dispatch halts with halt-token `dispatch-envelope-violation`
+(exit code 29). The post-dispatch envelope validator
+(`bin/run-stage.sh::_validate_dispatch_envelope`) detected an EGREGIOUS
+bypass of `bin/linear.sh`'s auto-injection chokepoint.
+
+### Symptom
+
+- Latest comment on the issue carries
+  `<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->`.
+- `pipeline:halted` label applied by the orchestrator.
+- The halt comment body lists the violation tokens
+  (e.g. `mcp__plugin_linear:bash bin/...; ...`).
+- A transcript sidecar at
+  `$PROJECT_STATE_DIR/<ident>/.envelope-transcript-<stage>` is preserved
+  across the halt for forensic review. The next dispatch's pre-clean at
+  `bin/dispatch.sh::_render_and_capture_stream` (line 83) removes it
+  unconditionally before any agent runs, so the sidecar survives until
+  the operator reads it OR until `--action continue` triggers the next
+  fresh dispatch.
+- `events.jsonl` row with `outcome=envelope-violation` (per
+  `bin/common.sh::failure_outcome_for_exit` exit-code 29).
+
+### Interpretation
+
+One of three causes:
+
+1. **Linear MCP plugin invocation.** The agent ran
+   `mcp__plugin_linear_*` (e.g. `mcp__plugin_linear_linear__save_issue`).
+   This is forbidden because (a) `save_issue` overwrites the entire
+   label set and silently strips `stage:*` / `pipeline:*` labels mid-flight
+   (CLAUDE.md "Linear conventions the harness depends on" §), and (b) it
+   bypasses the auto-injection chokepoint at
+   `bin/linear.sh::_inject_dispatch_marker`, breaking the
+   cross-dispatch staleness contract. Investigate
+   `bin/dispatch.sh::allowed_tools_for` for accidental MCP-tool
+   inclusion (verified absent at ENG-87 ship time, but a future
+   regression could re-introduce).
+
+2. **Direct `curl https://api.linear.app` invocation.** The agent
+   bypassed `bin/linear.sh` entirely with a raw HTTP call to the Linear
+   GraphQL API. Likely a prompt regression that re-introduced a
+   "wrong-way" example, OR a learned-rules entry that surfaced an old
+   curl recipe. Inspect the per-stage transcript at the sidecar path
+   above; grep for `https://api.linear.app` in
+   `learned-rules/<slug>/<stage>.md`.
+
+3. **Allocator failed and the chokepoint logged unstamped comments.**
+   Rare. Inspect `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log` for
+   `bin/common.sh::allocate_dispatch_id` errors (jq parse failures on
+   `issue-state.json`, mv-f failures, missing `$PROJECT_STATE_DIR`).
+   The agent then ran legitimately but the env var was empty, so the
+   chokepoint emitted unstamped bodies. Investigate the allocator
+   logs; an upstream JSON-corruption fix usually unblocks.
+
+### Recovery
+
+Inspect the transcript sidecar:
+
+```bash
+cat "$PROJECT_STATE_DIR/<ident>/.envelope-transcript-<stage>" | jq -c 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and (.input.command? // "" | startswith("mcp__plugin_linear") or startswith("curl https://api.linear.app")))'
+```
+
+Fix the underlying cause (allowlist edit in
+`.pipeline-config/config.json::dispatch.tools`, prompt fix to
+`AGENT_PROMPTS.md` or learned-rules, or allocator bug fix). Resume:
+
+```bash
+bash bin/pipeline.sh decide ENG-N --action continue
+```
+
+The atomic resume clears `pipeline:halted`, drops the per-issue
+counter, and posts an operator-resume waypoint that resets the
+freshness floor for the next dispatch (which re-allocates a fresh
+`dispatch_id`). The transcript sidecar is removed by the next clean
+dispatch's envelope validator.
+
+### Why this halt exists
+
+Defense-in-depth on top of the lane fence (ENG-41) and the chokepoint
+auto-injection at `bin/linear.sh`. The auto-injection is the
+preventive primitive — it stamps every comment posted via the
+sanctioned path. The envelope validator catches any agent that
+bypasses the chokepoint entirely (MCP fork or raw curl). Without this
+backstop, a bypassing agent's writes would land on Linear unstamped,
+and the next dispatch's `find_fresh_verdict` would treat them as the
+operator-manual lane (no marker = legacy fallback to timestamp window),
+defeating the cross-dispatch contract for that issue.
+
+The chained-command blind spot — `bash bin/linear.sh add-comment …; mcp__plugin_linear …`
+inside a single `tool_use.input.command` string — is documented at
+`bin/run-stage.sh:867-881` and accepted as a trade-off (the `assert_no_tool_invocation`
+helper uses startswith semantics and does not split on `;` / `&&`).
+The AGENT_PROMPTS.md preamble's "Dispatch identifier and freshness
+contract" subsection is the prompt-side defense for that gap.
+
+### Forensic asymmetry post-resume
+
+After `--action continue` clears the halt label and the next tick allocates
+a fresh dispatch_id (e.g. d0008 replacing d0007), `find_fresh_verdict`'s
+strict id-match path filters the d0007 halt comment OUT (its dispatch
+marker says `id=d0007`, mismatching the current `id=d0008`). The issue
+resumes correctly — the agent emits a fresh d0008 verdict that the
+strict path picks up — but `bin/status.sh` and operator-triage workflows
+that read verdict history will report "no fresh verdict" between the
+`--action continue` and the next dispatch's first verdict emission.
+
+This is a forensic regression, not control-flow-breaking. The pre-ENG-87
+timestamp-window code would have surfaced the d0007 halt; the strict
+path does not. To inspect a halted issue's prior-dispatch halts after
+resume, query the comment history directly:
+
+```bash
+bash bin/linear.sh get-comments ENG-N \
+  | jq -r '.[] | select(.body | contains("verdict result=halt")) | "\(.createdAt) \(.body[:200])"'
+```
+
+The `dispatch_history.jsonl` audit log
+(`$(issue_dir <issue>)/dispatch_history.jsonl`) is also intact across
+the halt — start/end rows for the d0007 dispatch survive the
+`--action continue`.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:

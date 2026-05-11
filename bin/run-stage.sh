@@ -10,7 +10,13 @@
 #             24=linear-post-failed, 25=agent-contract-missing (agent exited clean
 #             but emitted neither the stage-summary file nor a verdict-marker comment),
 #             26=worktree-mutation-forbidden (build-stage transcript invoked
-#             git checkout/switch/pull/reset; ENG-71).
+#             git checkout/switch/pull/reset; ENG-71),
+#             27=self-leak (out-of-scope path appeared post-dispatch; ENG-14),
+#             28=leaked-in-scope-threshold (≥3 consecutive in-scope leaks; ENG-14),
+#             29=envelope-violation (dispatch envelope validator detected agent bypass
+#             of bin/linear.sh — ENG-87),
+#             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
+#             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
 # Caller contract: run-stage.sh expects the issue to already carry stage:<X> for the
 # stage being run (the poller sets this on entry). On success, run-stage.sh advances
@@ -711,6 +717,236 @@ _entry_conditions_gate() {
   esac
 }
 
+# ENG-87: clear current-stage local files at the start of every dispatch
+# so file existence post-dispatch is proof of THIS-dispatch authorship.
+# Generalises the wait-exit clear at lines 497-499 (build-only) to all
+# stages. Cleared:
+#   stage-summary-${stage}.md  (read by post_completion_comment)
+#   wait-${stage}.json         (overwritten by _handle_wait when the
+#                               agent emits a wait verdict; clearing
+#                               here ensures a fresh dispatch doesn't
+#                               inherit a stale counter)
+# NOT cleared:
+#   issue-state.json           (allocator merges into it; clearing
+#                               would lose classify-failure state)
+#   stage-summary-OTHER.md     (forward+loopback reads need them
+#                               intact — see brainstorm §6.1/6.2)
+_clear_current_stage_slots() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2"
+  local d; d="$(issue_dir "$ident")"
+  rm -f "$d/stage-summary-${stage}.md" 2>/dev/null || true
+  rm -f "$d/wait-${stage}.json"        2>/dev/null || true
+  return 0
+}
+
+# ENG-87: post-dispatch envelope validator. Detective-only — halts only
+# on egregious bypass:
+#   (a) Transcript invoked mcp__plugin_linear* (Linear MCP fork outside
+#       bin/linear.sh's auto-injection lane).
+#   (b) Transcript invoked curl https://api.linear.app (direct Linear
+#       HTTP API outside bin/linear.sh).
+# Returns 0 = envelope clean, 29 = violation (caller halts).
+# Skip on wait-exit and scope-approval-replay (caller gate).
+_validate_dispatch_envelope() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2"
+  local d; d="$(issue_dir "$ident")"
+  local sidecar="${d}/.envelope-transcript-${stage}"
+  # When dispatch.sh's _render_and_capture_stream did not persist a
+  # sidecar (dry-run, smoke-only path), no transcript scan is possible —
+  # the validator is detective-only, fail-open in that case.
+  [[ -s "$sidecar" ]] || return 0
+
+  local violations=()
+  local _viol_mcp _viol_curl
+  if _viol_mcp="$(assert_no_tool_invocation "$sidecar" "mcp__plugin_linear")"; then
+    :
+  else
+    violations+=("mcp__plugin_linear:${_viol_mcp}")
+  fi
+  if _viol_curl="$(assert_no_tool_invocation "$sidecar" "curl https://api.linear.app")"; then
+    :
+  else
+    violations+=("curl-linear:${_viol_curl}")
+  fi
+  if (( ${#violations[@]} > 0 )); then
+    # ENG-87 review-iter-7 Critical 3: SANITISE viol_str BEFORE
+    # interpolation into the halt body. The agent-controlled bytes
+    # (extracted via assert_no_tool_invocation's printf '%s' "$matched"
+    # — which is the unsanitised .input.command from the transcript)
+    # could contain a literal `<!-- pipeline: verdict result=pass -->`
+    # substring. Such an embedded pipeline-marker would be picked up by
+    # parse_pipeline_marker's tail -1 family-precedence selector and
+    # promote the halt comment INTO a forward `pass` transition on
+    # every find_fresh_verdict / resume_in_progress_transition read.
+    # The auto-injected dispatch_id marker means the comment is no
+    # longer filtered as legacy by D-005's strict-id-match path either,
+    # so the hijack survives readers that key off the freshness floor.
+    #
+    # Defense:
+    #  (1) Replace embedded `<!--` opens with `<\!--` so any agent-
+    #      injected HTML-comment shape no longer matches the
+    #      `<!-- pipeline: ... -->` and `<!-- meta: ... -->` parsers.
+    #      Operators read the visible escape difference; markers do
+    #      NOT classify.
+    #  (2) Wrap viol_str in a triple-backtick fenced code block as
+    #      defense-in-depth: parse_pipeline_marker's
+    #      _strip_code_blocks_and_spans removes `{3}[^`]{3}` runs
+    #      before the marker grep, so any fenced-out content is
+    #      structurally invisible to the parser.
+    local viol_str_raw viol_str_safe
+    viol_str_raw="$(printf '%s; ' "${violations[@]}")"
+    viol_str_safe="${viol_str_raw//<!--/<\\!--}"
+    local body
+    # ${VAR:-unknown} (NOT ${VAR-}) is intentional here: the halt body is
+    # operator-facing prose and must never render a literal empty
+    # `dispatch_id=` field — `unknown` is a self-explanatory sentinel
+    # if the env var was somehow unset by the time validation runs (e.g.
+    # a downstream caller that forgot to allocate). Lint-safe — neither
+    # variable name matches secret-probe-lint.sh's regex.
+    body="$(printf '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->\n\nDispatch envelope violation on dispatch_id=%s stage=%s:\n\n```\n%s\n```\n\nThe agent bypassed bin/linear.sh (auto-injection chokepoint). Inspect: %s\n\n**Resume:** investigate the bypass, fix the agent prompt or tool-allowlist, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+      "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$viol_str_safe" "$sidecar" "$ident")"
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+    return 29
+  fi
+  return 0
+}
+
+# ENG-87 review M1+M2: dispatch_history.jsonl end-row trap. Plan §13.1.2
+# + §A-026 mandate two rows per dispatch (start + end). Pre-fix the end
+# row was only emitted on the success path (1 of 15 exit sites) and was
+# missing 3 of the 9 documented schema fields (policy, verdict_emitted,
+# verdict_target). EXIT trap centralises the emission so every early-
+# exit path appends the row exactly once.
+#
+# Globals owned by main() that the trap reads. Empty defaults so the
+# trap is a no-op until main() initialises them after the start-row.
+# ENG-87 review-iter-7 M2: _END_ROW_TRANSCRIPT_CLEAN is removed (was
+# a redundant module-level global; the writer now derives the field
+# from the trap's exit_code arg, so the validator's rc=29 path no
+# longer needs to mutate cross-function state). M3: _END_ROW_VERDICT_*
+# initial values are seeded once per dispatch in main(); the writer
+# below reads find_fresh_verdict + find_fresh_wait_verdict at end-row
+# time so classify-failure.sh and verdict-handler.sh no longer need
+# to reach in and mutate them.
+_END_ROW_HIST_FILE=""
+_END_ROW_DISPATCH_ID=""
+_END_ROW_STAGE=""
+_END_ROW_T0=""
+_END_ROW_ISSUE=""
+_END_ROW_VERDICT_EMITTED=""
+_END_ROW_VERDICT_TARGET=""
+_END_ROW_POLICY=""
+
+_append_dispatch_end_row() {
+  local exit_code="${1:-0}"
+  # Sentinel: empty HIST_FILE → trap fires before main() initialised the
+  # globals (precondition / guard early-exit) OR after a prior successful
+  # append (idempotency). No-op in both cases.
+  [[ -n "$_END_ROW_HIST_FILE" ]] || return 0
+  [[ -n "$_END_ROW_DISPATCH_ID" ]] || return 0
+  local exit_at; exit_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local now duration
+  now="$(date +%s)"
+  duration=$(( (now - _END_ROW_T0) * 1000 ))
+  local _summary_path="$(issue_dir "$_END_ROW_ISSUE")/stage-summary-${_END_ROW_STAGE}.md"
+  local _summary_present
+  _summary_present="$([[ -s "$_summary_path" ]] && printf 'true' || printf 'false')"
+
+  # ENG-87 review-iter-7 M2: derive transcript_clean from exit_code
+  # rather than from a cross-function module-level global. exit_code 29
+  # is `envelope-violation` per failure_outcome_for_exit (common.sh) —
+  # any other rc means the validator either passed cleanly or never
+  # ran. Single-purpose computation; no cross-script mutation.
+  local _transcript_clean
+  if [[ "$exit_code" == "29" ]]; then
+    _transcript_clean=false
+  else
+    _transcript_clean=true
+  fi
+
+  # ENG-87 review-iter-7 M3: read verdict_emitted + verdict_target
+  # from Linear at end-row time. Pre-iter-7 these were seeded at 5+
+  # explicit sites across run-stage.sh (scope-violation halt, wait-
+  # success, budget-exhausted halt, success-path read), classify-
+  # failure.sh (halt-policy arms), and verdict-handler.sh (protocol-
+  # violation halt). Each new halt path was a silent gap unless the
+  # developer remembered to seed. Plan §13.1.2 says verdict_emitted
+  # reflects "what the agent posted to Linear"; Linear is the source
+  # of truth. Try find_fresh_verdict (pass/fail/halt) first; if the
+  # latest verdict on the issue is a wait, fall back to
+  # find_fresh_wait_verdict (which find_fresh_verdict explicitly
+  # excludes). Two Linear queries per dispatch end is acceptable cost
+  # against the simplification — and the success-path consolidation
+  # at line ~1437 already paid the same query cost in the pre-iter-7
+  # shape.
+  if [[ -z "$_END_ROW_VERDICT_EMITTED" ]] && [[ -n "$_END_ROW_ISSUE" ]]; then
+    local _fresh_v
+    _fresh_v="$(find_fresh_verdict "$_END_ROW_ISSUE" 2>/dev/null || printf '')"
+    if [[ -n "$_fresh_v" ]]; then
+      _END_ROW_VERDICT_EMITTED="$(jq -r '.event.result // ""' <<<"$_fresh_v" 2>/dev/null || printf '')"
+      _END_ROW_VERDICT_TARGET="$(jq -r '.event.target // .event.stage // ""' <<<"$_fresh_v" 2>/dev/null || printf '')"
+    else
+      local _fresh_wv
+      _fresh_wv="$(find_fresh_wait_verdict "$_END_ROW_ISSUE" 2>/dev/null || printf '')"
+      if [[ -n "$_fresh_wv" ]]; then
+        _END_ROW_VERDICT_EMITTED="wait"
+      fi
+    fi
+  fi
+
+  # ENG-87 review-iter-7 M1: derive policy from issue-state.json. The
+  # file is classify-failure.sh's durable artifact (poll.sh reads
+  # .policy on every tick to decide skip-policy), and _cf_write_state
+  # populated it microseconds before classify-failure returned. Reading
+  # here at end-row time eliminates the last cross-file _END_ROW_*
+  # mutation. Empty default when the file is absent (success path
+  # never invokes classify-failure) or when jq cannot parse it.
+  if [[ -z "$_END_ROW_POLICY" ]] && [[ -n "$_END_ROW_ISSUE" ]]; then
+    local _state_file
+    _state_file="$(issue_dir "$_END_ROW_ISSUE")/issue-state.json"
+    if [[ -s "$_state_file" ]]; then
+      _END_ROW_POLICY="$(jq -r '.policy // ""' "$_state_file" 2>/dev/null || printf '')"
+    fi
+  fi
+
+  # ENG-87 review-iter-3 M1: envelope schema completeness. Plan §13.1.2
+  # mandates 3 sub-fields — stage_summary_present, comments_stamped,
+  # transcript_clean. comments_stamped ships as `[]` baseline (forensic-
+  # only writer with no runtime consumer; ENG-92 deferred populates it).
+  jq -nc \
+    --arg dispatch_id "$_END_ROW_DISPATCH_ID" \
+    --arg stage "$_END_ROW_STAGE" \
+    --arg exit_at "$exit_at" \
+    --argjson exit_code "${exit_code:-0}" \
+    --arg policy "$_END_ROW_POLICY" \
+    --arg verdict_emitted "$_END_ROW_VERDICT_EMITTED" \
+    --arg verdict_target "$_END_ROW_VERDICT_TARGET" \
+    --argjson duration_ms "$duration" \
+    --argjson stage_summary_present "$_summary_present" \
+    --argjson transcript_clean "$_transcript_clean" \
+    --argjson comments_stamped '[]' '
+    {
+      dispatch_id: $dispatch_id, stage: $stage, exit_at: $exit_at,
+      exit_code: $exit_code, policy: $policy,
+      verdict_emitted: $verdict_emitted, verdict_target: $verdict_target,
+      duration_ms: $duration_ms,
+      envelope: {
+        stage_summary_present: $stage_summary_present,
+        comments_stamped:      $comments_stamped,
+        transcript_clean:      $transcript_clean
+      }
+    }' >> "$_END_ROW_HIST_FILE" \
+    || log "warning: dispatch_history.jsonl write failed for $_END_ROW_DISPATCH_ID"
+  # Idempotency: clear the sentinel so a nested `set -e` exit does not
+  # double-append the same row.
+  _END_ROW_HIST_FILE=""
+  return 0
+}
+
 main() {
   local ident="${1:-}" stage="${2:-}"
   [[ -n "$ident" && -n "$stage" ]] || die "usage: run-stage.sh <issue_id> <stage>"
@@ -798,6 +1034,88 @@ main() {
   # Guarantee the per-issue state dir exists before dispatch so an agent's first
   # Write of stage-summary-<stage>.md cannot fail on missing parents.
   mkdir -p "$(issue_dir "$ident")"
+
+  # ENG-87: allocate dispatch_id (per-issue monotonic counter) and clear
+  # current-stage local files. Skip on scope-approval replay (the prior
+  # dispatch's id is still durable in issue-state.json and its envelope
+  # was already validated). Stamps PIPELINE_DISPATCH_ID + PIPELINE_STAGE
+  # into the env so dispatch.sh's `env` block carries them into the
+  # agent subshell, where bin/linear.sh's auto-injection picks them up
+  # for the per-comment dispatch marker.
+  if (( ! skip_dispatch )); then
+    export PIPELINE_STAGE="$stage"
+    local _dispatch_id
+    _dispatch_id="$(allocate_dispatch_id "$ident")"
+    log "dispatch-id allocated: $_dispatch_id (stage=$stage)"
+    _clear_current_stage_slots "$ident" "$stage"
+    # Append dispatch-start row to history (orchestrator-only forensic
+    # log; never read at runtime by decision-making code).
+    local _hist_file _trigger _predecessor _branch _hash
+    _hist_file="$(issue_dir "$ident")/dispatch_history.jsonl"
+    _branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident" 2>/dev/null || printf '')"
+    _hash="$(compute_pipeline_content_hash 2>/dev/null || printf '')"
+    # predecessor = the prior id; empty if this is d0001.
+    if [[ "$_dispatch_id" =~ -d0*([1-9][0-9]*)$ ]]; then
+      local _seq="${BASH_REMATCH[1]}"
+      if (( _seq > 1 )); then
+        _predecessor="$(printf '%s-d%04d' "$ident" "$((_seq - 1))")"
+      else
+        _predecessor=""
+      fi
+    else
+      _predecessor=""
+    fi
+    # Trigger inferred from labels; conservative default = "transition".
+    # Refining (loopback vs inbox-pickup vs retry-immediately) is forensic
+    # only and is left to a future ticket per brainstorm §12.
+    _trigger="transition"
+    # ENG-87 review-iter-2 m1: jq -nc --arg for symmetry with the
+    # end-row writer at line ~824 and to keep the row safe under any
+    # future field carrying embedded `"` / newline. printf '%s' was a
+    # holdover from when the schema was strictly ASCII-safe.
+    jq -nc \
+      --arg dispatch_id "$_dispatch_id" \
+      --arg stage "$stage" \
+      --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg trigger "$_trigger" \
+      --arg predecessor_dispatch_id "$_predecessor" \
+      --arg branch "$_branch" \
+      --arg pipeline_content_hash "$_hash" '
+      {
+        dispatch_id: $dispatch_id,
+        stage: $stage,
+        started_at: $started_at,
+        trigger: $trigger,
+        predecessor_dispatch_id: $predecessor_dispatch_id,
+        branch: $branch,
+        pipeline_content_hash: $pipeline_content_hash
+      }' >> "$_hist_file"
+
+    # ENG-87 review M1+M2: install the EXIT trap that appends the end
+    # row at every exit site. Globals seeded here; classify_failure /
+    # verdict_handler call sites refine POLICY / VERDICT_* below before
+    # the trap fires.
+    _END_ROW_HIST_FILE="$_hist_file"
+    _END_ROW_DISPATCH_ID="$_dispatch_id"
+    _END_ROW_STAGE="$stage"
+    # ENG-87 review-iter-3 m2: capture _END_ROW_T0 at the start-row
+    # write site, NOT at the top of main(). `t0` was set before
+    # verify_preconditions, scope-approval check, _pre_dispatch_merge_gate,
+    # and _entry_conditions_gate — so duration_ms used to include
+    # pre-dispatch gating that has nothing to do with the agent's run,
+    # breaking the started_at + duration_ms ≈ exit_at invariant the
+    # plan §13.1.2 schema implies. `date +%s` here aligns with the
+    # `started_at` jq arg above (within ~milliseconds).
+    _END_ROW_T0="$(date +%s)"
+    _END_ROW_ISSUE="$ident"
+    _END_ROW_VERDICT_EMITTED=""
+    _END_ROW_VERDICT_TARGET=""
+    _END_ROW_POLICY=""
+    # ENG-87 review-iter-7 M2: _END_ROW_TRANSCRIPT_CLEAN global is
+    # gone — _append_dispatch_end_row now derives transcript_clean
+    # from the trap's exit_code arg (29 = false; anything else = true).
+    trap '_append_dispatch_end_row $?' EXIT
+  fi
 
   # Render the prompt.
   local prompt_file log_file
@@ -980,6 +1298,10 @@ main() {
             "$(failure_outcome_for_exit 0 1)" "$duration" \
             "branch=$branch notable_count=$(wc -l <<<"$notable_files" | tr -d ' ')" \
             "${_cf_pending[@]+"${_cf_pending[@]}"}" || true
+          # ENG-87 review-iter-7 M3: end-row writer reads find_fresh_verdict
+          # at trap-fire time, so this manual seed is no longer needed.
+          # The just-posted halt verdict will be picked up by the writer's
+          # Linear read.
           exit 0
         fi
         ;;
@@ -1034,6 +1356,9 @@ main() {
         # ENG-54: review-stage wait-success branch is gone (review never
         # waits anymore — _fresh_wait_reason narrowed to build only).
         log "stage $stage wait on $ident (reason=$_wait_reason)"
+        # ENG-87 review-iter-7 M3: writer reads find_fresh_wait_verdict
+        # at trap-fire time when find_fresh_verdict returns empty (wait
+        # is excluded by the latter's filter). Manual seed removed.
         exit 0
       fi
       # Budget exhausted: _handle_wait already posted the halt comment and
@@ -1052,6 +1377,9 @@ main() {
         "$(( ($(date +%s) - t0) * 1000 ))" "verdict=halt reason=$_wait_reason exhausted=external-signal-budget" \
         "${_halt_cost_flags[@]+"${_halt_cost_flags[@]}"}" || true
       log "stage $stage halt-for-human on $ident (external-signal-budget exhausted, reason=$_wait_reason)"
+      # ENG-87 review-iter-7 M3: writer reads find_fresh_verdict at
+      # trap-fire time and picks up the budget-exhausted halt comment
+      # _handle_wait just posted. Manual seed removed.
       exit 0
     fi
   fi
@@ -1076,6 +1404,35 @@ main() {
             "agent dispatch returned 0 but emitted no stage-summary file and no verdict marker" 25
           exit 25
         fi
+        ;;
+    esac
+  fi
+
+  # ENG-87: post-dispatch envelope validator. Halts on egregious bypass
+  # only — transcript scan for direct Linear API calls (mcp__plugin_linear*
+  # or curl https://api.linear.app) outside the bin/linear.sh chokepoint.
+  # Detective backstop on top of (a) ENG-41's lane fence, (b) Task 7's
+  # auto-injection — catches an agent that bypasses bin/linear.sh entirely.
+  # Skip on scope-approval replay (no agent ran). Cleans the sidecar
+  # whether the envelope is clean OR violation (after halt comment lands).
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      brainstorming|planning|implementing|ui|reviewing|qa|building)
+        local _env_rc=0
+        _validate_dispatch_envelope "$ident" "$stage" || _env_rc=$?
+        if (( _env_rc == 29 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "dispatch envelope violation: agent bypassed bin/linear.sh (transcript shows mcp__plugin_linear or curl https://api.linear.app)" 29
+          # ENG-87 review C3: do NOT remove the sidecar on the halt
+          # path. CLAUDE.md and docs/runbooks/recovery.md both promise
+          # that the transcript is "preserved across the halt for
+          # forensic review and removed by the next clean dispatch."
+          # Pre-clean at dispatch.sh:102 ensures the next dispatch
+          # cannot inherit a stale sidecar; cleanup on `--action
+          # continue` is the operator's recovery path.
+          exit 29
+        fi
+        rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
         ;;
     esac
   fi
@@ -1134,6 +1491,13 @@ main() {
   # confirmed equal to dispatched_stage_label, so no second linear.sh call needed).
   local vh_stage
   vh_stage="${current_stage_label#stage:}"
+
+  # ENG-87 review-iter-7 M3: verdict_emitted / verdict_target are now
+  # derived inside _append_dispatch_end_row (which calls find_fresh_verdict
+  # at trap-fire time). The pre-iter-7 explicit pre-seed here was the
+  # success-path mirror of M3's manual seeds at halt/wait sites; with
+  # the writer-side derivation it's redundant.
+
   local vh_rc=0
   verdict_handler "$ident" "$vh_stage" || vh_rc=$?
 
@@ -1144,6 +1508,14 @@ main() {
   esac
 
   t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+
+  # ENG-87 review M1+M2: the dispatch_history.jsonl end row is appended
+  # by the EXIT trap (_append_dispatch_end_row) installed after the
+  # start-row above. The trap emits the full 9-field schema (plan §13.1.2)
+  # at every exit site (clean OR halt). If skip_dispatch was set
+  # (scope-approval replay), the trap is NOT installed (no start row was
+  # either — preserves the start/end pairing invariant).
+
   # ENG-26 D-005: claude ran for all three vh_rc arms below (success,
   # halt-for-human, protocol-violation), so each site receives cost
   # flags. Read once into a bash array, then expand under the

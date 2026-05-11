@@ -221,6 +221,10 @@ below. The slot list is additive to this contract — always follow the contract
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
 **Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **Do NOT prepend env-var assignments** (e.g. `PIPELINE_WRITER=agent`, `LINEAR_API_KEY=...`) **to your `bash bin/...` invocations** — the sandbox allowlist matcher anchors on the FIRST token of the command line, and an env-var assignment is not `bash`, so the `Bash(bash bin/pipeline.sh:*)` / `Bash(bash bin/linear.sh:*)` patterns fail to match. The orchestrator already exports `PIPELINE_WRITER=agent` into your dispatch via `bin/dispatch.sh::main`; the prefix is redundant AND unmatchable. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
+
+**Dispatch identifier and freshness contract (ENG-87):** The orchestrator allocates a per-dispatch identifier `{dispatch_id}` of the form `ENG-N-d<NNNN>` (monotonic per issue) before invoking your `claude -p` subprocess. It is rendered into your prompt via `render-prompt.sh` and exported as `PIPELINE_DISPATCH_ID` so every `bash bin/linear.sh add-comment` or `add-or-update-comment` call you make auto-stamps a `<!-- meta: dispatch id={dispatch_id} stage=<your stage> -->` marker on the comment body. You do NOT manage this marker; the chokepoint owns it. Rules: (1) **Do NOT manually emit `<!-- meta: dispatch id=... -->` markers** — the chokepoint at `bin/linear.sh::add_comment` / `add_or_update_comment` auto-injects them when `PIPELINE_DISPATCH_ID` is set; manual emission is a contract violation, the injector is idempotent and silently de-duplicates, but the convention is "the chokepoint owns this marker." (2) **Do NOT post Linear comments via `mcp__plugin_linear_*` or `curl https://api.linear.app`** — both forms bypass the auto-injection; the post-dispatch envelope validator scans your transcript and halts with `verdict halt --reason dispatch-envelope-violation` (exit 29) on either invocation. (3) **Do NOT read the `dispatch_id` of a previous cycle to "carry forward" any state** — each dispatch is a fresh slate; loopback inputs come from the SOURCE stage's stage-summary file (which the orchestrator preserves; YOUR stage-summary file is cleared at THIS dispatch's start, so re-emitting it via `Write` with full content is mandatory — see the per-stage Output bullets and the §5 ENG-71/ENG-77 precedent).
+
+**Stage summary file — overwrite-on-every-dispatch contract (ENG-77/ENG-71):** Every per-stage Output section instructs you to write the stage summary file at `{stage_summary_path}` as the LAST step. **MANDATORY — overwrite on every dispatch.** Use `Write` with the full report content; do not read-then-conditionally-skip. The orchestrator reads this file verbatim and posts it as the Linear `completion/<stage>/{issue_id}` summary; a stale file means stale Linear posts and stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised the ENG-71 (May 2026) review-loop incident: any stage-summary file going unwritten on a re-dispatch is a structural staleness hazard, not just a §5 problem. Per-stage bullets retain the file path + slot list (artifact link, TL;DR, status, notes); the overwrite contract here is the single source of truth — do not re-state it in §§1-7.
 ```
 
 ---
@@ -301,6 +305,8 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
 4. **Commit artifacts**: the brainstorm doc, plus any new ADRs appended to
    `docs/knowledge/decisions.md` with status `proposed`.
 5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+   Overwrite-on-every-dispatch contract per §0; orchestrator posts it to Linear as
+   `completion/brainstorm/{issue_id}`.
    Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
    - Artifact link: `[docs/brainstorms/{file}.md](<github-blob-url>)` pointing at the
      brainstorm doc on the feature branch.
@@ -504,6 +510,8 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    knowledge-file changes go through PRs with CODEOWNERS. Do NOT change the Linear stage
    label — the orchestrator swaps it on successful exit.
 5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+   Overwrite-on-every-dispatch contract per §0; orchestrator posts it to Linear as
+   `completion/plan/{issue_id}`.
    Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
    - Artifact link: `[docs/plans/{plan_file}.md](<github-blob-url>)` pointing at the plan
      doc on the feature branch (reviewers can jump to the plan even before a PR exists).
@@ -643,7 +651,8 @@ Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
 - Post the TDD evidence comment above.
 - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-  comment format contract (preamble). Stage-specific slots:
+  comment format contract (preamble). Overwrite-on-every-dispatch contract per §0;
+  orchestrator posts it to Linear as `completion/implement/{issue_id}`. Stage-specific slots:
   - Artifact link: plan doc link (`[docs/plans/{plan_file}.md](<github-blob-url>)`) AND
     the branch-compare link
     (`https://github.com/<owner>/<repo>/compare/main...<branch>`) so the reviewer can
@@ -785,7 +794,8 @@ Do NOT create or edit the pull request. The orchestrator opens it on transition 
 Output:
 - Commit any remaining work on `{branch_name}` and push. Do NOT open the pull request yourself — the orchestrator handles it.
 - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-  comment format contract (preamble). Stage-specific slots:
+  comment format contract (preamble). Overwrite-on-every-dispatch contract per §0;
+  orchestrator posts it to Linear as `completion/ui/{issue_id}`. Stage-specific slots:
   - Artifact link: the branch-compare URL (`https://github.com/<owner>/<repo>/compare/main...<branch>`). The orchestrator opens the PR after this stage exits, so the PR URL is not yet available.
   - TL;DR: 1–2 sentences on what the user sees change and the single biggest design
     call (e.g. new view vs. extending an existing one, chart library choice).
@@ -999,16 +1009,13 @@ Output:
 - Consolidated Linear review summary as a `completion/reviewing/{issue_id}`
   add-or-update-comment.
 - Stage-summary file at {stage_summary_path} (per the Stage summary comment
-  format contract). **MANDATORY — overwrite on every dispatch.** Use `Write`
-  with the full report content; do not read-then-conditionally-skip. The
-  file's contents at exit time are your authoritative report — the
-  orchestrator reads it verbatim and posts it as the Linear
-  `completion/reviewing/{issue_id}` summary. If your findings are unchanged
-  from a prior iter (rare on a re-dispatched review-loopback), re-write the
-  same content; the orchestrator's footer-only re-apply path covers
-  visibility. ENG-71 (May 2026) cycled 9 review-implement loops because
-  iters 6-9 emitted fresh `verdict fail` markers but never updated this
-  file — the orchestrator kept posting the iter-5 stale body to Linear,
+  format contract). Overwrite-on-every-dispatch contract per §0; orchestrator
+  posts it to Linear as `completion/reviewing/{issue_id}`. If your findings
+  are unchanged from a prior iter (rare on a re-dispatched review-loopback),
+  re-write the same content; the orchestrator's footer-only re-apply path
+  covers visibility. ENG-71 (May 2026) cycled 9 review-implement loops
+  because iters 6-9 emitted fresh `verdict fail` markers but never updated
+  this file — the orchestrator kept posting the iter-5 stale body to Linear,
   the implement agent kept reading the stale body, and no new feedback
   reached the next iteration. Do not repeat.
 - Verdict per Decision path (A premise-failure → fail to brainstorming,
@@ -1162,7 +1169,8 @@ Decision path (apply exactly one):
      - Post a QA summary comment on the PR (gate results + coverage-audit table +
        adversarial tests added + dedup results). This is the full audit trail.
      - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-       comment format contract (preamble). Stage-specific slots:
+       comment format contract (preamble). Overwrite-on-every-dispatch contract per §0;
+       orchestrator posts it to Linear as `completion/qa/{issue_id}`. Stage-specific slots:
        - Artifact link: the PR URL.
        - TL;DR: 1–2 sentences on QA verdict and whether adversarial tests surfaced
          anything new (usually: "no new issues" + number of tests added).
@@ -1418,7 +1426,9 @@ Decision path (apply exactly one):
      - Merge the PR (squash + auto + delete-branch).
      - Watch post-merge CI to green.
      - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
-       comment format contract (preamble). Stage-specific slots:
+       comment format contract (preamble). Overwrite-on-every-dispatch contract per §0;
+       orchestrator posts it to Linear as `completion/build/{issue_id}`.
+       Stage-specific slots:
        - Artifact link: the merge commit link
          (`https://github.com/<owner>/<repo>/commit/<merge_sha>`).
        - TL;DR: 1 sentence on what merged (e.g. "Fix: reconcile honors

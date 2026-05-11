@@ -93,6 +93,107 @@ compute_pipeline_content_hash() {
     | shasum -a 256 \
     | awk '{print $1}'
 }
+# ─── Dispatch identifier (ENG-87) ─────────────────────────────────────
+# Per-issue monotonic dispatch counter. Allocated at run-stage.sh::main
+# per dispatch (after preconditions, before render-prompt), exported as
+# PIPELINE_DISPATCH_ID, persisted in $(issue_dir)/issue-state.json. Format
+# ENG-N-d<NNNN> (4-digit zero-padded). The id is the glue layer for the
+# cross-dispatch staleness contract: every cross-dispatch read becomes a
+# single-equality check on this counter instead of secondary inference
+# (mtime, createdAt window, label state, prompt-token textual equality).
+allocate_dispatch_id() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "allocate_dispatch_id: missing issue id"
+  local state_file; state_file="$(issue_dir "$issue")/issue-state.json"
+  local lock_dir="$(issue_dir "$issue")/.allocate.lock"
+  mkdir -p "$(issue_dir "$issue")"
+  # Per-issue mkdir-lock around the read-modify-write. mv -f's rename
+  # atomicity guarantees readers see whole-or-prior, not a partial; the
+  # lock guarantees two concurrent allocators serialise instead of both
+  # reading the same prior_seq and double-writing seq+1.
+  acquire_lock "$lock_dir" 60 || die "allocate_dispatch_id: lock timeout for $issue"
+  # Use a trap to ensure the lock is released even on early die / jq
+  # parse failure inside the critical section.
+  local _alloc_rc=0
+  _allocate_dispatch_id_locked "$issue" "$state_file" || _alloc_rc=$?
+  release_lock "$lock_dir"
+  return "$_alloc_rc"
+}
+
+_allocate_dispatch_id_locked() {
+  local issue="$1" state_file="$2"
+  local prior_seq=0 prior_json="{}"
+  # Resilient prior-seq read: corrupt-JSON / torn-write / non-numeric
+  # current_dispatch_seq all reset to 0.
+  if [[ -s "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+    prior_seq="$(jq -r '.current_dispatch_seq // 0' "$state_file" 2>/dev/null || printf '0')"
+    [[ "$prior_seq" =~ ^[0-9]+$ ]] || prior_seq=0
+    prior_json="$(cat "$state_file")"
+  fi
+  local next_seq=$((prior_seq + 1))
+  local id; id="$(printf '%s-d%04d' "$issue" "$next_seq")"
+  # Merge: write current_dispatch_seq, current_dispatch_id, current_stage
+  # without losing classify-failure's existing fields (policy, reason,
+  # exit_code, retry_count, ...). jq -n + ($prior + {…}) preserves them.
+  local merged
+  merged="$(jq -cn --argjson prior "$prior_json" --argjson seq "$next_seq" \
+                 --arg id "$id" --arg stage "${PIPELINE_STAGE-}" '
+    $prior + {current_dispatch_seq: $seq, current_dispatch_id: $id, current_stage: $stage}')"
+  local tmp="${state_file}.tmp.$$"
+  printf '%s' "$merged" > "$tmp"
+  mv -f "$tmp" "$state_file"
+  export PIPELINE_DISPATCH_ID="$id"
+  printf '%s' "$id"
+}
+
+# Read-only sibling: returns current_dispatch_id from issue-state.json,
+# or empty string if absent. Used by verdict-handler.sh's dispatch_id-
+# primary filter (find_fresh_verdict, resume_in_progress_transition).
+current_dispatch_id() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "current_dispatch_id: missing issue id"
+  local state_file; state_file="$(issue_dir "$issue")/issue-state.json"
+  [[ -s "$state_file" ]] || { printf ''; return 0; }
+  jq -r '.current_dispatch_id // ""' "$state_file" 2>/dev/null || printf ''
+}
+
+# ─── Transcript-based assertion (ENG-43, hoisted ENG-87) ──────────────
+# Single jq fork; reads NDJSON from $transcript line by line, finds
+# tool_use blocks invoking Bash whose .input.command starts with
+# $pattern, and prints the FIRST match on stdout (returning 1).
+# Soft-fail (return 0) on empty/missing transcript so dry-run /
+# planning-only paths never synthesize false positives. Pure: no
+# harness ambient context (D-010).
+#
+# Lives in common.sh (not dispatch.sh) because two callers need it:
+#   (1) bin/dispatch.sh::_render_and_capture_stream — runs in dispatch.sh's
+#       subprocess (gh pr create / branch creation / worktree mutation
+#       checks against the live transcript).
+#   (2) bin/run-stage.sh::_validate_dispatch_envelope — runs in run-stage.sh's
+#       parent process (post-dispatch envelope scan against the persisted
+#       sidecar). Pre-ENG-87 review fix, this caller hit `command not found`
+#       rc=127 because run-stage.sh sources only common.sh / classify-failure.sh
+#       / verdict-handler.sh — never dispatch.sh — and the conditional-context
+#       falsy arm halted every dispatch with rc=29.
+assert_no_tool_invocation() {
+  local transcript="$1" pattern="$2"
+  [[ -s "$transcript" ]] || return 0
+  local matched
+  matched="$(jq -Rr --arg p "$pattern" '
+    fromjson? // empty
+    | select(.type == "assistant")
+    | .message.content[]?
+    | select(.type == "tool_use" and .name == "Bash")
+    | (.input.command // "")
+    | select(startswith($p))
+  ' "$transcript" 2>/dev/null | head -1)" || true
+  if [[ -n "$matched" ]]; then
+    printf '%s\n' "$matched"
+    return 1
+  fi
+  return 0
+}
+
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
@@ -131,6 +232,7 @@ failure_outcome_for_exit() {
     26) printf 'worktree-mutation-forbidden' ;;
     27) printf 'self-leak' ;;
     28) printf 'leaked-in-scope-threshold' ;;
+    29) printf 'envelope-violation' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
@@ -198,10 +300,22 @@ parse_pipeline_marker() {
   # NOT register as real state-driving events.
   body="$(_strip_code_blocks_and_spans "$body")"
 
-  # Match either family. The grep is intentionally unanchored so a marker
-  # appearing anywhere in the body is found; we take the LAST one (`tail -1`)
-  # because mechanical summary writers append the dedup marker to the end.
-  marker="$(grep -oE '<!-- (pipeline|meta): [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  # Family precedence: pipeline > meta. Pipeline-family markers
+  # (verdict, transition, decision) are state-driving — every caller of
+  # this function cares about them. Meta-family markers (dedup, metric,
+  # dispatch, ...) are bookkeeping that often coexists in the SAME comment
+  # body alongside a state-driving pipeline marker (ENG-87 dispatch_id
+  # auto-injection appends `<!-- meta: dispatch ... -->` AT THE END of
+  # every comment that goes through the linear.sh chokepoint, so a
+  # straight `tail -1` would return the dispatch marker for every
+  # comment that carries both — hijacking find_fresh_verdict /
+  # resume_in_progress_transition / _vh_drain_legacy_labels). Within a
+  # family the LAST marker wins (legacy semantics: mechanical summary
+  # writers append dedup markers at the end).
+  marker="$(grep -oE '<!-- pipeline: [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  if [[ -z "$marker" ]]; then
+    marker="$(grep -oE '<!-- meta: [^>]+ -->' <<<"$body" 2>/dev/null | tail -1 || true)"
+  fi
   [[ -z "$marker" ]] && return 1
 
   local family payload
@@ -272,7 +386,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id assert_no_tool_invocation
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
