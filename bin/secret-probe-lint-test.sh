@@ -274,6 +274,46 @@ case_10_dry_run_wires_lint() {
   fi
 }
 
+# ─── case 11: bin/dry-run.sh uses canonical stage names ────────────────
+# Setup smoke must exercise the same canonical gerund-form stages consumed
+# by render-prompt.sh, dispatch.sh, reconcile.sh, and run-stage.sh. Legacy
+# short names (`brainstorm`, `plan`, `implement`, `review`, `build`,
+# `release`) make setup fail even when the pipeline code is healthy.
+case_11_dry_run_uses_canonical_stages() {
+  local dry="$SCRIPT_DIR_REAL/../bin/dry-run.sh"
+  if [[ ! -f "$dry" ]]; then
+    bad 'case-11' "bin/dry-run.sh not found at $dry"
+    return
+  fi
+  if grep -Eq '(for stage in brainstorm plan implement ui review qa build release retrospective|dispatch\.sh brainstorm([[:space:]]|$)|reconcile\.sh .* brainstorm([[:space:]]|$)|run-stage\.sh .* brainstorm([[:space:]]|$))' "$dry"; then
+    bad 'case-11' "bin/dry-run.sh still invokes stage-aware checks with legacy short stage names"
+    return
+  fi
+  if grep -qF 'for stage in brainstorming planning implementing ui reviewing qa building released retrospective' "$dry"; then
+    ok 'case-11'
+  else
+    bad 'case-11' "bin/dry-run.sh does not enumerate canonical gerund-form stages"
+  fi
+}
+
+# ─── case 12: stage-less run-stage probe skips paused issues ───────────
+# The online setup smoke chooses a real Linear issue. A probe can be
+# stage-less AND `pipeline:paused`; run-stage.sh then correctly refuses it
+# at the pause precondition before the missing-stage guard. The smoke check
+# must skip that issue instead of reporting a false failure.
+case_12_dry_run_skips_paused_precondition_probe() {
+  local dry="$SCRIPT_DIR_REAL/../bin/dry-run.sh"
+  if [[ ! -f "$dry" ]]; then
+    bad 'case-12' "bin/dry-run.sh not found at $dry"
+    return
+  fi
+  if grep -qF 'pipeline:paused; skipping precondition probe' "$dry"; then
+    ok 'case-12'
+  else
+    bad 'case-12' "bin/dry-run.sh does not skip run-stage precondition probe when the stage-less issue is pipeline:paused"
+  fi
+}
+
 main() {
   if [[ ! -f "$LINT" ]]; then
     printf 'fail: lint script not found at %s\n' "$LINT" >&2
@@ -289,6 +329,8 @@ main() {
   case_8_no_git_repo
   case_9_per_stage_secret_rule_inlined
   case_10_dry_run_wires_lint
+  case_11_dry_run_uses_canonical_stages
+  case_12_dry_run_skips_paused_precondition_probe
   printf '\n'
   printf 'passed: %d\nfailed: %d\n' "$PASS" "$FAIL"
   (( FAIL == 0 ))

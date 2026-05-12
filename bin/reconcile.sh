@@ -53,7 +53,7 @@ resolve_via_control_label() {
 
 main() {
   local issue_id="${1:-}" kind="${2:-}"
-  [[ -n "$issue_id" && -n "$kind" ]] || die "usage: reconcile.sh <issue_id> <brainstorm|plan>"
+  [[ -n "$issue_id" && -n "$kind" ]] || die "usage: reconcile.sh <issue_id> <brainstorming|planning>"
 
   local dir
   case "$kind" in
