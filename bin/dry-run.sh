@@ -106,7 +106,7 @@ check "render-prompt: extracts brainstorm block" bash -c '
 check "render-prompt: extracts all 9 stages" bash -c '
   source $HARNESS_ROOT/bin/common.sh
   source $HARNESS_ROOT/bin/render-prompt.sh
-  for stage in brainstorm plan implement ui review qa build release retrospective; do
+  for stage in brainstorming planning implementing ui reviewing qa building released retrospective; do
     section=$(lookup_section "$stage")
     if [[ -z "$section" ]]; then echo "no section for: $stage"; exit 1; fi
     body=$(extract_block "$section")
@@ -134,7 +134,7 @@ check "dispatch.sh: dry-run prints prompt preview" bash -c '
   tmp=$(mktemp)
   echo "PROMPT TEST BODY line 1" > "$tmp"
   echo "PROMPT TEST BODY line 2" >> "$tmp"
-  out=$(PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/dispatch.sh brainstorm "$tmp" 2>&1)
+  out=$(PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/dispatch.sh brainstorming "$tmp" 2>&1)
   grep -q "would invoke: gtimeout" <<<"$out" || { echo "$out"; exit 1; }
   grep -q "PROMPT TEST BODY" <<<"$out" || { echo "$out"; exit 1; }
   rm "$tmp"
@@ -143,7 +143,7 @@ check "dispatch.sh: dry-run prints prompt preview" bash -c '
 check "dispatch.sh: all 9 stages have allowed-tools profiles" bash -c '
   source $HARNESS_ROOT/bin/common.sh
   source $HARNESS_ROOT/bin/dispatch.sh
-  for stage in brainstorm plan implement ui review qa build release retrospective; do
+  for stage in brainstorming planning implementing ui reviewing qa building released retrospective; do
     allowed_tools_for "$stage" >/dev/null || exit 1
   done
 '
@@ -211,7 +211,7 @@ else
     '
 
     check "reconcile.sh: produces a valid decision (proceed | human | link:*)" bash -c '
-      out=$($HARNESS_ROOT/bin/reconcile.sh "'"$PROBE_ID"'" brainstorm 2>/dev/null || true)
+      out=$($HARNESS_ROOT/bin/reconcile.sh "'"$PROBE_ID"'" brainstorming 2>/dev/null || true)
       case "$out" in
         proceed|human|link:*) echo "reconcile output: $out"; exit 0 ;;
         *) echo "unexpected reconcile output: $out"; exit 1 ;;
@@ -225,7 +225,11 @@ else
         echo "probe '"$PROBE_ID"' already at $cur; skipping precondition probe"
         exit 0
       fi
-      if PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/run-stage.sh "'"$PROBE_ID"'" brainstorm 2>&1 \
+      if $HARNESS_ROOT/bin/linear.sh has-label "'"$PROBE_ID"'" pipeline:paused; then
+        echo "probe '"$PROBE_ID"' has pipeline:paused; skipping precondition probe"
+        exit 0
+      fi
+      if PIPELINE_DRY_RUN=1 $HARNESS_ROOT/bin/run-stage.sh "'"$PROBE_ID"'" brainstorming 2>&1 \
         | grep -q "does not carry stage:brainstorming"; then
         exit 0
       else
