@@ -478,6 +478,50 @@ else
   fail_at "case-14 NOTABLE" "unexpected bumps=$bumps"
 fi
 
+# ─── Case 15: _compose_scope_check_detail strips [ts] prefix + joins with `; ` ──
+# Pins the producer/consumer contract between common.sh::log's `[ts]` prefix
+# and the operator-visible halt reason. Three input shapes:
+#   (a) multi-line scope-check log → joined with `; `, no trailing separator
+#   (b) single-line scope-check log → passes through, no `; ` injected
+#   (c) empty input                  → empty output (caller's :- fallback fires)
+multi='[2026-05-13T17:00:00Z] scope-check: fetch origin main failed; falling back to local refs
+[2026-05-13T17:00:00Z] scope-check: plan=docs/plans/foo.md branch=test
+[2026-05-13T17:00:00Z] scope-check: plan=docs/plans/foo.md: File Structure section missing or empty'
+got_multi="$(_compose_scope_check_detail "$multi")"
+want_multi='scope-check: fetch origin main failed; falling back to local refs; scope-check: plan=docs/plans/foo.md branch=test; scope-check: plan=docs/plans/foo.md: File Structure section missing or empty'
+if [[ "$got_multi" == "$want_multi" ]]; then
+  pass_at "case-15a multi-line: lines join with '; ', timestamps stripped, no trailing separator"
+else
+  fail_at "case-15a multi-line" "got=|$got_multi| want=|$want_multi|"
+fi
+
+single='[2026-05-13T17:00:00Z] scope-check: plan not found for ENG-T96A'
+got_single="$(_compose_scope_check_detail "$single")"
+if [[ "$got_single" == "scope-check: plan not found for ENG-T96A" ]]; then
+  pass_at "case-15b single-line: no separator injected"
+else
+  fail_at "case-15b single-line" "got=|$got_single|"
+fi
+
+got_empty="$(_compose_scope_check_detail "")"
+if [[ -z "$got_empty" ]]; then
+  pass_at "case-15c empty: empty output (caller :- fallback path)"
+else
+  fail_at "case-15c empty" "got=|$got_empty|"
+fi
+
+# Non-scope-check log lines (e.g. shell errors, gtimeout messages) are filtered
+# out — the grep anchor is intentionally narrow.
+noise='fatal: not a git repository
+[2026-05-13T17:00:00Z] scope-check: plan not found for ENG-T
+some stray output without a bracket prefix'
+got_noise="$(_compose_scope_check_detail "$noise")"
+if [[ "$got_noise" == "scope-check: plan not found for ENG-T" ]]; then
+  pass_at "case-15d noise-filter: non-`[ts] scope-check:` lines dropped"
+else
+  fail_at "case-15d noise-filter" "got=|$got_noise|"
+fi
+
 # ─── Case 19: _cost_flags_for emits 12 lines when usage file present (ENG-26 D-005) ──
 # Asserts the helper turns a six-field usage-<stage>.json into a newline-delimited
 # stream of `--key`/`value` pairs and that the model literal `claude-opus-4-7[1m]`

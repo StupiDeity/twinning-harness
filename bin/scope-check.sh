@@ -60,8 +60,11 @@ find_canonical_plan() {
 
 extract_scope_section() {
   local plan="$1"
+  # Accepts `## File Structure`, `### File Structure`, `## N. File Structure`.
   awk '
-    /^(##|###)[[:space:]]+[Ff]ile [Ss]tructure/ { depth=length($1); in_fs=1; next }
+    /^(##|###)[[:space:]]+([0-9]+\.[[:space:]]+)?[Ff]ile [Ss]tructure/ {
+      depth=length($1); in_fs=1; next
+    }
     in_fs && /^(##|###)[[:space:]]/ {
       this=length($1)
       if (this <= depth) { in_fs=0; next }
@@ -170,12 +173,14 @@ main() {
 
   local plan
   plan="$(find_canonical_plan "$issue_id" "$worktree_root")" \
-    || { log "scope-check: no canonical plan for $issue_id"; exit 2; }
-  log "scope-check: plan=${plan#"$worktree_root/"} branch=$branch"
+    || { log "scope-check: plan not found for $issue_id (no docs/plans/*.md with frontmatter linear: $issue_id)"; exit 2; }
+  local plan_rel="${plan#"$worktree_root/"}"
+  log "scope-check: plan=$plan_rel branch=$branch"
 
   local body
   body="$(extract_scope_section "$plan")"
-  [[ -n "$body" ]] || { log "scope-check: File Structure section empty/missing"; exit 2; }
+  [[ -n "$body" ]] \
+    || { log "scope-check: plan=$plan_rel: File Structure section missing or empty (expected a '## File Structure' or '### File Structure' heading)"; exit 2; }
 
   local allowed_files allowed_dirs
   # ENG-25: `*` (not `+`) on the directory-prefix group so repo-root files
@@ -197,7 +202,7 @@ main() {
     | awk '!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.[a-zA-Z0-9]+\/$/' | sort -u || true)"
 
   if [[ -z "$allowed_files$allowed_dirs" ]]; then
-    log "scope-check: no file or directory tokens parsed from File Structure"
+    log "scope-check: plan=$plan_rel: File Structure section parsed but contains no file or directory tokens"
     exit 2
   fi
 

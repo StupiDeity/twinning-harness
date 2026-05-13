@@ -140,6 +140,17 @@ _replay_scope_approval() {
   bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "scope-approval-replay" 0
 }
 
+# Strip common.sh::log's `[ts]` prefix from scope-check stderr and join
+# multi-line diagnostics with `; ` so the halt reason reads as one sentence
+# in Linear. Empty input → empty output (caller falls back).
+# `|| true` guards the grep-no-match rc=1 from killing set -e callers.
+_compose_scope_check_detail() {
+  local scope_out="$1"
+  { grep -E '^\[.*\] scope-check: ' <<<"$scope_out" \
+      | sed -E 's/^\[[^]]+\][[:space:]]+//' \
+      | awk 'BEGIN{ORS=""} NR>1{print "; "} {print}'; } || true
+}
+
 # ─── Per-stage success-path completion comment (ENG-11) ──────────────────────
 # Read the agent-authored summary file, wrap with header + PR tail, and
 # upsert under sig completion/<stage>/<issue>. On missing/empty/symlink,
@@ -1331,8 +1342,10 @@ main() {
         ;;
       *)
         bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
+        local scope_detail
+        scope_detail="$(_compose_scope_check_detail "$scope_out")"
         classify_failure "$ident" "$stage" "skip-until-code-changes" \
-          "scope-check rc=$scope_rc (likely plan not found or File Structure unparseable)" \
+          "scope-check rc=$scope_rc: ${scope_detail:-no diagnostic captured}" \
           21 "$scope_rc"
         exit 21
         ;;
