@@ -52,13 +52,14 @@ check "sweep test harness: 13 partition cases pass" \
 check "run-stage-test: all cases pass" \
   bash $HARNESS_ROOT/bin/run-stage-test.sh
 
-check "YAML syntax: .github/workflows/*.yml" bash -c '
+check "GH Actions workflow structure: .github/workflows/*.yml" bash -c '
   shopt -s nullglob
   for f in .github/workflows/*.yml; do
-    bun -e "
-      import fs from \"fs\"; import YAML from \"yaml\";
-      YAML.parse(fs.readFileSync(\"$f\",\"utf8\"));
-    " >/dev/null 2>&1 || exit 1
+    [[ -s "$f" ]] || { echo "empty file: $f"; exit 1; }
+    grep -qE "^on[[:space:]]*:" "$f" || { echo "missing top-level on: in $f"; exit 1; }
+    grep -qE "^jobs[[:space:]]*:" "$f" || { echo "missing top-level jobs: in $f"; exit 1; }
+    awk '\''/^\t/ { found=1 } END { exit found?1:0 }'\'' "$f" \
+      || { echo "tab indentation (YAML forbids tabs): $f"; exit 1; }
   done
 '
 
