@@ -226,8 +226,14 @@ printf '\n--- allowed_tools_for: dispatch.tools.<stage>[] extras ---\n'
 # (b) Fallback: no dispatch.tools key → base only, no trailing comma.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-tools-empty" '')"
 base_implement="$(CONFIG="$cfg" allowed_tools_for implementing)"
-contains 'fallback_base_includes_cargo' 'Bash(cargo:*)' "$base_implement"
-contains 'fallback_base_includes_bun'   'Bash(bun:*)'   "$base_implement"
+# ENG-94: post-D-1, the BASE no longer carries cargo/bun (they flow in
+# via the PROFILE when the slug's project-profile.md lists them). The
+# base path is stack-neutral. Verify cargo/bun are ABSENT from the base
+# when no profile is configured (this test fixture overrides HARNESS_ROOT
+# to a temp dir with no learned-rules/<slug>/project-profile.md, so
+# _dispatch_tools_from_profile returns empty regardless).
+notcontains 'fallback_base_lacks_cargo' 'Bash(cargo:*)' "$base_implement"
+notcontains 'fallback_base_lacks_bun'   'Bash(bun:*)'   "$base_implement"
 notcontains 'fallback_base_no_trailing_comma' ',,'      "$base_implement"
 case "$base_implement" in
   *,) ng 'fallback_base_no_trailing_comma_at_end' 'no trailing comma' "$base_implement" ;;
@@ -245,12 +251,12 @@ got="$(CONFIG="$cfg" allowed_tools_for implementing)"
 contains 'extras_present_test_runner' \
   'Bash(bash bin/run-local-helpers-adversarial-test.sh:*)' "$got"
 contains 'extras_present_shellcheck' 'Bash(shellcheck:*)' "$got"
-contains 'extras_appended_after_base_cargo' 'Bash(cargo:*)' "$got"
-# Comma-separated, with extras after base.
-case "$got" in
-  *"Bash(cargo:*)"*"Bash(shellcheck:*)"*) ok 'extras_ordered_after_base' ;;
-  *) ng 'extras_ordered_after_base' 'shellcheck after cargo' "$got" ;;
-esac
+# ENG-94: post-D-1, cargo is no longer in the base allowlist (it only
+# flows in via PROFILE, which this fixture does not configure). The
+# pre-amendment "extras appear AFTER base-cargo" ordering is moot —
+# pin cargo's absence instead. Fixture 1 in dispatch-test.sh covers
+# the post-D-1 profile-fed path.
+notcontains 'extras_no_base_cargo_before_extras' 'Bash(cargo:*)' "$got"
 
 # (c) Per-stage isolation: implementing extras don't leak to ui/qa/build.
 ui_tools="$(CONFIG="$cfg" allowed_tools_for ui)"
@@ -304,8 +310,10 @@ esac
 
 # Regression: missing CONFIG file path → no extras (defensive, matches
 # the dispatch_timeout_minutes pattern in main()).
+# ENG-94: post-D-1, the base no longer carries cargo. Verify cargo is
+# ABSENT from the base path when CONFIG is missing.
 got="$(CONFIG="/nonexistent/path/config.json" allowed_tools_for implementing)"
-contains 'missing_config_file_returns_base_implement' 'Bash(cargo:*)' "$got"
+notcontains 'missing_config_file_returns_base_implement_no_cargo' 'Bash(cargo:*)' "$got"
 case "$got" in
   *,) ng 'missing_config_file_no_trailing_comma' 'no trailing comma' "$got" ;;
   *)  ok 'missing_config_file_no_trailing_comma' ;;
