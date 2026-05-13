@@ -332,6 +332,20 @@ This is intentional — false-positive scope is bounded to top-level
 single-file matches, never a directory prefix. If this is too broad for
 your repo, set `config.json::scope.allowlist.<stage>[]` to a tighter list.
 
+**ENG-96 — profile-driven `is_benign` lockfile set.** `bin/scope-check.sh::is_benign`
+no longer hardcodes `Cargo.lock`; the lockfile basenames it auto-allows
+are inferred per dispatch from
+`learned-rules/$PROJECT_SLUG/project-profile.md`'s
+`## Build & test gates` section (e.g. profile naming `poetry` →
+`poetry.lock` is benign). Helper: `_profile_lockfile_basenames`
+(token table at `_lockfile_for_pm`). To add a new stack: one case-arm
+edit + one token in `_profile_lockfile_basenames`'s `for pm in ...`
+loop. The `$SCOPE_CHECK_PROFILE_PATH` env-var override is **test-only**
+— production callers must not set it. Missing profile / unknown PM
+tokens degrade gracefully to "path-classes-only benign" with a `log`
+warning, **strictly more restrictive** than today's hardcoded Cargo
+carve-out on non-Rust stacks.
+
 ## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-53 #8, ENG-94)
 
 `dispatch.sh::allowed_tools_for` ships a stack-neutral base allowlist for each stage. Per-target
