@@ -293,6 +293,113 @@ _dispatch_tools_extras() {
   ' "$CONFIG" 2>/dev/null || true
 }
 
+# ENG-94: read the per-stage Tool allowlist block from the slug-aware
+# project profile and emit a comma-joined string ready to splice into
+# allowed_tools_for's base+extras composition. Sibling of
+# _dispatch_tools_extras; same soft-fail contract (empty string on
+# missing/malformed input, no die).
+#
+# Resolution: $HARNESS_ROOT/learned-rules/$PROJECT_SLUG/project-profile.md
+#
+# Fail-soft branches (D-3):
+#   - file absent OR HARNESS_ROOT/PROJECT_SLUG empty → empty, NO warning.
+#   - frontmatter missing OR schema_version != 2 → empty + ONE log warn.
+#   - schema_version 2, '## Tool allowlist' section absent → empty + ONE log warn.
+#   - section present, stage line absent OR sub-bullets empty/"(none)" → empty, NO warn.
+#   - awk parse failure → empty + ONE log warn.
+#
+# SEC (D-8): awk-side hygiene rejects Bash patterns containing shell
+# metacharacters (;, &, |, `, $(, >, <, newline, paren-imbalance) as
+# defense-in-depth against a profile commit that smuggles a chained
+# command into the allowlist. The warning text NEVER includes the
+# matched pattern text (ENG-46 secret-handling) — the pattern could
+# legitimately contain a $VAR reference that log's expansion would
+# leak into the per-stage transcript.
+_dispatch_tools_from_profile() {
+  local stage="$1"
+  [[ -n "${HARNESS_ROOT:-}" && -n "${PROJECT_SLUG:-}" ]] || return 0
+  local profile_path="${HARNESS_ROOT}/learned-rules/${PROJECT_SLUG}/project-profile.md"
+  [[ -f "$profile_path" ]] || return 0
+
+  # Schema-version gate. Must be exactly `schema_version: 2` inside
+  # frontmatter. Anything else (missing frontmatter, v1, malformed)
+  # falls through with one warning.
+  local has_v2
+  has_v2="$(awk '
+    NR==1 && $0=="---" { in_fm=1; next }
+    in_fm && $0=="---" { exit }
+    in_fm && /^schema_version:[[:space:]]+2[[:space:]]*$/ { print "yes"; exit }
+  ' "$profile_path" 2>/dev/null)"
+  if [[ "$has_v2" != "yes" ]]; then
+    log "[allowed-tools] project-profile.md schema_version != 2; Tool allowlist not loaded for stage=$stage"
+    return 0
+  fi
+
+  # Section presence gate. If '## Tool allowlist' header is absent,
+  # warn and fall through.
+  if ! grep -qE '^## Tool allowlist[[:space:]]*$' "$profile_path"; then
+    log "[allowed-tools] project-profile.md::## Tool allowlist section not found; stage=$stage"
+    return 0
+  fi
+
+  # Extract this stage's patterns. State machine: track section presence,
+  # track current stage (top-level `- <stage>:` bullets), emit any
+  # sub-bullet matching `^  - `Bash(...)`` for the requested stage.
+  # D-8 hygiene rejects shell-metachar payloads. BSD-awk compatible
+  # (no match($0, /<pat>/, m) capture groups — capture via sub()
+  # prefix-strip instead).
+  local result
+  result="$(awk -v STAGE="$stage" '
+    BEGIN { in_section=0; current_stage=""; first=1 }
+    # Strip CRLF for cross-platform editor tolerance.
+    { sub(/\r$/, "") }
+    # Enter the Tool allowlist section.
+    /^## Tool allowlist[ \t]*$/ { in_section=1; next }
+    # Any subsequent H2 closes the section.
+    in_section && /^## / { in_section=0; next }
+    !in_section { next }
+    # Top-level `- <stage>:` bullets switch the current stage.
+    /^- [a-z]+:/ {
+      line = $0
+      sub(/^- /, "", line)
+      sub(/:.*$/, "", line)
+      current_stage = line
+      next
+    }
+    # Sub-bullet `  - `Bash(...)`` lines belong to current_stage.
+    current_stage == STAGE && /^  - `Bash\(/ {
+      line = $0
+      # Strip leading "  - `"
+      sub(/^  - `/, "", line)
+      # Strip trailing "`" plus anything after (paranoia).
+      sub(/`.*$/, "", line)
+      # line is now "Bash(<inner>)". Extract <inner> for hygiene.
+      inner = line
+      sub(/^Bash\(/, "", inner)
+      sub(/\)$/, "", inner)
+      # D-8 hygiene: reject shell metachars and command-substitution.
+      if (inner ~ /[;&|`<>]/) next
+      if (inner ~ /\$\(/) next
+      if (inner ~ /\n/)   next
+      # Paren-balance check.
+      tmp = inner; opens = 0; closes = 0
+      while (match(tmp, /\(/)) { opens++; tmp = substr(tmp, RSTART+1) }
+      tmp = inner
+      while (match(tmp, /\)/)) { closes++; tmp = substr(tmp, RSTART+1) }
+      if (opens != closes) next
+      # Emit Bash(<inner>) joined by commas.
+      if (!first) printf ","
+      printf "Bash(%s)", inner
+      first = 0
+    }
+  ' "$profile_path" 2>/dev/null)" || {
+    log "[allowed-tools] awk parse failure for stage=$stage"
+    return 0
+  }
+
+  printf '%s' "$result"
+}
+
 allowed_tools_for() {
   # Every stage gets BOTH `Bash(bash .pipeline/bin/linear.sh:*)` AND
   # `Bash(bash bin/linear.sh:*)` so agents can post Linear comments
@@ -315,22 +422,31 @@ allowed_tools_for() {
     # Canonical gerund-form stage names.
     brainstorming)  base='Read,Write,Edit,Grep,Glob,TaskCreate,WebFetch,Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
     planning)       base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git log:*),Bash(git diff:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
-    implementing)   base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(cargo:*),Bash(bun:*),Bash(rustc:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
-    ui)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
+    implementing)   base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
+    ui)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
     reviewing)      base='Read,Write,Grep,Glob,TaskCreate,Agent,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
-    qa)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(cargo:*),Bash(bun:*),Bash(npx:*),Bash(node:*),Bash(jq:*),Bash(awk:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
+    qa)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(jq:*),Bash(awk:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
     building)       base='Read,Write,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*)' ;;
     released)       base='Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(gh release view:*),Bash(gh release list:*),Bash(jq:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*),Bash(bash .pipeline/bin/metrics.sh:*),Bash(bash bin/metrics.sh:*)' ;;
     retrospective)  base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*),Bash(bash .pipeline/bin/metrics.sh:*),Bash(bash bin/metrics.sh:*)' ;;
     *)              die "no allowed-tools profile for stage: $1" ;;
   esac
+  # ENG-94 composition order (D-2, D-4): base (case arm) → profile
+  # (auto-discovered from learned-rules/<slug>/project-profile.md)
+  # → extras (operator-curated via .pipeline-config/config.json::
+  # dispatch.tools.<stage>[]). Empty segments are elided so no stray
+  # commas leak into the --allowed-tools argv (claude's matcher is
+  # delimiter-strict). The helper is invoked for EVERY stage; stages
+  # whose profile section is `(none)` or absent return empty and
+  # collapse to base+extras (pre-ENG-94 behavior preserved).
+  local profile_tools
+  profile_tools="$(_dispatch_tools_from_profile "$1")"
   local extras
   extras="$(_dispatch_tools_extras "$1")"
-  if [[ -n "$extras" ]]; then
-    printf '%s,%s' "$base" "$extras"
-  else
-    printf '%s' "$base"
-  fi
+  local result="$base"
+  [[ -n "$profile_tools" ]] && result="${result},${profile_tools}"
+  [[ -n "$extras"        ]] && result="${result},${extras}"
+  printf '%s' "$result"
 }
 
 main() {
