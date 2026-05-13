@@ -63,6 +63,74 @@ _vh_protocol_violation() {
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
 }
 
+# Inspect the issue's comment stream and the dispatch state to classify
+# WHY find_fresh_verdict returned empty. Disambiguates two failure modes
+# the caller (verdict_handler) used to collapse under case_id "no-marker":
+#
+#   (a) no-marker            — no `<!-- pipeline: verdict ... -->` markers
+#                              exist on the issue at all.
+#   (b) dispatch-id-mismatch — verdict markers exist AND `<!-- meta:
+#                              dispatch id=… -->` markers exist, but none
+#                              of the verdict comments carry the CURRENT
+#                              dispatch_id (the ENG-87 strict-id path's
+#                              "markers exist, none match" branch — see
+#                              find_fresh_verdict lines 128-131). Most
+#                              commonly an agent that emitted the marker
+#                              manually in its stage-summary with a
+#                              literal-placeholder (e.g. `$PIPELINE_DISPATCH_ID`),
+#                              violating AGENT_PROMPTS.md §0 rule (1).
+#
+# Returns three pipe-delimited fields on stdout:
+#   <case_id>|<curr_dispatch_id>|<observed_marker_csv>
+# observed_marker_csv is unique-sorted, capped at 5 entries to keep the
+# halt comment human-readable. Empty fields stay empty (never "<unset>"
+# placeholder — the caller formats display).
+_vh_classify_no_fresh_reason() {
+  local issue="$1"
+  local comments curr_id has_verdict observed case_id
+  comments="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-comments "$issue" 2>/dev/null || printf '[]')"
+  curr_id="$(current_dispatch_id "$issue" 2>/dev/null || printf '')"
+  has_verdict=0
+  # `set -e` safety: a bare `grep && var=1` chain whose grep returns 1
+  # (no match) exits the function nonzero. `if grep; then ... fi` is the
+  # tested-context form, which set -e ignores.
+  if grep -qF '<!-- pipeline: verdict ' <<<"$comments"; then
+    has_verdict=1
+  fi
+  observed="$(grep -oE '<!-- meta: dispatch id=[^[:space:]>]+' <<<"$comments" \
+    | sed -E 's|^<!-- meta: dispatch id=||' \
+    | sort -u \
+    | head -n 5 \
+    | tr '\n' ',' \
+    | sed 's/,$//' || true)"
+  if [[ "$has_verdict" == "1" && -n "$curr_id" && -n "$observed" ]]; then
+    case_id="dispatch-id-mismatch"
+  else
+    case_id="no-marker"
+  fi
+  printf '%s|%s|%s' "$case_id" "$curr_id" "$observed"
+}
+
+# Compose the human-readable halt body for an empty-fresh-verdict
+# classification. Centralised so verdict_handler stays a flat dispatch
+# table; the formatting is non-trivial enough (multi-line, multi-case)
+# that inlining costs readability.
+_vh_format_no_fresh_reason() {
+  local issue="$1" case_id="$2" curr_id="$3" observed="$4"
+  local curr_display="${curr_id:-<unset>}"
+  local resolution="Resolution: \`bash bin/pipeline.sh decide $issue --action continue\` (clears halt + resets dispatch state on the next tick)."
+  case "$case_id" in
+    dispatch-id-mismatch)
+      printf 'no verdict comment carries the current_dispatch_id `%s`. Observed dispatch-marker values on this issue: `%s`. Likely cause: an agent emitted `<!-- meta: dispatch id=... -->` manually in its stage-summary file (contract violation per AGENT_PROMPTS.md §0 rule 1 — the chokepoint at bin/linear.sh::add_comment owns this marker). %s' \
+        "$curr_display" "$observed" "$resolution"
+      ;;
+    *)
+      printf 'no fresh verdict marker on the issue (current_dispatch_id=`%s`). %s' \
+        "$curr_display" "$resolution"
+      ;;
+  esac
+}
+
 # ENG-60 T2.13: drain legacy pipeline-namespace labels on every transition.
 # These labels are folded into pipeline:halted / pipeline:abandoned per
 # design §7.5; removing them on every transition cleans them out
@@ -455,8 +523,17 @@ verdict_handler() {
   local fresh
   fresh="$(find_fresh_verdict "$issue")"
   if [[ -z "$fresh" ]]; then
-    _vh_protocol_violation "$issue" "no-marker" \
-      "halt applied without a fresh verdict marker"
+    # ENG-96: classify WHY no fresh verdict was found and emit an
+    # operator-actionable halt body. The two failure modes used to
+    # collapse under case_id "no-marker"; that masked the
+    # dispatch-id-mismatch mode (ENG-87 strict-id path empty), which is
+    # almost always an agent contract violation rather than a missing
+    # verdict marker. See _vh_classify_no_fresh_reason.
+    local classification case_id curr_id observed reason
+    classification="$(_vh_classify_no_fresh_reason "$issue")"
+    IFS='|' read -r case_id curr_id observed <<<"$classification"
+    reason="$(_vh_format_no_fresh_reason "$issue" "$case_id" "$curr_id" "$observed")"
+    _vh_protocol_violation "$issue" "$case_id" "$reason"
     return 2
   fi
 

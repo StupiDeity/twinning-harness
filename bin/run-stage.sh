@@ -184,6 +184,16 @@ post_completion_comment() {
   # `pipeline-rejection`, `pipeline-halt`, etc.) the agent may have emitted.
   # The new `<!-- pipeline: <event> ... -->` shape (no hyphen between
   # `pipeline` and the event) is preserved.
+  #
+  # ENG-96: also strip `<!-- meta: dispatch id=... -->` lines. The
+  # chokepoint at bin/linear.sh::add_or_update_comment owns this marker
+  # (auto-injects from PIPELINE_DISPATCH_ID); an agent-emitted marker —
+  # whether a literal-placeholder `$PIPELINE_DISPATCH_ID` (the ENG-96
+  # case), a stale prior-dispatch id, or a syntactically valid current id —
+  # is defense-in-depth-scrubbed here so the auto-injection re-adds
+  # exactly one canonical marker. Without this, an agent-emitted marker
+  # poisons find_fresh_verdict's ENG-87 strict-id-match path and halts
+  # the issue with `protocol-violation/dispatch-id-mismatch`.
   local body fallback_marker=""
   if [[ -L "$summary_path" ]]; then
     fallback_marker="summary_symlink_refused"
@@ -191,7 +201,11 @@ post_completion_comment() {
     fallback_marker="summary_missing"
   else
     local fsize; fsize="$(wc -c < "$summary_path" | tr -d ' ')"
-    body="$(sed -E -e '/<!-- meta: dedup key=.* -->/d' -e '/<!-- pipeline-[a-z]+: .* -->/d' "$summary_path" | head -c 32768)"
+    body="$(sed -E \
+      -e '/<!-- meta: dedup key=.* -->/d' \
+      -e '/<!-- meta: dispatch id=.* -->/d' \
+      -e '/<!-- pipeline-[a-z]+: .* -->/d' \
+      "$summary_path" | head -c 32768)"
     if (( fsize > 32768 )); then
       body+=$'\n\n_[truncated at 32 KiB]_'
       body+=$'\n<!-- meta: metric name=summary_truncated -->'
