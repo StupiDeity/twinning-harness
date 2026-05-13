@@ -33,8 +33,9 @@ Have these ready in browser tabs and on disk:
 ### PATH expectations
 
 The launchd plist injects a minimal PATH (`/opt/homebrew/bin`,
-`/usr/local/bin`, and system dirs — see
-`launchd/com.twinning.pipeline.plist.template:36-39`).
+`/usr/local/bin`, and system dirs — see the `<key>PATH</key>` entry
+under `EnvironmentVariables` in
+`launchd/com.twinning.pipeline.plist.template`).
 The `export PATH=…` line in `bin/run-local.sh` belt-and-braces
 additional segments for stack-specific user-global bins
 (`$HOME/.bun/bin`, `$HOME/.npm-global/bin`) that the *dispatched

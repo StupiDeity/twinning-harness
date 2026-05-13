@@ -38,10 +38,10 @@ placeholders.
 
 `launchd` hands the harness a minimal PATH via the plist's
 `EnvironmentVariables/PATH` block. The template at
-`launchd/com.twinning.pipeline.plist.template:36-39` injects
+`launchd/com.twinning.pipeline.plist.template` injects
 `/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin`
-— system defaults plus Homebrew dirs (Apple Silicon and Intel), no
-`$HOME` segments.
+under the `<key>PATH</key>` entry — system defaults plus Homebrew dirs
+(Apple Silicon and Intel), no `$HOME` segments.
 
 The `export PATH=…` line in `bin/run-local.sh` belt-and-braces the
 plist's PATH with additional segments for stack-specific user-global

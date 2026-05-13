@@ -52,7 +52,7 @@ check "sweep test harness: 13 partition cases pass" \
 check "run-stage-test: all cases pass" \
   bash $HARNESS_ROOT/bin/run-stage-test.sh
 
-check "GH Actions workflow structure: .github/workflows/*.yml" bash -c '
+check "GH Actions workflow structure (top-level on:/jobs: + no tab indent; not a full YAML parse): .github/workflows/*.yml" bash -c '
   shopt -s nullglob
   for f in .github/workflows/*.yml; do
     [[ -s "$f" ]] || { echo "empty file: $f"; exit 1; }
