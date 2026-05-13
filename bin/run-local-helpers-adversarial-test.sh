@@ -1708,6 +1708,286 @@ test_halt_issue_for_self_leak_at_exactly_5_hashes() {
 }
 test_halt_issue_for_self_leak_at_exactly_5_hashes
 
+# ─── ENG-95: profile-driven stage_output_paths ──────────────────────────
+# Coverage matrix: parser format handling (em-dash split, multi-backtick
+# prefix, no-em-dash), placeholder substitution (<slug> resolution + other
+# placeholder rejection), path-syntax filters (D-006: absolute, traversal,
+# embedded traversal), slug-shape validation (D-002: regex metachar fail-
+# closed), always-include union behavior (minimal profile, dedup), override
+# precedence (empty array falls through), and diagnostic-log emission
+# (D-005). Each case is self-contained: tempdir + fixture profile + post-
+# source override of HARNESS_ROOT/PROJECT_SLUG + restore (mirrors the
+# qa_no_state_bleed_between_invocations pattern at line ~300).
+
+_eng95_save_hr=""
+_eng95_save_ps=""
+_eng95_save_cfg=""
+_eng95_save_env() {
+  _eng95_save_hr="${HARNESS_ROOT-}"
+  _eng95_save_ps="${PROJECT_SLUG-}"
+  _eng95_save_cfg="${CONFIG-}"
+}
+_eng95_restore_env() {
+  HARNESS_ROOT="$_eng95_save_hr"
+  PROJECT_SLUG="$_eng95_save_ps"
+  CONFIG="$_eng95_save_cfg"
+  export HARNESS_ROOT PROJECT_SLUG CONFIG
+}
+
+# Build a fixture profile at $tdir/learned-rules/<slug>/project-profile.md
+# whose `## File layout` body is supplied via $2 (multi-line string of
+# bullets). $3 is the slug; defaults to "test-slug".
+_eng95_write_profile() {
+  local tdir="$1" body="$2" slug="${3:-test-slug}"
+  local pf="$tdir/learned-rules/$slug/project-profile.md"
+  mkdir -p "$(dirname "$pf")"
+  {
+    printf '%s\n' '---'
+    printf 'slug: %s\n' "$slug"
+    printf '%s\n' 'schema_version: 1'
+    printf '%s\n' '---'
+    printf '%s\n' ''
+    printf '%s\n' '# Project profile'
+    printf '%s\n' ''
+    printf '%s\n' '## File layout'
+    printf '%s\n' ''
+    printf '%s\n' "$body"
+    printf '%s\n' ''
+    printf '%s\n' '## Language idioms'
+    printf '%s\n' ''
+    printf '%s\n' 'text'
+  } > "$pf"
+  printf '%s' "$pf"
+}
+
+# parse_em_dash_split: only backticked tokens BEFORE the em-dash are
+# extracted; description-side backticks ignored.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `src/` — note about `tests/`')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_em_dash_split' 'src/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_multi_backtick_prefix: multiple backticked tokens before the em-
+# dash are all extracted (mirrors harness profile's `docs/brainstorms/` +
+# `docs/plans/` bullet).
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `docs/brainstorms/` and `docs/plans/` — caption')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_multi_backtick_prefix' 'docs/brainstorms/,docs/plans/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_slug_substitution: `<slug>` placeholder in a bullet path resolves
+# to the supplied slug.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `learned-rules/<slug>/` — per-slug rules' foo)"
+_got="$(_parse_profile_file_layout "$_pf" foo | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_slug_substitution' 'learned-rules/foo/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_other_placeholder_skipped: D-006 drops any token still containing
+# `<...>` after `<slug>` substitution (defensive against future placeholders
+# like `<stage>` that aren't substituted).
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `<stage>/output/` — placeholder')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_other_placeholder_skipped' '' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# always_include_present_when_profile_minimal: stage_output_paths returns
+# the union of profile-derived list and always-include catalog. A profile
+# with one bullet still yields the full catalog plus that bullet.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `src/` — sole source')"
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_got="$(stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+# Expected: profile `src/` ∪ always-include catalog (18 entries dedup'd; src/
+# is new, no overlap with catalog).
+_expected='Cargo.lock,Cargo.toml,Gemfile,Gemfile.lock,Pipfile,Pipfile.lock,bun.lock,bun.lockb,docs/,go.mod,go.sum,package-lock.json,package.json,pnpm-lock.yaml,poetry.lock,pyproject.toml,src/,uv.lock,yarn.lock'
+assert_eq 'eng95_always_include_present_when_profile_minimal' "$_expected" "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# always_include_dedup_with_profile: a profile that lists `docs/` (also in
+# the always-include catalog) MUST yield exactly one `docs/` entry in
+# stage_output_paths' output (sort -u boundary).
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `docs/` — duplicates catalog')"
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_got="$(stage_output_paths implementing 2>/dev/null | grep -c '^docs/$' | tr -d ' ')"
+assert_eq 'eng95_always_include_dedup_with_profile' '1' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# override_empty_falls_through_to_profile: an empty-array
+# `config.json::scope.allowlist.implementing` (ENG-51's fallback case)
+# routes to the profile-derived path (not the legacy fallback).
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `app/` — only entry')"
+_cfg="$_tdir/config.json"
+printf '%s\n' '{"scope":{"allowlist":{"implementing":[]}}}' > "$_cfg"
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+CONFIG="$_cfg"
+export HARNESS_ROOT PROJECT_SLUG CONFIG
+_got="$(stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+case "$_got" in
+  *app/*) report_ok 'eng95_override_empty_falls_through_to_profile' ;;
+  *)      report_fail 'eng95_override_empty_falls_through_to_profile' \
+            "output contains profile-derived app/" "$_got" ;;
+esac
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_absolute_path_rejected: D-006 drops tokens beginning with `/`.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `/etc/passwd` — adversary')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_absolute_path_rejected' '' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_traversal_prefix_rejected: D-006 drops tokens beginning with `../`.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `../../etc/shadow` — adversary')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_traversal_prefix_rejected' '' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_embedded_traversal_rejected: D-006 drops tokens with `/../`
+# embedded.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `foo/../../bar` — adversary')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_embedded_traversal_rejected' '' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_unbalanced_backticks_safe: a bullet with an opened-but-not-closed
+# backtick after the first valid token extracts ONLY the closed pair; the
+# inner match loop exits cleanly, no partial-token leak, no abort.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `src/` `docs/ — caption')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_unbalanced_backticks_safe' 'src/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_slug_regex_metachar_safe: a slug containing awk regex metachars
+# (e.g. `.`) fails the D-002 validation regex and substitutes to the empty
+# string; `learned-rules/<slug>/` collapses to `learned-rules//` (harmless;
+# matches no real path). Critical assertion: no awk-replacement-string
+# injection (no exotic token, no crash).
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `learned-rules/<slug>/` — metachar slug')"
+_got="$(_parse_profile_file_layout "$_pf" 'a.b' | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_slug_regex_metachar_safe' 'learned-rules//' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_slug_amp_metachar_safe: a benign slug (`foo`) yields the expected
+# substitution with no awk-replacement-string injection (smoke for the
+# gsub-escape pre-pass on `&`/`\` — actual `&` would fail validation, so
+# this verifies the happy-path side doesn't double-escape).
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `learned-rules/<slug>/` — benign slug')"
+_got="$(_parse_profile_file_layout "$_pf" 'foo' | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_slug_amp_metachar_safe' 'learned-rules/foo/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_no_em_dash_handled: a bullet with no em-dash (single backticked
+# token, no description) is parsed whole-line; the token is still extracted.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `src/`')"
+_got="$(_parse_profile_file_layout "$_pf" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_parse_no_em_dash_handled' 'src/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_log_fires_on_empty_profile_layout: stage_output_paths emits the
+# D-005 diagnostic exactly once on stderr when the profile-derived list is
+# empty (missing `## File layout` section); always-include set still emits
+# on stdout.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+# Profile WITHOUT `## File layout` section.
+mkdir -p "$_tdir/learned-rules/test-slug"
+cat > "$_tdir/learned-rules/test-slug/project-profile.md" <<'MD'
+---
+slug: test-slug
+schema_version: 1
+---
+
+# Project profile
+
+## Stack
+
+text
+
+## Language idioms
+
+text
+MD
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_stderr_file="$_tdir/stderr"
+_stdout="$(stage_output_paths implementing 2>"$_stderr_file")"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" | tr -d ' ')"
+assert_eq 'eng95_parse_log_fires_on_empty_profile_layout' '1' "$_stderr_grep_count"
+# Always-include still emits on stdout (catalog has 18 entries).
+_stdout_lines="$(printf '%s\n' "$_stdout" | grep -c '.' | tr -d ' ')"
+case "$_stdout_lines" in
+  18) report_ok 'eng95_parse_log_fires_always_include_still_emits' ;;
+  *)  report_fail 'eng95_parse_log_fires_always_include_still_emits' \
+        '18 lines' "$_stdout_lines lines: $_stdout" ;;
+esac
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# parse_log_does_not_fire_on_valid_profile: a profile with a populated
+# `## File layout` section silences the D-005 diagnostic.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `crates/` — Rust workspace')"
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_stderr_file="$_tdir/stderr"
+stage_output_paths implementing >/dev/null 2>"$_stderr_file"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" | tr -d ' ')"
+assert_eq 'eng95_parse_log_does_not_fire_on_valid_profile' '0' "$_stderr_grep_count"
+rm -rf "$_tdir"
+_eng95_restore_env
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
