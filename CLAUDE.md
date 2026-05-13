@@ -299,11 +299,29 @@ This is intentional — false-positive scope is bounded to top-level
 single-file matches, never a directory prefix. If this is too broad for
 your repo, set `config.json::scope.allowlist.<stage>[]` to a tighter list.
 
-## Per-target dispatch.tools extras (ENG-51, ENG-53 #8)
+## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-53 #8, ENG-94)
 
-`dispatch.sh::allowed_tools_for` ships a Tauri-shaped base allowlist for each stage. To grant
-extra Bash patterns for a non-Tauri target (e.g., `pytest` for Python, `go test` for Go,
-the test-runner suite for harness-self), populate the target's `.pipeline-config/config.json`.
+`dispatch.sh::allowed_tools_for` ships a stack-neutral base allowlist for each stage. Per-target
+stack tools (`cargo` for Tauri, `pytest` for Python, `go test` for Go, etc.) flow from the
+project profile's `## Tool allowlist` section (`learned-rules/<slug>/project-profile.md`,
+schema_version 2; ENG-94). Operator-curated extras (e.g., the harness-self target's
+per-test-script enumeration for `bin/*-test.sh`) still come from the target's
+`.pipeline-config/config.json::dispatch.tools.<stage>[]` (ENG-51).
+
+The per-stage `--allowed-tools` argv is composed in left-to-right order:
+**base** (the stage's hardcoded case arm — Read/Write/Edit/Grep/Glob, git family, dual-path
+linear/pipeline/etc. wrappers) → **profile** (auto-discovered from the slug's project profile
+by `_dispatch_tools_from_profile`) → **extras** (operator-curated, ENG-51). Empty segments
+are elided so no stray commas leak into the argv. Claude's allowlist matcher is order-
+insensitive, so the ordering is for log-readability and reasoning clarity, not behavioral
+correctness.
+
+**Fallback contract.** If the profile is missing, has `schema_version != 2`, or lacks the
+`## Tool allowlist` section, `_dispatch_tools_from_profile` returns empty and emits a single
+`[allowed-tools]` warning to stderr. The composition collapses to `base + extras`; dispatch
+does NOT die (AC#3). The warning lands in `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log`
+per ENG-94 OQ-3. Operator runbook entry for the T1 + ENG-94 rollout coordination is tracked
+as ENG-94 OQ-6 (future work).
 
 **Wildcard pitfall.** Claude's `--allowed-tools` matcher does NOT expand `*` inside a
 `Bash(<prefix>:*)` prefix as a shell glob — the `*` is treated literally. So
@@ -352,7 +370,10 @@ jq --argjson l "$LIST" '.dispatch.tools = {"implementing": $l, "qa": $l}' \
 `bin/dispatch-test.sh` asserts (a) no broken wildcard `Bash(bash bin/*-test.sh:*)` is
 present, and (b) the enumerated count covers every `bin/*-test.sh` on disk — catches
 drift when a new test is added but not allowlisted (skipped silently when
-`.pipeline-config/config.json` is absent — CI or non-harness operators).
+`.pipeline-config/config.json` is absent — CI or non-harness operators). The wildcard
+pitfall and the regeneration guidance apply symmetrically to the profile's `## Tool allowlist`
+section: discovery-emitted patterns must enumerate each script literally (no `Bash(bash
+bin/*-test.sh:*)` shape).
 
 ## Per-stage dispatch timeouts (ENG-65)
 
