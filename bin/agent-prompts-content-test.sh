@@ -117,11 +117,16 @@ else
   ok "§8 lacks obsolete 'pipeline-release.yml sweep' phrase"
 fi
 
-# ─── ENG-52: §2 has BOTH a Tauri AND a non-Tauri api-contract example ───
+# ─── ENG-97: §2 has gRPC (post-Tauri) AND a non-Tauri api-contract example ───
+# Post-ENG-97 (May 2026): the §2 api-contract block carries a gRPC + protobuf
+# compiled-IPC example (replacing the prior Tauri v2 + TypeScript shape) plus the
+# existing Python/Flask HTTP-handler example. Test pins (a) the absence of
+# the prior Tauri marker and (b) the presence of the new gRPC marker so a
+# silent revert (or a silent drop of Example 1) trips here.
 if printf '%s\n' "$s2" | grep -qF '#[tauri::command]'; then
-  ok "§2 preserves Tauri api-contract example (#[tauri::command])"
+  nope "§2 ENG-97: '#[tauri::command]' marker absent (post-Tauri-strip)" "marker present — has the api-contract Example 1 reverted to Tauri?"
 else
-  nope "§2 preserves Tauri api-contract example (#[tauri::command])" "phrase missing"
+  ok "§2 ENG-97: '#[tauri::command]' marker absent (post-Tauri-strip)"
 fi
 if printf '%s\n' "$s2" | grep -qF '@app.route'; then
   ok "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)"

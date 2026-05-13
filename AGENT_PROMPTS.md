@@ -455,23 +455,22 @@ self-review; see ENG-94 where line-numbered boundaries drifted under a rebase th
 landed a sibling ticket above the insertion point).
 
 API Contract (MACHINE-READABLE — MANDATORY when the project has an FE↔BE API surface and a new endpoint or type is added or changed):
-Render the contract as a single fenced block tagged `api-contract`. The exact shape depends on the project's stack; consult the Project profile addendum for the canonical handler/type idioms. Below are two illustrative examples (Tauri v2 + TypeScript for a compiled-IPC stack, Python/Flask + TypeScript for an HTTP-handler stack) — adapt to your project profile:
+Render the contract as a single fenced block tagged `api-contract`. The exact shape depends on the project's stack; consult the Project profile addendum for the canonical handler/type idioms. Below are two illustrative examples (one compiled-IPC stack illustrated with gRPC + protobuf, one HTTP-handler stack illustrated with Python/Flask + TypeScript) — adapt to your project profile:
 
     ```api-contract
-    # === Example 1 — Tauri v2 + TypeScript (compiled-IPC stack) ===
+    # Choose your stack: render the contract per the project profile's Stack section.
 
-    # Backend signatures (path per the profile's File layout)
-    #[tauri::command]
-    async fn foo(x: i64, y: String) -> Result<FooResponse, String>;
+    # === Example 1 — gRPC + protobuf (compiled-IPC stack) ===
 
-    # Backend types (module paths)
-    struct FooResponse { id: String, items: Vec<FooItem> }
-    struct FooItem     { name: String, score: f64 }
+    # Backend service definition (.proto, path per the profile's File layout)
+    service FooService {
+      rpc GetFoo (FooRequest) returns (FooResponse);
+    }
+    message FooRequest  { int64 x = 1; string y = 2; }
+    message FooResponse { string id = 1; repeated FooItem items = 2; }
+    message FooItem     { string name = 1; double score = 2; }
 
-    # Emitted events (where applicable to your stack)
-    event "foo:progress" { step: u32, total: u32 }
-
-    # Frontend types (path per the profile's File layout)
+    # Frontend types (generated from .proto via the profile's codegen toolchain)
     export type FooResponse = { id: string; items: FooItem[] };
     export type FooItem     = { name: string; score: number };
 
@@ -779,7 +778,7 @@ If any check fails, STOP. Post a Linear comment on {issue_id} tagged
 cleanly; do not build UI on top of a broken base.
 
 Precondition — Contract resolution (MANDATORY when the profile describes an FE↔BE API surface):
-Parse the plan's `api-contract` fenced block. For every frontend call (e.g. `invoke("cmd_x", …)` on Tauri stacks, `fetch("/api/foo")` on REST stacks) you are about to write, the corresponding backend handler MUST exist on this branch with matching arg names/types and return type. At code-write time, grep the backend source on the current branch and confirm each handler is actually present. If a contract entry is declared but no backend impl exists, STOP and comment `<!-- meta: metric name=contract_gap -->`; do NOT invent a call shape the backend didn't implement.
+Parse the plan's `api-contract` fenced block. For every frontend→backend call (the canonical client-call idiom for your stack is named in the Project profile addendum's Stack / Language idioms section) you are about to write, the corresponding backend handler MUST exist on this branch with matching arg names/types and return type. At code-write time, grep the backend source on the current branch and confirm each handler is actually present. If a contract entry is declared but no backend impl exists, STOP and comment `<!-- meta: metric name=contract_gap -->`; do NOT invent a call shape the backend didn't implement.
 
 Your task:
 - Follow the plan's Frontend Tasks in `depends_on` order. Tasks with `depends_on: []`
@@ -1131,7 +1130,7 @@ Authoritative test manifest:
 
 New-code-path definition (replaces the legacy handwave):
   A "new code path" is any of the following introduced by this PR — interpret per the project's stack as named in the profile:
-    - a new FE↔BE handler / endpoint (e.g. Tauri command, REST handler, RPC method),
+    - a new FE↔BE handler / endpoint (the profile names the handler-attribute or route-binding shape for your stack),
     - a new public function exposed by a backend module per the profile's File layout,
     - a new frontend component or route per the profile's File layout,
     - a new module / package / file at a layer the profile names as code-bearing.
@@ -1159,7 +1158,7 @@ Your task:
      (c) any event payload shape in the `api-contract` block changed.
 
 3. **Coverage audit (proxy since no line-level tooling is wired):**
-   For every new code path identified above, grep the test tree (use the discovery tools appropriate to the profile's stack — e.g. `cargo test -- --list` for Rust, test-file globbing per the profile's File layout) for a test that names the path directly (function name, handler name, or component name). Missing → P0.
+   For every new code path identified above, grep the test tree (use the stack's test-discovery idiom — the profile's `Build & test gates` section names the canonical command, and `File layout` names the test-file roots) for a test that names the path directly (function name, handler name, or component name). Missing → P0.
 
 4. **Regression-intent audit:**
    Any previously-passing test now failing is a regression by default.
@@ -1403,8 +1402,8 @@ Configuration audit (READ-ONLY — no edits in this stage):
     - Any new capability or permission grant that broadens scope unusually
       (e.g., wildcard execute, root filesystem read, cross-origin `*`) → flag.
     - Any change to runtime configuration files named in the profile (examples
-      include `next.config.js`, `Caddyfile`, `nginx.conf`, `tauri.conf.json`,
-      `pyproject.toml`, `go.mod`): scan for new hosts, new bundle identifiers,
+      include `next.config.js`, `Caddyfile`, `nginx.conf`, `pyproject.toml`,
+      `go.mod`): scan for new hosts, new bundle identifiers,
       changed security policies.
   Flagged items are posted as a Linear comment tagged
   `<!-- meta: metric name=build_config_flag -->` and included in the summary. They do
@@ -1601,9 +1600,11 @@ Your task (execute in order):
        shipped; this is a signal to retrospective.
 
 6. **Manifest version drift audit** (known issue to track, not fix):
-     - Some stacks track version in multiple manifests (e.g. Tauri tracks both
-       `package.json` and `src-tauri/Cargo.toml`). Check whether the secondary manifests
-       named in the Project profile addendum match {version}.
+     - Some stacks track version in multiple manifests (e.g. a workspace + per-package
+       manifest pair: a top-level `package.json` plus a sub-crate or sub-package manifest,
+       or a monorepo root + child manifests). The Project profile addendum names the
+       canonical and secondary manifests for this target; check whether the secondary
+       manifests match {version}.
      - Often they do NOT (semantic-release typically only updates one canonical file).
        If the profile flags this drift as expected, note "secondary manifest version
        unchanged (expected per profile)" in the Slack summary; otherwise flag it
@@ -1720,9 +1721,10 @@ is a P0 meta-finding against the retrospective itself):
    - Unverifiable → reject with a comment.
 
 5. **Human-override analysis:**
-   - For each file under `docs/brainstorms/`, `docs/plans/`, `crates/*/`, `src/`, and
-     `src-tauri/src/` modified by a human commit AFTER a bot commit on the same file
-     within this period: diff the human version against the bot version.
+   - For each file under `docs/brainstorms/`, `docs/plans/`, and the code-bearing
+     directories declared in the per-target `learned-rules/<slug>/project-profile.md`'s
+     `## File layout` section, modified by a human commit AFTER a bot commit on the same
+     file within this period: diff the human version against the bot version.
    - Extract the lesson: what did the agent miss? Map to the responsible stage.
    - Surface as a learned-rule proposal for that stage (with the diff as evidence).
 
