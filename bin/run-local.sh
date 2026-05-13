@@ -16,9 +16,11 @@
 
 set -euo pipefail
 
-# launchd hands us a minimal PATH. Prepend the places the tools actually live on
-# macOS (Homebrew on Apple Silicon + Intel, npm/bun user-global bins). The plist
-# also sets PATH; this is belt-and-braces so the script works if invoked manually.
+# launchd hands us a minimal PATH; belt-and-braces it with Homebrew
+# sbin dirs plus stack-specific user-global bins for the dispatched
+# agent. Harmless on hosts lacking those dirs (absent segments are
+# ignored). See CLAUDE.md "PATH expectations on the launchd host"
+# for the per-segment attribution.
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.bun/bin:$HOME/.npm-global/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

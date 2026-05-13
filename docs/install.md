@@ -30,6 +30,28 @@ Have these ready in browser tabs and on disk:
 - **Tools installed**: `jq`, `gh`, `coreutils` (for `gtimeout`),
   `bash` 4+, `git`, the `claude` CLI logged in to a subscription.
 
+### PATH expectations
+
+The launchd plist injects a minimal PATH (`/opt/homebrew/bin`,
+`/usr/local/bin`, and system dirs — see the `<key>PATH</key>` entry
+under `EnvironmentVariables` in
+`launchd/com.twinning.pipeline.plist.template`).
+The `export PATH=…` line in `bin/run-local.sh` belt-and-braces
+additional segments for stack-specific user-global bins
+(`$HOME/.bun/bin`, `$HOME/.npm-global/bin`) that the *dispatched
+agent* may need on Bun- or npm-using targets. Harmless on hosts that
+lack those dirs.
+
+Operators on non-Homebrew installs (e.g. MacPorts, Nix) should edit
+the rendered plist's `EnvironmentVariables/PATH` after
+`bin/install-launchd.sh` runs and re-`launchctl bootstrap` to pick up
+the change. Targets that need additional user-global bin dirs
+(`~/.cargo/bin`, `~/go/bin`, etc.) currently require a manual plist
+edit; a profile-derived PATH mechanism is a deferred followup.
+
+See CLAUDE.md's "PATH expectations on the launchd host" section for
+the full per-segment attribution.
+
 ## Phase 1: workspace
 
 Creates `$TARGET_REPO/.pipeline-config/{,schemas/}` and
