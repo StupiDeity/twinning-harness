@@ -1991,6 +1991,292 @@ assert_eq 'eng95_parse_log_does_not_fire_on_valid_profile' '0' "$_stderr_grep_co
 rm -rf "$_tdir"
 _eng95_restore_env
 
+# ─── ENG-95 QA-adversarial coverage ──────────────────────────────────────
+# These cases were NOT in the plan's Failure Mode → Test Map. They probe
+# the boundary between the awk parser's regex anchors and operator-authored
+# profile shapes (case-sensitivity, sub-headings, CRLF, etc) plus
+# stage_output_paths' equivalence across implementing/ui/qa.
+
+# QA-adv-1: section header case-sensitivity. `## File Layout` (capital L)
+# is NOT the canonical heading; parser MUST yield nothing and the
+# stage_output_paths diagnostic MUST fire.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+cat > "$_tdir/learned-rules/test-slug/project-profile.md" <<'MD'
+---
+slug: test-slug
+---
+
+## File Layout
+
+- `wrongcase/` — header has capital L
+MD
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug | paste -sd, -)"
+assert_eq 'eng95_qa_adv_section_header_case_sensitive_parser' '' "$_parser_got"
+_stderr_file="$_tdir/stderr"
+stage_output_paths implementing >/dev/null 2>"$_stderr_file"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" 2>/dev/null | tr -d ' ' || true)"
+_stderr_grep_count="${_stderr_grep_count:-0}"
+assert_eq 'eng95_qa_adv_section_header_case_sensitive_log_fires' '1' "$_stderr_grep_count"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-2: section header with trailing whitespace (tab + spaces). The
+# `[[:space:]]*$` anchor must accept this — operators occasionally trail
+# whitespace and the parser must NOT silently drop the section.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+printf -- '---\nslug: test-slug\n---\n\n## File layout\t   \n\n- `src/` — trailing whitespace ok\n' \
+  > "$_tdir/learned-rules/test-slug/project-profile.md"
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug | paste -sd, -)"
+assert_eq 'eng95_qa_adv_section_header_trailing_whitespace' 'src/' "$_parser_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-3: sub-headings (`### foo`) inside `## File layout` do NOT
+# terminate the section — only `^## ` matches the exit guard. Current
+# behavior: bullets in subsections leak into the allowlist. Pin this
+# behavior so a future regex tweak doesn't accidentally narrow it.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+cat > "$_tdir/learned-rules/test-slug/project-profile.md" <<'MD'
+---
+slug: test-slug
+---
+
+## File layout
+
+- `top/` — top-level bullet
+
+### Subsection
+
+- `sub/` — bullets in subsections also leak (pinned)
+
+## Stack
+
+- `outside/` — outside section must NOT leak
+MD
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_qa_adv_subsection_bullets_pinned' 'sub/,top/' "$_parser_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-4: profile with `## File layout` section present but no bullets
+# at all (operator stubbed the header but hasn't filled it in). Parser
+# emits nothing; stage_output_paths fires the empty-list diagnostic.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+cat > "$_tdir/learned-rules/test-slug/project-profile.md" <<'MD'
+---
+slug: test-slug
+---
+
+## File layout
+
+(empty — operator hasn't filled in directory list)
+
+## Stack
+
+text
+MD
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug | paste -sd, -)"
+assert_eq 'eng95_qa_adv_section_present_no_bullets_parser' '' "$_parser_got"
+_stderr_file="$_tdir/stderr"
+stage_output_paths implementing >/dev/null 2>"$_stderr_file"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" 2>/dev/null | tr -d ' ' || true)"
+_stderr_grep_count="${_stderr_grep_count:-0}"
+assert_eq 'eng95_qa_adv_section_present_no_bullets_log_fires' '1' "$_stderr_grep_count"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-5: CRLF line endings (Windows-edited profile). Section header
+# match, bullet match, and em-dash split must all survive `\r` line
+# terminators on macOS bsdawk.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+printf -- '---\r\nslug: test-slug\r\n---\r\n\r\n## File layout\r\n\r\n- `src/` — CRLF profile\r\n' \
+  > "$_tdir/learned-rules/test-slug/project-profile.md"
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug \
+  | tr -d '\r' | LC_ALL=C sort | paste -sd, -)"
+# Accept either bare 'src/' (CR stripped pre-emit by awk) or 'src/' after
+# the tr -d strip. The contract is: at least 'src/' is extracted.
+case "$_parser_got" in
+  *src/*) report_ok 'eng95_qa_adv_crlf_line_endings' ;;
+  *)      report_fail 'eng95_qa_adv_crlf_line_endings' \
+            "contains 'src/'" "$_parser_got" ;;
+esac
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-6: stage_output_paths `ui` and `qa` arms behave identically to
+# `implementing`. ENG-95 collapses all three under one case-arm; pin
+# this equivalence so a future split (e.g. ui-only `static/`) doesn't
+# silently regress.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `crates/` — Rust workspace')"
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_impl_out="$(stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+_ui_out="$(stage_output_paths ui 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+_qa_out="$(stage_output_paths qa 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_qa_adv_ui_matches_implementing' "$_impl_out" "$_ui_out"
+assert_eq 'eng95_qa_adv_qa_matches_implementing'  "$_impl_out" "$_qa_out"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-7: `HARNESS_ROOT` unset entirely (test-source path before
+# common.sh's line-9 derivation). profile_path becomes
+# `/learned-rules/<slug>/project-profile.md` — almost certainly absent
+# in real environments. [[ -f ]] returns false → parser returns rc 0
+# with empty stdout → catalog-only emission + diagnostic fires. No
+# crash, no leak.
+_eng95_save_env
+unset HARNESS_ROOT
+PROJECT_SLUG="test-slug"
+export PROJECT_SLUG
+unset CONFIG
+_stderr_file="$(mktemp -t twinning-eng95-qa.XXXXXX)"
+_stdout="$(stage_output_paths implementing 2>"$_stderr_file")"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" 2>/dev/null | tr -d ' ' || true)"
+_stderr_grep_count="${_stderr_grep_count:-0}"
+assert_eq 'eng95_qa_adv_harness_root_unset_log_fires' '1' "$_stderr_grep_count"
+_stdout_lines="$(printf '%s\n' "$_stdout" | grep -c '.' 2>/dev/null | tr -d ' ' || true)"
+_stdout_lines="${_stdout_lines:-0}"
+# Catalog has 18 entries; emit count must equal exactly 18.
+case "$_stdout_lines" in
+  18) report_ok 'eng95_qa_adv_harness_root_unset_catalog_emits' ;;
+  *)  report_fail 'eng95_qa_adv_harness_root_unset_catalog_emits' \
+        '18 lines' "$_stdout_lines lines" ;;
+esac
+rm -f "$_stderr_file"
+_eng95_restore_env
+
+# QA-adv-8: PROJECT_SLUG unset entirely. Same fail-soft contract as
+# HARNESS_ROOT-unset: profile_path becomes
+# `$HARNESS_ROOT/learned-rules//project-profile.md` (double slash) →
+# [[ -f ]] returns false → catalog-only emission.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+HARNESS_ROOT="$_tdir"
+unset PROJECT_SLUG
+export HARNESS_ROOT
+unset CONFIG
+_stderr_file="$(mktemp -t twinning-eng95-qa.XXXXXX)"
+_stdout="$(stage_output_paths implementing 2>"$_stderr_file")"
+_stdout_lines="$(printf '%s\n' "$_stdout" | grep -c '.' 2>/dev/null | tr -d ' ' || true)"
+_stdout_lines="${_stdout_lines:-0}"
+case "$_stdout_lines" in
+  18) report_ok 'eng95_qa_adv_project_slug_unset_catalog_emits' ;;
+  *)  report_fail 'eng95_qa_adv_project_slug_unset_catalog_emits' \
+        '18 lines' "$_stdout_lines lines: $_stdout" ;;
+esac
+rm -f "$_stderr_file"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-9: _always_include_paths returns exactly the cataloged 18
+# entries, every one a literal filename or `docs/`. No directory prefixes
+# beyond `docs/`, no `<placeholder>`s. Pin the catalog shape so an
+# accidental edit (e.g. adding `src/` to the catalog) is caught.
+_got_count="$(_always_include_paths | grep -c '.' | tr -d ' ')"
+assert_eq 'eng95_qa_adv_always_include_catalog_count' '18' "$_got_count"
+_dir_entries="$(_always_include_paths | grep -c '/$' | tr -d ' ')"
+# Only `docs/` is a directory prefix; the other 17 are literal filenames.
+assert_eq 'eng95_qa_adv_always_include_one_directory_only' '1' "$_dir_entries"
+# No placeholders. (grep -c returns rc=1 on zero matches under
+# pipefail+errexit from common.sh; awk avoids the rc trap.)
+_placeholder_count="$(_always_include_paths | awk '/</ {n++} END {print n+0}')"
+assert_eq 'eng95_qa_adv_always_include_no_placeholders' '0' "$_placeholder_count"
+
+# QA-adv-10: Bullet with `%` and `$` in the path. printf '%s' is the
+# safe form, but pin against accidental re-introduction of
+# `printf "$profile_list"` (format-string injection) by sending a path
+# with `%s` through the full stage_output_paths pipeline.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `pct-%s-end/` — percent-s in path')"
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_got="$(stage_output_paths implementing 2>/dev/null | grep '^pct-' | head -1)"
+assert_eq 'eng95_qa_adv_percent_s_in_path_safe' 'pct-%s-end/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-11: Empty profile file (0-byte). [[ -f ]] passes; awk reads
+# nothing; parser emits nothing. stage_output_paths logs the diagnostic
+# and falls through to catalog.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+: > "$_tdir/learned-rules/test-slug/project-profile.md"
+HARNESS_ROOT="$_tdir"
+PROJECT_SLUG="test-slug"
+export HARNESS_ROOT PROJECT_SLUG
+unset CONFIG
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug | paste -sd, -)"
+assert_eq 'eng95_qa_adv_empty_profile_file' '' "$_parser_got"
+_stderr_file="$_tdir/stderr"
+stage_output_paths implementing >/dev/null 2>"$_stderr_file"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" 2>/dev/null | tr -d ' ' || true)"
+_stderr_grep_count="${_stderr_grep_count:-0}"
+assert_eq 'eng95_qa_adv_empty_profile_file_log_fires' '1' "$_stderr_grep_count"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-12: Adjacent bullets with no blank-line separator are all
+# extracted (markdown allows tight lists).
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+printf -- '---\nslug: test-slug\n---\n\n## File layout\n- `a/`\n- `b/`\n- `c/`\n' \
+  > "$_tdir/learned-rules/test-slug/project-profile.md"
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug | LC_ALL=C sort | paste -sd, -)"
+assert_eq 'eng95_qa_adv_tight_list_no_blank_lines' 'a/,b/,c/' "$_parser_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-13: Profile ends mid-section (no closing H2). awk's exit guard
+# `in_section && /^## /` never fires; bullets through EOF must all
+# extract.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+mkdir -p "$_tdir/learned-rules/test-slug"
+printf -- '---\nslug: test-slug\n---\n\n## File layout\n\n- `eof-bullet/` — runs to EOF, no closing heading' \
+  > "$_tdir/learned-rules/test-slug/project-profile.md"
+_parser_got="$(_parse_profile_file_layout "$_tdir/learned-rules/test-slug/project-profile.md" test-slug | paste -sd, -)"
+assert_eq 'eng95_qa_adv_eof_no_closing_heading' 'eof-bullet/' "$_parser_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
+# QA-adv-14: Slug starts with digit (valid per `^[a-zA-Z0-9_-]+$` regex,
+# even though semantically odd). Confirms the regex character-class
+# correctly admits digit-leading slugs.
+_eng95_save_env
+_tdir="$(mktemp -d -t twinning-eng95-qa.XXXXXX)"
+_pf="$(_eng95_write_profile "$_tdir" '- `learned-rules/<slug>/` — digit-leading slug' 99slug)"
+_got="$(_parse_profile_file_layout "$_pf" 99slug | paste -sd, -)"
+assert_eq 'eng95_qa_adv_digit_leading_slug' 'learned-rules/99slug/' "$_got"
+rm -rf "$_tdir"
+_eng95_restore_env
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
