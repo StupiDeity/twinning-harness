@@ -19,6 +19,68 @@ _scope_allowlist_override() {
   ' "$CONFIG" 2>/dev/null || true
 }
 
+# ENG-95: parse the `## File layout` section of a project-profile.md into
+# a flat list of paths (one per stdout line). Pure helper — no log calls,
+# no state mutation, safe to call from tests without stubs. Operator-
+# visible diagnostics live in stage_output_paths (D-005), not here. The
+# canonical profile path matches bin/render-prompt.sh:149's resolution
+# (HARNESS_ROOT/learned-rules/<PROJECT_SLUG>/project-profile.md).
+_parse_profile_file_layout() {
+  local profile_path="$1" slug="${2:-${PROJECT_SLUG:-}}"
+  [[ -f "$profile_path" ]] || return 0
+
+  # D-002 fail-closed: validate slug shape. A slug containing awk regex
+  # or gsub replacement metachars (`.`, `|`, `[`, `&`, `\`, …) collapses
+  # to empty rather than reaching the parser; the resulting empty
+  # substitution drops the bullet via D-006's empty/`<…>` filter chain.
+  if [[ ! "$slug" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    slug=""
+  fi
+  # Belt-and-braces: pre-escape awk gsub replacement metachars even
+  # though the validation regex already disallows them. Order matters —
+  # `\` first so the subsequent `&` escape's own backslash isn't doubled.
+  local slug_esc
+  slug_esc="${slug//\\/\\\\}"
+  slug_esc="${slug_esc//&/\\&}"
+
+  awk -v slug="$slug_esc" '
+    /^## File layout[[:space:]]*$/ { in_section=1; next }
+    in_section && /^## / { exit }
+    in_section && /^- / {
+      prefix = $0
+      em_pos = index(prefix, " \xe2\x80\x94 ")
+      if (em_pos == 0) em_pos = index(prefix, "—")
+      if (em_pos > 0) prefix = substr(prefix, 1, em_pos - 1)
+      while (match(prefix, /`[^`]+`/)) {
+        token = substr(prefix, RSTART+1, RLENGTH-2)
+        gsub(/<slug>/, slug, token)
+        if (token != "" && token !~ /</ && token !~ /^\// \
+            && token !~ /^\.\.\// && token !~ /\/\.\.\//) {
+          print token
+        }
+        prefix = substr(prefix, RSTART + RLENGTH)
+      }
+    }
+  ' "$profile_path"
+}
+
+# ENG-95: stack-agnostic always-include catalog union'd with the profile-
+# derived File-layout list (D-003). Hardcoded by design — T1's structured
+# schema may eventually move this catalog into per-stack profiles. False-
+# positive scope is bounded: every entry is a single literal top-level
+# filename (or `docs/`), never granting a broader directory prefix.
+_always_include_paths() {
+  printf '%s\n' \
+    'docs/' \
+    'package.json' 'package-lock.json' 'yarn.lock' \
+    'pnpm-lock.yaml' 'bun.lock' 'bun.lockb' \
+    'Cargo.toml' 'Cargo.lock' \
+    'pyproject.toml' 'poetry.lock' 'uv.lock' \
+    'Pipfile' 'Pipfile.lock' \
+    'go.mod' 'go.sum' \
+    'Gemfile' 'Gemfile.lock'
+}
+
 # Circuit breaker (ENG-10). Trips after $FAIL_THRESHOLD consecutive
 # failures by writing `paused: true` to STATE_FILE — the same path
 # `is_orchestrator_paused` reads as a runtime override over CONFIG.
@@ -211,15 +273,32 @@ stage_output_paths() {
       printf '%s\n' 'docs/plans/'
       ;;
     implementing|ui|qa)
+      # ENG-95 derivation order: (D-004) operator override wins absolutely;
+      # absent that, (D-001) parse `## File layout` from the per-slug
+      # profile and (D-003) union with the stack-agnostic always-include
+      # catalog via `sort -u` (dedup boundary, e.g. profile listing `docs/`
+      # coexists with the catalog's `docs/`). D-005 fail-soft: missing or
+      # empty profile yields catalog-only and emits one diagnostic via
+      # log() with the operator's remediation hint.
       local override
       override="$(_scope_allowlist_override "$stage")"
       if [[ -n "$override" ]]; then
         printf '%s\n' "$override"
       else
-        printf '%s\n' \
-          'src/' 'src-tauri/' 'crates/' 'tests/' 'docs/' \
-          'package.json' 'package-lock.json' 'bun.lock' 'bun.lockb' \
-          'Cargo.toml' 'Cargo.lock'
+        local profile_path="${HARNESS_ROOT:-}/learned-rules/${PROJECT_SLUG:-}/project-profile.md"
+        local profile_list
+        profile_list="$(_parse_profile_file_layout "$profile_path")"
+        if [[ -z "$profile_list" ]]; then
+          log "stage_output_paths: profile-derived list empty for stage=$stage" \
+              "(slug=${PROJECT_SLUG:-<unset>}, path=$profile_path);" \
+              "falling back to docs/ + lockfile catalog." \
+              "Run: bash bin/setup.sh project-profile"
+        fi
+        {
+          printf '%s' "$profile_list"
+          [[ -n "$profile_list" ]] && printf '\n'
+          _always_include_paths
+        } | LC_ALL=C sort -u
       fi
       ;;
     retrospective)
