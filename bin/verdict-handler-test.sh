@@ -264,6 +264,69 @@ else
   fail_at "case-7 unknown-loopback-protocol-violation" "rc=$rc calls=$(cat "$STUB_LOG")"
 fi
 
+# ─── Case 7a: no-marker reason enrichment ────────────────────────────
+# When no verdict markers exist on the issue at all, the protocol-violation
+# halt body must include the current_dispatch_id (or `<unset>` placeholder)
+# and a Resolution hint so operators can recover without reading code.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=implementing to=qa -->|2026-04-23T10:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:qa"
+VH_CURRENT_LABELS="stage:qa pipeline:halted"
+rc=0; verdict_handler "ENG-907a" "qa" >/dev/null 2>&1 || rc=$?
+# Body checks use calls_contains rather than extract_call_body because
+# the halt body is multi-line and extract_call_body | head -1 would
+# truncate to the first line only.
+if [[ "$rc" == "2" ]] \
+   && calls_contains "add-or-update-comment protocol-violation/no-marker/ENG-907a ENG-907a" \
+   && calls_contains "current_dispatch_id" \
+   && calls_contains "Resolution" \
+   && calls_contains "pipeline.sh decide ENG-907a"; then
+  pass_at "case-7a no-marker reason enrichment (current_dispatch_id + Resolution hint in body)"
+else
+  fail_at "case-7a no-marker reason enrichment" "rc=$rc calls=$(cat "$STUB_LOG")"
+fi
+
+# ─── Case 7b: dispatch-id-mismatch protocol-violation ────────────────
+# ENG-87 strict-id path: a verdict-pass marker exists AND a meta:dispatch
+# marker exists on the issue, but no comment carries the CURRENT
+# dispatch_id. This is the ENG-96 scenario: planning agent wrote a
+# stage-summary with `<!-- meta: dispatch id=$PIPELINE_DISPATCH_ID stage=
+# planning -->` (literal-placeholder) → strict path activates, current id
+# not found, returns empty. Expectation: new case_id "dispatch-id-mismatch"
+# (not "no-marker"), with the current id + observed marker values in the
+# halt body so operators can diagnose without reading code.
+reset_calls
+# Mock current_dispatch_id() for this test only — the stub in the
+# linear.sh fake doesn't know about issue-state.json, and the real
+# function reads from $PROJECT_STATE_DIR which we don't want to touch.
+current_dispatch_id() { printf '%s' 'ENG-907b-d0002'; }
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=brainstorming to=planning -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=planning -->|2026-04-23T11:00:00.000Z" \
+  "**planning summary** <!-- meta: dispatch id=\$PIPELINE_DISPATCH_ID stage=planning -->|2026-04-23T11:00:10.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:planning"
+VH_CURRENT_LABELS="stage:planning"
+rc=0; verdict_handler "ENG-907b" "planning" >/dev/null 2>&1 || rc=$?
+if [[ "$rc" == "2" ]] \
+   && calls_contains "add-or-update-comment protocol-violation/dispatch-id-mismatch/ENG-907b ENG-907b" \
+   && calls_contains "ENG-907b-d0002" \
+   && calls_contains '$PIPELINE_DISPATCH_ID' \
+   && calls_contains "Resolution"; then
+  pass_at "case-7b dispatch-id-mismatch case_id + enriched halt body"
+else
+  fail_at "case-7b dispatch-id-mismatch" "rc=$rc calls=$(cat "$STUB_LOG")"
+fi
+# Restore real current_dispatch_id for downstream cases.
+unset -f current_dispatch_id
+current_dispatch_id() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "current_dispatch_id: missing issue id"
+  local state_file; state_file="$(issue_dir "$issue")/issue-state.json"
+  [[ -s "$state_file" ]] || { printf ''; return 0; }
+  jq -r '.current_dispatch_id // ""' "$state_file" 2>/dev/null || printf ''
+}
+
 # ─── Case 8: most-recent-marker-wins ─────────────────────────────────
 # Two stage-summary markers after a transition; newer one wins.
 reset_calls

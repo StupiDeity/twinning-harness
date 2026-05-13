@@ -183,6 +183,39 @@ else
   fail_at "case-4 sig-hijack" "$body"
 fi
 
+# ─── Case 4b: agent-emitted dispatch marker stripped from body (ENG-96) ──
+# Defense-in-depth against AGENT_PROMPTS.md §0 rule (1) violations: an
+# agent that emits `<!-- meta: dispatch id=... -->` in its stage-summary
+# (whether a literal `$PIPELINE_DISPATCH_ID` placeholder or any other
+# value) poisons the ENG-87 find_fresh_verdict strict-id-match path —
+# the marker triggers the strict path on the issue's comment stream, but
+# the verdict-pass comment posted via `pipeline.sh event` carries no
+# matching id, so find_fresh_verdict returns empty and verdict_handler
+# halts the issue with `protocol-violation/dispatch-id-mismatch` (or
+# pre-ENG-96, `no-marker`).
+#
+# post_completion_comment scrubs ALL `<!-- meta: dispatch id=... -->`
+# lines from the body BEFORE posting; the linear.sh chokepoint then
+# re-injects exactly one canonical marker for the current dispatch.
+reset_capture
+mkdir -p "$(issue_dir ENG-T4b)"
+{
+  printf '## Plan body\n'
+  printf '<!-- meta: dispatch id=$PIPELINE_DISPATCH_ID stage=planning -->\n'
+  printf 'Real content here.\n'
+  printf '<!-- meta: dispatch id=ENG-T4b-d0001 stage=planning -->\n'
+  printf 'Tail content.\n'
+} > "$(issue_dir ENG-T4b)/stage-summary-plan.md"
+post_completion_comment ENG-T4b plan
+body="$(captured_body)"
+if   grep -q 'Real content here'                       <<<"$body" \
+  && grep -q 'Tail content'                            <<<"$body" \
+  && ! grep -q '<!-- meta: dispatch id='               <<<"$body"; then
+  pass_at "case-4b dispatch-marker scrubbed: agent-emitted lines stripped (ENG-96)"
+else
+  fail_at "case-4b dispatch-marker scrubbed (ENG-96)" "$body"
+fi
+
 # ─── Case 5: oversize file → truncation marker ──────────────────────────
 reset_capture
 mkdir -p "$(issue_dir ENG-T5)"
