@@ -117,16 +117,95 @@ else
   ok "§8 lacks obsolete 'pipeline-release.yml sweep' phrase"
 fi
 
-# ─── ENG-52: §2 has BOTH a Tauri AND a non-Tauri api-contract example ───
+# ─── ENG-97: §2 has gRPC (post-Tauri) AND a non-Tauri api-contract example ───
+# Post-ENG-97 (May 2026): the §2 api-contract block carries a gRPC + protobuf
+# compiled-IPC example (replacing the prior Tauri v2 + TypeScript shape) plus the
+# existing Python/Flask HTTP-handler example. Test pins (a) the absence of
+# the prior Tauri marker and (b) the presence of the new gRPC marker so a
+# silent revert (or a silent drop of Example 1) trips here.
 if printf '%s\n' "$s2" | grep -qF '#[tauri::command]'; then
-  ok "§2 preserves Tauri api-contract example (#[tauri::command])"
+  nope "§2 ENG-97: '#[tauri::command]' marker absent (post-Tauri-strip)" "marker present — has the api-contract Example 1 reverted to Tauri?"
 else
-  nope "§2 preserves Tauri api-contract example (#[tauri::command])" "phrase missing"
+  ok "§2 ENG-97: '#[tauri::command]' marker absent (post-Tauri-strip)"
+fi
+if printf '%s\n' "$s2" | grep -qF 'service FooService'; then
+  ok "§2 ENG-97: contains gRPC api-contract example (service FooService)"
+else
+  nope "§2 ENG-97: contains gRPC api-contract example (service FooService)" "marker missing — has Example 1 been silently dropped or its body renamed?"
 fi
 if printf '%s\n' "$s2" | grep -qF '@app.route'; then
   ok "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)"
 else
   nope "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)" "phrase missing"
+fi
+
+# ─── ENG-97: whole-file negative-grep on de-Tauri-ed tokens ─────────────
+# Post-ENG-97 (May 2026): AGENT_PROMPTS.md must carry zero Tauri-specific
+# illustrations. The prior assertions are §2-scoped (api-contract block) —
+# this block scans the whole file so a re-introduction in §3/§6/§7/§8/§9
+# trips here too. One assertion per token gives a diagnostic that names
+# which token reappeared. Tokens enumerated by Linear ENG-97 AC#1.
+for forbidden_token in 'Tauri' 'tauri::' 'tauri.conf.json' 'src-tauri/' 'cargo test -- --list' 'invoke('; do
+  if grep -qF -- "$forbidden_token" "$PROMPTS"; then
+    nope "AGENT_PROMPTS.md ENG-97: forbidden token '$forbidden_token' absent" "token reappeared in AGENT_PROMPTS.md — see ENG-97 for context"
+  else
+    ok "AGENT_PROMPTS.md ENG-97: forbidden token '$forbidden_token' absent"
+  fi
+done
+
+# ─── ENG-97 QA-adversarial: case-insensitive 'tauri' substring scan ───────
+# The Task 8.2 negative-grep is case-sensitive (`grep -F`). A future revert
+# could write `TAURI`, `tauri-app`, or `Pre-Tauri-era` and evade the pinned
+# tokens. This case-insensitive scan tightens the intent: the proper noun
+# 'Tauri' in any casing is banned from AGENT_PROMPTS.md.
+if grep -qiF -- 'tauri' "$PROMPTS"; then
+  nope "ENG-97 QA: AGENT_PROMPTS.md case-insensitive 'tauri' marker absent" \
+    "case-insensitive scan matched — a Tauri substring (any case) reappeared in the prompt"
+else
+  ok "ENG-97 QA: AGENT_PROMPTS.md case-insensitive 'tauri' marker absent"
+fi
+
+# ─── ENG-97 QA-adversarial: §2 body is non-empty (header-rename guard) ────
+# Every §2-scoped assertion above operates on $s2 from `section_body`.
+# If `## 2. Plan Agent` is renamed (e.g. to `## 2. Planning Agent`),
+# section_body returns the empty string and every negative-grep on $s2
+# trivially passes. This guard defends those assertions against silent
+# header drift.
+if [[ -n "$s2" ]]; then
+  ok "ENG-97 QA: §2 (Plan Agent) section body is non-empty (header-rename guard)"
+else
+  nope "ENG-97 QA: §2 (Plan Agent) section body is non-empty (header-rename guard)" \
+    "§2 body extracted as empty — has the '## 2. Plan Agent' heading been renamed? Every §2-scoped negative-grep is now trivially passing."
+fi
+
+# ─── ENG-97 QA-adversarial: §2 has exactly 2 indented api-contract fences ─
+# The existing §2 column-0 fence-count pin (further below) covers the
+# OUTER per-stage fence pair. If a future edit deletes the indented
+# (column-4) api-contract fence — at AGENT_PROMPTS.md:460,494 — so the
+# example bodies float as plain prose, the column-0 count stays at 2 and
+# the existing test still passes, but downstream agents lose the fenced
+# extraction target. Pin the indented fence count separately.
+indented_fence_count_s2="$(printf '%s\n' "$s2" | grep -cE '^[[:space:]]+```' || true)"
+if [[ "$indented_fence_count_s2" == "2" ]]; then
+  ok "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)"
+else
+  nope "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)" \
+    "got $indented_fence_count_s2 indented fences in §2 — the api-contract block bounds drifted; plan agents lose the fenced extraction target"
+fi
+
+# ─── ENG-97 QA-adversarial: §2 carries both Example heading markers ───────
+# The positive pins above check one body-marker per example (`service
+# FooService` for gRPC, `@app.route` for Flask). A silent collapse — drop
+# Example 1, rename Example 2's body under the Example 1 header — could
+# leave one body marker missing AND remove an Example heading without
+# tripping body-marker assertions. Pin the heading markers as a
+# structural complement.
+if printf '%s\n' "$s2" | grep -qE '^[[:space:]]*# === Example 1 —' \
+   && printf '%s\n' "$s2" | grep -qE '^[[:space:]]*# === Example 2 —'; then
+  ok "ENG-97 QA: §2 api-contract carries both '# === Example 1 —' AND '# === Example 2 —' headers"
+else
+  nope "ENG-97 QA: §2 api-contract carries both '# === Example 1 —' AND '# === Example 2 —' headers" \
+    "one or both example headers missing — has an example been silently collapsed?"
 fi
 
 # ─── ENG-52: §7 release.yml check is profile-conditional ────────────────
@@ -152,9 +231,10 @@ fi
 # multi-stack examples (pyproject.toml, go.mod). The plan-locked
 # assertion above only locks the profile-conditional release.yml prose;
 # nothing locks the list-extension itself. A future retrospective edit
-# could revert §7 to the Tauri-only list (`tauri.conf.json,
-# next.config.js, Caddyfile, nginx.conf`) and the existing assertions
-# would all still pass.
+# could revert §7 to a Tauri-leaning list (`next.config.js, Caddyfile,
+# nginx.conf` plus a desktop-shell config like the prior `tauri.conf.json`
+# token, now banned by the ENG-97 global negative-grep above) and the
+# existing list assertions below would all still pass.
 if printf '%s\n' "$s7" | grep -qF 'pyproject.toml' \
    && printf '%s\n' "$s7" | grep -qF 'go.mod'; then
   ok "§7 config-scan list contains non-Tauri examples (pyproject.toml, go.mod)"
