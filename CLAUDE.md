@@ -262,6 +262,43 @@ diff and partitions changes into three streams via `partition_dirty_paths`:
 Anything writing files outside the per-stage allowlist must update the partition rules in
 `run-local-helpers.sh` or it will trip the breaker.
 
+The `implementing | ui | qa` allowlist is derived from
+`learned-rules/$PROJECT_SLUG/project-profile.md`'s `## File layout`
+section, plus a stack-agnostic catalog of `docs/` and common
+manifest+lockfile filenames (`Cargo.lock`, `package-lock.json`,
+`poetry.lock`, `go.sum`, etc. — see `_always_include_paths` in
+`bin/run-local-helpers.sh`). The hardcoded Tauri shape (`src-tauri/`,
+`crates/`, `bun.lock*`) was removed in ENG-95.
+
+**Where to make scope changes (decision tree):**
+
+| Change shape | Edit | Notes |
+|---|---|---|
+| Permanent stack-shape change (new top-level dir like `app/`, `pkg/`) | `learned-rules/<slug>/project-profile.md::"## File layout"` | The profile is the canonical source of stack truth. Re-run `bash bin/setup.sh project-profile` to regenerate, or hand-edit. Visible to every dispatched agent's prompt AND the sweep allowlist. |
+| Per-target one-off (test-specific path, experimental dir) | `config.json::scope.allowlist.<stage>[]` | Overrides the profile-derived list completely for that stage; useful for granting scope without polluting the canonical profile. **This config is gitignored** — operator-local. |
+| Common lockfile catalog (e.g. add `bun.lockb` for a new package manager) | `_always_include_paths` in `bin/run-local-helpers.sh` | Hardcoded list; PR to the harness repo. Universal across slugs. |
+
+**Migration from pre-ENG-95 (existing Tauri targets):** Existing profiles
+that list the Tauri directories (`src/`, `src-tauri/`, `crates/`, `tests/`)
+in their `## File layout` section work unchanged. The new implementation
+reads your profile instead of a hardcoded list — same result. If your
+profile is missing entries, scope falls back to `docs/ + lockfile catalog`
+only and the agent self-leaks on the next source-dir write; the operator
+sees a diagnostic in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log`:
+
+    stage_output_paths: profile-derived list empty for stage=implementing
+    (slug=<slug>, path=<...>); falling back to docs/ + lockfile catalog.
+    Run: bash bin/setup.sh project-profile
+
+**Always-include lockfile catalog scope.** The always-include set grants
+in-scope status for ALL common manifest+lockfile filenames
+(`Cargo.toml/lock`, `package.json/-lock.json`, `bun.lock/lockb`,
+`pyproject.toml + poetry.lock/uv.lock/Pipfile.lock`, `go.mod/sum`,
+`Gemfile/.lock`), regardless of whether your target uses that stack.
+This is intentional — false-positive scope is bounded to top-level
+single-file matches, never a directory prefix. If this is too broad for
+your repo, set `config.json::scope.allowlist.<stage>[]` to a tighter list.
+
 ## Per-target dispatch.tools extras (ENG-51, ENG-53 #8)
 
 `dispatch.sh::allowed_tools_for` ships a Tauri-shaped base allowlist for each stage. To grant
