@@ -129,4 +129,152 @@ rm -rf "$_eng95_case12_tdir"
 printf ' M .pipeline-config/config.json\0' \
   | assert_partition retrospective_pipeline_config_in_scope retrospective ENG-14 1 0 0
 
+# ─── ENG-95: stack-fixture integration cases ────────────────────────────
+# Each case seeds a tempdir profile (learned-rules/$PROJECT_SLUG/project-
+# profile.md) with a stack-shaped `## File layout`, points HARNESS_ROOT
+# at the tempdir for the duration of the assertion, and verifies that a
+# representative dirty-path record lands in the expected stream. The
+# helper below writes the fixture and runs the partition under the
+# override; it always restores HARNESS_ROOT/CONFIG afterward.
+
+_eng95_pin_root_with_profile() {
+  local tdir="$1" layout_body="$2" slug="${3:-$PROJECT_SLUG}"
+  mkdir -p "$tdir/learned-rules/$slug"
+  {
+    printf -- '---\n'
+    printf 'slug: %s\n' "$slug"
+    printf 'schema_version: 1\n'
+    printf -- '---\n\n'
+    printf '# Project profile\n\n## File layout\n\n%s\n' "$layout_body"
+  } > "$tdir/learned-rules/$slug/project-profile.md"
+}
+
+# 14: Rust workspace — `crates/` + `tests/` in profile; agent writes
+# `crates/twinning-foo/src/lib.rs` → in-scope.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `crates/` — workspace member dirs
+- `tests/` — integration tests'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? crates/twinning-foo/src/lib.rs\0' \
+  | assert_partition profile_rust_workspace_inscope implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 15: Python single-package — `app/` + `tests/` in profile; agent writes
+# `app/handlers.py` → in-scope.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `app/` — application code
+- `tests/` — pytest suite'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? app/handlers.py\0' \
+  | assert_partition profile_python_single_pkg_inscope implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 16: Go module — `cmd/` + `pkg/` + `internal/` in profile; agent writes
+# `cmd/server/main.go` → in-scope.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `cmd/` — main packages
+- `pkg/` — exported library code
+- `internal/` — private packages'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? cmd/server/main.go\0' \
+  | assert_partition profile_go_module_inscope implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 17: harness-self — `bin/`, `learned-rules/<slug>/`, `AGENT_PROMPTS.md`
+# in profile. Two assertions: (a) `?? bin/foo.sh` → in-scope; (b) the
+# `<slug>` substitution lands `learned-rules/$PROJECT_SLUG/build.md`
+# in-scope.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `bin/` — orchestration scripts
+- `learned-rules/<slug>/` — per-slug rules
+- `AGENT_PROMPTS.md` — stage prompt source'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? bin/foo.sh\0' \
+  | assert_partition profile_harness_self_inscope_bin implementing ENG-14 1 0 0
+printf '?? learned-rules/%s/build.md\0' "$PROJECT_SLUG" \
+  | assert_partition profile_harness_self_inscope_slug_sub implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 18: Python lockfile via always-include catalog — profile lists only
+# `app/`; agent writes `poetry.lock` (top-level lockfile) → in-scope
+# via the always-include catalog, not the profile.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `app/` — sole source dir'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? poetry.lock\0' \
+  | assert_partition profile_python_lockfile_inscope implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 19: Go lockfile via always-include catalog — profile lists only
+# `cmd/`; agent writes `go.sum` → in-scope via catalog.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `cmd/` — main packages only'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? go.sum\0' \
+  | assert_partition profile_go_lockfile_inscope implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 20: `docs/` always in-scope — profile lists only `src/`; agent writes
+# `docs/anything.md` → in-scope via catalog's `docs/`.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `src/` — sources'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? docs/anything.md\0' \
+  | assert_partition profile_docs_always_inscope implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 21: profile_unknown_dir_out_of_scope — profile lists only `crates/`;
+# agent writes `app/leak.py` (untracked, no allowlist match) → observed
+# (FD5). The leaked-vs-observed split happens upstream in run-local.sh
+# via the tick-start snapshot; partition_dirty_paths alone routes
+# allowlist-misses to FD5.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `crates/` — Rust workspace only'
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? app/leak.py\0' \
+  | assert_partition profile_unknown_dir_out_of_scope implementing ENG-14 0 0 1
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 22: profile_missing_falls_back_to_always_include — no profile file on
+# disk; two assertions: (a) `docs/foo.md` → in-scope via catalog;
+# (b) `src/leak.rs` → observed (catalog has no `src/`).
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? docs/foo.md\0' \
+  | assert_partition profile_missing_falls_back_docs implementing ENG-14 1 0 0
+printf '?? src/leak.rs\0' \
+  | assert_partition profile_missing_falls_back_src implementing ENG-14 0 0 1
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 23: profile_file_layout_missing_falls_back — profile exists but has
+# no `## File layout` section. Behaves identically to missing profile.
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+mkdir -p "$_t/learned-rules/$PROJECT_SLUG"
+{
+  printf -- '---\nslug: %s\nschema_version: 1\n---\n\n' "$PROJECT_SLUG"
+  printf '# Project profile\n\n## Stack\n\ntext\n\n## Language idioms\n\ntext\n'
+} > "$_t/learned-rules/$PROJECT_SLUG/project-profile.md"
+_saved_hr="$HARNESS_ROOT"; HARNESS_ROOT="$_t"; export HARNESS_ROOT
+printf '?? docs/anywhere.md\0' \
+  | assert_partition profile_file_layout_missing_falls_back implementing ENG-14 1 0 0
+HARNESS_ROOT="$_saved_hr"; export HARNESS_ROOT; rm -rf "$_t"
+
+# 24: profile_override_shadows_layout — profile lists `crates/`, config
+# override = `[src/]`. The override (ENG-51 contract, D-004) wins
+# absolutely; profile is NOT consulted. Two assertions:
+#  (a) `?? src/foo.rs` → in-scope (override hit);
+#  (b) `?? crates/foo.rs` → observed (profile is shadowed).
+_t="$(mktemp -d -t twinning-eng95-sweep.XXXXXX)"
+_eng95_pin_root_with_profile "$_t" '- `crates/` — workspace dirs'
+_cfg="$_t/config.json"
+printf '%s\n' '{"scope":{"allowlist":{"implementing":["src/"]}}}' > "$_cfg"
+_saved_hr="$HARNESS_ROOT"; _saved_cfg="${CONFIG-}"
+HARNESS_ROOT="$_t"; CONFIG="$_cfg"; export HARNESS_ROOT CONFIG
+printf '?? src/foo.rs\0' \
+  | assert_partition profile_override_shadows_layout_inscope implementing ENG-14 1 0 0
+printf '?? crates/foo.rs\0' \
+  | assert_partition profile_override_shadows_layout_observed implementing ENG-14 0 0 1
+HARNESS_ROOT="$_saved_hr"; CONFIG="$_saved_cfg"; export HARNESS_ROOT CONFIG
+rm -rf "$_t"
+
 printf 'All sweep-test cases passed.\n'
