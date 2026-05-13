@@ -128,11 +128,30 @@ if printf '%s\n' "$s2" | grep -qF '#[tauri::command]'; then
 else
   ok "§2 ENG-97: '#[tauri::command]' marker absent (post-Tauri-strip)"
 fi
+if printf '%s\n' "$s2" | grep -qF 'service FooService'; then
+  ok "§2 ENG-97: contains gRPC api-contract example (service FooService)"
+else
+  nope "§2 ENG-97: contains gRPC api-contract example (service FooService)" "marker missing — has Example 1 been silently dropped or its body renamed?"
+fi
 if printf '%s\n' "$s2" | grep -qF '@app.route'; then
   ok "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)"
 else
   nope "§2 contains non-Tauri (Python/Flask) api-contract example (@app.route)" "phrase missing"
 fi
+
+# ─── ENG-97: whole-file negative-grep on de-Tauri-ed tokens ─────────────
+# Post-ENG-97 (May 2026): AGENT_PROMPTS.md must carry zero Tauri-specific
+# illustrations. The prior assertions are §2-scoped (api-contract block) —
+# this block scans the whole file so a re-introduction in §3/§6/§7/§8/§9
+# trips here too. One assertion per token gives a diagnostic that names
+# which token reappeared. Tokens enumerated by Linear ENG-97 AC#1.
+for forbidden_token in 'Tauri' 'tauri::' 'tauri.conf.json' 'src-tauri/' 'cargo test -- --list' 'invoke('; do
+  if grep -qF -- "$forbidden_token" "$PROMPTS"; then
+    nope "AGENT_PROMPTS.md ENG-97: forbidden token '$forbidden_token' absent" "token reappeared in AGENT_PROMPTS.md — see ENG-97 for context"
+  else
+    ok "AGENT_PROMPTS.md ENG-97: forbidden token '$forbidden_token' absent"
+  fi
+done
 
 # ─── ENG-52: §7 release.yml check is profile-conditional ────────────────
 if printf '%s\n' "$s7" | grep -qF 'gh run list --branch main --workflow' \
@@ -157,9 +176,10 @@ fi
 # multi-stack examples (pyproject.toml, go.mod). The plan-locked
 # assertion above only locks the profile-conditional release.yml prose;
 # nothing locks the list-extension itself. A future retrospective edit
-# could revert §7 to the Tauri-only list (`tauri.conf.json,
-# next.config.js, Caddyfile, nginx.conf`) and the existing assertions
-# would all still pass.
+# could revert §7 to a Tauri-leaning list (`next.config.js, Caddyfile,
+# nginx.conf` plus a desktop-shell config like the prior `tauri.conf.json`
+# token, now banned by the ENG-97 global negative-grep above) and the
+# existing list assertions below would all still pass.
 if printf '%s\n' "$s7" | grep -qF 'pyproject.toml' \
    && printf '%s\n' "$s7" | grep -qF 'go.mod'; then
   ok "§7 config-scan list contains non-Tauri examples (pyproject.toml, go.mod)"
