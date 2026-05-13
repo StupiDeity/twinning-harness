@@ -35,10 +35,11 @@ Have these ready in browser tabs and on disk:
 The launchd plist injects a minimal PATH (`/opt/homebrew/bin`,
 `/usr/local/bin`, and system dirs — see
 `launchd/com.twinning.pipeline.plist.template:36-39`).
-`bin/run-local.sh:22` belt-and-braces additional segments for
-stack-specific user-global bins (`$HOME/.bun/bin`,
-`$HOME/.npm-global/bin`) that the *dispatched agent* may need on Bun-
-or npm-using targets. Harmless on hosts that lack those dirs.
+The `export PATH=…` line in `bin/run-local.sh` belt-and-braces
+additional segments for stack-specific user-global bins
+(`$HOME/.bun/bin`, `$HOME/.npm-global/bin`) that the *dispatched
+agent* may need on Bun- or npm-using targets. Harmless on hosts that
+lack those dirs.
 
 Operators on non-Homebrew installs (e.g. MacPorts, Nix) should edit
 the rendered plist's `EnvironmentVariables/PATH` after

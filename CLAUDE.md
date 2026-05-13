@@ -43,16 +43,17 @@ placeholders.
 — system defaults plus Homebrew dirs (Apple Silicon and Intel), no
 `$HOME` segments.
 
-`bin/run-local.sh:22` belt-and-braces the plist's PATH with additional
-segments for stack-specific user-global bins (`$HOME/.bun/bin`,
-`$HOME/.npm-global/bin`) that the *dispatched agent* may need on Bun- or
-npm-using targets. This is harmless on hosts where those directories are
-absent — the shell ignores missing PATH segments.
+The `export PATH=…` line in `bin/run-local.sh` belt-and-braces the
+plist's PATH with additional segments for stack-specific user-global
+bins (`$HOME/.bun/bin`, `$HOME/.npm-global/bin`) that the *dispatched
+agent* may need on Bun- or npm-using targets. This is harmless on
+hosts where those directories are absent — the shell ignores missing
+PATH segments.
 
 | Segment | Consumer | Notes |
 |---|---|---|
-| `/opt/homebrew/bin`, `/opt/homebrew/sbin` | harness's own tools | Apple Silicon Homebrew. Plist injects `bin`; `run-local.sh:22` adds `sbin`. |
-| `/usr/local/bin`, `/usr/local/sbin` | harness's own tools | Intel Homebrew (or `/usr/local`-style installs). Plist injects `bin`; `run-local.sh:22` adds `sbin`. |
+| `/opt/homebrew/bin`, `/opt/homebrew/sbin` | harness's own tools | Apple Silicon Homebrew. Plist injects `bin`; `run-local.sh` adds `sbin`. |
+| `/usr/local/bin`, `/usr/local/sbin` | harness's own tools | Intel Homebrew (or `/usr/local`-style installs). Plist injects `bin`; `run-local.sh` adds `sbin`. |
 | `$HOME/.bun/bin` | dispatched agent's stack tools | Bun user-global bin. Only consumed on Bun-using targets (e.g. twinning's `bun tauri build`). |
 | `$HOME/.npm-global/bin` | dispatched agent's stack tools | npm user-global bin (`npm install -g …`). Only consumed on npm-using targets. |
 | `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` | system | Plist's tail. |
