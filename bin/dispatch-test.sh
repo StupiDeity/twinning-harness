@@ -2188,6 +2188,333 @@ else
   printf 'SKIP ENG-87 M6-iter7: dispatch.sh not present at %s — skipping env-propagation pin\n' "$DISP_SRC_FOR_M6"
 fi
 
+# ─── ENG-94: dispatch.sh::allowed_tools_for consumes project-profile Tool allowlist ───
+# Five fixtures exercising _dispatch_tools_from_profile + composition tail:
+#   1. Tauri profile (back-compat) — implementing/ui/qa regain cargo/bun/rustc/npx/node
+#      via profile, NOT via base.
+#   2. Python profile — implementing/qa get pytest, NOT cargo.
+#   3. Go profile — implementing/qa get `go test`, NOT cargo.
+#   4. Fallback fixture (AC#3 warn branch) — schema_version 1 → empty + warning.
+#   5. Empty-section fixture (AC#3 no-warn branch) — schema_version 2 with
+#      `- implementing: (none)` → empty + NO warning.
+#
+# Each fixture overrides HARNESS_ROOT to a mktemp -d layout (matching the
+# source-and-override pattern documented in bin/render-prompt-slug-test.sh:32–63).
+# The pre-existing HARNESS_ROOT (set at line 2090 for the Gap-7 contract check)
+# is restored at the end of each fixture so subsequent assertions are unaffected.
+printf '\n--- ENG-94: project-profile Tool allowlist composition ---\n'
+_ENG94_SAVED_HARNESS_ROOT="$HARNESS_ROOT"
+_ENG94_SAVED_PROJECT_SLUG="$PROJECT_SLUG"
+
+# Fixture 1 — Tauri profile (back-compat). Stub a schema_version 2 profile
+# listing cargo/bun/rustc for implementing, cargo/bun/npx/node for ui, and
+# cargo/bun/npx/node for qa. Assert each stage's composed return value
+# contains the Tauri tokens via PROFILE (not via base).
+_ENG94_TAURI_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_ENG94_TAURI_ROOT"
+mkdir -p "$_ENG94_TAURI_ROOT/learned-rules/eng94-tauri-slug"
+cat > "$_ENG94_TAURI_ROOT/learned-rules/eng94-tauri-slug/project-profile.md" <<'PROFILE'
+---
+slug: eng94-tauri-slug
+generated_at: 2026-05-13T00:00:00Z
+generated_by: eng94-test
+schema_version: 2
+---
+
+# Project profile — eng94-tauri-slug
+
+## Stack
+Tauri (test fixture).
+
+## Build & test gates
+- Build: `bun tauri build`
+- Test: `cargo test`
+- Lint/check: `cargo clippy`
+- Integration/E2E: `(n/a)`
+
+## Tool allowlist
+- brainstorming: (none)
+- planning: (none)
+- implementing:
+  - `Bash(cargo:*)`
+  - `Bash(bun:*)`
+  - `Bash(rustc:*)`
+- ui:
+  - `Bash(cargo:*)`
+  - `Bash(bun:*)`
+  - `Bash(npx:*)`
+  - `Bash(node:*)`
+- reviewing: (none)
+- qa:
+  - `Bash(cargo:*)`
+  - `Bash(bun:*)`
+  - `Bash(npx:*)`
+  - `Bash(node:*)`
+- building: (none)
+- released: (none)
+
+## File layout
+- test fixture.
+
+## Language idioms
+- test.
+
+## Don'ts
+- none.
+PROFILE
+HARNESS_ROOT="$_ENG94_TAURI_ROOT"
+PROJECT_SLUG="eng94-tauri-slug"
+_ENG94_TAURI_IMPL="$(allowed_tools_for implementing 2>/dev/null)"
+_ENG94_TAURI_UI="$(allowed_tools_for ui 2>/dev/null)"
+_ENG94_TAURI_QA="$(allowed_tools_for qa 2>/dev/null)"
+for token in 'Bash(cargo:*)' 'Bash(bun:*)' 'Bash(rustc:*)'; do
+  if [[ "$_ENG94_TAURI_IMPL" == *"$token"* ]]; then
+    pass_at "ENG-94 Fixture 1 (Tauri): implementing carries $token via profile"
+  else
+    fail_at "ENG-94 Fixture 1 (Tauri): implementing missing $token" "got: $_ENG94_TAURI_IMPL"
+  fi
+done
+for token in 'Bash(cargo:*)' 'Bash(bun:*)' 'Bash(npx:*)' 'Bash(node:*)'; do
+  if [[ "$_ENG94_TAURI_UI" == *"$token"* ]]; then
+    pass_at "ENG-94 Fixture 1 (Tauri): ui carries $token via profile"
+  else
+    fail_at "ENG-94 Fixture 1 (Tauri): ui missing $token" "got: $_ENG94_TAURI_UI"
+  fi
+  if [[ "$_ENG94_TAURI_QA" == *"$token"* ]]; then
+    pass_at "ENG-94 Fixture 1 (Tauri): qa carries $token via profile"
+  else
+    fail_at "ENG-94 Fixture 1 (Tauri): qa missing $token" "got: $_ENG94_TAURI_QA"
+  fi
+done
+# Pin AC#1: base no longer carries the tokens (the profile is the sole source).
+# The composition is base,profile,extras — base should NOT contain cargo etc.
+# We assert this by clearing the profile and re-checking:
+HARNESS_ROOT="$_TEST_STUB_DIR/empty-root"  # no profile path → empty
+mkdir -p "$HARNESS_ROOT"
+_ENG94_BARE_IMPL="$(allowed_tools_for implementing 2>/dev/null)"
+if [[ "$_ENG94_BARE_IMPL" != *'Bash(cargo:*)'* ]]; then
+  pass_at "ENG-94 AC#1: implementing base (no profile) does NOT contain Bash(cargo:*)"
+else
+  fail_at "ENG-94 AC#1: implementing base still carries Bash(cargo:*) after case-arm cleanup" \
+    "got: $_ENG94_BARE_IMPL"
+fi
+HARNESS_ROOT="$_ENG94_TAURI_ROOT"  # restore for any subsequent reference
+_test_safe_rm "$_ENG94_TAURI_ROOT"
+
+# Fixture 2 — Python profile. Stub a schema_version 2 profile listing
+# pytest/pip/python3 for implementing AND qa. Assert each stage's composed
+# output contains pytest via profile and does NOT contain cargo (case-arm
+# cleanup removed cargo from base).
+_ENG94_PYTHON_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_ENG94_PYTHON_ROOT"
+mkdir -p "$_ENG94_PYTHON_ROOT/learned-rules/eng94-python-slug"
+cat > "$_ENG94_PYTHON_ROOT/learned-rules/eng94-python-slug/project-profile.md" <<'PROFILE'
+---
+slug: eng94-python-slug
+schema_version: 2
+---
+
+# Project profile — eng94-python-slug
+
+## Stack
+Python (test fixture).
+
+## Tool allowlist
+- brainstorming: (none)
+- planning: (none)
+- implementing:
+  - `Bash(pytest:*)`
+  - `Bash(pip:*)`
+  - `Bash(python3:*)`
+- ui: (none)
+- reviewing: (none)
+- qa:
+  - `Bash(pytest:*)`
+  - `Bash(pip:*)`
+  - `Bash(python3:*)`
+- building: (none)
+- released: (none)
+PROFILE
+HARNESS_ROOT="$_ENG94_PYTHON_ROOT"
+PROJECT_SLUG="eng94-python-slug"
+_ENG94_PY_IMPL="$(allowed_tools_for implementing 2>/dev/null)"
+_ENG94_PY_QA="$(allowed_tools_for qa 2>/dev/null)"
+if [[ "$_ENG94_PY_IMPL" == *'Bash(pytest:*)'* ]]; then
+  pass_at "ENG-94 Fixture 2 (Python): implementing carries Bash(pytest:*) via profile"
+else
+  fail_at "ENG-94 Fixture 2 (Python): implementing missing Bash(pytest:*)" "got: $_ENG94_PY_IMPL"
+fi
+if [[ "$_ENG94_PY_IMPL" != *'Bash(cargo:*)'* ]]; then
+  pass_at "ENG-94 Fixture 2 (Python): implementing does NOT contain Bash(cargo:*)"
+else
+  fail_at "ENG-94 Fixture 2 (Python): implementing unexpectedly contains Bash(cargo:*)" "got: $_ENG94_PY_IMPL"
+fi
+if [[ "$_ENG94_PY_QA" == *'Bash(pytest:*)'* ]]; then
+  pass_at "ENG-94 Fixture 2 (Python): qa carries Bash(pytest:*) via profile"
+else
+  fail_at "ENG-94 Fixture 2 (Python): qa missing Bash(pytest:*)" "got: $_ENG94_PY_QA"
+fi
+if [[ "$_ENG94_PY_QA" != *'Bash(cargo:*)'* ]]; then
+  pass_at "ENG-94 Fixture 2 (Python): qa does NOT contain Bash(cargo:*)"
+else
+  fail_at "ENG-94 Fixture 2 (Python): qa unexpectedly contains Bash(cargo:*)" "got: $_ENG94_PY_QA"
+fi
+_test_safe_rm "$_ENG94_PYTHON_ROOT"
+
+# Fixture 3 — Go profile. Stub a schema_version 2 profile listing
+# go test/go build/go vet/gofmt for implementing AND qa. The `go test`
+# pattern's internal space exercises the awk regex's tolerance of
+# multi-word command names.
+_ENG94_GO_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_ENG94_GO_ROOT"
+mkdir -p "$_ENG94_GO_ROOT/learned-rules/eng94-go-slug"
+cat > "$_ENG94_GO_ROOT/learned-rules/eng94-go-slug/project-profile.md" <<'PROFILE'
+---
+slug: eng94-go-slug
+schema_version: 2
+---
+
+# Project profile — eng94-go-slug
+
+## Stack
+Go (test fixture).
+
+## Tool allowlist
+- brainstorming: (none)
+- planning: (none)
+- implementing:
+  - `Bash(go test:*)`
+  - `Bash(go build:*)`
+  - `Bash(go vet:*)`
+  - `Bash(gofmt:*)`
+- ui: (none)
+- reviewing: (none)
+- qa:
+  - `Bash(go test:*)`
+  - `Bash(go build:*)`
+  - `Bash(go vet:*)`
+  - `Bash(gofmt:*)`
+- building: (none)
+- released: (none)
+PROFILE
+HARNESS_ROOT="$_ENG94_GO_ROOT"
+PROJECT_SLUG="eng94-go-slug"
+_ENG94_GO_IMPL="$(allowed_tools_for implementing 2>/dev/null)"
+_ENG94_GO_QA="$(allowed_tools_for qa 2>/dev/null)"
+if [[ "$_ENG94_GO_IMPL" == *'Bash(go test:*)'* ]]; then
+  pass_at "ENG-94 Fixture 3 (Go): implementing carries Bash(go test:*) via profile"
+else
+  fail_at "ENG-94 Fixture 3 (Go): implementing missing Bash(go test:*)" "got: $_ENG94_GO_IMPL"
+fi
+if [[ "$_ENG94_GO_IMPL" != *'Bash(cargo:*)'* ]]; then
+  pass_at "ENG-94 Fixture 3 (Go): implementing does NOT contain Bash(cargo:*)"
+else
+  fail_at "ENG-94 Fixture 3 (Go): implementing unexpectedly contains Bash(cargo:*)" "got: $_ENG94_GO_IMPL"
+fi
+if [[ "$_ENG94_GO_QA" == *'Bash(go test:*)'* ]]; then
+  pass_at "ENG-94 Fixture 3 (Go): qa carries Bash(go test:*) via profile"
+else
+  fail_at "ENG-94 Fixture 3 (Go): qa missing Bash(go test:*)" "got: $_ENG94_GO_QA"
+fi
+if [[ "$_ENG94_GO_QA" != *'Bash(cargo:*)'* ]]; then
+  pass_at "ENG-94 Fixture 3 (Go): qa does NOT contain Bash(cargo:*)"
+else
+  fail_at "ENG-94 Fixture 3 (Go): qa unexpectedly contains Bash(cargo:*)" "got: $_ENG94_GO_QA"
+fi
+_test_safe_rm "$_ENG94_GO_ROOT"
+
+# Fixture 4 — Fallback (AC#3 warn branch). Stub a schema_version 1 profile
+# (no Tool allowlist section). Capture stderr; assert composed output is
+# empty of stack tokens, exactly one warning fires, helper returns 0.
+_ENG94_FB_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_ENG94_FB_ROOT"
+mkdir -p "$_ENG94_FB_ROOT/learned-rules/eng94-fallback-slug"
+cat > "$_ENG94_FB_ROOT/learned-rules/eng94-fallback-slug/project-profile.md" <<'PROFILE'
+---
+slug: eng94-fallback-slug
+schema_version: 1
+---
+# Project profile — eng94-fallback-slug
+## Stack
+test fixture.
+PROFILE
+HARNESS_ROOT="$_ENG94_FB_ROOT"
+PROJECT_SLUG="eng94-fallback-slug"
+_ENG94_FB_STDERR="$(mktemp)"
+_test_assert_temp_path "$_ENG94_FB_STDERR"
+_ENG94_FB_OUT="$(allowed_tools_for implementing 2>"$_ENG94_FB_STDERR")"
+_ENG94_FB_RC=$?
+if (( _ENG94_FB_RC == 0 )); then
+  pass_at "ENG-94 Fixture 4 (Fallback): allowed_tools_for returns 0 (does NOT die on schema v1)"
+else
+  fail_at "ENG-94 Fixture 4 (Fallback): allowed_tools_for exited non-zero (rc=$_ENG94_FB_RC)" ""
+fi
+if [[ "$_ENG94_FB_OUT" != *'Bash(cargo:*)'* ]]; then
+  pass_at "ENG-94 Fixture 4 (Fallback): composed output lacks Bash(cargo:*) (AC#3 + AC#1)"
+else
+  fail_at "ENG-94 Fixture 4 (Fallback): composed output unexpectedly contains Bash(cargo:*)" "got: $_ENG94_FB_OUT"
+fi
+_ENG94_FB_WARN_COUNT="$(grep -cE '\[allowed-tools\] project-profile.md schema_version != 2' "$_ENG94_FB_STDERR" 2>/dev/null || true)"
+if [[ "$_ENG94_FB_WARN_COUNT" == "1" ]]; then
+  pass_at "ENG-94 Fixture 4 (Fallback): exactly one schema-version warning fired"
+else
+  fail_at "ENG-94 Fixture 4 (Fallback): expected 1 schema-version warning, got $_ENG94_FB_WARN_COUNT" \
+    "stderr: $(cat "$_ENG94_FB_STDERR")"
+fi
+rm -f "$_ENG94_FB_STDERR"
+_test_safe_rm "$_ENG94_FB_ROOT"
+
+# Fixture 5 — Empty-section (AC#3 no-warn branch). Stub a schema_version 2
+# profile with present-but-empty Tool allowlist for implementing
+# (`- implementing: (none)`). Assert composed output lacks profile tokens
+# AND zero `[allowed-tools]` warnings fire.
+_ENG94_ES_ROOT="$(mktemp -d)"
+_test_assert_temp_path "$_ENG94_ES_ROOT"
+mkdir -p "$_ENG94_ES_ROOT/learned-rules/eng94-empty-slug"
+cat > "$_ENG94_ES_ROOT/learned-rules/eng94-empty-slug/project-profile.md" <<'PROFILE'
+---
+slug: eng94-empty-slug
+schema_version: 2
+---
+# Project profile — eng94-empty-slug
+## Stack
+test fixture.
+
+## Tool allowlist
+- brainstorming: (none)
+- planning: (none)
+- implementing: (none)
+- ui: (none)
+- reviewing: (none)
+- qa: (none)
+- building: (none)
+- released: (none)
+PROFILE
+HARNESS_ROOT="$_ENG94_ES_ROOT"
+PROJECT_SLUG="eng94-empty-slug"
+_ENG94_ES_STDERR="$(mktemp)"
+_test_assert_temp_path "$_ENG94_ES_STDERR"
+_ENG94_ES_OUT="$(allowed_tools_for implementing 2>"$_ENG94_ES_STDERR")"
+if [[ "$_ENG94_ES_OUT" != *'Bash(cargo:*)'* ]]; then
+  pass_at "ENG-94 Fixture 5 (Empty-section): composed output lacks Bash(cargo:*)"
+else
+  fail_at "ENG-94 Fixture 5 (Empty-section): composed output unexpectedly contains Bash(cargo:*)" "got: $_ENG94_ES_OUT"
+fi
+_ENG94_ES_WARN_COUNT="$(grep -cE '\[allowed-tools\]' "$_ENG94_ES_STDERR" 2>/dev/null || true)"
+if [[ "$_ENG94_ES_WARN_COUNT" == "0" ]]; then
+  pass_at "ENG-94 Fixture 5 (Empty-section): no [allowed-tools] warning fired (no-warn discrimination)"
+else
+  fail_at "ENG-94 Fixture 5 (Empty-section): unexpected [allowed-tools] warning(s) fired" \
+    "stderr: $(cat "$_ENG94_ES_STDERR")"
+fi
+rm -f "$_ENG94_ES_STDERR"
+_test_safe_rm "$_ENG94_ES_ROOT"
+
+# Restore overrides so subsequent assertions inherit pre-fixture environment.
+HARNESS_ROOT="$_ENG94_SAVED_HARNESS_ROOT"
+PROJECT_SLUG="$_ENG94_SAVED_PROJECT_SLUG"
+unset _ENG94_SAVED_HARNESS_ROOT _ENG94_SAVED_PROJECT_SLUG
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
