@@ -34,6 +34,38 @@ Any script run by hand needs `TARGET_REPO` exported. The launchd plist templates
 all three under `EnvironmentVariables` after `install-launchd.sh` substitutes the `__VAR__`
 placeholders.
 
+## PATH expectations on the launchd host
+
+`launchd` hands the harness a minimal PATH via the plist's
+`EnvironmentVariables/PATH` block. The template at
+`launchd/com.twinning.pipeline.plist.template:36-39` injects
+`/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin`
+— system defaults plus Homebrew dirs (Apple Silicon and Intel), no
+`$HOME` segments.
+
+`bin/run-local.sh:22` belt-and-braces the plist's PATH with additional
+segments for stack-specific user-global bins (`$HOME/.bun/bin`,
+`$HOME/.npm-global/bin`) that the *dispatched agent* may need on Bun- or
+npm-using targets. This is harmless on hosts where those directories are
+absent — the shell ignores missing PATH segments.
+
+| Segment | Consumer | Notes |
+|---|---|---|
+| `/opt/homebrew/bin`, `/opt/homebrew/sbin` | harness's own tools | Apple Silicon Homebrew. Plist injects `bin`; `run-local.sh:22` adds `sbin`. |
+| `/usr/local/bin`, `/usr/local/sbin` | harness's own tools | Intel Homebrew (or `/usr/local`-style installs). Plist injects `bin`; `run-local.sh:22` adds `sbin`. |
+| `$HOME/.bun/bin` | dispatched agent's stack tools | Bun user-global bin. Only consumed on Bun-using targets (e.g. twinning's `bun tauri build`). |
+| `$HOME/.npm-global/bin` | dispatched agent's stack tools | npm user-global bin (`npm install -g …`). Only consumed on npm-using targets. |
+| `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` | system | Plist's tail. |
+
+Tools the **harness itself** uses (`gtimeout`, `gh`, `claude`, `jq`,
+`awk`, `sed`, `git`, `curl`) are assumed to be reachable via the
+Homebrew / system segments above. Operators on non-Homebrew installs
+(MacPorts, Nix) must edit the rendered plist's
+`EnvironmentVariables/PATH` after `bin/install-launchd.sh` runs and
+re-`launchctl bootstrap`. Targets that need additional user-global bin
+dirs (`~/.cargo/bin`, `~/go/bin`, etc.) currently require a manual plist
+edit; a profile-derived PATH mechanism is a deferred followup.
+
 ## Runtime topology
 
 ```
