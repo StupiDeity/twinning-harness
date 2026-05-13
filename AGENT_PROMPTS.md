@@ -384,6 +384,29 @@ Anti-anchoring check (MANDATORY — before you start planning):
   Exit cleanly; the orchestrator will keep the issue paused in `stage:planning` until a
   human applies one of those labels.
 
+Branch-base freshness check (MANDATORY — before recording any `path:line` excerpt in
+Assumption Inventory):
+- Run `git fetch origin main` then `git log --oneline HEAD..origin/main`.
+- If the output is NON-EMPTY, this branch has drifted behind main. Every `path:line`
+  you would record in Assumption Inventory is potentially stale — a sibling ticket
+  may have rewritten the file, moved the function, or removed it entirely. Two options:
+  - **Preferred (clean drift):** Add a `### Task 0: Rebase onto origin/main` entry at
+    the top of Backend Tasks with `depends_on: []`. State explicitly that the
+    implement agent MUST run `git fetch origin main && git rebase origin/main`
+    before any other task and re-verify Assumption Inventory `path:line` references
+    survived the rebase. Pair with content-anchored Edit boundaries (see
+    "Edit-boundary keys" below) so subsequent tasks survive the rebase too.
+  - **Halt (dirty drift):** If `HEAD..origin/main` contains a sibling commit that
+    materially changes a file in your File Structure (e.g., a predecessor ticket
+    rewrote the schema-v1 of an on-disk profile to schema-v2 while this branch was
+    still drafting against v1), STOP. Post a Linear comment on {issue_id} naming the
+    conflicting upstream change and request `pipeline:supersede` — the brainstorm
+    should be re-run against the new main, not patched.
+- If `HEAD..origin/main` is EMPTY, record a one-line note in Assumption Inventory:
+  `branch-base freshness: HEAD..origin/main empty at plan time (origin/main = <sha>)`.
+  This pins the freshness claim against the SHA the plan was drafted against — the
+  retrospective can detect when implement-time drift exceeded plan-time freshness.
+
 Your task:
 - Produce a plan at docs/plans/{date}-{issue_id_lower}-{slug}.md
 - Follow the format of existing plans (see docs/plans/ for examples)
@@ -417,6 +440,19 @@ Task format (MANDATORY — each task is an H3):
   - short code snippets for non-obvious steps
 Do NOT state a line budget. The concrete function list is the budget; if a task touches
 more than ~5 functions it probably wants splitting.
+
+Edit-boundary keys (MANDATORY — for any step that instructs the implement agent to
+insert/remove content between two existing anchors in a file): use CONTENT anchors,
+not bare line numbers. A content anchor is a surrounding section header, a distinctive
+closing token (e.g. the `fi` of a named conditional block), or a quoted code fragment
+unique within the file. Bare line numbers drift the moment ANY unrelated commit lands
+above the insertion point — including the rebase pulled in by Task 0 (see "Branch-base
+freshness check" above). Line numbers may appear ONLY as informational hints alongside
+a content anchor (e.g. "AFTER the `# ─── ENG-53 #8 ───` block's closing `fi`
+(~line 2168) BEFORE the `# ─── Summary ───` header (~line 2170)"). A step whose ONLY
+boundary is a bare line number is a P0 plan defect (caught by `feasibility` in
+self-review; see ENG-94 where line-numbered boundaries drifted under a rebase that
+landed a sibling ticket above the insertion point).
 
 API Contract (MACHINE-READABLE — MANDATORY when the project has an FE↔BE API surface and a new endpoint or type is added or changed):
 Render the contract as a single fenced block tagged `api-contract`. The exact shape depends on the project's stack; consult the Project profile addendum for the canonical handler/type idioms. Below are two illustrative examples (Tauri v2 + TypeScript for a compiled-IPC stack, Python/Flask + TypeScript for an HTTP-handler stack) — adapt to your project profile:
@@ -473,7 +509,19 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
     columns, SQL functions, module paths) against the current repo using Read/Grep.
     Never against prior design docs. Additionally validate that every task's `depends_on`
     list is correct (no hidden coupling through shared mutable state) and that every
-    Failure Mode → Test Map row names a plausible test layer + test name.
+    Failure Mode → Test Map row names a plausible test layer + test name. Also run the
+    **test-gate closure** sweep: for every token, symbol, or substring this plan REMOVES
+    from production code (e.g., a dropped allowlist entry, a renamed function, a deleted
+    enum variant, a changed default), grep the project's sibling test files (per the
+    profile's "Build & test gates" file list — `bin/*-test.sh` for the harness target,
+    `tests/` for most stacks) for that token. ANY sibling test file that contains the
+    soon-to-be-removed token AND is not listed in File Structure is a P0 plan-completeness
+    defect — either add the file to File Structure with a task inverting the assertion,
+    or document explicitly (in the plan's Test Strategy section) why the test should keep
+    passing unchanged. This catches the ENG-94 class of error: the plan removed
+    `Bash(cargo:*)` from `dispatch.sh` but missed that `bin/profile-allowlist-test.sh`
+    had five assertions pinning that exact token, and the implement agent halted on the
+    pre-commit gate failure mid-stage.
   - **scope** — every task and every File Structure entry must trace to a brainstorm
     decision or an accepted ADR. Flag gold-plating; flag any task whose `touches` list
     strays outside the declared File Structure.
@@ -500,7 +548,15 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    - missing or malformed API Contract block when the project has an FE↔BE API surface that changed,
    - a task missing `depends_on` or `touches` metadata,
    - a Failure Mode row with no named test,
-   - any File Structure entry that feasibility cannot locate or justify as new.
+   - any File Structure entry that feasibility cannot locate or justify as new,
+   - a **test-gate closure** defect: a sibling test file containing a soon-to-be-removed
+     token that is not listed in File Structure (see feasibility's "test-gate closure"
+     sweep above),
+   - a Task step using BARE line numbers as its only Edit boundary, without a content
+     anchor (see "Edit-boundary keys" above),
+   - a non-empty `git log --oneline HEAD..origin/main` at plan time AND no Task 0
+     "Rebase onto origin/main" in Backend Tasks (see "Branch-base freshness check"
+     above) — the plan is drafting against a stale branch base.
    Iterate at most 3 times. If any P0 remains after iteration 3, set status = `escalate`
    and proceed to step 5 with an escalation comment — do NOT commit an unresolved plan,
    but do NOT silently exit either.
