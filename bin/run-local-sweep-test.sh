@@ -94,8 +94,34 @@ printf ' M crates/twinning-pipeline/src/foo.rs\0' \
   | assert_partition source_file_observed_not_staged brainstorming ENG-14 0 0 1
 
 # 12 (new for ENG-13): implementing stage sweeps Rust source without D-004
+# ENG-95: case-12 back-compat — the new derivation reads `## File layout`
+# from `learned-rules/$PROJECT_SLUG/project-profile.md`. With PROJECT_SLUG=
+# test-slug and no such profile present in the harness repo, the parser
+# returns empty and the always-include catalog is the entire fallback —
+# which does NOT include `crates/`. Seed a tempdir profile fixture listing
+# `crates/` and point HARNESS_ROOT at it for the duration of this case.
+_eng95_case12_tdir="$(mktemp -d -t twinning-eng95-case12.XXXXXX)"
+mkdir -p "$_eng95_case12_tdir/learned-rules/$PROJECT_SLUG"
+cat > "$_eng95_case12_tdir/learned-rules/$PROJECT_SLUG/project-profile.md" <<MD
+---
+slug: $PROJECT_SLUG
+schema_version: 1
+---
+
+# Project profile
+
+## File layout
+
+- \`crates/\` — Rust workspace member dirs
+MD
+_eng95_case12_save_hr="${HARNESS_ROOT-}"
+HARNESS_ROOT="$_eng95_case12_tdir"
+export HARNESS_ROOT
 printf ' M crates/twinning-pipeline/src/foo.rs\0' \
   | assert_partition implement_stage_sweeps_rust_source implementing ENG-14 1 0 0
+HARNESS_ROOT="$_eng95_case12_save_hr"
+export HARNESS_ROOT
+rm -rf "$_eng95_case12_tdir"
 
 # 13 (new for ENG-13, updated for ENG-23): retrospective allowlist now covers
 # `.pipeline-config/config.json` (target-repo config) — `.pipeline/learned-rules/`

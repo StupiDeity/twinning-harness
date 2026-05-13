@@ -1960,10 +1960,12 @@ export HARNESS_ROOT PROJECT_SLUG
 unset CONFIG
 _stderr_file="$_tdir/stderr"
 _stdout="$(stage_output_paths implementing 2>"$_stderr_file")"
-_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" | tr -d ' ')"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" 2>/dev/null | tr -d ' ' || true)"
+_stderr_grep_count="${_stderr_grep_count:-0}"
 assert_eq 'eng95_parse_log_fires_on_empty_profile_layout' '1' "$_stderr_grep_count"
 # Always-include still emits on stdout (catalog has 18 entries).
-_stdout_lines="$(printf '%s\n' "$_stdout" | grep -c '.' | tr -d ' ')"
+_stdout_lines="$(printf '%s\n' "$_stdout" | grep -c '.' 2>/dev/null | tr -d ' ' || true)"
+_stdout_lines="${_stdout_lines:-0}"
 case "$_stdout_lines" in
   18) report_ok 'eng95_parse_log_fires_always_include_still_emits' ;;
   *)  report_fail 'eng95_parse_log_fires_always_include_still_emits' \
@@ -1983,7 +1985,8 @@ export HARNESS_ROOT PROJECT_SLUG
 unset CONFIG
 _stderr_file="$_tdir/stderr"
 stage_output_paths implementing >/dev/null 2>"$_stderr_file"
-_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" | tr -d ' ')"
+_stderr_grep_count="$(grep -c 'profile-derived list empty' "$_stderr_file" 2>/dev/null | tr -d ' ' || true)"
+_stderr_grep_count="${_stderr_grep_count:-0}"
 assert_eq 'eng95_parse_log_does_not_fire_on_valid_profile' '0' "$_stderr_grep_count"
 rm -rf "$_tdir"
 _eng95_restore_env

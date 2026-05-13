@@ -109,37 +109,49 @@ mkconfig() {
 # ─── Surface 1: stage_output_paths ──────────────────────────────────────
 printf '\n--- stage_output_paths: profile-driven scope allowlist ---\n'
 
-# (b) Fallback: missing scope key → hardcoded Tauri-shaped list.
-TAURI_EXPECTED='Cargo.lock,Cargo.toml,bun.lock,bun.lockb,crates/,docs/,package-lock.json,package.json,src-tauri/,src/,tests/'
+# ENG-95: the fallback (no operator override AND no profile-derived
+# entries) is now the always-include lockfile catalog from
+# _always_include_paths — not the legacy Tauri-shaped list. Pin
+# HARNESS_ROOT to a tempdir that has NO learned-rules/<slug>/project-
+# profile.md so _parse_profile_file_layout returns empty regardless of
+# the caller's PROJECT_SLUG (the harness repo carries real profiles for
+# `harness` and `twinning`; relying on the test's hard-coded test-slug
+# was fragile under pre-set PROJECT_SLUG inheritance). The override-
+# precedence cases below (ENG-51's preserved contract) are independent
+# of this fallback change.
+ALWAYS_INCLUDE_EXPECTED='Cargo.lock,Cargo.toml,Gemfile,Gemfile.lock,Pipfile,Pipfile.lock,bun.lock,bun.lockb,docs/,go.mod,go.sum,package-lock.json,package.json,pnpm-lock.yaml,poetry.lock,pyproject.toml,uv.lock,yarn.lock'
+_eng95_saved_harness_root="$HARNESS_ROOT"
+HARNESS_ROOT="$_TEST_ROOT"
+export HARNESS_ROOT
 
 cfg="$(mkconfig "$_TEST_ROOT/cfg-empty" '')"
-got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
-eq 'fallback_implement_matches_legacy_tauri_list' "$TAURI_EXPECTED" "$got"
+got="$(CONFIG="$cfg" stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'fallback_implement_matches_always_include_catalog' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
-got="$(CONFIG="$cfg" stage_output_paths ui | LC_ALL=C sort | paste -sd, -)"
-eq 'fallback_ui_matches_legacy_tauri_list' "$TAURI_EXPECTED" "$got"
+got="$(CONFIG="$cfg" stage_output_paths ui 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'fallback_ui_matches_always_include_catalog' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
-got="$(CONFIG="$cfg" stage_output_paths qa | LC_ALL=C sort | paste -sd, -)"
-eq 'fallback_qa_matches_legacy_tauri_list' "$TAURI_EXPECTED" "$got"
+got="$(CONFIG="$cfg" stage_output_paths qa 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'fallback_qa_matches_always_include_catalog' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
-# (b) Fallback: completely missing CONFIG file → hardcoded list.
-got="$(CONFIG="/nonexistent/path/config.json" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
-eq 'fallback_when_config_file_missing' "$TAURI_EXPECTED" "$got"
+# (b) Fallback: completely missing CONFIG file → always-include catalog.
+got="$(CONFIG="/nonexistent/path/config.json" stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'fallback_when_config_file_missing' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
-# (a) Override: scope.allowlist.implementing REPLACES the hardcoded list.
+# (a) Override: scope.allowlist.implementing REPLACES the fallback list.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-impl" '{
   "scope": { "allowlist": { "implementing": ["bin/", "AGENT_PROMPTS.md", "docs/"] } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="$cfg" stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
 eq 'override_implement_replaces_fallback' \
   'AGENT_PROMPTS.md,bin/,docs/' "$got"
 
 # (c) Per-stage isolation: implementing override does NOT leak to ui/qa.
-got="$(CONFIG="$cfg" stage_output_paths ui | LC_ALL=C sort | paste -sd, -)"
-eq 'override_does_not_leak_to_ui' "$TAURI_EXPECTED" "$got"
+got="$(CONFIG="$cfg" stage_output_paths ui 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'override_does_not_leak_to_ui' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
-got="$(CONFIG="$cfg" stage_output_paths qa | LC_ALL=C sort | paste -sd, -)"
-eq 'override_does_not_leak_to_qa' "$TAURI_EXPECTED" "$got"
+got="$(CONFIG="$cfg" stage_output_paths qa 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'override_does_not_leak_to_qa' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
 # Per-stage divergence: each stage carries its own list.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-three" '{
@@ -150,11 +162,11 @@ cfg="$(mkconfig "$_TEST_ROOT/cfg-three" '{
   } }
 }')"
 eq 'override_implement_divergent' 'bin/' \
-  "$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
+  "$(CONFIG="$cfg" stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
 eq 'override_ui_divergent'        'src/,static/' \
-  "$(CONFIG="$cfg" stage_output_paths ui | LC_ALL=C sort | paste -sd, -)"
+  "$(CONFIG="$cfg" stage_output_paths ui 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
 eq 'override_qa_divergent'        'e2e/,tests/' \
-  "$(CONFIG="$cfg" stage_output_paths qa | LC_ALL=C sort | paste -sd, -)"
+  "$(CONFIG="$cfg" stage_output_paths qa 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
 
 # (b) Defensive fallback: empty array means "fall back" — an empty
 # configured allowlist would route every dirty path to self-leak,
@@ -162,21 +174,21 @@ eq 'override_qa_divergent'        'e2e/,tests/' \
 cfg="$(mkconfig "$_TEST_ROOT/cfg-empty-arr" '{
   "scope": { "allowlist": { "implementing": [] } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
-eq 'empty_array_override_falls_back_to_hardcoded' "$TAURI_EXPECTED" "$got"
+got="$(CONFIG="$cfg" stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'empty_array_override_falls_back_to_always_include' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
 # Defensive: non-array value (string instead of list) → fallback.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-bad-type" '{
   "scope": { "allowlist": { "implementing": "bin/" } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
-eq 'non_array_override_falls_back_to_hardcoded' "$TAURI_EXPECTED" "$got"
+got="$(CONFIG="$cfg" stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
+eq 'non_array_override_falls_back_to_always_include' "$ALWAYS_INCLUDE_EXPECTED" "$got"
 
 # Defensive: non-string entries silently dropped.
 cfg="$(mkconfig "$_TEST_ROOT/cfg-mixed" '{
   "scope": { "allowlist": { "implementing": ["bin/", 42, null, "AGENT_PROMPTS.md"] } }
 }')"
-got="$(CONFIG="$cfg" stage_output_paths implementing | LC_ALL=C sort | paste -sd, -)"
+got="$(CONFIG="$cfg" stage_output_paths implementing 2>/dev/null | LC_ALL=C sort | paste -sd, -)"
 eq 'non_string_entries_silently_dropped' 'AGENT_PROMPTS.md,bin/' "$got"
 
 # scope.allowlist must NOT affect brainstorming/planning/retrospective stages.
@@ -201,6 +213,12 @@ eq 'scope_allowlist_does_not_alter_retrospective' \
 # read-mostly stages still emit nothing (review|build|release).
 got="$(CONFIG="$cfg" stage_output_paths review)"
 eq 'review_stage_remains_read_mostly' '' "$got"
+
+# ENG-95: restore HARNESS_ROOT before Surface 2's dispatch.tools cases —
+# they don't read the profile but downstream tests in this file (and any
+# follow-ups) shouldn't see a leaked override.
+HARNESS_ROOT="$_eng95_saved_harness_root"
+export HARNESS_ROOT
 
 # ─── Surface 2: allowed_tools_for ───────────────────────────────────────
 printf '\n--- allowed_tools_for: dispatch.tools.<stage>[] extras ---\n'
