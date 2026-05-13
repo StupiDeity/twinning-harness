@@ -558,6 +558,9 @@ has_scope_approval ENG-HSA2 \
 # ─── Group: ENG-96 profile-driven lockfile inference ──────────────
 printf '\n--- ENG-96: profile-driven _profile_lockfile_basenames ---\n'
 
+# The HSA group above reassigned $SCRIPT_DIR to $HSA_STUB_DIR. Restore
+# the real bin/ dir so the T8/T8b sandboxes can locate scope-check.sh.
+ENG96_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENG96_DIR="$(mktemp -d -t scope-check-eng96-XXXXXX)"
 trap 'rm -rf "$HSA_STUB_DIR" "$ENG96_DIR"' EXIT
 
@@ -688,7 +691,7 @@ PLAN
 )
 t8_rc=0
 (cd "$sandbox_t8" && SCOPE_CHECK_PROFILE_PATH="$profile_t8" \
-  bash "$SCRIPT_DIR/scope-check.sh" ENG-T96 test-branch) >/dev/null 2>&1 || t8_rc=$?
+  bash "$ENG96_SCRIPT_DIR/scope-check.sh" ENG-T96 test-branch) >/dev/null 2>&1 || t8_rc=$?
 [[ "$t8_rc" == "0" ]] \
   && pass_at "T8 end-to-end Python: pyproject.toml in-plan + poetry.lock benign → rc=0" \
   || fail_at "T8 end-to-end Python" "rc=$t8_rc (expected 0)"
@@ -725,7 +728,7 @@ PLAN
 )
 t8b_rc=0
 (cd "$sandbox_t8b" && SCOPE_CHECK_PROFILE_PATH="$profile_t8b" \
-  bash "$SCRIPT_DIR/scope-check.sh" ENG-T96B test-branch) >/dev/null 2>&1 || t8b_rc=$?
+  bash "$ENG96_SCRIPT_DIR/scope-check.sh" ENG-T96B test-branch) >/dev/null 2>&1 || t8b_rc=$?
 [[ "$t8b_rc" == "0" ]] \
   && pass_at "T8b end-to-end Go: go.mod in-plan + go.sum benign → rc=0" \
   || fail_at "T8b end-to-end Go" "rc=$t8b_rc (expected 0)"
