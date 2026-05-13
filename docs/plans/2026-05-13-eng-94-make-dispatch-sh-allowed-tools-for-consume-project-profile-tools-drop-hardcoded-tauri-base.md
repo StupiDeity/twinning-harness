@@ -522,14 +522,31 @@ bin/
                                                         elision).
 
   dispatch-test.sh                           MODIFIED — D-6. Five fixture groups appended
-                                                        after line 2168 (closing fi of ENG-53
-                                                        #8 block) and before line 2170
-                                                        (RESULTS summary): Tauri back-compat,
-                                                        Python, Go, fallback (schema_version 1
-                                                        warn branch), empty-section
-                                                        (schema_version 2 no-warn branch).
-                                                        File grows from ~2173 lines to ~2330
-                                                        lines.
+                                                        AFTER the ENG-87 review-iter-7 M6 block's
+                                                        closing `fi` (the conditional that pins
+                                                        PIPELINE_DISPATCH_ID env propagation) and
+                                                        BEFORE the `# ─── Summary ─────` header
+                                                        that precedes `printf 'RESULTS: ...'`:
+                                                        Tauri back-compat, Python, Go, fallback
+                                                        (schema_version 1 warn branch),
+                                                        empty-section (schema_version 2 no-warn
+                                                        branch). Content-anchored boundary per
+                                                        ENG-94 plan amendment (line numbers
+                                                        drifted post-rebase when ENG-87 M6
+                                                        landed above this region).
+
+  profile-allowlist-test.sh                  MODIFIED — ENG-94 plan amendment, Task 4b. Five
+                                                        assertions that pin Bash(cargo:*) /
+                                                        Bash(bun:*) in the post-D-1 base are
+                                                        inverted: `fallback_base_includes_cargo`,
+                                                        `fallback_base_includes_bun`,
+                                                        `extras_appended_after_base_cargo`,
+                                                        `extras_ordered_after_base`, and
+                                                        `missing_config_file_returns_base_implement`.
+                                                        Anchor each Edit by the assertion-NAME
+                                                        string (content anchor — NOT line
+                                                        numbers, which drift). See Task 4b for
+                                                        per-assertion shape.
 
 CLAUDE.md                                    MODIFIED — D-7. Section heading rewritten at
                                                         line 265 (adds ENG-94 to title).
@@ -895,7 +912,7 @@ quoted in Step 3.1 below matches verbatim either way.)
 ### Task 4: D-6 — five fixture groups in `bin/dispatch-test.sh`
 
 - `depends_on: [3]`
-- `touches: bin/dispatch-test.sh (insert after line 2168, before line 2170)`
+- `touches: bin/dispatch-test.sh (insert AFTER the ENG-87 review-iter-7 M6 block's closing fi, BEFORE the # ─── Summary ─── header — content-anchored per ENG-94 plan amendment)`
 
 This task adds five fixture groups. Each fixture follows the same
 shape (set per-fixture `PROJECT_SLUG` + override `HARNESS_ROOT` to a
@@ -906,12 +923,22 @@ sequential to avoid `HARNESS_ROOT` cross-contamination across tests
 (each fixture's trap cleans its own tempdir).
 
 - [ ] **Step 4.1.** Use the Edit tool to insert the fixture block
-  IMMEDIATELY AFTER line 2168 (the closing `fi` of the ENG-53 #8
-  block per A-012) and BEFORE line 2170 (the `# ─── Summary ─` header
-  per A-017). The `old_string` should be the unambiguous boundary —
-  specifically the `fi` at line 2168 plus the blank line and the
-  `# ─── Summary ─` header at line 2170. The `new_string` adds the
-  fixture block in between.
+  IMMEDIATELY AFTER the closing `fi` of the ENG-87 review-iter-7 M6
+  conditional (the block that grep-pins `PIPELINE_DISPATCH_ID` +
+  `PIPELINE_STAGE` references in `bin/dispatch.sh`'s env-block) and
+  IMMEDIATELY BEFORE the
+  `# ─── Summary ────────────────────────────────────────────────────────`
+  header that precedes `printf '\nRESULTS: %d passed, %d failed\n'`.
+
+  Use CONTENT anchors, not line numbers — line numbers in this region
+  drifted during the ENG-94 plan amendment when ENG-87 review-iter-7 M6
+  landed above the pre-existing insertion point (the original plan said
+  "AFTER line 2168 BEFORE line 2170" and the M6 block now occupies
+  exactly that span). The robust `old_string` is the M6 closing `fi`
+  plus the blank line plus the `# ─── Summary ─` header (all of which
+  are unique within this file). The `new_string` is the same three
+  lines with the fixture block inserted between the closing `fi` and
+  the Summary header.
 
   The fixture block opens with:
   ```bash
@@ -1174,6 +1201,82 @@ sequential to avoid `HARNESS_ROOT` cross-contamination across tests
     and confirm the Summary header is still present and now sits
     AFTER the new ENG-94 block (its line number should be ~2330,
     not 2170).
+
+### Task 4b: Invert cargo/bun base-pinning assertions in `bin/profile-allowlist-test.sh` (ENG-94 plan amendment)
+
+- `depends_on: [2]`
+- `touches: bin/profile-allowlist-test.sh (5 assertions, anchored by assertion-NAME string — NOT line numbers)`
+
+This task closes the test-gate-closure gap that halted the first ENG-94
+implement dispatch (`<!-- meta: metric name=plan_gap -->`, see
+`agent-blocked` verdict comment from 2026-05-13). The pre-amendment plan
+removed `Bash(cargo:*)` / `Bash(bun:*)` from the `bin/dispatch.sh`
+implementing case-arm (D-1 / Task 2), but five assertions in
+`bin/profile-allowlist-test.sh` pin those exact tokens in the base
+allowlist. Post-D-1, all five fail the pre-commit hook
+(`bash bin/profile-allowlist-test.sh → 5 failed`) which blocks the test
+gate (Task 6.4).
+
+The new behavior: post-D-1, the BASE no longer carries cargo/bun (they
+flow in via PROFILE when present). The assertions are inverted to
+assert their absence from the base path.
+
+Anchor each Edit by the assertion-NAME string (e.g.
+`'fallback_base_includes_cargo'`, `'extras_appended_after_base_cargo'`).
+Each name is unique within the file. Do NOT use line numbers — they
+drift if sibling test additions land above this region.
+
+- [ ] **Step 4b.1.** Invert `fallback_base_includes_cargo`. In
+  `bin/profile-allowlist-test.sh`, replace
+  `contains 'fallback_base_includes_cargo' 'Bash(cargo:*)' "$base_implement"`
+  with
+  `notcontains 'fallback_base_lacks_cargo' 'Bash(cargo:*)' "$base_implement"`.
+
+- [ ] **Step 4b.2.** Invert `fallback_base_includes_bun`. Same shape:
+  `contains 'fallback_base_includes_bun' 'Bash(bun:*)' "$base_implement"`
+  → `notcontains 'fallback_base_lacks_bun' 'Bash(bun:*)' "$base_implement"`.
+
+- [ ] **Step 4b.3.** Delete `extras_appended_after_base_cargo`. The
+  pre-amendment assertion checked that cargo (from the base) appeared
+  in the extras-test composed output. Post-D-1, cargo is no longer in
+  the base (it only flows in via PROFILE, which this fixture does not
+  configure). Remove the line:
+  `contains 'extras_appended_after_base_cargo' 'Bash(cargo:*)' "$got"`.
+  No replacement needed — Fixture 1 in `bin/dispatch-test.sh` (Task 4)
+  already covers the post-D-1 profile-fed path.
+
+- [ ] **Step 4b.4.** Rewrite `extras_ordered_after_base`. The
+  pre-amendment `case` statement checked that cargo (from base)
+  appeared BEFORE shellcheck (from extras). Post-D-1 the premise is
+  invalid (no base-cargo). Replace the entire `case`-block with a
+  notcontains assertion verifying cargo does NOT precede shellcheck
+  (i.e. cargo is absent entirely):
+  ```bash
+  notcontains 'extras_no_base_cargo_before_extras' 'Bash(cargo:*)' "$got"
+  ```
+  Verify shellcheck is still present via the existing
+  `extras_present_shellcheck` assertion (preserved, no change needed).
+
+- [ ] **Step 4b.5.** Invert `missing_config_file_returns_base_implement`.
+  Pre-amendment: `contains 'missing_config_file_returns_base_implement' 'Bash(cargo:*)' "$got"`.
+  Post-amendment, rename and invert to assert cargo is NOT in the
+  base path when CONFIG is missing:
+  `notcontains 'missing_config_file_returns_base_implement_no_cargo' 'Bash(cargo:*)' "$got"`.
+  The `no_trailing_comma` sibling assertion immediately after is
+  preserved verbatim — it tests an orthogonal invariant.
+
+- [ ] **Step 4b.6.** Run `bash bin/profile-allowlist-test.sh` and
+  confirm `RESULTS: N passed, 0 failed`. The pass-count will decrease
+  by 1 (Step 4b.3 deleted one assertion; Step 4b.4 collapsed a
+  multi-line `case` into a single notcontains; the other three
+  inversions are 1-for-1).
+
+- [ ] **Step 4b.7.** Commit as
+  `test(ENG-94): invert profile-allowlist-test cargo/bun base assertions post-D-1`
+  on `{branch_name}`. This is a TEST-side commit; pair it with
+  Task 2's source-side commit per the TDD discipline (test must
+  exist before or alongside the impl commit that changes the base
+  allowlist — Task 2 is the impl commit here).
 
 ### Task 5: D-7 — rewrite the `CLAUDE.md` "Per-target dispatch.tools extras" section
 
