@@ -244,6 +244,116 @@ else
 fi
 rm -rf "$sandbox6"
 
+# ─── Case 7: end-to-end — numbered `## N. File Structure` headings parse ────
+# Regression: ENG-96 implement halted with rc=2 because the plan was written
+# with `## 3. File Structure` (the H2 numbering style used by the plan-agent
+# template for its top-level sections). The pre-fix awk pattern required the
+# literal "File Structure" tokens to come immediately after `## `, so any
+# `N. ` between the hashes and the title produced an empty extract → exit 2.
+# Two plans in flight at fix-time used this shape (ENG-24, ENG-96); fixing
+# the parser is cheaper and more durable than re-issuing those plans.
+for heading in "3. File Structure" "12. File Structure" "1. File structure"; do
+  sandbox7="$(mktemp -d -t scope-check-test7-XXXXXX)"
+  (
+    cd "$sandbox7"
+    git init -q
+    git config user.email t@example.com
+    git config user.name 'Test'
+    mkdir -p docs/plans
+    cat > docs/plans/2026-05-13-eng-test-96.md <<PLAN
+---
+linear: ENG-T96
+---
+## ${heading}
+- \`CLAUDE.md\` — additive docs change at repo root.
+PLAN
+    printf 'baseline\n' > CLAUDE.md
+    git add -A
+    git commit -qm "initial"
+    git branch -m main
+    git checkout -qb test-branch
+    printf '+more docs\n' >> CLAUDE.md
+    git commit -aqm "test branch change"
+  )
+  if (cd "$sandbox7" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T96 test-branch) >/dev/null 2>&1; then
+    pass_at "case-7 numbered heading '## $heading' parses and passes scope-check"
+  else
+    rc=$?
+    fail_at "case-7 numbered heading '## $heading'" "rc=$rc (expected 0)"
+  fi
+  rm -rf "$sandbox7"
+done
+
+# ─── Case 8: rc=2 diagnostics distinguish plan-not-found from missing-section
+# Regression: ENG-96 halt body read "scope-check rc=2 (likely plan not found
+# or File Structure unparseable)" — operators could not tell which side
+# failed. Split the stderr text so each branch is independently identifiable.
+sandbox8a="$(mktemp -d -t scope-check-test8a-XXXXXX)"
+(
+  cd "$sandbox8a"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  # No plan with linear: ENG-T96A frontmatter exists — only a sibling plan
+  # with a different ID, which find_canonical_plan must skip.
+  cat > docs/plans/2026-05-13-eng-test-96a-other.md <<'PLAN'
+---
+linear: ENG-OTHER
+---
+## File Structure
+- `CLAUDE.md`
+PLAN
+  printf 'baseline\n' > CLAUDE.md
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf '+x\n' >> CLAUDE.md
+  git commit -aqm "test"
+)
+c8a_stderr="$(cd "$sandbox8a" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T96A test-branch 2>&1 1>/dev/null || true)"
+if grep -q 'scope-check: plan not found for ENG-T96A' <<<"$c8a_stderr"; then
+  pass_at "case-8a plan-not-found diagnostic mentions the missing issue id"
+else
+  fail_at "case-8a plan-not-found diagnostic" "stderr=$(tr '\n' '|' <<<"$c8a_stderr")"
+fi
+rm -rf "$sandbox8a"
+
+sandbox8b="$(mktemp -d -t scope-check-test8b-XXXXXX)"
+(
+  cd "$sandbox8b"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  # Plan exists for the issue but has no File Structure heading at all.
+  cat > docs/plans/2026-05-13-eng-test-96b.md <<'PLAN'
+---
+linear: ENG-T96B
+---
+## Goal
+Do a thing.
+
+## Backend Tasks
+1. Foo.
+PLAN
+  printf 'baseline\n' > CLAUDE.md
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf '+x\n' >> CLAUDE.md
+  git commit -aqm "test"
+)
+c8b_stderr="$(cd "$sandbox8b" && bash "$SCRIPT_DIR/scope-check.sh" ENG-T96B test-branch 2>&1 1>/dev/null || true)"
+if grep -q 'scope-check: plan=.*2026-05-13-eng-test-96b.md: File Structure section missing' <<<"$c8b_stderr"; then
+  pass_at "case-8b missing-section diagnostic mentions the plan path"
+else
+  fail_at "case-8b missing-section diagnostic" "stderr=$(tr '\n' '|' <<<"$c8b_stderr")"
+fi
+rm -rf "$sandbox8b"
+
 # ─── QA-Adv-1 (ENG-59): scope-check still SEVERE-flags an undeclared file
 # even when the diff base is origin/main rather than local main.
 # Pins that the fix does NOT disable scope-check semantics — it only
