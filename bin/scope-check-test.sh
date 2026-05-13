@@ -555,6 +555,182 @@ has_scope_approval ENG-HSA2 \
   && pass_at "HSA2: new-shape halt+approve detected" \
   || fail_at "HSA2" "new-shape halt + new-shape decision approve not detected"
 
+# ─── Group: ENG-96 profile-driven lockfile inference ──────────────
+printf '\n--- ENG-96: profile-driven _profile_lockfile_basenames ---\n'
+
+ENG96_DIR="$(mktemp -d -t scope-check-eng96-XXXXXX)"
+trap 'rm -rf "$HSA_STUB_DIR" "$ENG96_DIR"' EXIT
+
+_eng96_write_profile() {
+  local path="$1" gates="$2"
+  mkdir -p "$(dirname "$path")"
+  cat > "$path" <<EOF
+---
+slug: test
+---
+## Build & test gates
+
+$gates
+
+## File layout
+- bin/
+EOF
+}
+
+_eng96_assert_basenames() {
+  local case_name="$1" profile_path="$2" expected="$3"  # expected: comma-sep
+  local got
+  SCOPE_CHECK_PROFILE_PATH="$profile_path" \
+    got="$(_profile_lockfile_basenames "$profile_path" | LC_ALL=C sort -u | paste -sd, -)"
+  if [[ "$got" == "$expected" ]]; then
+    pass_at "$case_name (expected=$expected got=$got)"
+  else
+    fail_at "$case_name" "expected=$expected got=$got"
+  fi
+}
+
+# T1: Rust profile → Cargo.lock benign (back-compat anchor; security P1d)
+_eng96_write_profile "$ENG96_DIR/T1.md" '- Test: `cargo test --workspace`'
+_eng96_assert_basenames 'T1 Rust(cargo)→Cargo.lock' "$ENG96_DIR/T1.md" 'Cargo.lock'
+
+# T2: Node (npm) → package-lock.json
+_eng96_write_profile "$ENG96_DIR/T2.md" '- Test: `npm test` and `npm run lint`'
+_eng96_assert_basenames 'T2 Node(npm)→package-lock.json' "$ENG96_DIR/T2.md" 'package-lock.json'
+
+# T3: Python (poetry) → poetry.lock
+_eng96_write_profile "$ENG96_DIR/T3.md" '- Build: `poetry build`; Test: `poetry run pytest`'
+_eng96_assert_basenames 'T3 Python(poetry)→poetry.lock' "$ENG96_DIR/T3.md" 'poetry.lock'
+
+# T4: Go → go.sum (pins word-boundary correctness)
+_eng96_write_profile "$ENG96_DIR/T4.md" '- Test: `go test ./...`'
+_eng96_assert_basenames 'T4 Go(go)→go.sum' "$ENG96_DIR/T4.md" 'go.sum'
+
+# T5: Bun → both bun.lock and bun.lockb (multi-lockfile PM)
+_eng96_write_profile "$ENG96_DIR/T5.md" '- Test: `bun test`'
+_eng96_assert_basenames 'T5 Bun(bun)→bun.lock+bun.lockb' "$ENG96_DIR/T5.md" 'bun.lock,bun.lockb'
+
+# T6: Profile missing → empty set
+rm -f "$ENG96_DIR/T6-missing.md"  # ensure absent
+_eng96_assert_basenames 'T6 missing profile→empty' "$ENG96_DIR/T6-missing.md" ''
+
+# T7: Profile present, no PM tokens (harness-self shape) → empty
+_eng96_write_profile "$ENG96_DIR/T7.md" '- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh`'
+_eng96_assert_basenames 'T7 bash-only profile→empty' "$ENG96_DIR/T7.md" ''
+
+# T9: Word-boundary regression — "tango" and "ego" must NOT match cargo/go
+_eng96_write_profile "$ENG96_DIR/T9.md" '- Build: `tango build`; Test: my-ego-tool'
+_eng96_assert_basenames 'T9 word-boundary tango/ego→empty' "$ENG96_DIR/T9.md" ''
+
+# T10: awk parser robustness — duplicate `## Build & test gates` header
+# exits at the first one (awk loops until next `## `, prints first body).
+# Asserts no crash + correct PM token detection on first section.
+cat > "$ENG96_DIR/T10.md" <<'EOF'
+---
+slug: test
+---
+## Build & test gates
+
+- Test: `cargo test`
+
+## Other heading
+
+## Build & test gates
+
+- Test: `poetry run pytest`
+
+## File layout
+- bin/
+EOF
+_eng96_assert_basenames 'T10 duplicate header→first section wins (cargo)' "$ENG96_DIR/T10.md" 'Cargo.lock'
+
+# T11: CRLF line endings — awk's default record separator handles \n,
+# so \r\n leaves trailing \r on captured tokens. Asserts behavior is
+# benign (no crash; either matches with \r-stripped or fails to match
+# cleanly — both acceptable). The contract: helper does NOT crash.
+printf -- '---\nslug: test\n---\n## Build & test gates\n\n- Test: `cargo test`\n\n## File layout\n- bin/\n' \
+  | tr '\n' '~' | sed 's/~/\r\n/g' | tr -d '~' > "$ENG96_DIR/T11.md" || true
+# We don't assert a specific basename — we assert no crash.
+if _profile_lockfile_basenames "$ENG96_DIR/T11.md" >/dev/null 2>&1; then
+  pass_at "T11 CRLF endings → no crash"
+else
+  fail_at "T11 CRLF endings" "_profile_lockfile_basenames crashed on CRLF input"
+fi
+
+# ─── T8: end-to-end Python (poetry) — plan declares pyproject.toml,
+# branch modifies pyproject.toml + poetry.lock, scope-check exits 0.
+# Pins the full path through main() including the SCOPE_BENIGN_LOCKFILES
+# population (D-005 happy path).
+sandbox_t8="$(mktemp -d -t scope-check-t8-XXXXXX)"
+profile_t8="$ENG96_DIR/T8-profile.md"
+_eng96_write_profile "$profile_t8" '- Build: `poetry build`; Test: `poetry run pytest`'
+(
+  cd "$sandbox_t8"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-13-eng-test-96.md <<'PLAN'
+---
+linear: ENG-T96
+---
+## File Structure
+- `pyproject.toml` — bump a dep version.
+PLAN
+  printf '[tool.poetry]\nname = "x"\n' > pyproject.toml
+  printf 'baseline\n' > poetry.lock
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf '[tool.poetry]\nname = "x-updated"\n' > pyproject.toml
+  printf 'baseline + churn\n' > poetry.lock
+  git commit -aqm "agent change"
+)
+t8_rc=0
+(cd "$sandbox_t8" && SCOPE_CHECK_PROFILE_PATH="$profile_t8" \
+  bash "$SCRIPT_DIR/scope-check.sh" ENG-T96 test-branch) >/dev/null 2>&1 || t8_rc=$?
+[[ "$t8_rc" == "0" ]] \
+  && pass_at "T8 end-to-end Python: pyproject.toml in-plan + poetry.lock benign → rc=0" \
+  || fail_at "T8 end-to-end Python" "rc=$t8_rc (expected 0)"
+rm -rf "$sandbox_t8"
+
+# ─── T8b: end-to-end Go (product persona insurance) — pins go.sum
+# word-boundary behavior end-to-end through main(). Identical shape
+# to T8 but with the Go token + go.sum lockfile.
+sandbox_t8b="$(mktemp -d -t scope-check-t8b-XXXXXX)"
+profile_t8b="$ENG96_DIR/T8b-profile.md"
+_eng96_write_profile "$profile_t8b" '- Test: `go test ./...`'
+(
+  cd "$sandbox_t8b"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-13-eng-test-96b.md <<'PLAN'
+---
+linear: ENG-T96B
+---
+## File Structure
+- `go.mod` — bump a module version.
+PLAN
+  printf 'module x\n' > go.mod
+  printf 'baseline\n' > go.sum
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf 'module x-updated\n' > go.mod
+  printf 'baseline + churn\n' > go.sum
+  git commit -aqm "agent change"
+)
+t8b_rc=0
+(cd "$sandbox_t8b" && SCOPE_CHECK_PROFILE_PATH="$profile_t8b" \
+  bash "$SCRIPT_DIR/scope-check.sh" ENG-T96B test-branch) >/dev/null 2>&1 || t8b_rc=$?
+[[ "$t8b_rc" == "0" ]] \
+  && pass_at "T8b end-to-end Go: go.mod in-plan + go.sum benign → rc=0" \
+  || fail_at "T8b end-to-end Go" "rc=$t8b_rc (expected 0)"
+rm -rf "$sandbox_t8b"
+
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
