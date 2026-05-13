@@ -153,6 +153,61 @@ for forbidden_token in 'Tauri' 'tauri::' 'tauri.conf.json' 'src-tauri/' 'cargo t
   fi
 done
 
+# ─── ENG-97 QA-adversarial: case-insensitive 'tauri' substring scan ───────
+# The Task 8.2 negative-grep is case-sensitive (`grep -F`). A future revert
+# could write `TAURI`, `tauri-app`, or `Pre-Tauri-era` and evade the pinned
+# tokens. This case-insensitive scan tightens the intent: the proper noun
+# 'Tauri' in any casing is banned from AGENT_PROMPTS.md.
+if grep -qiF -- 'tauri' "$PROMPTS"; then
+  nope "ENG-97 QA: AGENT_PROMPTS.md case-insensitive 'tauri' marker absent" \
+    "case-insensitive scan matched — a Tauri substring (any case) reappeared in the prompt"
+else
+  ok "ENG-97 QA: AGENT_PROMPTS.md case-insensitive 'tauri' marker absent"
+fi
+
+# ─── ENG-97 QA-adversarial: §2 body is non-empty (header-rename guard) ────
+# Every §2-scoped assertion above operates on $s2 from `section_body`.
+# If `## 2. Plan Agent` is renamed (e.g. to `## 2. Planning Agent`),
+# section_body returns the empty string and every negative-grep on $s2
+# trivially passes. This guard defends those assertions against silent
+# header drift.
+if [[ -n "$s2" ]]; then
+  ok "ENG-97 QA: §2 (Plan Agent) section body is non-empty (header-rename guard)"
+else
+  nope "ENG-97 QA: §2 (Plan Agent) section body is non-empty (header-rename guard)" \
+    "§2 body extracted as empty — has the '## 2. Plan Agent' heading been renamed? Every §2-scoped negative-grep is now trivially passing."
+fi
+
+# ─── ENG-97 QA-adversarial: §2 has exactly 2 indented api-contract fences ─
+# The existing §2 column-0 fence-count pin (further below) covers the
+# OUTER per-stage fence pair. If a future edit deletes the indented
+# (column-4) api-contract fence — at AGENT_PROMPTS.md:460,494 — so the
+# example bodies float as plain prose, the column-0 count stays at 2 and
+# the existing test still passes, but downstream agents lose the fenced
+# extraction target. Pin the indented fence count separately.
+indented_fence_count_s2="$(printf '%s\n' "$s2" | grep -cE '^[[:space:]]+```' || true)"
+if [[ "$indented_fence_count_s2" == "2" ]]; then
+  ok "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)"
+else
+  nope "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)" \
+    "got $indented_fence_count_s2 indented fences in §2 — the api-contract block bounds drifted; plan agents lose the fenced extraction target"
+fi
+
+# ─── ENG-97 QA-adversarial: §2 carries both Example heading markers ───────
+# The positive pins above check one body-marker per example (`service
+# FooService` for gRPC, `@app.route` for Flask). A silent collapse — drop
+# Example 1, rename Example 2's body under the Example 1 header — could
+# leave one body marker missing AND remove an Example heading without
+# tripping body-marker assertions. Pin the heading markers as a
+# structural complement.
+if printf '%s\n' "$s2" | grep -qE '^[[:space:]]*# === Example 1 —' \
+   && printf '%s\n' "$s2" | grep -qE '^[[:space:]]*# === Example 2 —'; then
+  ok "ENG-97 QA: §2 api-contract carries both '# === Example 1 —' AND '# === Example 2 —' headers"
+else
+  nope "ENG-97 QA: §2 api-contract carries both '# === Example 1 —' AND '# === Example 2 —' headers" \
+    "one or both example headers missing — has an example been silently collapsed?"
+fi
+
 # ─── ENG-52: §7 release.yml check is profile-conditional ────────────────
 if printf '%s\n' "$s7" | grep -qF 'gh run list --branch main --workflow' \
    && printf '%s\n' "$s7" | grep -qiF 'if the project profile names a release CI workflow'; then
