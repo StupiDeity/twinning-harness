@@ -19,20 +19,24 @@ ok()   { printf 'OK: %s\n' "$1"; PASS=$((PASS+1)); }
 nope() { printf 'FAIL: %s\n  reason: %s\n' "$1" "$2" >&2; FAIL=$((FAIL+1)); }
 
 main() {
-  # AC1 invariant: bun -e MUST NOT appear in dry-run.sh.
-  if grep -qE 'bun[[:space:]]+-e' "$DRY_RUN_PATH"; then
+  # AC1 invariant: bun -e MUST NOT appear in dry-run.sh as an executed call.
+  # Pattern anchors to non-comment lines so a future "we replaced bun -e"
+  # comment cannot false-positive (review #4).
+  if grep -qE '^[[:space:]]*[^#[:space:]].*bun[[:space:]]+-e' "$DRY_RUN_PATH"; then
     nope 'no-bun-e' \
       "bin/dry-run.sh contains 'bun -e' — D-1 (ENG-98) requires the Bun-coupled YAML check to be replaced by a pure-bash structural check"
   else
     ok 'no-bun-e'
   fi
 
-  # AC4 invariant: the replacement check's renamed label is present.
-  if grep -qF 'GH Actions workflow structure' "$DRY_RUN_PATH"; then
+  # AC4 invariant: the replacement check's renamed label appears in an
+  # actual `check "GH Actions workflow structure: …"` invocation, not in a
+  # comment or stale documentation (review #3 — vacuous-anchor fix).
+  if grep -qE '^check[[:space:]]+"GH Actions workflow structure:' "$DRY_RUN_PATH"; then
     ok 'structural-check-present'
   else
     nope 'structural-check-present' \
-      "bin/dry-run.sh missing literal 'GH Actions workflow structure' — D-1 (ENG-98) replacement check label not present"
+      "bin/dry-run.sh missing 'check \"GH Actions workflow structure: …\"' invocation — D-1 (ENG-98) replacement check label not present"
   fi
 
   printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
