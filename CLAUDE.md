@@ -346,6 +346,28 @@ tokens degrade gracefully to "path-classes-only benign" with a `log`
 warning, **strictly more restrictive** than today's hardcoded Cargo
 carve-out on non-Rust stacks.
 
+**Sanctioned agent scratch dir (`.scratch/`).** Agents (especially
+reviewer and QA) sometimes need to drop verification fixtures or ad-hoc
+test scripts. Without a sanctioned namespace these trip the tick-end
+sweep as self-leaks, because `reviewing | building | released` have no
+allowlist by design (read-mostly) and `implementing | ui | qa` only
+allow profile-derived paths plus the lockfile catalog. The `.scratch/`
+prefix is the carve-out:
+
+- `partition_dirty_paths` (`bin/run-local-helpers.sh`) treats `.scratch/*`
+  as invisible — neither in-scope nor leaked nor observed. The sweep
+  never commits, never halts on it.
+- `is_benign` (`bin/scope-check.sh`) mirrors this for the agent-side
+  scope-check that runs inside the implementing stage's flow.
+- `.scratch/` is in the repo's `.gitignore`, so even if an agent `git add`s
+  the directory it never reaches a commit.
+
+The trailing slash is load-bearing in both case globs (`.scratch/*`), so
+a top-level file literally named `.scratchpad` is NOT carved out — only
+paths under the directory. Reviewers/QA writing scratch elsewhere
+(repo-root `tmp-*.md`, etc.) still self-leak; the convention is that
+all throwaway work lives under `.scratch/`.
+
 ## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-53 #8, ENG-94)
 
 `dispatch.sh::allowed_tools_for` ships a stack-neutral base allowlist for each stage. Per-target

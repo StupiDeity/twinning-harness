@@ -1000,6 +1000,30 @@ else
 fi
 rm -rf "$sandbox_qa11"
 
+# ─── Group: is_benign — .scratch/ sanctioned agent scratch namespace ───
+# scope-check.sh has already been sourced above (HSA fixtures), so
+# is_benign is in scope. The function references $allowed_files /
+# $allowed_dirs only in the crate-tests branch — the .scratch/ case
+# returns before reaching that branch, so leaving them empty is fine.
+printf '\n--- is_benign accepts .scratch/ as sanctioned scratch ---\n'
+
+allowed_files="" allowed_dirs=""
+is_benign ".scratch/bte_paren.md" \
+  && pass_at "scratch: top-level file in .scratch/ is benign" \
+  || fail_at "scratch top-level" ".scratch/bte_paren.md not classified benign"
+
+is_benign ".scratch/fixtures/nested/deep.md" \
+  && pass_at "scratch: nested path under .scratch/ is benign" \
+  || fail_at "scratch nested" ".scratch/fixtures/nested/deep.md not classified benign"
+
+# Path-boundary: a top-level file NAMED .scratchpad must NOT match.
+# The case glob is `.scratch/*` — the trailing slash is load-bearing.
+if is_benign ".scratchpad"; then
+  fail_at "scratch boundary" ".scratchpad incorrectly classified benign (no trailing slash)"
+else
+  pass_at "scratch: path-boundary — .scratchpad is NOT benign"
+fi
+
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

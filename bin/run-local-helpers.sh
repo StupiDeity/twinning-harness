@@ -395,6 +395,13 @@ partition_dirty_paths() {
       skip_next=1
     fi
 
+    # Sanctioned agent scratch dir — invisible to sweep classification.
+    # Gitignored so contents can never reach a commit; the reviewer/QA
+    # agents can use it to drop verification fixtures without tripping
+    # the self-leak halt (which would otherwise fire because reviewing/
+    # building/released stages have no allowlist by design).
+    case "$path" in .scratch/*) continue ;; esac
+
     local matched_dir=0 matched_exact=0 entry
     if (( ${#allowlist[@]} > 0 )); then
       for entry in "${allowlist[@]}"; do

@@ -277,4 +277,22 @@ printf '?? crates/foo.rs\0' \
 HARNESS_ROOT="$_saved_hr"; CONFIG="$_saved_cfg"; export HARNESS_ROOT CONFIG
 rm -rf "$_t"
 
+# 25: scratch-dir is invisible to sweep — neither in-scope nor leaked.
+# .scratch/ is the sanctioned agent scratch namespace (gitignored).
+# Reviewer/QA may drop verification fixtures there without tripping
+# the self-leak halt, which would otherwise fire for any new file on
+# reviewing/building/released (no allowlist by design).
+printf '?? .scratch/bte_paren.md\0' \
+  | assert_partition scratch_dir_invisible_reviewing reviewing ENG-14 0 0 0
+printf '?? .scratch/run_checks.sh\0' \
+  | assert_partition scratch_script_invisible_qa qa ENG-14 0 0 0
+printf '?? .scratch/fixtures/nested.md\0' \
+  | assert_partition scratch_nested_invisible_implementing implementing ENG-14 0 0 0
+
+# 26: path-boundary — a file NAMED .scratchpad (no slash) must NOT
+# match the .scratch/ prefix. The case glob is `.scratch/*` so the
+# trailing slash is load-bearing.
+printf '?? .scratchpad\0' \
+  | assert_partition scratch_path_boundary_not_matched implementing ENG-14 0 0 1
+
 printf 'All sweep-test cases passed.\n'
