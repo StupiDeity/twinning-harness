@@ -1129,6 +1129,12 @@ else
   nope "§6 ENG-82: cites detection command 'git diff main..HEAD --name-only'" \
        "without the exact command, agents may invent different signals"
 fi
+if printf '%s\n' "$s6" | grep -qF 'Back-fill verified · 0 new code paths'; then
+  ok "§6 ENG-82: pins canonical status line 'Back-fill verified · 0 new code paths · …'"
+else
+  nope "§6 ENG-82: pins canonical status line 'Back-fill verified · 0 new code paths · …'" \
+       "non-canonical status lines break grep-based operator audit on completion/qa/ENG-N comments"
+fi
 unset s6
 
 # ─── ENG-87 review-iter-7 C2: dispatch-id contract delivered to agents ──
