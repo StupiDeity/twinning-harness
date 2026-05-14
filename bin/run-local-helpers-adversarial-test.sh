@@ -2755,11 +2755,13 @@ test_self_leak_callsite_wired() {
     return
   fi
   # Anchor 1: self_leak_paths array is declared empty alongside hashes.
-  if grep -qE '^[[:space:]]*self_leak_paths=\(\)' "$rl"; then
+  # ENG-81: also accept the function-local form `local -a self_leak_paths=()`
+  # introduced when the body moved into _run_worker() (Task 5 refactor).
+  if grep -qE '^[[:space:]]*(local[[:space:]]+-a[[:space:]]+)?self_leak_paths=\(\)' "$rl"; then
     report_ok 'wire-up #1: self_leak_paths=() declaration present in run-local.sh'
   else
     report_fail 'wire-up #1: self_leak_paths declaration' \
-      'self_leak_paths=() at column-aligned indentation' 'not found'
+      'self_leak_paths=() (with optional `local -a` prefix) at column-aligned indentation' 'not found'
   fi
   # Anchor 2: self_leak_paths is appended-to in the observed-vs-self-leak
   # loop (the load-bearing line that, if dropped, makes self_leak_paths

@@ -316,4 +316,32 @@ printf '?? .scratch/bte.md\0' \
 printf '?? .scratchpad\0' \
   | assert_partition scratch_path_boundary_not_matched implementing ENG-14 0 0 1
 
+# AC-K2-PARALLEL-WORKERS (ENG-81 Task 5): end-to-end K=2 fanout coverage.
+#
+# This file is currently a focused unit test of partition_dirty_paths.
+# The plan (docs/plans/2026-05-14-eng-81-*.md §5 Task 5) explicitly
+# DEFERS the run-local.sh end-to-end K=2 fixture to the QA agent:
+#
+#   "Concrete fixture wiring — Linear stub responses, branch-name
+#    stubs, dispatch.sh PIPELINE_DRY_RUN short-circuits — follows the
+#    existing pattern in this file; QA agent fills in details against
+#    the same stub primitives the rest of the file uses."
+#
+# Surface expected by the plan's Failure Mode → Test Map:
+#   CLAUDE_MAX_CONCURRENT=2 with two distinct ENG-N issues both
+#   produce $PROJECT_STATE_DIR/logs/local-YYYY-MM-DD-ENG-N.log files
+#   and independent .consecutive-failures rows on the same tick.
+#
+# The underlying primitives the K=2 path relies on are already covered
+# at unit-level by:
+#   - bin/run-local-helpers-adversarial-test.sh::AC-INFLIGHT-LOCK
+#       (per-issue .in-flight.lock contention)
+#   - bin/run-local-helpers-adversarial-test.sh::AC-METRICS-CONCURRENT-WRITE
+#       (parallel events.jsonl writers; POSIX O_APPEND atomicity)
+#   - bin/run-local-helpers-adversarial-test.sh::AC-WORKER-ISOLATION
+#       (worker-A halt does not contaminate worker-B's per-issue counter)
+#   - bin/mutex-test.sh::AC-N2-FREE-SLOT-2, AC-N2-CONTEND
+#       (cap=2 slot accounting under contention)
+# QA owns wiring the end-to-end fanout against these primitives.
+
 printf 'All sweep-test cases passed.\n'

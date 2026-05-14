@@ -42,15 +42,19 @@ reset_sem() {
 # Slow-down dispatch.sh so the second invocation actually contends. We do
 # this by pre-acquiring slot-1 from this test process for 3s before
 # launching the dispatch under-test.
+#
+# CLAUDE_MAX_CONCURRENT=1 forces cap=1 so the pre-held slot-1 is the only
+# slot dispatch.sh can target — without this, Task 7's default cap=2 would
+# let dispatch take slot-2 immediately and the wait would never happen.
 reset_sem
 mkdir "$SEM_DIR/slot-1"
 (
   sleep 3
-  rmdir "$SEM_DIR/slot-1"
+  rmdir "$SEM_DIR/slot-1" 2>/dev/null || true
 ) &
 
 start="$(date +%s)"
-out="$(bash "$HARNESS_DIR/dispatch.sh" brainstorm "$PROMPT" 2>&1)"
+out="$(CLAUDE_MAX_CONCURRENT=1 bash "$HARNESS_DIR/dispatch.sh" brainstorming "$PROMPT" 2>&1)" || true
 elapsed=$(( $(date +%s) - start ))
 
 grep -q 'claude-mutex.*waiting' <<<"$out" \
@@ -63,7 +67,7 @@ reset_sem
 mkdir "$SEM_DIR/slot-1"
 start="$(date +%s)"
 CLAUDE_MAX_CONCURRENT=2 \
-  bash "$HARNESS_DIR/dispatch.sh" brainstorm "$PROMPT" >/dev/null 2>&1
+  bash "$HARNESS_DIR/dispatch.sh" brainstorming "$PROMPT" >/dev/null 2>&1
 elapsed=$(( $(date +%s) - start ))
 (( elapsed < 2 )) || {
   echo "FAIL AC-N2-FREE-SLOT-2: cap=2 with only slot-1 held should not wait (elapsed=$elapsed)";
@@ -76,10 +80,10 @@ echo "OK AC-N2-FREE-SLOT-2 (slot-2 acquired immediately, elapsed=${elapsed}s)"
 reset_sem
 mkdir "$SEM_DIR/slot-1"
 mkdir "$SEM_DIR/slot-2"
-( sleep 3; rmdir "$SEM_DIR/slot-1" ) &
+( sleep 3; rmdir "$SEM_DIR/slot-1" 2>/dev/null || true ) &
 start="$(date +%s)"
 CLAUDE_MAX_CONCURRENT=2 \
-  bash "$HARNESS_DIR/dispatch.sh" brainstorm "$PROMPT" >/dev/null 2>&1
+  bash "$HARNESS_DIR/dispatch.sh" brainstorming "$PROMPT" >/dev/null 2>&1
 elapsed=$(( $(date +%s) - start ))
 (( elapsed >= 3 )) || {
   echo "FAIL AC-N2-CONTEND: cap=2 with both slots held should wait (elapsed=$elapsed)";
