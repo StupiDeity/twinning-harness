@@ -550,8 +550,15 @@ main() {
   # package only ships gtimeout). Discovery is best-effort; absence
   # degrades to "no metric emit" and is non-fatal so hosts that haven't
   # installed gnu-time keep dispatching.
+  #
+  # _PIPELINE_FORCE_NO_GTIME=1 (test-only) skips discovery so the
+  # degraded-mode test (G8.B) is deterministic on hosts that DO have
+  # gnu-time installed — PATH-strip alone is fragile when the test PATH
+  # has to keep /opt/homebrew for jq/awk reachability.
   local _gtime_bin="" _gtime_out=""
-  if command -v gtime >/dev/null 2>&1; then
+  if [[ "${_PIPELINE_FORCE_NO_GTIME:-0}" == "1" ]]; then
+    log "[dispatch-resource-sample] gtime discovery forced off (_PIPELINE_FORCE_NO_GTIME=1)"
+  elif command -v gtime >/dev/null 2>&1; then
     _gtime_bin="$(command -v gtime)"
     _gtime_out="$(mktemp -t pipeline-gtime-XXXXXX)"
   else
@@ -649,13 +656,23 @@ main() {
   # mutex-test / dry-run-self-check) don't have an issue dir to attribute
   # the sample to, so they skip.
   if [[ -n "$_gtime_out" && -s "$_gtime_out" && -n "${PIPELINE_ISSUE_ID:-}" ]]; then
-    local _wall_s _rss_kb _cpu_pct
-    _wall_s="$(awk -F': ' '/Elapsed \(wall clock\) time/ {print $2}' "$_gtime_out" | head -1)"
+    local _wall_raw _wall_seconds _rss_kb _cpu_pct
+    _wall_raw="$(awk -F': ' '/Elapsed \(wall clock\) time/ {print $2}' "$_gtime_out" | head -1)"
+    # gtime emits wall in `h:mm:ss`, `m:ss.ff`, or `ss.ff`. Normalise
+    # to total seconds so downstream consumers (status.sh, retro)
+    # can `tonumber` the field — matches the brainstorm contract
+    # name `wall_seconds`. ENG-81 review.minor.
+    _wall_seconds="$(awk -F: -v v="$_wall_raw" 'BEGIN {
+      n = split(v, p, /:/)
+      if (n == 3)      printf "%.2f\n", p[1]*3600 + p[2]*60 + p[3]
+      else if (n == 2) printf "%.2f\n", p[1]*60 + p[2]
+      else if (n == 1) printf "%.2f\n", p[1]+0
+    }')"
     _rss_kb="$(awk -F': ' '/Maximum resident set size/ {print $2}' "$_gtime_out" | head -1)"
     _cpu_pct="$(awk -F': ' '/Percent of CPU this job got/ {print $2}' "$_gtime_out" | tr -d '%' | head -1)"
     bash "$SCRIPT_DIR/metrics.sh" dispatch-resource-sample \
       "$PIPELINE_ISSUE_ID" "$stage" measured 0 \
-      "wall=${_wall_s:-?} rss_kb=${_rss_kb:-?} cpu_pct=${_cpu_pct:-?}" \
+      "wall_seconds=${_wall_seconds:-?} max_rss_kb=${_rss_kb:-?} cpu_pct=${_cpu_pct:-?}" \
       || log "[dispatch-resource-sample] metric emit failed (non-blocking)"
   fi
   [[ -n "$_gtime_out" ]] && rm -f "$_gtime_out"
