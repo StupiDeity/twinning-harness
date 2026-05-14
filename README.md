@@ -364,7 +364,7 @@ $HARNESS_CONFIG_DIR/                 ($XDG_CONFIG_HOME/twinning-harness)
   └─ <gh-app>.pem                    (GitHub App private key)
 
 $HARNESS_STATE_DIR/                  ($XDG_STATE_HOME/twinning-harness)
-  ├─ .claude-mutex.lock/             (global single-flight around dispatch)
+  ├─ .claude-semaphore/              (global counting semaphore — slot-<N>/pid each; cap from orchestrator.max_concurrent_features, default 2; ENG-81)
   └─ <slug>/                         (= $PROJECT_STATE_DIR — per-project)
       ├─ .consecutive-failures       (global breaker counter)
       ├─ .run-local.lock/            (per-tick lock)

@@ -13,9 +13,10 @@ The harness ships two `launchd` agents:
 | **Orchestrator** | Every 5 min (`StartInterval=300`) | `bin/run-local.sh` | Linear (status, labels, comments), GitHub (PRs, checks), `$PROJECT_STATE_DIR` | Linear (markers, labels), GitHub (commits, PRs), `$PROJECT_STATE_DIR/{logs,metrics,ENG-N/...}` |
 | **Retrospective** | Mondays 09:00 (`StartCalendarInterval`) | `bin/run-retrospective-local.sh` | `$PROJECT_STATE_DIR/metrics/events.jsonl`, per-stage transcripts, `learned-rules/*.md` | A PR proposing edits to `learned-rules/*.md` |
 
-They share nothing except the global Claude mutex
-(`$HARNESS_STATE_DIR/.claude-mutex.lock/`), which serializes their
-`claude -p` invocations system-wide.
+They share nothing except the global Claude counting semaphore
+(`$HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/`), which caps
+concurrent `claude -p` invocations at `orchestrator.max_concurrent_features`
+(default 2 since ENG-81; was a binary mutex in `.claude-mutex.lock/` pre-ENG-81).
 
 The retrospective is a **peer**, not a footnote. It's how the harness
 learns from its own runs: every week, an agent reads the metric stream
@@ -338,21 +339,27 @@ poller reads it on every tick and includes/excludes the issue based on
 `bin/**`, `config.json`, `AGENT_PROMPTS.md`) and branch-head SHA.
 Schema in [`operations.md#issue-statejson-schema`](operations.md#issue-statejson-schema).
 
-## Cross-cutting: the Claude mutex
+## Cross-cutting: the Claude counting semaphore
 
-A directory-based mutex at `$HARNESS_STATE_DIR/.claude-mutex.lock/`
-serializes every `claude -p` invocation, system-wide:
+A directory-based counting semaphore at
+`$HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/` caps concurrent
+`claude -p` invocations, system-wide. Cap defaults to 2 (per
+`orchestrator.max_concurrent_features`); operators override via env
+`CLAUDE_MAX_CONCURRENT` or per-project config (precedence: env >
+config > 2). Pre-ENG-81 this was a binary mutex at `.claude-mutex.lock/`
+(cap=1).
 
+The cap applies:
+
+- Across **projects** — two projects' ticks may now run `claude -p`
+  simultaneously up to cap dispatches in flight.
+- Across the orchestrator and the retrospective.
 - Across stages of the same issue (impossible in practice — one tick
-  runs one stage)
-- Across issues of the same project (the per-tick lock makes this
-  impossible too)
-- Across **projects** (this is the load-bearing case — two projects'
-  ticks won't fire `claude -p` simultaneously)
-- Across the orchestrator and the retrospective
+  runs one stage per worker; ENG-81's per-issue `.in-flight.lock`
+  prevents same-issue double-dispatch).
 
 Holds for `CLAUDE_MUTEX_TIMEOUT` seconds (default 600) before dying.
-PID is recorded in `$HARNESS_STATE_DIR/.claude-mutex.lock/pid` for
+Each acquired slot dir carries a `pid` file with the dispatch PID for
 debugging.
 
 ## Retrospective lifecycle
@@ -390,9 +397,11 @@ Shared resources (cross-project):
 
 | Resource | Location |
 |---|---|
-| Claude mutex | `$HARNESS_STATE_DIR/.claude-mutex.lock/` |
+| Claude counting semaphore | `$HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/` (default cap 2; ENG-81) |
 | Secrets | `$HARNESS_CONFIG_DIR/secrets.env` |
 | GitHub App private key | `$HARNESS_CONFIG_DIR/github-app.pem` |
 
 There is no cross-project orchestration logic — each project's
-launchd tick is independent. They contend only on the Claude mutex.
+launchd tick is independent. They contend only on the Claude
+counting semaphore (max `orchestrator.max_concurrent_features` slots
+in flight system-wide).

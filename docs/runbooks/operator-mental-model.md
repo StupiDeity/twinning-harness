@@ -300,20 +300,23 @@ Then update `config.json::project.slug`. Or just don't change the slug.
 
 ## §7 — Cross-project
 
-**Global claude mutex serializes ALL projects.**
-`~/.local/state/twinning-harness/.claude-mutex.lock` is held during every
-`claude -p` dispatch across every project. So if you have 2 projects each
-with 2 slots (4 logical slots), only **1** `claude -p` is running at a
-time. Tick latency adds up across projects.
+**Global claude counting semaphore caps system-wide concurrent dispatches.**
+`~/.local/state/twinning-harness/.claude-semaphore/slot-<N>/` slot dirs
+are held during each `claude -p` dispatch (one slot per in-flight
+dispatch). The cap defaults to 2 (`orchestrator.max_concurrent_features`,
+since ENG-81; was a binary mutex pre-ENG-81). With 2 projects each at
+2 slots, you can have up to 2 concurrent `claude -p` invocations
+system-wide — additional ticks contend for a slot until one frees.
 
-Spot it: `ls ~/.local/state/twinning-harness/.claude-mutex.lock` — if the
-directory exists, a dispatch is in flight (somewhere). If it persists
-without a corresponding `claude -p` process, the mutex is stale.
+Spot it: `ls ~/.local/state/twinning-harness/.claude-semaphore/slot-*/pid`
+— each present `pid` file is one in-flight dispatch. Empty listing
+means no live dispatches. If a slot persists without a corresponding
+`claude -p` process, the slot is stale.
 
-Fix:
+Fix the stale slot:
 
 ```bash
-rmdir ~/.local/state/twinning-harness/.claude-mutex.lock
+rmdir ~/.local/state/twinning-harness/.claude-semaphore/slot-1
 ```
 
 Only remove if you've confirmed no `claude -p` is actually running:
@@ -321,6 +324,10 @@ Only remove if you've confirmed no `claude -p` is actually running:
 ```bash
 ps -ef | grep -E 'claude -p|gtimeout' | grep -v grep
 ```
+
+To inspect concurrency / resource baseline operationally, prefer
+`bash bin/status.sh` over the raw `ls` form — it aggregates the live
+slot count and the recent `dispatch-resource-sample` baseline.
 
 ## When in doubt
 

@@ -258,7 +258,7 @@ A single harness checkout drives N target repos. Per-project state at:
 
 ```
 ${XDG_STATE_HOME:-~/.local/state}/twinning-harness/
-├── .claude-mutex.lock/        # global, shared across projects
+├── .claude-semaphore/         # global counting semaphore — slot-<N>/pid each (cap from orchestrator.max_concurrent_features, default 2; ENG-81)
 └── <slug-A>/                  # project A's state
     ├── .consecutive-failures
     ├── logs/
@@ -271,10 +271,11 @@ Each project gets its own pair of `launchd` jobs:
 - `com.twinning.pipeline.<slug>` (every 5 min)
 - `com.twinning.retrospective.<slug>` (Mondays 09:00)
 
-Cross-project ticks DO serialize via the shared
-`.claude-mutex.lock/` — at most one `claude -p` invocation system-wide
-at a time. The retrospective scheduling is per-project, but the
-dispatch mutex covers it too.
+Cross-project ticks share the `.claude-semaphore/slot-<N>/`
+counting semaphore — up to `orchestrator.max_concurrent_features`
+(default 2) `claude -p` invocations may run system-wide at a time.
+The retrospective scheduling is per-project, but the semaphore
+covers it too.
 
 Shared secrets live once at `$HARNESS_CONFIG_DIR/secrets.env`:
 - `LINEAR_API_KEY` (one personal key works across all your Linear projects)
