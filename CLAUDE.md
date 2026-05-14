@@ -36,36 +36,16 @@ placeholders.
 
 ## PATH expectations on the launchd host
 
-`launchd` hands the harness a minimal PATH via the plist's
-`EnvironmentVariables/PATH` block. The template at
-`launchd/com.twinning.pipeline.plist.template` injects
-`/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin`
-under the `<key>PATH</key>` entry — system defaults plus Homebrew dirs
-(Apple Silicon and Intel), no `$HOME` segments.
+The plist (`launchd/com.twinning.pipeline.plist.template`) injects
+`/opt/homebrew/{bin,sbin}:/usr/local/{bin,sbin}:/usr/{bin,sbin}:/{bin,sbin}` —
+system + Homebrew (Apple Silicon + Intel), no `$HOME` segments.
+`bin/run-local.sh` adds `$HOME/.bun/bin` and `$HOME/.npm-global/bin` for
+dispatched agents on Bun/npm targets (harmless when absent).
 
-The `export PATH=…` line in `bin/run-local.sh` belt-and-braces the
-plist's PATH with additional segments for stack-specific user-global
-bins (`$HOME/.bun/bin`, `$HOME/.npm-global/bin`) that the *dispatched
-agent* may need on Bun- or npm-using targets. This is harmless on
-hosts where those directories are absent — the shell ignores missing
-PATH segments.
-
-| Segment | Consumer | Notes |
-|---|---|---|
-| `/opt/homebrew/bin`, `/opt/homebrew/sbin` | harness's own tools | Apple Silicon Homebrew. Plist injects `bin`; `run-local.sh` adds `sbin`. |
-| `/usr/local/bin`, `/usr/local/sbin` | harness's own tools | Intel Homebrew (or `/usr/local`-style installs). Plist injects `bin`; `run-local.sh` adds `sbin`. |
-| `$HOME/.bun/bin` | dispatched agent's stack tools | Bun user-global bin. Only consumed on Bun-using targets (e.g. twinning's `bun tauri build`). |
-| `$HOME/.npm-global/bin` | dispatched agent's stack tools | npm user-global bin (`npm install -g …`). Only consumed on npm-using targets. |
-| `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` | system | Plist's tail. |
-
-Tools the **harness itself** uses (`gtimeout`, `gh`, `claude`, `jq`,
-`awk`, `sed`, `git`, `curl`) are assumed to be reachable via the
-Homebrew / system segments above. Operators on non-Homebrew installs
-(MacPorts, Nix) must edit the rendered plist's
-`EnvironmentVariables/PATH` after `bin/install-launchd.sh` runs and
-re-`launchctl bootstrap`. Targets that need additional user-global bin
-dirs (`~/.cargo/bin`, `~/go/bin`, etc.) currently require a manual plist
-edit; a profile-derived PATH mechanism is a deferred followup.
+Harness tools (`gtimeout`, `gh`, `claude`, `jq`, `awk`, `sed`, `git`,
+`curl`) must resolve via Homebrew/system segments. Non-Homebrew installs
+(MacPorts, Nix) and additional user-global bin dirs (`~/.cargo/bin`,
+`~/go/bin`) need a manual plist edit + `launchctl bootstrap`.
 
 ## Runtime topology
 
@@ -210,30 +190,22 @@ seen in Linear is human-applied.
 ## Linear conventions the harness depends on
 
 - **Every new ticket carries a type label at creation time.** Exactly one of
-  `Bug` / `Feature` / `Improvement` MUST be set when the issue is filed. Mapping
-  to branch shape (per `bin/branch-name.sh:26-29`):
+  `Bug` / `Feature` / `Improvement` MUST be set when the issue is filed:
   - `Bug` → `fix/<eng-n>-<slug>`
   - `Feature` / `Improvement` → `feat/<eng-n>-<slug>`
 
-  This is **load-bearing, not cosmetic**. `branch-name.sh` re-evaluates the
-  `Bug` label on every call (worktree creation, render-prompt, the orchestrator's
-  `apply_transition` PR-create hook in `bin/verdict-handler.sh:206`). Adding or
-  removing `Bug` after the worktree is created causes branch-shape drift: the
-  pushed branch has the old prefix, but `branch-name.sh` returns the new one,
-  and the PR-create hook silently fails with `gh pr create --head fix/...`
-  against an unpushed branch (its `|| log` swallows the failure — see ENG-86,
-  May 2026). If unsure which label fits when filing, ASK before creating;
-  do not file the ticket unlabelled and "decide later."
+  Load-bearing — `branch-name.sh` re-evaluates the `Bug` label on every call.
+  Adding/removing `Bug` after worktree creation causes branch-shape drift: the
+  pushed branch has the old prefix, `branch-name.sh` returns the new one, and
+  the PR-create hook silently fails (its `|| log` swallows it — see ENG-86).
+  If unsure, ASK before creating; do not file unlabelled.
 
-- **Mutate labels additively on existing issues.** Use `bash bin/linear.sh add-label <ENG-N> <label>`
-  and `remove-label`. Never use the Linear MCP `save_issue` to update an existing issue,
-  and never use it to mutate labels by any path — that call overwrites the entire label
-  set and will silently drop `stage:*` / `pipeline:*` labels that the orchestrator is
-  mid-flight on. **Creating a new issue with `save_issue` is allowed and is the
-  expected path** (there is no prior label set to overwrite); set the type label
-  (`Bug` / `Feature` / `Improvement`) and any other initial labels in the create call's
-  `labels` field per the convention above. Once the issue exists, all subsequent label
-  changes go through `bin/linear.sh add-label` / `remove-label`.
+- **Mutate labels additively on existing issues.** Use `bash bin/linear.sh add-label`
+  / `remove-label`. NEVER use Linear MCP `save_issue` to update an existing issue
+  or mutate labels — it overwrites the entire label set, silently dropping
+  `stage:*` / `pipeline:*` mid-flight. Creating new issues with `save_issue` IS
+  expected (no prior labels to overwrite); set the type label and any initial
+  labels in the create call's `labels` field.
 - **Doc-to-issue ownership is YAML frontmatter, not prose.** `reconcile.sh` (lines ~68–77)
   greps the first 20 lines of `docs/brainstorms/*.md` and `docs/plans/*.md` for a literal
   `linear: ENG-N` line; that, plus a fallback H1 match, is what makes a doc the canonical
@@ -265,224 +237,110 @@ $HARNESS_STATE_DIR/
         └── stage-summary-<stage>.md
 ```
 
-`issue-state.json` is the durable state for the skip-label dance OR retry tracking —
-`poll.sh` reads it on every tick and includes/excludes the issue based on `policy`
-plus a recomputed `pipeline_content_hash` (sha256 over `bin/**`, `config.json`,
+`issue-state.json` is durable state for skip-label dance + retry tracking.
+`poll.sh` reads it every tick and includes/excludes based on `policy` plus
+a recomputed `pipeline_content_hash` (sha256 over `bin/**`, `config.json`,
 `AGENT_PROMPTS.md`) and branch-head SHA.
 
-The harness orchestrator NEVER dispatches an agent into the operator's `$TARGET_REPO`
-checkout — every dispatch resolves a per-issue worktree first (ENG-67, May 2026). If
-`bin/run-local.sh` ever logs `FATAL: internal: worktree_path empty after
-reconcile=proceed (ENG-67); refusing to dispatch from $TARGET_REPO`, that is the
-D-003 invariant `die`-ing — most likely a Linear-API outage in `branch-name.sh`,
-which now blocks ticks loudly rather than silently dispatching from the operator's
-checkout. Operator action: inspect `$PROJECT_STATE_DIR/<slug>/logs/local-*.log` for
-the preceding error from `branch-name.sh`/`linear.sh`, fix the underlying cause
-(network, API key, Linear status), and the next tick resumes; do NOT bypass the
-`die` by re-introducing a soft fallback.
+The orchestrator NEVER dispatches into `$TARGET_REPO` — every dispatch resolves
+a per-issue worktree first (ENG-67). If you see `FATAL: internal: worktree_path
+empty after reconcile=proceed`, that's the D-003 invariant — usually a
+Linear-API outage in `branch-name.sh`. Inspect logs for the preceding error,
+fix the underlying cause, next tick resumes. Do NOT bypass via soft fallback.
 
 ## Sweep + scope partition (ENG-14)
 
-After a clean stage run, `run-local.sh` does a tick-start vs tick-end dirty-path
-diff and partitions changes into three streams via `partition_dirty_paths`:
+After a clean stage run, `run-local.sh` partitions tick-start vs tick-end
+dirty paths into three streams via `partition_dirty_paths`:
 
-1. **In-scope** → committed and pushed by the bot.
-2. **Leaked-in-scope** → soft fail, increments `.consecutive-failures`, may trip breaker.
-3. **Out-of-scope** → bucketed:
-   - if path was in the tick-start snapshot → **observed** (info only — concurrent human work).
-   - if NEW since tick start → **self-leak** → hard fail, breaker, no commit at all.
+1. **In-scope** → committed and pushed.
+2. **Leaked-in-scope** → soft fail, increments `.consecutive-failures`.
+3. **Out-of-scope** → if path was in tick-start snapshot → **observed** (info
+   only); if NEW → **self-leak** → hard fail, no commit.
 
-Anything writing files outside the per-stage allowlist must update the partition rules in
-`run-local-helpers.sh` or it will trip the breaker.
+The `implementing | ui | qa` allowlist comes from
+`learned-rules/$PROJECT_SLUG/project-profile.md`'s `## File layout` section,
+plus a stack-agnostic catalog of `docs/` and common manifest+lockfile
+filenames (see `_always_include_paths` in `bin/run-local-helpers.sh`).
 
-The `implementing | ui | qa` allowlist is derived from
-`learned-rules/$PROJECT_SLUG/project-profile.md`'s `## File layout`
-section, plus a stack-agnostic catalog of `docs/` and common
-manifest+lockfile filenames (`Cargo.lock`, `package-lock.json`,
-`poetry.lock`, `go.sum`, etc. — see `_always_include_paths` in
-`bin/run-local-helpers.sh`). The hardcoded Tauri shape (`src-tauri/`,
-`crates/`, `bun.lock*`) was removed in ENG-95.
+**Where to make scope changes:**
 
-**Where to make scope changes (decision tree):**
+| Change shape | Edit |
+|---|---|
+| Permanent stack-shape change (new top-level dir) | `learned-rules/<slug>/project-profile.md::"## File layout"` (or rerun `bash bin/setup.sh project-profile`) |
+| Per-target one-off | `config.json::scope.allowlist.<stage>[]` (gitignored, operator-local; overrides profile completely) |
+| Common lockfile catalog | `_always_include_paths` in `bin/run-local-helpers.sh` (PR to harness repo) |
 
-| Change shape | Edit | Notes |
-|---|---|---|
-| Permanent stack-shape change (new top-level dir like `app/`, `pkg/`) | `learned-rules/<slug>/project-profile.md::"## File layout"` | The profile is the canonical source of stack truth. Re-run `bash bin/setup.sh project-profile` to regenerate, or hand-edit. Visible to every dispatched agent's prompt AND the sweep allowlist. |
-| Per-target one-off (test-specific path, experimental dir) | `config.json::scope.allowlist.<stage>[]` | Overrides the profile-derived list completely for that stage; useful for granting scope without polluting the canonical profile. **This config is gitignored** — operator-local. |
-| Common lockfile catalog (e.g. add `bun.lockb` for a new package manager) | `_always_include_paths` in `bin/run-local-helpers.sh` | Hardcoded list; PR to the harness repo. Universal across slugs. |
+If profile is missing entries, scope falls back to `docs/` + lockfile catalog
+only and the agent self-leaks on source-dir writes; rerun
+`bash bin/setup.sh project-profile`.
 
-**Migration from pre-ENG-95 (existing Tauri targets):** Existing profiles
-that list the Tauri directories (`src/`, `src-tauri/`, `crates/`, `tests/`)
-in their `## File layout` section work unchanged. The new implementation
-reads your profile instead of a hardcoded list — same result. If your
-profile is missing entries, scope falls back to `docs/ + lockfile catalog`
-only and the agent self-leaks on the next source-dir write; the operator
-sees a diagnostic in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log`:
+**Always-include lockfile catalog.** Grants in-scope status for ALL common
+manifest+lockfile filenames (`Cargo.toml/lock`, `package.json/-lock.json`,
+`bun.lock/lockb`, `pyproject.toml + poetry.lock/uv.lock/Pipfile.lock`,
+`go.mod/sum`, `Gemfile/.lock`) regardless of stack. False-positive scope
+is bounded to top-level single-file matches. Tighten with
+`config.json::scope.allowlist.<stage>[]` if too broad.
 
-    stage_output_paths: profile-derived list empty for stage=implementing
-    (slug=<slug>, path=<...>); falling back to docs/ + lockfile catalog.
-    Run: bash bin/setup.sh project-profile
+**Profile-driven `is_benign` lockfile set (ENG-96).**
+`bin/scope-check.sh::is_benign` infers lockfile basenames per dispatch from
+the profile's `## Build & test gates` section. Missing profile / unknown PM
+tokens degrade gracefully to "path-classes-only benign" with a `log` warning.
+The `$SCOPE_CHECK_PROFILE_PATH` env-var override is **test-only**.
 
-**Always-include lockfile catalog scope.** The always-include set grants
-in-scope status for ALL common manifest+lockfile filenames
-(`Cargo.toml/lock`, `package.json/-lock.json`, `bun.lock/lockb`,
-`pyproject.toml + poetry.lock/uv.lock/Pipfile.lock`, `go.mod/sum`,
-`Gemfile/.lock`), regardless of whether your target uses that stack.
-This is intentional — false-positive scope is bounded to top-level
-single-file matches, never a directory prefix. If this is too broad for
-your repo, set `config.json::scope.allowlist.<stage>[]` to a tighter list.
+**Sanctioned `.scratch/` carve-out — `implementing | ui | qa` only.**
+`partition_dirty_paths` and `is_benign` treat `.scratch/*` as invisible
+(neither in-scope nor leaked nor observed). On `brainstorming | planning`
+the carve-out does NOT apply (cross-dispatch state-injection vector — D-004
+issue-id constraint). The trailing slash is load-bearing — a top-level file
+named `.scratchpad` is NOT carved out. `.scratch/` is `.gitignore`d.
 
-**ENG-96 — profile-driven `is_benign` lockfile set.** `bin/scope-check.sh::is_benign`
-no longer hardcodes `Cargo.lock`; the lockfile basenames it auto-allows
-are inferred per dispatch from
-`learned-rules/$PROJECT_SLUG/project-profile.md`'s
-`## Build & test gates` section (e.g. profile naming `poetry` →
-`poetry.lock` is benign). Helper: `_profile_lockfile_basenames`
-(token table at `_lockfile_for_pm`). To add a new stack: one case-arm
-edit + one token in `_profile_lockfile_basenames`'s `for pm in ...`
-loop. The `$SCOPE_CHECK_PROFILE_PATH` env-var override is **test-only**
-— production callers must not set it. Missing profile / unknown PM
-tokens degrade gracefully to "path-classes-only benign" with a `log`
-warning, **strictly more restrictive** than today's hardcoded Cargo
-carve-out on non-Rust stacks.
+**Read-mostly stages auto-clean self-leak residue, never halt on it
+(`reviewing | building | released`).** `stage_output_paths` returns empty
+by design. `stage_is_read_mostly` (`bin/run-local-helpers.sh`) gates on
+empty + zero exit; unknown stages fall through to NOT read-mostly.
+`clean_self_leak_residue` runs *after* `partition_dirty_paths` has already
+classified observed-vs-self-leak — operates only on paths NEW since
+tick-start (C1 invariant — never touches operator's pre-existing 'observed'
+edits). Per-path: tracked-modified → `git checkout --`; untracked →
+`rm -rf`. Emits `sweep-readonly-residue-cleaned` metric with audit payload
+(`count`, `branch`, `hashes` sha12-csv, `rm_fail`, `checkout_fail`); path
+strings never reach Linear comments (adversarial-filename discipline).
+Defensive guards: empty/missing-worktree/main-or-master/dry-run all no-op
+safely. `implementing | ui | qa` are NOT affected — self-leak halts there
+remain correct policy.
 
-**Sanctioned agent scratch dir (`.scratch/`) — gated to allowlisted
-stages.** For `implementing | ui | qa`, agents may need throwaway
-fixtures alongside legitimate in-scope writes. `.scratch/` is the
-carve-out:
-
-- `partition_dirty_paths` (`bin/run-local-helpers.sh`) treats `.scratch/*`
-  as invisible **only on `implementing | ui | qa`** — neither in-scope
-  nor leaked nor observed.
-- `is_benign` (`bin/scope-check.sh`) mirrors this for the agent-side
-  scope-check inside the implementing stage's flow.
-- `.scratch/` is in the repo's `.gitignore`, so even if an agent
-  `git add`s the directory it never reaches a commit.
-
-**On `brainstorming | planning`** the carve-out does NOT apply — those
-stages have a tight `docs/{brainstorms,plans}/` allowlist and D-004
-issue-id constraint. Letting them silently drop `.scratch/*` would
-create a cross-dispatch state-injection vector (planted file readable
-by later-stage agents via `Read`). Brainstorm/plan `.scratch/*` writes
-flow through to out-of-scope and self-leak halt.
-
-The trailing slash is load-bearing in both case globs (`.scratch/*`), so
-a top-level file literally named `.scratchpad` is NOT carved out — only
-paths under the directory.
-
-**Read-mostly stages auto-clean self-leak residue, never halt on it.**
-For `reviewing | building | released`, `stage_output_paths` returns
-empty *by design* — the contract is "no worktree writes." Stage
-summaries go to `$(issue_dir)/stage-summary-<stage>.md` (outside the
-worktree), Linear comments go via `bin/linear.sh`, gh/git operations
-target origin or sibling state dirs. There is no legitimate in-worktree
-write.
-
-The single source of truth for "stage is read-mostly" lives in
-`stage_is_read_mostly` (`bin/run-local-helpers.sh`) — captures the
-output of `stage_output_paths` and gates on empty AND on the
-subcommand returning zero. Unknown stages (where `stage_output_paths`
-dies) fall through to NOT read-mostly, conservative default that
-prevents a typo'd stage from silently routing into the auto-clean
-branch and discarding agent output. A future stage added with empty
-`stage_output_paths` is automatically picked up.
-
-Intervention point is **inside the self-leak handler** in
-`bin/run-local.sh`, *after* `partition_dirty_paths` has already done
-the snapshot-based observed-vs-self-leak classification. The partition
-guarantees `self_leak_paths` is by construction the set of paths NEW
-since tick-start — operator's pre-existing 'observed' edits are NEVER
-in that list and are therefore NEVER touched by the clean. This is
-the C1 correctness invariant from the cold-pass review.
-
-`clean_self_leak_residue` (`bin/run-local-helpers.sh`) per-path:
-- Tracked-modified (`git ls-files --error-unmatch` succeeds):
-  `git checkout -- <path>` reverts to index.
-- Untracked (anything else): `rm -rf "$worktree/<path>"`.
-
-Emits `sweep-readonly-residue-cleaned` with the full audit payload —
-event, issue, stage, outcome, exit-code, then notes that include
-`count=N branch=<b> hashes=<sha12-csv> rm_fail=N checkout_fail=N`.
-The sha12 list is the forensic reconstruction surface the
-retrospective consumes; path strings themselves never reach Linear
-comments (matches `halt_issue_for_self_leak`'s adversarial-filename
-discipline).
-
-Result: the harness advances autonomously through reviewing → qa →
-building → released even when those agents drop verification residue.
-Eliminates the ENG-96-shape operator-touch halt (reviewer left
-`.scratch/bte_*.md` + root-level `tmp-awk-dup-test.md` to verify a
-parser, sweep self-leaked, operator had to manually `decide --action
-continue` to recover).
-
-Defensive guards: empty path list → no-op (no metric); missing
-worktree → no-op + warn; main/master/empty branch → defensive refuse
-+ warn; dry-run mode logs without mutating; per-path failures are
-non-blocking and surface in the metric's `rm_fail` / `checkout_fail`
-counters.
-
-`implementing | ui | qa` are NOT affected — their allowlists are real
-signal, self-leak halts there remain the correct policy (operator
-must inspect; an agent that wrote source files to wrong paths is
-real evidence of a bug).
-
-**Tick-end stage-agnostic `.scratch/` cleanup
-(`clean_scratch_dir`).** The `.scratch/*` partition carve-out only
-catches paths visible to `git status --porcelain` — but `.scratch/`
-is in `.gitignore`, so its contents are INVISIBLE to git status on
-every stage. Without an explicit cleanup, files an agent drops into
-`.scratch/` during one dispatch persist into the worktree for the
-next dispatch and could be `Read` by the subsequent agent. The
-threat surface is bounded today (no agent prompt instructs reading
-`.scratch/`) but the persistence is real and would compound under
-prompt injection on intervening stages.
-
+**Tick-end stage-agnostic `.scratch/` cleanup (`clean_scratch_dir`).**
+`.scratch/` is `.gitignore`d so contents are invisible to `git status` on
+every stage; without explicit cleanup, files persist into the next dispatch's
+worktree where they could be `Read` by the next agent.
 `clean_scratch_dir "$dispatch_cwd"` runs in `bin/run-local.sh`
-**immediately after dispatch returns, before the `[[ $rc -ne 0 ]] && exit`
-rc-gate** — load-bearing ordering. Placing the cleanup downstream of
-the rc-gate (as a naive read of "tick-end" would suggest) leaks stale
-`.scratch/` payload across the operator's `--action continue` resume
-for every failure mode that exits non-zero before the partition phase:
-dispatch timeout (rc=124), envelope validator (rc=29), scope-check
-violation (rc=21), agent crash. The cleanup must run on those paths
-too, because that's exactly when an agent's partial `.scratch/` writes
-are most likely to be left behind. `rm -rf "$worktree/.scratch"` if
-the directory exists; no-op if absent; dry-run logs only; failures
-are non-blocking. The position invariant is pinned by
-`bin/run-local-helpers-adversarial-test.sh` wire-up anchor #6.
+**immediately after dispatch returns, before the rc-gate** —
+load-bearing ordering pinned by `bin/run-local-helpers-adversarial-test.sh`
+wire-up anchor #6. Placement downstream of the rc-gate would leak stale
+payload across `--action continue` resume for every non-zero exit (timeout
+rc=124, envelope rc=29, scope rc=21, crash). `rm -rf "$worktree/.scratch"`;
+no-op if absent; dry-run logs only; failures non-blocking.
 
-The cleanup is stage-agnostic because no agent's work product lives
-in `.scratch/` after the dispatch ends — verdict + stage-summary
-capture work in Linear / `$(issue_dir)`.
+## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-94)
 
-## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-53 #8, ENG-94)
+`dispatch.sh::allowed_tools_for` ships a stack-neutral base allowlist per stage.
+Per-target stack tools come from the profile's `## Tool allowlist` section
+(`learned-rules/<slug>/project-profile.md`, schema_version 2). Operator-curated
+extras come from `.pipeline-config/config.json::dispatch.tools.<stage>[]`.
 
-`dispatch.sh::allowed_tools_for` ships a stack-neutral base allowlist for each stage. Per-target
-stack tools (`cargo` for Tauri, `pytest` for Python, `go test` for Go, etc.) flow from the
-project profile's `## Tool allowlist` section (`learned-rules/<slug>/project-profile.md`,
-schema_version 2; ENG-94). Operator-curated extras (e.g., the harness-self target's
-per-test-script enumeration for `bin/*-test.sh`) still come from the target's
-`.pipeline-config/config.json::dispatch.tools.<stage>[]` (ENG-51).
+Per-stage `--allowed-tools` argv composition (left-to-right): **base + profile
++ extras**. Empty segments elided. Claude's matcher is order-insensitive —
+ordering is for log readability only.
 
-The per-stage `--allowed-tools` argv is composed in left-to-right order:
-**base** (the stage's hardcoded case arm — Read/Write/Edit/Grep/Glob, git family, dual-path
-linear/pipeline/etc. wrappers) → **profile** (auto-discovered from the slug's project profile
-by `_dispatch_tools_from_profile`) → **extras** (operator-curated, ENG-51). Empty segments
-are elided so no stray commas leak into the argv. Claude's allowlist matcher is order-
-insensitive, so the ordering is for log-readability and reasoning clarity, not behavioral
-correctness.
+**Fallback contract.** Missing profile / `schema_version != 2` / missing
+`## Tool allowlist` → `_dispatch_tools_from_profile` returns empty, emits a
+single `[allowed-tools]` warning to stderr, dispatch does NOT die.
 
-**Fallback contract.** If the profile is missing, has `schema_version != 2`, or lacks the
-`## Tool allowlist` section, `_dispatch_tools_from_profile` returns empty and emits a single
-`[allowed-tools]` warning to stderr. The composition collapses to `base + extras`; dispatch
-does NOT die (AC#3). The warning lands in `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log`
-per ENG-94 OQ-3. Operator runbook entry for the T1 + ENG-94 rollout coordination is tracked
-as ENG-94 OQ-6 (future work).
-
-**Wildcard pitfall.** Claude's `--allowed-tools` matcher does NOT expand `*` inside a
-`Bash(<prefix>:*)` prefix as a shell glob — the `*` is treated literally. So
-`Bash(bash bin/*-test.sh:*)` matches *only* the literal string `bash bin/*-test.sh ...`,
-not any actual test script. Patterns must enumerate each script with a fully-literal prefix:
+**Wildcard pitfall.** Claude's matcher does NOT expand `*` inside a
+`Bash(<prefix>:*)` prefix as a shell glob — `*` is treated literally.
+`Bash(bash bin/*-test.sh:*)` matches *only* the literal string, not any actual
+test script. Patterns must enumerate each script with a fully-literal prefix:
 
 ```json
 {
@@ -491,27 +349,17 @@ not any actual test script. Patterns must enumerate each script with a fully-lit
       "implementing": [
         "Bash(bash .githooks/pre-commit:*)",
         "Bash(bash bin/secret-probe-lint.sh:*)",
-        "Bash(bash bin/agent-prompts-content-test.sh:*)",
         "Bash(bash bin/classify-failure-test.sh:*)",
         "...one literal entry per bin/*-test.sh..."
       ],
-      "qa": [
-        "...same enumerated list..."
-      ]
+      "qa": [ "...same enumerated list..." ]
     }
   }
 }
 ```
 
-Stage keys are the gerund form (`implementing`, `qa`) — they must match
-`dispatch.sh::allowed_tools_for`'s case-arm names. The entries are appended to the
-per-stage hardcoded base. `.pipeline-config/` is gitignored, so each operator applies this
-on their own copy. For the harness-self target specifically (the one driving this repo),
-this is required: without it, the implement and qa agents have no allowlisted way to
-invoke `bash bin/<name>-test.sh` and ship without running tests (the failure mode that
-drove ENG-53; the wildcard incarnation drove ENG-77's QA halt cascade in May 2026).
-
-Regenerate the list whenever a new `bin/*-test.sh` is added:
+Stage keys are gerund form (`implementing`, `qa`). For the harness-self target
+this is required (ENG-77 cascade May 2026). Regenerate when adding a test:
 
 ```bash
 TESTS=$(ls bin/*-test.sh | sort | sed 's|^|Bash(bash |; s|$|:*)|')
@@ -523,27 +371,19 @@ jq --argjson l "$LIST" '.dispatch.tools = {"implementing": $l, "qa": $l}' \
   .pipeline-config/config.json > /tmp/c && mv /tmp/c .pipeline-config/config.json
 ```
 
-`bin/dispatch-test.sh` asserts (a) no broken wildcard `Bash(bash bin/*-test.sh:*)` is
-present, and (b) the enumerated count covers every `bin/*-test.sh` on disk — catches
-drift when a new test is added but not allowlisted (skipped silently when
-`.pipeline-config/config.json` is absent — CI or non-harness operators). The wildcard
-pitfall and the regeneration guidance apply symmetrically to the profile's `## Tool allowlist`
-section: discovery-emitted patterns must enumerate each script literally (no `Bash(bash
-bin/*-test.sh:*)` shape).
+`bin/dispatch-test.sh` asserts no broken wildcard is present and the enumerated
+count covers every `bin/*-test.sh` on disk. The pitfall applies symmetrically
+to the profile's `## Tool allowlist` section.
 
 ## Per-stage dispatch timeouts (ENG-65)
 
-`dispatch.sh::main` wraps each `claude -p` invocation with a `gtimeout` watchdog
-(ENG-48). The cap defaults to **60 min for `brainstorming` and `planning`** (where
-persona-review iterations legitimately span >30 min) and **30 min for every other
-stage**. Two layers of override sit above those built-ins:
+`dispatch.sh::main` wraps each `claude -p` with `gtimeout`. Defaults: **60 min
+for `brainstorming`/`planning`** (persona-review iterations >30 min), **30 min
+for every other stage**. Override precedence (highest first):
 
-1. `orchestrator.dispatch_timeout_minutes_per_stage[<stage>]` — per-stage override
-   in the target's `.pipeline-config/config.json`. Wins over both the global and
-   the built-in default. Highest precedence.
-2. `orchestrator.dispatch_timeout_minutes` — the existing global override (ENG-48).
-   Applies to every stage.
-3. Per-stage built-in default (above) — applied when neither override resolves.
+1. `orchestrator.dispatch_timeout_minutes_per_stage[<stage>]` — per-stage.
+2. `orchestrator.dispatch_timeout_minutes` — global.
+3. Per-stage built-in default.
 
 ```json
 {
@@ -551,65 +391,41 @@ stage**. Two layers of override sit above those built-ins:
     "dispatch_timeout_minutes": 30,
     "dispatch_timeout_minutes_per_stage": {
       "brainstorming": 60,
-      "planning":      60
+      "planning": 60
     }
   }
 }
 ```
 
-Validation:
-- Values must be **integers** (e.g. `60`, not `"60m"` or `"1h"`). Non-integer values
-  fail the `^[0-9]+$` regex guard and fall through to the next layer.
-- A resolved value `< 1` is rejected (gtimeout treats `0` as "no timeout", which
-  would silently disable the watchdog). The per-stage built-in default is restored.
-
-The canonical stage keys (gerund form per `dispatch.sh::allowed_tools_for`):
-`brainstorming`, `planning`, `implementing`, `ui`, `reviewing`, `qa`, `building`,
-`released`. **An unknown key (e.g. `brainstorm` missing `-ing`) silently falls
-through** to the global, then to the built-in default — no warning is emitted.
-After applying an override, grep `gtimeout ... <seconds>` in the per-stage
-transcript at `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log` to confirm the
-override took effect.
-
-Trade-off: a longer cap wastes more spend on a stalled agent before the watchdog
-fires; a tighter cap risks SIGTERM mid-iteration on legitimate persona-review
-work (the failure mode that drove ENG-65). Brainstorm's prompt-side 2-iteration
-cap (D-001) bounds the persona path to ~36–60 min, so 60 min for brainstorming
-is the upper bound — not a green light to widen further.
+Validation: integer regex `^[0-9]+$`, value `>= 1` (`gtimeout 0` would disable
+the watchdog). Stage keys are gerund form (`brainstorming`, `planning`,
+`implementing`, `ui`, `reviewing`, `qa`, `building`, `released`); unknown key
+silently falls through. Confirm via `gtimeout ... <seconds>` in
+`$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log`.
 
 When SIGTERM fires before a `result` event lands, `_render_and_capture_stream`
-falls back to summing per-message `assistant.message.usage.*` and writes a
-partial usage file with `cost_usd: null` and `partial: true` (D-003). The
-on-disk `partial: true` field is the discriminator the retrospective uses to
-distinguish SIGTERM-captured runs from genuine zero-cost dispatches; the flag
-stream emitted by `_cost_flags_for` shows `--cost-usd 0` (jq `// 0` coercion).
+sums per-message `assistant.message.usage.*` and writes a partial usage file
+with `cost_usd: null` and `partial: true` (D-003 — distinguishes SIGTERM runs
+from genuine zero-cost dispatches).
 
 ## Orchestrator entry-conditions (ENG-86)
 
 `bin/run-stage.sh::_entry_conditions_gate` is a config-driven pre-dispatch
-gate that runs after `_pre_dispatch_merge_gate` and before render-prompt +
-agent dispatch. It shells out to `bin/entry-conditions.sh::should_dispatch`,
-which reads a per-stage check list from
-`.pipeline-config/config.json::orchestrator.entry_conditions[<stage>]`, runs
-each named check in declaration order, AND-gates the results, and prints
-exactly one of `proceed`, `skip:<reason>`, or `error:<check-name>` on stdout.
+gate (after `_pre_dispatch_merge_gate`, before render-prompt + dispatch).
+Shells out to `bin/entry-conditions.sh::should_dispatch`, reads per-stage
+checks from `.pipeline-config/config.json::orchestrator.entry_conditions[<stage>]`,
+AND-gates results, prints `proceed` | `skip:<reason>` | `error:<check-name>`.
 
-Phase 1 ships exactly one check, `pr-approved-by-non-bot`, mirroring the
-agent-side P2 at `AGENT_PROMPTS.md:1287-1289`. The orchestrator skips the
-build-agent dispatch entirely (~100 ms vs ~2 min) when the PR has zero
-non-bot APPROVED reviews — saving ~$0.5–0.7 per tick and freeing the
-ENG-81 K=2 slot for other ready work. New checks land in
-`_entry_check_handler_for` without schema migration.
+Phase 1 ships one check, `pr-approved-by-non-bot`, mirroring the agent-side
+P2. Skips build-agent dispatch entirely (~100ms vs ~2min) when PR has zero
+non-bot APPROVED reviews. New checks land in `_entry_check_handler_for`.
 
 ```json
 {
   "orchestrator": {
     "entry_conditions": {
       "building": [
-        {
-          "name": "pr-approved-by-non-bot",
-          "type": "github-pr-review"
-        }
+        { "name": "pr-approved-by-non-bot", "type": "github-pr-review" }
       ]
     }
   }
@@ -617,211 +433,116 @@ ENG-81 K=2 slot for other ready work. New checks land in
 ```
 
 Validation:
-- Each entry's `name` MUST resolve in `_entry_check_handler_for`. An
-  unknown name is logged via `log` and the entry is skipped (treated as
-  a no-op, NOT a hard error) so a typo cannot lock the orchestrator out
-  of dispatching forever.
-- Empty/null/absent `entry_conditions` → `proceed` (back-compat — the
-  pre-ENG-86 dispatch path is unchanged).
-- Stage keys are gerund form (`building`, `implementing`, …). An
-  unknown key (e.g. `build` missing `-ing`) silently falls through —
-  `// []` returns the empty array, so `should_dispatch` prints
-  `proceed`. Same trade-off as ENG-65 per-stage timeouts; no warning
-  is emitted.
-- On skip, the gate calls `_handle_wait` so the ENG-45
-  `external_signal_budget` escalation still applies — a buggy predicate
-  halts the issue within `max_attempts` ticks rather than spinning
-  forever.
-- On `gh`/`jq` outage, the check returns rc=2 and `should_dispatch`
-  prints `error:<check-name>`; the orchestrator falls through to
-  dispatch (D-010 fail-open). The agent's P2 (unchanged) is the
-  defense-in-depth fallback when the orchestrator gate cannot
-  evaluate.
+- Unknown `name` is logged and skipped (no-op, NOT a hard error).
+- Empty/null `entry_conditions` → `proceed` (back-compat).
+- Stage keys are gerund form; unknown key silently falls through.
+- On skip, gate calls `_handle_wait` so `external_signal_budget` halts a
+  buggy predicate within `max_attempts` ticks.
+- On `gh`/`jq` outage (rc=2 → `error:<check>`), orchestrator falls through
+  to dispatch (D-010 fail-open). Agent's P2 is defense-in-depth.
 
-The skip path emits paired `stage-start` + `stage-end` metric events
-with outcome `dispatch-skipped` (mirrors the `merged-pre-dispatch`
-pairing template), so the retrospective's §1 event-pairing pass does
-not see an orphaned terminal event.
-
-`.pipeline-config/` is gitignored — each operator opts in
-independently. For the harness-self target, regenerate the local
-`.pipeline-config/config.json` with the stanza above (the
-`## Per-target dispatch.tools extras` section's regen one-liner already
-covers the test-list enumeration; the `entry_conditions` stanza is a
-one-time manual add). Operator visibility is via the per-stage
-transcript (the `entry-conditions: skip` log line) and
-`$PROJECT_STATE_DIR/<ident>/wait-building.json`'s `attempts` field — NOT
-via Linear comments (D-003 trade-off: cost-recovery vs Linear-thread
-silence).
+Skip path emits paired `stage-start` + `stage-end` events with outcome
+`dispatch-skipped`. Operator visibility: per-stage transcript
+(`entry-conditions: skip` log) and `wait-building.json::attempts` — NOT
+Linear comments (D-003 trade-off).
 
 ## Cross-dispatch staleness contract (ENG-87)
 
-Six prior tickets (ENG-77, ENG-41 §1.1+§1.2, ENG-78, ENG-79, ENG-67)
-each manifested the same structural failure: a fresh dispatch's reader
-treats data written by a PRIOR dispatch as if it were current. Each
-prior fix patched one medium (per-issue file, Linear comment freshness,
-Linear label, prompt token, worktree path) with that medium's natural
-primitive. ENG-87 ships a unified hard hand-off contract.
+Six prior tickets (ENG-77, ENG-41 §1.1+§1.2, ENG-78, ENG-79, ENG-67) each
+manifested the same structural failure: a fresh dispatch's reader treats
+data written by a PRIOR dispatch as if it were current. ENG-87 ships a
+unified hand-off contract.
 
-**Glue: `PIPELINE_DISPATCH_ID`.** Allocated by `bin/run-stage.sh::main`
-once per dispatch via `bin/common.sh::allocate_dispatch_id`. Format:
-`ENG-N-d<NNNN>` (4-digit zero-padded; monotonic per issue). Persisted
-in `$PROJECT_STATE_DIR/<ident>/issue-state.json::current_dispatch_id`
-+ `current_dispatch_seq`. Exported as `PIPELINE_DISPATCH_ID` and
-inherited by `bin/dispatch.sh`'s `env`-block subshell, the agent's
-`bash bin/linear.sh` calls, and the orchestrator's post-dispatch
-envelope validator. The reader-side helper `current_dispatch_id <issue>`
-returns the persisted id (or empty string if unallocated, e.g. legacy
-pre-cutover issues).
+**Glue: `PIPELINE_DISPATCH_ID`.** Allocated by `bin/run-stage.sh::main` once
+per dispatch via `bin/common.sh::allocate_dispatch_id`. Format:
+`ENG-N-d<NNNN>` (monotonic per issue). Persisted in
+`issue-state.json::current_dispatch_id` + `current_dispatch_seq`. Exported
+and inherited by `dispatch.sh`'s subshell, agent's `bash bin/linear.sh`
+calls, and the post-dispatch envelope validator.
 
-**Per-medium primitives.** Each cheapest for its medium:
+**Per-medium primitives:**
 
 | Medium | Primitive | Site |
 |---|---|---|
-| Per-issue local files | clear-on-dispatch-start | `bin/run-stage.sh::_clear_current_stage_slots` (current-stage `stage-summary-*.md` + `wait-*.json`; OTHER stages preserved for loopback reads) |
-| Linear comments | auto-inject `<!-- meta: dispatch id=… stage=… -->` at chokepoint | `bin/linear.sh::_inject_dispatch_marker` (idempotent; skipped when env unset → operator-manual lane) |
-| Linear labels | lane fence | `bin/linear.sh::_check_lane` (ENG-41 — already shipped) |
-| Prompt tokens | resolver registry + render-time validator | `bin/render-prompt.sh::PROMPT_RESOLVERS` (twelve resolvers; unknown `{token}` dies loud) |
+| Per-issue files | clear-on-dispatch-start | `bin/run-stage.sh::_clear_current_stage_slots` (current-stage only; OTHER stages preserved for loopback) |
+| Linear comments | auto-inject `<!-- meta: dispatch id=… stage=… -->` | `bin/linear.sh::_inject_dispatch_marker` (idempotent) |
+| Linear labels | lane fence | `bin/linear.sh::_check_lane` (ENG-41) |
+| Prompt tokens | resolver registry + render-time validator | `bin/render-prompt.sh::PROMPT_RESOLVERS` |
 
-**Reader-side filters.** `bin/verdict-handler.sh::find_fresh_verdict`
-prefers a `dispatch_id`-equality match over the timestamp window when
-ANY comment on the issue carries a `meta: dispatch id=` marker.
-`bin/verdict-handler.sh::resume_in_progress_transition` rejects a
-`pipeline: transition` whose `meta: dispatch id=` disagrees with the
-current dispatch id. **Soft-fallback (D-005):** legacy issues with no
-markers anywhere fall through to the existing timestamp-window /
-labels-cross-check code (preserves ENG-41 §4.2's guard); the fallback
-expires the first time the orchestrator dispatches the issue
-post-cutover (the dispatch's auto-injection puts a marker on the next
-comment, and subsequent ticks take the strict id-match path).
+**Reader-side filters.** `verdict-handler.sh::find_fresh_verdict` prefers
+`dispatch_id`-equality over the timestamp window when ANY comment carries
+the marker. `resume_in_progress_transition` rejects a transition whose
+`meta: dispatch id=` disagrees with the current id. **Soft-fallback
+(D-005):** legacy issues with no markers fall through to the existing
+timestamp-window guard; expires the first time the orchestrator dispatches
+post-cutover.
 
-**Detective backstop.** `bin/run-stage.sh::_validate_dispatch_envelope`
-runs after the rc=25 agent-contract validator and before
-`post_completion_comment`. It scans the per-stage transcript sidecar
-(`$(issue_dir)/.envelope-transcript-<stage>`) for invocations matching
-`mcp__plugin_linear` (Linear MCP forks) or `curl https://api.linear.app`
-(direct Linear HTTP). On any match: emits
-`<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->`
-via `bin/pipeline.sh event` and exits 29. The validator is fail-open
-on a missing sidecar (detective-only; not a primary defense). Halt
-reason `dispatch-envelope-violation` (registered in
-`bin/pipeline-events.json::halt_reasons`) and exit code 29
-(`envelope-violation` in `failure_outcome_for_exit`).
+**Detective backstop.** `_validate_dispatch_envelope` scans the per-stage
+transcript sidecar for `mcp__plugin_linear` or `curl https://api.linear.app`.
+On match: emits `<!-- pipeline: verdict result=halt
+reason=dispatch-envelope-violation -->` and exits 29. Fail-open on missing
+sidecar (detective-only).
 
-**`dispatch_history.jsonl`.** New per-issue append-only forensic log
-at `$(issue_dir)/dispatch_history.jsonl`. Two rows per dispatch
-(start + end). NEVER cleared; never read at runtime by decision-making
-code. Consumed by retrospective + manual triage; surfacing in
-`bin/status.sh` is a separate ticket. **Accepted YAGNI cost.** The
-~95 LOC writer + 8 module globals + idempotency sentinel ship without
-a runtime consumer (the retrospective is the first reader, and that
-ticket is open as ENG-92). Trade-off: paying the maintenance cost now
-to capture forensic data starting at iter-1 of the contract avoids
-having to back-fill missing `dispatch_id`-stamped history rows the
-moment a real incident lands. Reviewers should NOT trim the writer
-absent a separate decision to defer the forensic capture surface.
+**`dispatch_history.jsonl`.** Per-issue append-only forensic log at
+`$(issue_dir)/dispatch_history.jsonl`. Two rows per dispatch (start + end).
+NEVER cleared; never read at runtime. Consumed by retrospective + manual
+triage. **Accepted YAGNI cost** — captures forensic data starting at iter-1
+to avoid back-fill when the first incident lands.
 
-**Recovery.** `bash bin/pipeline.sh decide ENG-N --action continue`
-(see "Failure-mode quick reference" §) clears the halt label and
-re-allocates a fresh `dispatch_id` on the next tick. The transcript
-sidecar at `$(issue_dir)/.envelope-transcript-<stage>` is preserved
-across the halt for forensic review and removed by the next dispatch's
-pre-clean at `bin/dispatch.sh::_render_and_capture_stream` (line 83).
-The `dispatch_history.jsonl` audit log carries the halted dispatch's
-start+end rows past the resume.
+**Recovery.** `bash bin/pipeline.sh decide ENG-N --action continue` clears
+the halt label and re-allocates a fresh `dispatch_id`. Transcript sidecar
+preserved across the halt; removed by next dispatch's pre-clean.
 
-**Forensic asymmetry post-resume.** After `--action continue` allocates
-a fresh `dispatch_id` (e.g. d0008 supersedes d0007), the strict
-id-match path in `find_fresh_verdict` filters the d0007 halt comment
-OUT — its `meta: dispatch id=d0007` marker mismatches the current d0008.
-The issue resumes correctly (the next dispatch's verdict is auto-
-injected with d0008 and surfaces normally), but operator-triage tools
-that read verdict history (`bin/status.sh`, manual `find_fresh_verdict`
-grep) will see "no fresh verdict" between the resume and the next
-dispatch's first verdict. Inspect prior halts directly via
-`bin/linear.sh get-comments` + a `verdict result=halt` filter; the
-`dispatch_history.jsonl` audit log is also intact across resume.
-Trade-off accepted (D-005): forensic regression is the cost of strict
-id-match; loosening to accept "previous-dispatch-id" halts as visible-
-but-superseded would re-introduce the V3 vulnerability the strict path
-prevents.
+**Forensic asymmetry post-resume.** After resume, strict id-match in
+`find_fresh_verdict` filters the prior-dispatch halt comment OUT — its
+marker mismatches the new id. Operator-triage tools (`bin/status.sh`,
+manual grep) see "no fresh verdict" until the next verdict. Inspect prior
+halts via `bin/linear.sh get-comments` + `verdict result=halt` filter;
+`dispatch_history.jsonl` is intact across resume. D-005 trade-off:
+forensic regression is the cost of strict id-match (vs V3 vulnerability).
 
-**Operator gotchas.** A dispatch that crashes mid-flight between
-`allocate_dispatch_id` and `_clear_current_stage_slots` leaves a
-`dispatch_history.jsonl` start row without an end row; the next tick's
-allocator increments past it monotonically. The clear-on-start fires
-unconditionally on every fresh dispatch, so a stale `stage-summary-*.md`
-or `wait-*.json` from the crashed dispatch is gone before the agent
-starts. The chained-command blind spot in `assert_no_tool_invocation`
-(documented at `bin/run-stage.sh:867-881` and `A-020` in the plan)
-applies to the envelope validator too — `bash bin/linear.sh add-comment …; mcp__plugin_linear …`
-inside a single `tool_use.input.command` string evades the startswith
-prefix match. AGENT_PROMPTS.md preamble's "Dispatch identifier and
-freshness contract" subsection is the prompt-side defense for that gap.
+**Operator gotcha — chained-command blind spot.** The envelope validator's
+startswith prefix match is evaded by chained commands inside a single
+`tool_use.input.command` string (e.g. `bash bin/linear.sh add-comment …;
+mcp__plugin_linear …`). AGENT_PROMPTS.md preamble's "Dispatch identifier
+and freshness contract" is the prompt-side defense.
 
 ## When wiring a new script
 
-- `source "$SCRIPT_DIR/common.sh"` first, before anything else. It enforces `TARGET_REPO`
-  exists and exports the canonical paths.
-- Use `log` / `die` / `require_env` / `require_bin` from common.sh — don't roll your own.
-- Linear writes go through `bin/linear.sh` so dry-run and the `meta: dedup`
+- `source "$SCRIPT_DIR/common.sh"` first. It enforces `TARGET_REPO` and exports
+  canonical paths.
+- Use `log` / `die` / `require_env` / `require_bin` from common.sh.
+- Linear writes go through `bin/linear.sh` so dry-run + `meta: dedup`
   (`add-or-update-comment <sig> <ident> <body>`) work uniformly. The function
-  emits the new-shape `<!-- meta: dedup key=... -->` marker and looks up
-  in-flight comments by both new and legacy shapes, so existing threads
-  posted under the legacy `<!-- pipeline-sig: ... -->` writer are still
-  updated in place rather than duplicated.
-- Metric writes go through `bin/metrics.sh` so they end up in `events.jsonl` and on the
-  retrospective's input.
-- Per-stage allowed tool lists are centralized in `dispatch.sh::allowed_tools_for`. New
-  stages must add a case there or dispatch dies.
-- For exit codes, use the taxonomy in `failure_outcome_for_exit` (common.sh) — adding a new
-  exit code without updating that switch routes it to `unknown-exit-N` and the
-  retrospective's §1 filter will not classify it.
-- New scripts that read or write per-project state must reference
-  `$PROJECT_STATE_DIR`, never `$HARNESS_STATE_DIR/<issue>` directly.
-  Cross-project shared state (the claude mutex, the project sentinel
-  collision check) is the only legitimate use of `$HARNESS_STATE_DIR/`.
-- Defense-in-depth on top of tool-lane denials: when a stage's contract says
-  "agent must not invoke tool X," prefer a transcript-based assertion
-  (`assert_no_tool_invocation` in `bin/dispatch.sh`) over a state-of-the-world
-  check after dispatch. State checks false-positive on actions taken by other
-  actors (humans, prior stages, future agents); transcript checks answer the
-  contract question directly. Today only the implement stage uses this
-  pattern (forbidding `gh pr create`); generalising to other stages is a
-  separate refactor.
-- For any new script that reads pipeline markers from Linear comments, use
-  `parse_pipeline_marker` from `bin/common.sh` rather than hand-rolling
-  contains-checks or regex extraction. The helper accepts both legacy
-  (`pipeline-X: value`) and current (`pipeline: event k=v`) shapes and
-  returns a uniform JSON event. The closed event vocabulary lives in
-  `bin/pipeline-events.json`; the human-readable schema is in
-  `docs/pipeline-vocabulary.md`.
+  emits `<!-- meta: dedup key=... -->` and looks up in-flight comments by both
+  new and legacy shapes.
+- Metric writes go through `bin/metrics.sh` (lands in `events.jsonl`).
+- Per-stage allowed tool lists are centralized in
+  `dispatch.sh::allowed_tools_for`. New stages must add a case there.
+- For exit codes, use the `failure_outcome_for_exit` taxonomy (common.sh) —
+  unmapped codes route to `unknown-exit-N` and the retrospective's §1 filter
+  won't classify them.
+- Per-project state must reference `$PROJECT_STATE_DIR`, never
+  `$HARNESS_STATE_DIR/<issue>` directly. Cross-project shared state (claude
+  mutex, project sentinel) is the only legitimate use of `$HARNESS_STATE_DIR/`.
+- Defense-in-depth: when a stage's contract says "agent must not invoke tool X,"
+  prefer a transcript-based assertion (`assert_no_tool_invocation` in
+  `bin/dispatch.sh`) over a post-dispatch state check. State checks
+  false-positive on actions taken by other actors. Today only implement uses
+  this pattern (forbidding `gh pr create`).
+- For scripts reading pipeline markers from Linear comments, use
+  `parse_pipeline_marker` from `bin/common.sh` rather than hand-rolled
+  contains/regex. Accepts both legacy (`pipeline-X: value`) and current
+  (`pipeline: event k=v`) shapes. Closed vocabulary lives in
+  `bin/pipeline-events.json`; schema in `docs/pipeline-vocabulary.md`.
 
 ## Single human-approval gate (ENG-54)
 
-The pipeline collects human approval **once**, at the build stage's P2
-preflight, on the post-QA SHA. The review stage is agent-only — it runs
-cold-pass reviewers, comments on the PR, and either advances to QA or
-loops back to implement. It does **not** wait for human approval, and
-`bin/run-stage.sh::_fresh_wait_reason` allow-lists the wait shape for
-`build` only.
-
-**One-time migration when deploying ENG-54:** any issue currently in
-flight at `stage:reviewing` with a `<!-- pipeline: verdict result=wait
-reason=awaiting-approval -->` marker (or its legacy `<!-- pipeline-wait:
-awaiting-approval -->` predecessor) as its latest comment will idle
-indefinitely under the new contract (the wait shape no longer drives a
-re-dispatch from review). Flush each such issue past the (now-removed)
-gate by applying `pipeline:halted` and resolving:
-
-```bash
-bash bin/linear.sh add-label ENG-N pipeline:halted
-bash bin/pipeline.sh decide ENG-N --action continue
-```
-
-The next tick resumes from review's clean-review path (Decision C),
-emits `<!-- pipeline: verdict result=pass stage=reviewing -->`, and
-transitions to QA. Issues at any other stage are unaffected.
+The pipeline collects human approval **once**, at build's P2 preflight on
+the post-QA SHA. Review is agent-only — runs cold-pass reviewers, comments
+on the PR, and either advances to QA or loops back to implement. It does
+**not** wait for human approval; `_fresh_wait_reason` allow-lists the wait
+shape for `build` only.
 
 ## Slot-occupancy contract (ENG-90)
 
@@ -866,26 +587,26 @@ inspect each surface.
 | Symptom | Where to look |
 |---|---|
 | Tick is silent | `$PROJECT_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
-| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure) | Linear comments under sig `halt/<stage>/<issue>` (verdict `result=halt reason=agent-blocked`); `pipeline:halted` + `pipeline:skip-until-human-acts` labels; `$(issue_dir <issue>)/.consecutive-failures` carries the per-issue count. Other issues continue to be polled — do NOT touch `orchestrator.paused`. **One-command recovery:** `bash bin/pipeline.sh decide <ENG-N> --action continue` (clears halt label, skip labels, per-issue counter, issue-state, posts operator-resume waypoint). **NOTE:** self-leak halts only fire on `implementing | ui | qa`. On `reviewing | building | released`, `clean_self_leak_residue` auto-cleans the residue and the tick advances without halting (see "Sweep + scope partition" section). If you expected a halt on those stages and didn't see one, that's working as designed; check the `sweep-readonly-residue-cleaned` metric for what was cleaned. |
-| Global breaker (infrastructure outage) | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 from `rc=24` (`linear-post-failed`) accumulated across ticks; `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`. Resolve with `set_orchestrator_paused false` (or any `decide --action continue`, which also clears the breaker via `_pipeline_clear_breaker`). The next clean tick clears the global counter. |
-| Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` (comment `createdAt` reflects FIRST emission only; check the `<!-- meta: reapplied at=… -->` footer for the latest re-apply moment — see `docs/runbooks/recovery.md` §4) |
-| Approved/ready ticket at later stage (e.g. `stage:building` post-approval, or `stage:reviewing` post-PR-mergeable) sits idle while an earlier-stage or inbox issue dispatches each tick | Pre-ENG-91 the picker walked Pass 4 (held) → Pass 5 (inbox) → Pass 6 (wait re-pickup) sequentially and `exit 0`'d after the first dispatch — a later-stage wait_recallable could starve behind an earlier-stage held even when its recall predicate was ready. ENG-91's unified Pass 4U picker (`bin/poll.sh::_picker_build_pool`) sorts by `[-stage_index, -priority_sort_rank, fifo_ts]` and gates wait_recallable inclusion on `bin/entry-conditions.sh::should_dispatch == proceed`. Inspect `$PROJECT_STATE_DIR/<slug>/logs/local-YYYY-MM-DD.log` for `picker: wait_recallable <ENG-N> skipped (predicate not ready)` lines — that is the gate firing. If the predicate is `proceed` and the issue still loses to an earlier-stage / inbox issue, the picker sort is the bug — see ENG-91. Recovery while waiting for a fix: `bash bin/linear.sh add-label <held-issue> pipeline:paused`, let the next tick re-pick the wait, then `remove-label`. |
+| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure) | Linear comments under sig `halt/<stage>/<issue>` (verdict `result=halt reason=agent-blocked`); `pipeline:halted` + `pipeline:skip-until-human-acts` labels; `$(issue_dir <issue>)/.consecutive-failures` carries per-issue count. Other issues keep polling — do NOT touch `orchestrator.paused`. **Recovery:** `bash bin/pipeline.sh decide <ENG-N> --action continue`. Self-leak halts only fire on `implementing | ui | qa`; on `reviewing | building | released`, `clean_self_leak_residue` auto-cleans (check `sweep-readonly-residue-cleaned` metric). |
+| Global breaker (infrastructure outage) | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 from `rc=24` (`linear-post-failed`); `orchestrator.paused=true`. Resolve with `set_orchestrator_paused false` or any `decide --action continue` (clears via `_pipeline_clear_breaker`). |
+| Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>`. Comment `createdAt` reflects FIRST emission only — check `<!-- meta: reapplied at=… -->` footer for latest re-apply (see `docs/runbooks/recovery.md` §4). |
+| Approved/ready ticket at later stage sits idle while earlier-stage/inbox issue dispatches each tick | Pre-ENG-91 the picker walked Pass 4→5→6 sequentially and exited after first dispatch. ENG-91's unified Pass 4U picker (`bin/poll.sh::_picker_build_pool`) sorts by `[-stage_index, -priority_sort_rank, fifo_ts]` and gates wait_recallable inclusion on `should_dispatch == proceed`. Inspect logs for `picker: wait_recallable <ENG-N> skipped (predicate not ready)`. Recovery: add `pipeline:paused` to held issue, let next tick re-pick the wait, then remove. |
 | Wrong-target Linear writes | `git log` on `$TARGET_REPO/.pipeline-config/schemas/linear-ids.json` — stale cache is the usual cause |
-| Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset, see below) or set `orchestrator.paused=true` (takes effect next tick) |
-| Brainstorm halts at iteration 2 with `iteration-exhausted` (was: resolved on iteration 3) | New ENG-65 behavior: brainstorm voluntarily halts after 2 persona-review iterations with unresolved P0 instead of starting iteration 3. Inspect `$PROJECT_STATE_DIR/<ident>/worktree/docs/brainstorms/`; resume via `--action continue` or fix the underlying P0 in the plan. Bounded worst-case spend, costs one extra operator touch on slow-converging brainstorms. |
-| scope-check halts an issue with files belonging to a recent upstream merge | Pre-ENG-59 bug: scope-check diffed against the host's local `main`, which lags upstream merges until the operator runs `git pull`. Post-ENG-59 (`bin/scope-check.sh:155-…`) fetches `origin main` per run and diffs against `origin/main`. If you still see this symptom, check the per-stage transcript for `scope-check: fetch origin main failed` — fetch unreachable + no prior `refs/remotes/origin/main` falls back to local `main` (the pre-ENG-59 behaviour, preserved as a warning-emitting degraded mode). |
-| Issue at `stage:building` idles with `dispatch-skipped` events and no halt label | inspect `$PROJECT_STATE_DIR/<ident>/wait-building.json`'s `attempts` field — the ENG-86 entry-conditions gate is firing skip per `gh pr view`. If the PR has been approved by a non-bot Code Owner, check whether `gh` is on PATH for launchd's environment (the stale-predicate fail-mode that the `external_signal_budget` halts after `max_attempts` ticks). If not approved, the operator's action is the underlying remedy. |
+| Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset) or set `orchestrator.paused=true` (next tick) |
+| Brainstorm halts at iteration 2 with `iteration-exhausted` | ENG-65: voluntarily halts after 2 persona-review iterations with unresolved P0. Resume via `--action continue` or fix underlying P0. Bounded worst-case spend; one extra operator touch on slow-converging brainstorms. |
+| scope-check halts on files from a recent upstream merge | Pre-ENG-59 bug; post-ENG-59 (`bin/scope-check.sh:155-…`) fetches `origin main` per run. If symptom persists, check transcript for `scope-check: fetch origin main failed` — fetch unreachable + no `refs/remotes/origin/main` falls back to local `main` (degraded mode with warning). |
+| Issue at `stage:building` idles with `dispatch-skipped` events and no halt label | Inspect `wait-building.json::attempts` — ENG-86 entry-conditions gate firing skip per `gh pr view`. If PR is approved by a non-bot Code Owner, check whether `gh` is on PATH for launchd. If not approved, operator action is the underlying remedy. |
 
-**What `--action continue` clears (atomic, ENG-58 ported to ENG-60; ENG-69 added per-issue counter clear):**
+**What `--action continue` clears (atomic):**
 
 1. `pipeline:halted` label
 2. `pipeline:skip-until-code-changes` and `pipeline:skip-until-human-acts` labels
 3. `$PROJECT_STATE_DIR/<ident>/wait-*.json` files
-4. `$PROJECT_STATE_DIR/<ident>/issue-state.json` IFF its `.policy == "skip-until-human-acts"`
-5. Global breaker: `orchestrator.paused=true` cleared and `$PROJECT_STATE_DIR/.consecutive-failures` removed (via `_pipeline_clear_breaker`)
-6. Per-issue counter: `$(issue_dir <issue>)/.consecutive-failures` removed (sibling of the global counter; written by `tally_leaked_in_scope_failure` and `route_run_stage_exit`'s per-issue arm)
-7. Posts a `<!-- pipeline: transition from=<stage> to=<stage> reason=operator-resume -->` waypoint to reset `count_marker_since_last_transition` (rejection counter) and `find_fresh_verdict` freshness.
+4. `issue-state.json` IFF its `.policy == "skip-until-human-acts"`
+5. Global breaker: `orchestrator.paused=true` + `$PROJECT_STATE_DIR/.consecutive-failures` (via `_pipeline_clear_breaker`)
+6. Per-issue counter: `$(issue_dir <issue>)/.consecutive-failures`
+7. Posts `<!-- pipeline: transition from=<stage> to=<stage> reason=operator-resume -->` waypoint to reset rejection counter and `find_fresh_verdict` freshness.
 
-**Idempotent — safe to re-run.** Every operation (remove-label, rm -f,
-add-comment) is idempotent; the operator-resume waypoint is posted
-LAST so a partial-failure leaves the issue in a re-runnable state.
+**Idempotent — safe to re-run.** Operations are idempotent; the
+operator-resume waypoint is posted LAST so a partial-failure leaves the
+issue re-runnable.

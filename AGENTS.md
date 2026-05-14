@@ -1,5 +1,7 @@
 # Repository Guidelines
 
+For the full operator/agent context (failure modes, recovery, runtime topology, scope rules, dispatch contracts), see [CLAUDE.md](CLAUDE.md). This file is a quick contributor guide.
+
 ## Project Structure & Module Organization
 
 This repository is a macOS-only bash orchestration harness. Runtime scripts live in `bin/`; most executable modules have a sibling `*-test.sh` file in the same directory. Operator and design documentation lives in `docs/`, with runbooks under `docs/runbooks/` and generated/planned artifacts under `docs/brainstorms/` and `docs/plans/`. Agent prompt source is `AGENT_PROMPTS.md`; retrospective rule files are in `learned-rules/`. LaunchAgent templates are in `launchd/`. This repo does not contain target application code; scripts act on a separate `TARGET_REPO`.
@@ -21,7 +23,7 @@ Use bash with `set -euo pipefail`, two-space indentation, lowercase function nam
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi
 ```
 
-Name issue IDs as `ENG-N`. Branch shape is controlled by `bin/branch-name.sh`: bugs use `fix/<eng-n>-<slug>`, features and improvements use `feat/<eng-n>-<slug>`.
+Name issue IDs as `ENG-N`. Every new ticket must carry exactly one of `Bug` / `Feature` / `Improvement` at creation time — load-bearing, not cosmetic: `bin/branch-name.sh` re-evaluates the `Bug` label on every call, so adding or removing it after the worktree exists causes branch-shape drift. Branch shape: bugs use `fix/<eng-n>-<slug>`, features and improvements use `feat/<eng-n>-<slug>`.
 
 ## Testing Guidelines
 
@@ -33,4 +35,4 @@ Recent history uses concise Conventional Commit style, for example `fix(git): ad
 
 ## Security & Configuration Tips
 
-Do not commit secrets from `.pipeline-config/`, `secrets.env`, or local state. Most commands require `TARGET_REPO`; prefer `PIPELINE_DRY_RUN=1` while validating changes that would otherwise write to Linear, GitHub, Slack, or invoke `claude -p`.
+Do not commit secrets from `.pipeline-config/`, `secrets.env`, or local state. Most commands require `TARGET_REPO`; prefer `PIPELINE_DRY_RUN=1` while validating changes that would otherwise write to Linear, GitHub, Slack, or invoke `claude -p`. When updating existing Linear issues, use `bash bin/linear.sh add-label` / `remove-label` — never the Linear MCP `save_issue` on an existing issue, which overwrites the entire label set and silently drops `stage:*` / `pipeline:*` labels the orchestrator depends on.
