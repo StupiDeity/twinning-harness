@@ -734,6 +734,272 @@ t8b_rc=0
   || fail_at "T8b end-to-end Go" "rc=$t8b_rc (expected 0)"
 rm -rf "$sandbox_t8b"
 
+# ─── Group: ENG-96 QA adversarial coverage ──────────────────────────────
+# QA-authored tests (not in plan §7 Failure Mode → Test Map). Each pins a
+# breakage shape the unit + e2e fixtures above leave unconstrained.
+printf '\n--- ENG-96: QA adversarial coverage ---\n'
+
+# QA-ADV-1: is_benign uses BASENAME EQUALITY, not glob — subdirectory
+# variants of a profile-derived lockfile basename must NOT be auto-benign.
+# Pins the [[ "$f" == "$lf" ]] string-equality semantics so a future
+# refactor to `case $f in *$lf)` would visibly regress.
+SCOPE_BENIGN_LOCKFILES=('Cargo.lock' 'poetry.lock')
+allowed_files=""
+allowed_dirs=""
+for adv_path in 'Cargo.lock' 'poetry.lock'; do
+  is_benign "$adv_path" \
+    && pass_at "QA-ADV-1: bare basename '$adv_path' → benign" \
+    || fail_at "QA-ADV-1: bare basename" "expected benign for $adv_path"
+done
+for adv_path in 'evil/Cargo.lock' 'node_modules/poetry.lock' '/Cargo.lock' './Cargo.lock' 'sub/dir/Cargo.lock'; do
+  if is_benign "$adv_path"; then
+    fail_at "QA-ADV-1: subdir smuggle" "path '$adv_path' wrongly classified benign — basename-equality contract broken"
+  else
+    pass_at "QA-ADV-1: subdir/abs '$adv_path' → NOT benign (basename equality holds)"
+  fi
+done
+
+# QA-ADV-2: Unicode look-alike — Cyrillic 'а' (U+0430) in place of ASCII
+# 'a'. is_benign's bash [[ == ]] is byte-equality, so non-ASCII variants
+# must fail to match the ASCII lockfile name.
+adv_uni=$'C\xd0\xb0rgo.lock'  # Cа (Latin C + Cyrillic a) .lock
+if is_benign "$adv_uni"; then
+  fail_at "QA-ADV-2: unicode look-alike" "Cyrillic-а 'Cаrgo.lock' wrongly classified benign"
+else
+  pass_at "QA-ADV-2: unicode look-alike 'Cаrgo.lock' → NOT benign (byte-equality holds)"
+fi
+
+# QA-ADV-3: _lockfile_for_pm unknown token emits nothing (no crash).
+out="$(_lockfile_for_pm 'maven' 2>&1)"
+if [[ -z "$out" ]]; then
+  pass_at "QA-ADV-3: _lockfile_for_pm unknown token → empty output (no crash)"
+else
+  fail_at "QA-ADV-3: _lockfile_for_pm unknown" "expected empty, got: $out"
+fi
+out_empty="$(_lockfile_for_pm '' 2>&1)"
+if [[ -z "$out_empty" ]]; then
+  pass_at "QA-ADV-3b: _lockfile_for_pm empty arg → empty output (no crash)"
+else
+  fail_at "QA-ADV-3b: _lockfile_for_pm empty arg" "expected empty, got: $out_empty"
+fi
+
+# QA-ADV-4: Section is LAST section in profile — no following '## ' header
+# to trigger awk's `exit`. The parser must read to EOF and emit the body.
+cat > "$ENG96_DIR/qa-adv4.md" <<'EOF'
+---
+slug: test
+---
+## File layout
+- bin/
+
+## Build & test gates
+
+- Test: `cargo test`
+EOF
+_eng96_assert_basenames 'QA-ADV-4: section-as-last (no trailing ## )→cargo→Cargo.lock' \
+  "$ENG96_DIR/qa-adv4.md" 'Cargo.lock'
+
+# QA-ADV-5: Multi-PM profile — cargo + bun + poetry tokens together →
+# union of all three lockfile sets. Brainstorm Q2 acknowledged this is
+# covered implicitly by T1+T5 separately; QA pins the union explicitly.
+cat > "$ENG96_DIR/qa-adv5.md" <<'EOF'
+---
+slug: test
+---
+## Build & test gates
+
+- Build: `cargo build` (Rust workspace)
+- Frontend: `bun install` then `bun run dev`
+- Tests: `poetry run pytest tests/`
+
+## File layout
+- bin/
+EOF
+_eng96_assert_basenames 'QA-ADV-5: multi-PM (cargo+bun+poetry) → union' \
+  "$ENG96_DIR/qa-adv5.md" 'Cargo.lock,bun.lock,bun.lockb,poetry.lock'
+
+# QA-ADV-6: word-boundary follow-ups beyond T9 — confirm 'go' does NOT
+# match inside 'golang' (l is a word char on the right boundary). Also
+# confirm 'cargo' DOES match inside 'cargo-nextest' (hyphen breaks word
+# boundary). Both pin grep -qwE semantics.
+cat > "$ENG96_DIR/qa-adv6a.md" <<'EOF'
+---
+slug: test
+---
+## Build & test gates
+
+- Build: `golang stdlib usage`; Test: `golangci-lint run`
+
+## File layout
+- bin/
+EOF
+_eng96_assert_basenames 'QA-ADV-6a: golang/golangci → no go.sum (l is word boundary)' \
+  "$ENG96_DIR/qa-adv6a.md" ''
+
+cat > "$ENG96_DIR/qa-adv6b.md" <<'EOF'
+---
+slug: test
+---
+## Build & test gates
+
+- Test: `cargo-nextest run --workspace`
+
+## File layout
+- bin/
+EOF
+_eng96_assert_basenames 'QA-ADV-6b: cargo-nextest (hyphen=word break) → Cargo.lock matches' \
+  "$ENG96_DIR/qa-adv6b.md" 'Cargo.lock'
+
+# QA-ADV-7: SCOPE_CHECK_PROFILE_PATH set to a DIRECTORY (not a file) →
+# [[ -f "$path" ]] returns false → empty set, no crash. Pins the
+# missing-path branch when the override is misconfigured.
+SCOPE_CHECK_PROFILE_PATH="$ENG96_DIR" \
+  got_dir="$(_profile_lockfile_basenames "$ENG96_DIR" 2>&1)"
+if [[ -z "$got_dir" ]]; then
+  pass_at "QA-ADV-7: profile path=directory → empty (no crash, file-test guard works)"
+else
+  fail_at "QA-ADV-7: profile=directory" "expected empty, got: $got_dir"
+fi
+
+# QA-ADV-8: SCOPE_CHECK_PROFILE_PATH set to empty string → resolver
+# falls through to the slug-relative default. Pins [[ -n "..." ]] guard.
+# We can't easily assert the full default path resolution (depends on
+# $HARNESS_ROOT / $PROJECT_SLUG), but we can verify the empty-string
+# override does NOT short-circuit and DOES return a non-empty path.
+empty_override_resolved="$(SCOPE_CHECK_PROFILE_PATH='' _resolve_profile_path)"
+if [[ -n "$empty_override_resolved" && "$empty_override_resolved" == */learned-rules/*/project-profile.md ]]; then
+  pass_at "QA-ADV-8: empty SCOPE_CHECK_PROFILE_PATH → fallback to default (got=$empty_override_resolved)"
+else
+  fail_at "QA-ADV-8: empty override fallback" "expected slug-relative default, got: $empty_override_resolved"
+fi
+
+# QA-ADV-9: end-to-end subdirectory-smuggle attack — Rust profile,
+# plan declares `src/main.rs`, branch modifies `src/main.rs` (in-scope)
+# AND a smuggled `evil/Cargo.lock` (NOT auto-benign because the
+# basename-equality contract excludes subdir variants). Expect rc=3
+# (severe) — the scope-check gate must catch this.
+sandbox_qa9="$(mktemp -d -t scope-check-qa-adv9-XXXXXX)"
+profile_qa9="$ENG96_DIR/qa-adv9-profile.md"
+_eng96_write_profile "$profile_qa9" '- Test: `cargo test --workspace`'
+(
+  cd "$sandbox_qa9"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans src evil
+  cat > docs/plans/2026-05-13-eng-test-96qa9.md <<'PLAN'
+---
+linear: ENG-T96QA9
+---
+## File Structure
+- `src/main.rs` — main module.
+PLAN
+  printf 'fn main() {}\n' > src/main.rs
+  printf 'baseline\n' > evil/Cargo.lock
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf 'fn main() { println!("hi"); }\n' > src/main.rs
+  printf 'churn\n' > evil/Cargo.lock
+  git commit -aqm "agent change with smuggled subdir lockfile"
+)
+qa9_rc=0
+qa9_out="$(cd "$sandbox_qa9" && SCOPE_CHECK_PROFILE_PATH="$profile_qa9" \
+  bash "$ENG96_SCRIPT_DIR/scope-check.sh" ENG-T96QA9 test-branch 2>&1)" || qa9_rc=$?
+# rc=3 = severe (preferred); rc=1 = notable also acceptable if `evil/`
+# happens to share a top-level segment (it doesn't here, so severe is
+# the correct expectation).
+if [[ "$qa9_rc" == "3" ]] && grep -q "evil/Cargo.lock" <<<"$qa9_out"; then
+  pass_at "QA-ADV-9: e2e subdir smuggle 'evil/Cargo.lock' → rc=3 severe (basename-equality contract holds end-to-end)"
+else
+  fail_at "QA-ADV-9: e2e subdir smuggle" "rc=$qa9_rc (expected 3) out=$(printf '%s' "$qa9_out" | tr '\n' ' ' | cut -c1-200)"
+fi
+rm -rf "$sandbox_qa9"
+
+# QA-ADV-10: end-to-end Bun multi-lockfile — profile names `bun`,
+# branch modifies BOTH bun.lock AND bun.lockb. T5 unit-tests the helper
+# emits both basenames; T8/T8b cover single-lockfile e2e. QA pins the
+# multi-lockfile e2e — both basenames must be benign in a single main()
+# population block.
+sandbox_qa10="$(mktemp -d -t scope-check-qa-adv10-XXXXXX)"
+profile_qa10="$ENG96_DIR/qa-adv10-profile.md"
+_eng96_write_profile "$profile_qa10" '- Test: `bun test`'
+(
+  cd "$sandbox_qa10"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-13-eng-test-96qa10.md <<'PLAN'
+---
+linear: ENG-T96QA10
+---
+## File Structure
+- `package.json` — bump a dep version.
+PLAN
+  printf '{"name":"x"}\n' > package.json
+  printf 'baseline\n' > bun.lock
+  printf 'baseline-bin' > bun.lockb
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf '{"name":"x-updated"}\n' > package.json
+  printf 'baseline + churn\n' > bun.lock
+  printf 'baseline-bin + churn' > bun.lockb
+  git commit -aqm "agent change touching both bun lockfiles"
+)
+qa10_rc=0
+(cd "$sandbox_qa10" && SCOPE_CHECK_PROFILE_PATH="$profile_qa10" \
+  bash "$ENG96_SCRIPT_DIR/scope-check.sh" ENG-T96QA10 test-branch) >/dev/null 2>&1 || qa10_rc=$?
+[[ "$qa10_rc" == "0" ]] \
+  && pass_at "QA-ADV-10: e2e Bun multi-lockfile (bun.lock + bun.lockb both benign) → rc=0" \
+  || fail_at "QA-ADV-10: e2e Bun multi-lockfile" "rc=$qa10_rc (expected 0)"
+rm -rf "$sandbox_qa10"
+
+# QA-ADV-11: end-to-end observability pin — profile present but section
+# absent → empty SCOPE_BENIGN_LOCKFILES + warning log line on stderr. The
+# message text is contractual (operator runbook references it).
+sandbox_qa11="$(mktemp -d -t scope-check-qa-adv11-XXXXXX)"
+profile_qa11="$ENG96_DIR/qa-adv11-profile.md"
+cat > "$profile_qa11" <<'EOF'
+---
+slug: test
+---
+## File layout
+- bin/
+EOF
+(
+  cd "$sandbox_qa11"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+  mkdir -p docs/plans
+  cat > docs/plans/2026-05-13-eng-test-96qa11.md <<'PLAN'
+---
+linear: ENG-T96QA11
+---
+## File Structure
+- `README.md` — a doc bump.
+PLAN
+  printf 'old\n' > README.md
+  git add -A
+  git commit -qm "initial"
+  git branch -m main
+  git checkout -qb test-branch
+  printf 'new\n' > README.md
+  git commit -aqm "agent change"
+)
+qa11_stderr="$(cd "$sandbox_qa11" && SCOPE_CHECK_PROFILE_PATH="$profile_qa11" \
+  bash "$ENG96_SCRIPT_DIR/scope-check.sh" ENG-T96QA11 test-branch 2>&1 1>/dev/null)" || true
+if grep -qF 'profile-derived lockfile set empty' <<<"$qa11_stderr"; then
+  pass_at "QA-ADV-11: observability pin — empty-set warning lands on stderr"
+else
+  fail_at "QA-ADV-11: empty-set warning" "expected 'profile-derived lockfile set empty' in stderr; got: $(printf '%s' "$qa11_stderr" | tr '\n' ' ' | cut -c1-200)"
+fi
+rm -rf "$sandbox_qa11"
+
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
