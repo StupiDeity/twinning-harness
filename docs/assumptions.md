@@ -185,7 +185,8 @@ The argv composition order is
 - **Profile-derived stack tools** — `learned-rules/<slug>/project-profile.md`
   carries a `## Tool allowlist` section authored by the discovery
   agent (`bash bin/setup.sh /path project-profile`, Phase 5b). The
-  section is per-stage. Example for a Python target's `implementing`:
+  section is per-stage. Example for a Python target (`pyproject.toml`-shaped)
+  `implementing`:
 
       ## Tool allowlist
 
