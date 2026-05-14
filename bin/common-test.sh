@@ -600,6 +600,92 @@ case "$qa2_id" in
     ;;
 esac
 
+# ─── ENG-81 Task 4b: _resolve_K precedence + validation ───────────────
+# Precedence: env CLAUDE_MAX_CONCURRENT > $CONFIG.orchestrator.max_concurrent_features > 2.
+# Non-integer / <1 falls through with a stderr warning.
+printf '\n--- ENG-81 Task 4b: _resolve_K ---\n'
+
+# AC-RK-DEFAULT: no env, no readable config → 2.
+unset CLAUDE_MAX_CONCURRENT
+CONFIG="$_TEST_ROOT/_resolve_K-absent.json"   # path does not exist
+got="$(_resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-DEFAULT: no env + missing config → 2" \
+  || fail_at "AC-RK-DEFAULT: no env + missing config" "got=$got"
+
+# AC-RK-ENV-WINS: env=3 with config=2 → 3 (env precedence).
+_RK_CFG="$_TEST_ROOT/_resolve_K-cfg2.json"
+jq -n '{orchestrator:{max_concurrent_features:2}}' > "$_RK_CFG"
+got="$(CLAUDE_MAX_CONCURRENT=3 CONFIG="$_RK_CFG" _resolve_K 2>/dev/null)"
+[[ "$got" == "3" ]] && pass_at "AC-RK-ENV-WINS: env=3 + config=2 → 3" \
+  || fail_at "AC-RK-ENV-WINS" "got=$got"
+
+# AC-RK-CONFIG: no env, config=4 → 4.
+_RK_CFG4="$_TEST_ROOT/_resolve_K-cfg4.json"
+jq -n '{orchestrator:{max_concurrent_features:4}}' > "$_RK_CFG4"
+got="$(unset CLAUDE_MAX_CONCURRENT; CONFIG="$_RK_CFG4" _resolve_K 2>/dev/null)"
+[[ "$got" == "4" ]] && pass_at "AC-RK-CONFIG: env unset + config=4 → 4" \
+  || fail_at "AC-RK-CONFIG" "got=$got"
+
+# AC-RK-ZERO-FALLTHROUGH: env=0 with no config → falls through to 2 + warning.
+unset CLAUDE_MAX_CONCURRENT
+CONFIG="$_TEST_ROOT/_resolve_K-absent2.json"
+got="$(CLAUDE_MAX_CONCURRENT=0 _resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-ZERO-FALLTHROUGH: env=0 → fall through to 2" \
+  || fail_at "AC-RK-ZERO-FALLTHROUGH" "got=$got"
+
+# AC-RK-NONINT-FALLTHROUGH: env=abc → falls through with warning.
+got="$(CLAUDE_MAX_CONCURRENT=abc _resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-NONINT-FALLTHROUGH: env=abc → fall through to 2" \
+  || fail_at "AC-RK-NONINT-FALLTHROUGH" "got=$got"
+
+# AC-RK-WARNING-ON-STDERR: env=0 emits a warning on stderr, NOT stdout.
+warn="$(CLAUDE_MAX_CONCURRENT=0 _resolve_K 2>&1 >/dev/null)"
+case "$warn" in
+  *"_resolve_K: invalid CLAUDE_MAX_CONCURRENT=0"*)
+    pass_at "AC-RK-WARNING-ON-STDERR: invalid env emits warning on stderr"
+    ;;
+  *)
+    fail_at "AC-RK-WARNING-ON-STDERR" "expected 'invalid CLAUDE_MAX_CONCURRENT=0' warning, got: $warn"
+    ;;
+esac
+
+# AC-RK-CONFIG-NEGATIVE: config=-3 falls through with warning. Pins the
+# (( k >= 1 )) branch's defensive read of a malformed config.
+_RK_CFG_NEG="$_TEST_ROOT/_resolve_K-cfg-neg.json"
+jq -n '{orchestrator:{max_concurrent_features:-3}}' > "$_RK_CFG_NEG"
+got="$(unset CLAUDE_MAX_CONCURRENT; CONFIG="$_RK_CFG_NEG" _resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-CONFIG-NEGATIVE: config=-3 falls through to 2" \
+  || fail_at "AC-RK-CONFIG-NEGATIVE" "got=$got"
+
+# ─── ENG-81 Task 4b: try_acquire_lock contract ────────────────────────
+printf '\n--- ENG-81 Task 4b: try_acquire_lock ---\n'
+
+_TAL_DIR="$_TEST_ROOT/tal"
+mkdir -p "$_TAL_DIR"
+
+# AC-TAL-FIRST: first acquire on a fresh dir succeeds (rc=0).
+rc=0
+try_acquire_lock "$_TAL_DIR/lock1" || rc=$?
+[[ "$rc" == "0" && -d "$_TAL_DIR/lock1" ]] \
+  && pass_at "AC-TAL-FIRST: try_acquire_lock on fresh dir → rc=0 + dir created" \
+  || fail_at "AC-TAL-FIRST" "rc=$rc dir=$([[ -d $_TAL_DIR/lock1 ]] && echo present || echo absent)"
+
+# AC-TAL-CONTEND: second acquire on the same dir returns rc=1 (no wait).
+rc=0
+try_acquire_lock "$_TAL_DIR/lock1" || rc=$?
+[[ "$rc" == "1" ]] \
+  && pass_at "AC-TAL-CONTEND: try_acquire_lock on held dir → rc=1 (non-blocking)" \
+  || fail_at "AC-TAL-CONTEND" "expected rc=1 (held), got rc=$rc"
+
+# AC-TAL-RELEASE: release_lock then re-acquire succeeds.
+release_lock "$_TAL_DIR/lock1"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock1" || rc=$?
+[[ "$rc" == "0" ]] \
+  && pass_at "AC-TAL-RELEASE: re-acquire after release succeeds" \
+  || fail_at "AC-TAL-RELEASE" "rc=$rc"
+release_lock "$_TAL_DIR/lock1"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
