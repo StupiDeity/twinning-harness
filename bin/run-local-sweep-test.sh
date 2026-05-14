@@ -316,32 +316,50 @@ printf '?? .scratch/bte.md\0' \
 printf '?? .scratchpad\0' \
   | assert_partition scratch_path_boundary_not_matched implementing ENG-14 0 0 1
 
-# AC-K2-PARALLEL-WORKERS (ENG-81 Task 5): end-to-end K=2 fanout coverage.
-#
-# This file is currently a focused unit test of partition_dirty_paths.
-# The plan (docs/plans/2026-05-14-eng-81-*.md §5 Task 5) explicitly
-# DEFERS the run-local.sh end-to-end K=2 fixture to the QA agent:
-#
-#   "Concrete fixture wiring — Linear stub responses, branch-name
-#    stubs, dispatch.sh PIPELINE_DRY_RUN short-circuits — follows the
-#    existing pattern in this file; QA agent fills in details against
-#    the same stub primitives the rest of the file uses."
-#
-# Surface expected by the plan's Failure Mode → Test Map:
-#   CLAUDE_MAX_CONCURRENT=2 with two distinct ENG-N issues both
-#   produce $PROJECT_STATE_DIR/logs/local-YYYY-MM-DD-ENG-N.log files
-#   and independent .consecutive-failures rows on the same tick.
-#
-# The underlying primitives the K=2 path relies on are already covered
-# at unit-level by:
-#   - bin/run-local-helpers-adversarial-test.sh::AC-INFLIGHT-LOCK
-#       (per-issue .in-flight.lock contention)
-#   - bin/run-local-helpers-adversarial-test.sh::AC-METRICS-CONCURRENT-WRITE
-#       (parallel events.jsonl writers; POSIX O_APPEND atomicity)
-#   - bin/run-local-helpers-adversarial-test.sh::AC-WORKER-ISOLATION
-#       (worker-A halt does not contaminate worker-B's per-issue counter)
-#   - bin/mutex-test.sh::AC-N2-FREE-SLOT-2, AC-N2-CONTEND
-#       (cap=2 slot accounting under contention)
-# QA owns wiring the end-to-end fanout against these primitives.
+# AC-K2-PARALLEL-WORKERS (ENG-81 Task 5): structural assertions on the
+# scheduler/worker fork plumbing in bin/run-local.sh. The full end-to-end
+# fanout against stubbed poll.sh / run-stage.sh is deferred to QA per
+# plan §5 Task 5; here we pin the structural invariants the review flagged
+# as load-bearing — the parallel fork loop, the pre-fork
+# _SCHEDULER_INFLIGHT_LOCKS clear, the wait after fork — so a future edit
+# that breaks them surfaces in CI rather than silently regressing K=2.
+RUN_LOCAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-local.sh"
+[[ -f "$RUN_LOCAL_SRC" ]] || { printf 'FAIL AC-K2-PARALLEL-WORKERS: cannot locate run-local.sh at %s\n' "$RUN_LOCAL_SRC"; exit 1; }
+
+# Invariant 1: _run_worker function is defined.
+grep -q '^_run_worker() {' "$RUN_LOCAL_SRC" \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-DEFN: _run_worker function missing in %s\n' "$RUN_LOCAL_SRC"; exit 1; }
+
+# Invariant 2: scheduler clears _SCHEDULER_INFLIGHT_LOCKS BEFORE the fork
+# loop so the EXIT trap walks an empty list (workers own their own locks
+# post-fork via per-subshell trap). A missing clear leaks lock cleanup on
+# scheduler exit, double-releasing each worker's lock.
+awk '
+  /^_SCHEDULER_INFLIGHT_LOCKS=\(\)$/ && seen_run_worker == 1 { pre_fork_clear = NR }
+  /^_run_worker\(\) \{/             { seen_run_worker = 1 }
+  /^for spec in "\$\{_claimed_workers\[@\]\}"/ { fork_loop = NR }
+  END {
+    if (pre_fork_clear > 0 && fork_loop > pre_fork_clear) exit 0
+    print "pre_fork_clear=" pre_fork_clear " fork_loop=" fork_loop > "/dev/stderr"
+    exit 1
+  }
+' "$RUN_LOCAL_SRC" \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-CLEAR: _SCHEDULER_INFLIGHT_LOCKS=() clear not present BEFORE the worker fork loop\n'; exit 1; }
+
+# Invariant 3: the worker fork loop uses background-fork (`) &`) and the
+# scheduler `wait`s after. A regression to sequential dispatch would drop
+# the `&` and the test would catch it.
+grep -q '^  ) &$' "$RUN_LOCAL_SRC" \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-FORK: worker subshell is not backgrounded with `) &` in %s\n' "$RUN_LOCAL_SRC"; exit 1; }
+grep -q '^wait$' "$RUN_LOCAL_SRC" \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-WAIT: `wait` after worker fork not present in %s\n' "$RUN_LOCAL_SRC"; exit 1; }
+
+# Invariant 4: per-worker log file name carries the issue id (so K=2 ticks
+# produce two distinct log files, not interleaved daily logs).
+grep -q 'worker_log=.*local-.*\${issue_id}' "$RUN_LOCAL_SRC" \
+  || grep -q 'local-.*-${issue_id}.log' "$RUN_LOCAL_SRC" \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-LOG: per-worker log filename does not contain ${issue_id}\n'; exit 1; }
+
+printf 'OK AC-K2-PARALLEL-WORKERS structural invariants (4 of 4): _run_worker, pre-fork clear, ) & wait, per-issue log filename\n'
 
 printf 'All sweep-test cases passed.\n'

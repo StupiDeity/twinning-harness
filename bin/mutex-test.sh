@@ -77,6 +77,12 @@ case "$out" in
 esac
 
 # ── AC-N2-FREE-SLOT-2: cap=2 + slot-1 held → second acquirer takes slot-2 ──
+# Also pins the slot-allocation contract: not just "fast acquire," but the
+# acquirer specifically claimed slot-2 and DID NOT race slot-1. We
+# pre-acquire slot-1 from the test process and assert slot-1 is STILL
+# present after dispatch returns. dispatch's release_claude_mutex only
+# rms its OWN _ACQUIRED_SLOT_DIR (slot-2 in this scenario); if the
+# allocator buggily raced slot-1 it would have rm -rf'd the test's lock.
 reset_sem
 mkdir "$SEM_DIR/slot-1"
 start="$(date +%s)"
@@ -87,8 +93,12 @@ elapsed=$(( $(date +%s) - start ))
   echo "FAIL AC-N2-FREE-SLOT-2: cap=2 with only slot-1 held should not wait (elapsed=$elapsed)";
   exit 1;
 }
+[[ -d "$SEM_DIR/slot-1" ]] || {
+  echo "FAIL AC-N2-FREE-SLOT-2: slot-1 was destroyed by dispatch (allocator raced slot-1 instead of claiming slot-2)";
+  exit 1;
+}
 rmdir "$SEM_DIR/slot-1" 2>/dev/null || true
-echo "OK AC-N2-FREE-SLOT-2 (slot-2 acquired immediately, elapsed=${elapsed}s)"
+echo "OK AC-N2-FREE-SLOT-2 (slot-1 intact, dispatch claimed slot-2, elapsed=${elapsed}s)"
 
 # ── AC-N2-CONTEND: cap=2 with BOTH slots held → third acquirer waits ──
 reset_sem

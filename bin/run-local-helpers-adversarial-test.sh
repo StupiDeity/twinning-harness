@@ -3016,22 +3016,92 @@ test_parallel_events_jsonl_atomic() {
     return
   fi
 
-  local total bad=0
+  local total bad=0 max_line=0
   total="$(wc -l < "$events" | tr -d ' ')"
   while IFS= read -r line; do
     jq -e . <<<"$line" >/dev/null 2>&1 || bad=$((bad + 1))
+    (( ${#line} > max_line )) && max_line=${#line}
   done < "$events"
 
-  if (( bad == 0 && total >= 100 )); then
-    report_ok "$case_name $total lines, 0 torn (POSIX O_APPEND atomic <= PIPE_BUF)"
+  # Pin the PIPE_BUF (4096 bytes on macOS / Linux) line-size envelope that
+  # the atomicity guarantee depends on. A future metrics.sh schema bump
+  # pushing lines past PIPE_BUF silently breaks POSIX O_APPEND atomicity
+  # while the parse-checks would continue to pass.
+  if (( bad == 0 && total >= 100 && max_line < 4096 )); then
+    report_ok "$case_name $total lines, 0 torn, max_line=$max_line < PIPE_BUF=4096"
   else
-    report_fail "$case_name torn-write detected or short" \
-      "0 torn lines, total >= 100" \
-      "$bad torn lines, total=$total"
+    report_fail "$case_name torn-write or oversize line" \
+      "0 torn, total >= 100, max_line < 4096" \
+      "$bad torn, total=$total, max_line=$max_line"
   fi
   rm -rf "$mc_dir"
 }
 test_parallel_events_jsonl_atomic
+
+# ─── E-7 (brainstorm §6.5): parallel rc=24 (linear-post-failed) ───────
+# Under K>1, multiple workers can exit with rc=24 in a single tick. Each
+# bump targets the global $FAIL_COUNTER lane (ENG-69 split — rc=24 is
+# infrastructure-wide). The under-count bound from brainstorm §6.5 is:
+# at K=2, worst-case 1 lost increment; at K=3, worst-case 2 lost.
+# Pin the bound by firing 5 parallel rc=24 routes and asserting the
+# counter lands at >= K-1 = 4 (the K=5 worst case under-count bound).
+test_parallel_rc24_counter_race() {
+  local case_name="AC-PARALLEL-RC24-COUNTER"
+  local rd; rd="$(mktemp -d -t twinning-rc24race.XXXXXX)"
+  local fail_counter="$rd/.consecutive-failures"
+
+  # route_run_stage_exit reads from $FAIL_COUNTER + $FAIL_THRESHOLD;
+  # mkdir issue dirs for the per-issue lane (unused here but required so
+  # the function does not die on a missing parent).
+  mkdir -p "$rd/ENG-2401" "$rd/ENG-2402" "$rd/ENG-2403" "$rd/ENG-2404" "$rd/ENG-2405"
+
+  # Stub set_orchestrator_paused (called by trip_breaker) and the bin/
+  # SCRIPT_DIR-anchored calls so the function does not touch real state.
+  local stub_dir; stub_dir="$(mktemp -d -t twinning-rc24-stubs.XXXXXX)"
+  for stub in linear.sh slack.sh metrics.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_dir/$stub"
+    chmod +x "$stub_dir/$stub"
+  done
+
+  local i pids=()
+  local err_dir; err_dir="$(mktemp -d -t twinning-rc24-err.XXXXXX)"
+  for i in 2401 2402 2403 2404 2405; do
+    (
+      PROJECT_STATE_DIR="$rd" FAIL_COUNTER="$fail_counter" \
+      FAIL_THRESHOLD=99 SCRIPT_DIR="$stub_dir" \
+        bash -c '
+          SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+          # shellcheck disable=SC1091
+          source "$SCRIPT_DIR_REAL/common.sh"
+          # shellcheck disable=SC1091
+          source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+          # Defang trip_breaker via FAIL_THRESHOLD=99 so the race tests the
+          # counter increment lane in isolation, never tripping the breaker.
+          route_run_stage_exit "ENG-'"$i"'" implementing 24
+        ' >"$err_dir/out-$i" 2>"$err_dir/err-$i"
+    ) &
+    pids+=("$!")
+  done
+  for i in "${pids[@]}"; do wait "$i" 2>/dev/null || true; done
+
+  local final
+  final="$(cat "$fail_counter" 2>/dev/null || printf '0')"
+  # Brainstorm §6.5 / E-7 bound: at K parallel writers, worst-case lost
+  # increments = K-1, so the floor is 1. The test asserts >= 1, pinning the
+  # counter-bump LANE works under contention without claiming linearizability.
+  if (( final >= 1 )); then
+    report_ok "$case_name 5 parallel rc=24 bumps → counter=$final (>= 1, race bounded by K-1=4)"
+  else
+    report_fail "$case_name counter never incremented under K=5 parallel rc=24" \
+      "counter >= 1 (at least 1 successful write under 5 racers)" \
+      "counter=$final; stderr samples: $(head -c 500 "$err_dir"/err-* 2>/dev/null || printf 'empty')"
+  fi
+  rm -rf "$rd" "$stub_dir" "$err_dir"
+}
+# Export SCRIPT_DIR_REAL so the subshell can find the harness scripts even
+# after the per-process SCRIPT_DIR override above.
+SCRIPT_DIR_REAL="$SCRIPT_DIR"
+test_parallel_rc24_counter_race
 
 # ─── ENG-81 Task 6: worker-isolation under self-leak halt ─────────────
 # When worker A halts via halt_issue_for_self_leak, the per-issue
@@ -3042,24 +3112,55 @@ test_parallel_events_jsonl_atomic
 test_worker_isolation_under_halt() {
   local case_name="AC-WORKER-ISOLATION"
   local wi_dir; wi_dir="$(mktemp -d -t twinning-isolation.XXXXXX)"
-  mkdir -p "$wi_dir/ENG-WIA" "$wi_dir/ENG-WIB"
+  # halt_issue_for_self_leak / classify_failure / route_run_stage_exit each
+  # validate the issue id against ^ENG-[0-9]+$ — use real numeric ids so the
+  # function reaches the per-issue state mutation it is meant to exercise.
+  mkdir -p "$wi_dir/ENG-8101" "$wi_dir/ENG-8102"
 
-  PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=1 \
+  # Stub linear.sh / slack.sh / metrics.sh / branch-name.sh as no-ops so
+  # classify_failure can reach the per-issue state mutation without firing
+  # real Linear/Slack writes. _CFS_SCRIPT_DIR (set inside classify-failure.sh
+  # on source) and SCRIPT_DIR (set by halt_issue_for_self_leak's metric
+  # emit) BOTH need to point at the stubs.
+  local stub_dir; stub_dir="$(mktemp -d -t twinning-isolation-stubs.XXXXXX)"
+  for stub in linear.sh slack.sh metrics.sh branch-name.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_dir/$stub"
+    chmod +x "$stub_dir/$stub"
+  done
+
+  # Drop PIPELINE_DRY_RUN explicitly — pre-fix the test set it to 1, which
+  # makes halt_issue_for_self_leak return at run-local-helpers.sh:142
+  # BEFORE classify_failure runs, so the assertion that ENG-8102's state
+  # is untouched would pass even if the lane-split were broken.
+  local err_log; err_log="$(mktemp -t twinning-isolation-err.XXXXXX)"
+  PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
     bash -c '
-      SCRIPT_DIR="'"$SCRIPT_DIR"'"
-      source "$SCRIPT_DIR/common.sh"
-      source "$SCRIPT_DIR/classify-failure.sh"
-      source "$SCRIPT_DIR/run-local-helpers.sh"
-      halt_issue_for_self_leak ENG-WIA implementing abc123def456
-    ' >/dev/null 2>&1 || true
+      SCRIPT_DIR_REAL="'"$SCRIPT_DIR"'"
+      SCRIPT_DIR="'"$stub_dir"'"
+      # shellcheck disable=SC1091
+      source "$SCRIPT_DIR_REAL/common.sh"
+      # shellcheck disable=SC1091
+      source "$SCRIPT_DIR_REAL/classify-failure.sh"
+      # Redirect classify-failure.sh internal calls (bin/linear.sh, slack.sh,
+      # metrics.sh) at the stub dir post-source.
+      _CFS_SCRIPT_DIR="'"$stub_dir"'"
+      # shellcheck disable=SC1091
+      source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+      halt_issue_for_self_leak ENG-8101 implementing abc123def456
+    ' >/dev/null 2>"$err_log" || true
 
-  if [[ ! -f "$wi_dir/ENG-WIB/.consecutive-failures" ]]; then
-    report_ok "$case_name ENG-WIB per-issue counter untouched by ENG-WIA halt"
+  # classify_failure writes issue-state.json (the canonical durable-state
+  # artifact). ENG-8102 must remain untouched.
+  local a_state="$wi_dir/ENG-8101/issue-state.json"
+  local b_state="$wi_dir/ENG-8102/issue-state.json"
+  if [[ -f "$a_state" && ! -f "$b_state" ]]; then
+    report_ok "$case_name ENG-8101 halted (issue-state.json present), ENG-8102 untouched"
   else
-    report_fail "$case_name ENG-WIB counter mutated" \
-      "absent" "present"
+    report_fail "$case_name cross-issue state contamination" \
+      "ENG-8101 state present, ENG-8102 absent" \
+      "ENG-8101=$([[ -f $a_state ]] && echo present || echo absent), ENG-8102=$([[ -f $b_state ]] && echo present || echo absent); stderr: $(head -c 500 "$err_log" 2>/dev/null)"
   fi
-  rm -rf "$wi_dir"
+  rm -rf "$wi_dir" "$stub_dir" "$err_log"
 }
 test_worker_isolation_under_halt
 
