@@ -56,8 +56,22 @@ fi
 # Bash traps are NOT stacked — a later `trap ... EXIT` REPLACES this one.
 # Register sweep tempfiles in TWINNING_SWEEP_TMPS so they are reaped here.
 TWINNING_SWEEP_TMPS=()
+
+# ENG-81 review.major: track scheduler-acquired per-issue in-flight
+# locks so cleanup_on_exit can reap any that did NOT successfully hand
+# off to a forked worker. The scheduler pushes here right after every
+# try_acquire_lock claim and CLEARS the array just before forking;
+# workers re-trap EXIT with their own release inside the subshell.
+# Without this, a Linear API blip / set -e between acquire and fork
+# leaves the lock dir behind and the issue is silently skipped on
+# every subsequent tick (operator-stuck — only `rmdir` recovers).
+_SCHEDULER_INFLIGHT_LOCKS=()
 cleanup_on_exit() {
   rm -rf "$LOCK_DIR"
+  local _l
+  for _l in "${_SCHEDULER_INFLIGHT_LOCKS[@]+"${_SCHEDULER_INFLIGHT_LOCKS[@]}"}"; do
+    release_lock "$_l"
+  done
   if (( ${#TWINNING_SWEEP_TMPS[@]} > 0 )); then
     rm -f "${TWINNING_SWEEP_TMPS[@]}"
   fi
@@ -195,12 +209,11 @@ _run_worker() {
   # split. rc=24 (linear-post-failed) → global counter; every other
   # non-zero rc → per-issue counter; rc=0 clears both.
   route_run_stage_exit "$issue_id" "$stage" "$rc"
-  if [[ $rc -ne 0 ]] && exit $rc; then :; fi
-  # NOTE: the line above's `&& exit $rc` is the wire-up #6 anchor
-  # (clean_scratch_dir before the failure-exit). `exit` inside this
-  # function exits the WORKER SUBSHELL, not the scheduler -- the
-  # function is invoked inside `( _run_worker ... ) &` so `exit`
-  # has subshell-scoped semantics here.
+  # ENG-81 review.minor: clean rc-gate idiom (was the opaque
+  # `&& exit $rc; then :; fi` workaround pinned by wire-up #6). `return`
+  # is correct because _run_worker is invoked inside `( ... ) &` — the
+  # subshell exits with the function's return value.
+  if [[ $rc -ne 0 ]]; then return $rc; fi
 
   # 3-stream partition sweep (ENG-14 D-3).
   local in_scope_file leaked_file out_scope_file
@@ -245,12 +258,13 @@ _run_worker() {
     done < "$out_scope_file"
   fi
 
-  # Tick-end .scratch/ cleanup — runs BEFORE the precedence block so
-  # it executes regardless of the halt/commit path chosen below.
-  clean_scratch_dir "$dispatch_cwd"
-
   # Precedence: self-leak (hard-fail) > leaked-in-scope > in-scope
   # commit > observed bucketed.
+  # (ENG-81 review.minor: removed the duplicate clean_scratch_dir call
+  # that lived here. The line at the start of _run_worker — before the
+  # rc-gate — already covers every post-dispatch path; partition reads
+  # only and mktemp uses TMPDIR, so .scratch/ cannot reappear between
+  # the two former call sites.)
   if (( ${#self_leak_hashes[@]} > 0 )); then
     if stage_is_read_mostly "$stage"; then
       clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}"
@@ -344,15 +358,17 @@ for di in $(seq 0 $((decisions_count - 1))); do
   stage="$(jq -r '.stage' <<<"$decision")"
   entry_action="$(jq -r '.entry_action // "run"' <<<"$decision")"
 
-  # Per-issue in-flight lock (ENG-81 D-002). try_acquire_lock is
-  # non-blocking; rc=1 means a prior tick's worker still holds it.
-  inflight_lock="$(issue_dir "$issue_id")/.in-flight.lock"
-  mkdir -p "$(issue_dir "$issue_id")"
-  if ! try_acquire_lock "$inflight_lock"; then
-    log "scheduler: $issue_id .in-flight.lock held by prior tick worker; skipping this decision"
-    continue
-  fi
-
+  # ENG-81 review.major: the per-issue .in-flight.lock is acquired AS
+  # LATE AS POSSIBLE — after every error-prone scheduler-side call
+  # (linear.sh transition-state / add-label, reconcile.sh, branch-name.sh,
+  # resolve_worktree_path, ensure_worktree). Pre-fix the lock was taken
+  # FIRST, so any of those failing on a transient blip killed the
+  # scheduler with `set -e` and left the lock orphaned — the issue
+  # silently skipped every subsequent tick.
+  # Cross-tick race protection (the lock's purpose) is preserved: if a
+  # tick-N worker is still running, we will arrive at the acquire and
+  # see the live PID; try_acquire_lock returns 1; we skip. ensure_worktree
+  # is idempotent so the reconcile-side work above is cheap to repeat.
   if [[ "$entry_action" == "apply-stage-label" ]]; then
     case "$stage" in
       brainstorming|planning|implementing|ui|reviewing|qa|building|released|retrospective) label_suffix="$stage" ;;
@@ -381,7 +397,6 @@ for di in $(seq 0 $((decisions_count - 1))); do
       esac
       [[ -n "$nxt_label" ]] && bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$nxt_label"
       bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" "linked" 0 "doc=$doc_path"
-      release_lock "$inflight_lock"
       continue
       ;;
     human)
@@ -390,7 +405,6 @@ for di in $(seq 0 $((decisions_count - 1))); do
       bash "$SCRIPT_DIR/metrics.sh" stage-start "$issue_id" "$stage" "reconcile-human" 0
       bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" \
         "reconcile-human" 0 "awaiting=supersede-or-extend-or-ignore" || true
-      release_lock "$inflight_lock"
       continue
       ;;
   esac
@@ -407,6 +421,18 @@ for di in $(seq 0 $((decisions_count - 1))); do
   mkdir -p "$(dirname "$worktree_path")"
   ensure_worktree "$branch" "$worktree_path"
   [[ -n "$worktree_path" ]] || die "internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from \$TARGET_REPO"
+
+  # Now that every error-prone call has succeeded, acquire the per-issue
+  # in-flight lock. The window between this line and the worker fork is
+  # tiny (one array append); cleanup_on_exit's EXIT trap covers it via
+  # _SCHEDULER_INFLIGHT_LOCKS.
+  inflight_lock="$(issue_dir "$issue_id")/.in-flight.lock"
+  mkdir -p "$(issue_dir "$issue_id")"
+  if ! try_acquire_lock "$inflight_lock"; then
+    log "scheduler: $issue_id .in-flight.lock held by prior tick worker; skipping this decision"
+    continue
+  fi
+  _SCHEDULER_INFLIGHT_LOCKS+=("$inflight_lock")
 
   _claimed_workers+=("${issue_id}|${stage}|${worktree_path}|${inflight_lock}")
 done
@@ -436,6 +462,12 @@ if (( ${#_claimed_workers[@]} == 0 )); then
   log "no workers claimed this tick (all decisions short-circuited in scheduler)"
   exit 0
 fi
+
+# ENG-81 review.major: hand off lock ownership to workers. Each worker
+# subshell re-traps EXIT with its own release; the scheduler-side
+# cleanup_on_exit must NOT reap these locks after fork. Clear the array
+# here — pre-fork — so the trap walks an empty list on scheduler exit.
+_SCHEDULER_INFLIGHT_LOCKS=()
 
 for spec in "${_claimed_workers[@]}"; do
   IFS='|' read -r w_issue w_stage w_worktree w_lock <<<"$spec"
