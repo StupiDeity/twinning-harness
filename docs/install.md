@@ -181,8 +181,11 @@ Applies sensible defaults to `config.json::orchestrator.*` and
 `linear.*` sections that aren't already set. This is where the
 per-stage-timeout and entry-conditions defaults land.
 
-If your target stack isn't Tauri, **after this phase** you'll want to
-populate `dispatch.tools` per
+Phase 5b (`project-profile`) populates the per-stage Tool allowlist
+for your target's stack. If you need additional operator-curated
+tools on top of the profile-derived list (e.g. enumerated
+`bin/*-test.sh` entries for harness-self), add them to
+`dispatch.tools` per
 [`configuration.md`](configuration.md#dispatchtools--per-stage-allowlist-extras).
 This is not driven by setup; you edit `config.json` by hand.
 

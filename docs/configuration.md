@@ -155,8 +155,18 @@ sees no orphaned terminal event.
 ## `dispatch.tools` — per-stage allowlist extras <a id="dispatchtools--per-stage-allowlist-extras"></a>
 
 Every `claude -p` invocation passes `--allowed-tools <comma-list>`. The
-base list per stage lives in `bin/dispatch.sh::allowed_tools_for` and is
-shaped for a Tauri (Rust + Bun + JS) target. Other stacks need extras.
+composition is
+**stack-neutral base + profile-derived stack tools + operator-curated extras**:
+
+- **stack-neutral base** — from `bin/dispatch.sh::allowed_tools_for`'s
+  per-stage case arm. No language-specific tokens.
+- **profile-derived stack tools** — from `learned-rules/<slug>/project-profile.md::## Tool allowlist`,
+  authored by the discovery agent.
+- **operator-curated extras** — from `.pipeline-config/config.json::dispatch.tools.<stage>[]`,
+  for per-target one-offs that don't belong in the canonical profile.
+
+Per-target stack tools are declared by the project profile, not
+hardcoded here.
 
 ### The wildcard pitfall
 
@@ -215,8 +225,8 @@ Stage keys are gerund form (matching `dispatch.sh::allowed_tools_for`'s case-arm
 |---|---|
 | `brainstorming` | Read, Write, Edit, Grep, Glob, TaskCreate, WebFetch, `bash bin/linear.sh`, `bash bin/pipeline.sh` |
 | `planning` | Read, Write, Edit, Grep, Glob, TaskCreate, `git log/diff`, linear/pipeline scripts |
-| `implementing` | Read, Write, Edit, Grep, Glob, TaskCreate, full git family, `cargo`, `bun`, `rustc`, `jq`, `awk`, linear/pipeline scripts |
-| `ui` | Implementing's tools + `Agent`, `npx`, `node` |
+| `implementing` | Read, Write, Edit, Grep, Glob, TaskCreate, full git family, `jq`, `awk`, linear/pipeline scripts. Stack tools come from `learned-rules/<slug>/project-profile.md::## Tool allowlist`. |
+| `ui` | Implementing's stack-neutral base + `Agent`. Stack tools (`npx`, `node`, etc.) come from the project profile. |
 | `reviewing` | Read, Write, Grep, Glob, TaskCreate, Agent, `gh pr view/diff/list/review/comment`, `gh issue create`, linear/pipeline/guards scripts |
 | `qa` | Read, Write, Edit, Grep, Glob, TaskCreate, Agent, full `git`, build tools, `gh pr/issue` family, linear/pipeline/guards scripts |
 | `building` | Read, Write, Grep, Glob, `git fetch/clone/rebase`, `gh run/pr` family (`view`, `checks`, `edit`, `merge`), linear/pipeline/slack scripts |
@@ -225,14 +235,18 @@ Stage keys are gerund form (matching `dispatch.sh::allowed_tools_for`'s case-arm
 The `bash .pipeline/bin/<script>:*` and `bash bin/<script>:*` dual entries
 date back to ENG-23 — both shapes are accepted for backwards-compat.
 
-### Adding extras for a non-Tauri stack
+### Adding operator-curated extras
 
 Append to `dispatch.tools.<stage>`. The entries are merged with the
-hardcoded base. Examples:
+stack-neutral base AND the profile-derived stack tools. The profile
+is the canonical place to declare stack tools (run discovery to
+populate); `dispatch.tools.<stage>` is for **operator-curated extras**
+on top — typically per-test-script enumeration or per-target
+one-offs. Examples:
 
-- **Python project** — add `Bash(pytest:*)`, `Bash(python:*)`, `Bash(ruff:*)`,
-  `Bash(mypy:*)` to `implementing` and `qa`.
-- **Go project** — add `Bash(go:*)`, `Bash(gofmt:*)`, `Bash(golangci-lint:*)`.
+- **Additional dev-tool patterns not declared in the profile** — for
+  example, a per-target one-off `Bash(./scripts/migrate:*)` that doesn't
+  belong in the canonical profile.
 - **Harness self** — add the full enumerated `bin/*-test.sh` list (above).
 
 ## `secrets.env`
@@ -282,7 +296,7 @@ wildcards, test enumeration matches disk).
 
 ## Examples
 
-### Minimal (Tauri target, defaults everywhere)
+### Minimal (defaults everywhere)
 
 ```json
 {

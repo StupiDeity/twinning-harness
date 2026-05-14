@@ -73,14 +73,15 @@ brainstorm output before letting the planning stage proceed.
 
 ### A2. Compromised target dependency
 
-**Threat**: A malicious npm/cargo/pip package in the target repo's
+**Threat**: A malicious dependency from any package ecosystem (cargo, bun, pip, go) in the target repo's
 build runs in the agent's worktree, with full write access to that
 worktree, the target's `.pipeline-config/`, and (transitively) the
 host filesystem under your user.
 
-**Reality today**: The agent runs `cargo`, `bun`, `npx`, `node`, `jq`,
-etc. with the worktree as CWD. Any post-install script in any
-dependency executes in your shell context.
+**Reality today**: The agent runs your target's package-manager
+commands (e.g. `cargo build`, `bun install`, `pip install`,
+`go build`) with the worktree as CWD. Any post-install script in
+any dependency executes in your shell context.
 
 **Mitigations in place**:
 - The worktree is per-issue, not the operator's main checkout (ENG-67
@@ -88,8 +89,9 @@ dependency executes in your shell context.
   else under your user.
 
 **Mitigations NOT in place**:
-- No supply-chain isolation. The agent's `cargo build` can run
-  malicious build scripts.
+- No supply-chain isolation. The agent's package-manager invocations
+  (e.g. `cargo build`, `bun install`, `pip install`, `go build`)
+  can run malicious build scripts.
 - No sandbox / firejail / Docker isolation around dispatches.
 
 **Recommended posture**: pin dependencies in the target repo. Audit

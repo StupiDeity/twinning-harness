@@ -322,6 +322,25 @@ payload across `--action continue` resume for every non-zero exit (timeout
 rc=124, envelope rc=29, scope rc=21, crash). `rm -rf "$worktree/.scratch"`;
 no-op if absent; dry-run logs only; failures non-blocking.
 
+**Where stack knowledge lives.** The per-slug project profile at
+`$HARNESS_ROOT/learned-rules/<slug>/project-profile.md` is the canonical
+source of stack truth. It is authored by a one-shot discovery agent
+during setup (`bash bin/setup.sh /path project-profile`) and consumed
+by four sites: `dispatch.sh::_dispatch_tools_from_profile` (reads
+`## Tool allowlist`), `run-local-helpers.sh::stage_output_paths`
+(reads `## File layout` for the scope sweep),
+`scope-check.sh::is_benign` (reads `## Build & test gates` to derive
+the benign lockfile basename set — ENG-96), and
+`render-prompt.sh::append_project_profile` (appends the entire
+profile to every non-retrospective dispatch's prompt). Failure
+asymmetry: the three dispatch-side consumers fall back stack-neutral
+with a `log` warning (no `die`); the prompt-side
+`render-prompt.sh::append_project_profile` dies loud on a missing or
+malformed (unresolved `<<NEEDS-INPUT:>>`) profile with a
+`bash bin/setup.sh /path project-profile` hint
+(`bin/render-prompt.sh:184-200`). See docs/architecture.md "Discovery
+and the project profile" for the full lifecycle.
+
 ## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-94)
 
 `dispatch.sh::allowed_tools_for` ships a stack-neutral base allowlist per stage.
@@ -329,9 +348,10 @@ Per-target stack tools come from the profile's `## Tool allowlist` section
 (`learned-rules/<slug>/project-profile.md`, schema_version 2). Operator-curated
 extras come from `.pipeline-config/config.json::dispatch.tools.<stage>[]`.
 
-Per-stage `--allowed-tools` argv composition (left-to-right): **base + profile
-+ extras**. Empty segments elided. Claude's matcher is order-insensitive —
-ordering is for log readability only.
+Per-stage `--allowed-tools` argv composition (left-to-right):
+**stack-neutral base + profile-derived stack tools + operator-curated extras**.
+Empty segments elided. Claude's matcher is order-insensitive — ordering is
+for log readability only.
 
 **Fallback contract.** Missing profile / `schema_version != 2` / missing
 `## Tool allowlist` → `_dispatch_tools_from_profile` returns empty, emits a
