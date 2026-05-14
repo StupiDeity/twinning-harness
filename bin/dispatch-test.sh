@@ -2876,25 +2876,42 @@ else
     "events.jsonl=$(cat "$G8_EVENTS" 2>/dev/null || printf 'absent') stderr=$(cat "$G8_OUT")"
 fi
 
-# Notes field carries wall/rss/cpu (the parsed gtime -v fields).
+# Notes field carries wall_seconds/max_rss_kb/cpu_pct (the parsed gtime
+# -v fields, with names matching the brainstorm contract — review.minor
+# renamed wall→wall_seconds and rss_kb→max_rss_kb so downstream
+# consumers can `tonumber` the wall value).
 if [[ -f "$G8_EVENTS" ]] \
-   && jq -e 'select(.event == "dispatch-resource-sample") | .notes | test("wall=") and test("rss_kb=") and test("cpu_pct=")' \
+   && jq -e 'select(.event == "dispatch-resource-sample") | .notes | test("wall_seconds=") and test("max_rss_kb=") and test("cpu_pct=")' \
         "$G8_EVENTS" >/dev/null 2>&1; then
-  pass_at "G8.A: dispatch-resource-sample notes carry wall/rss_kb/cpu_pct fields"
+  pass_at "G8.A: dispatch-resource-sample notes carry wall_seconds/max_rss_kb/cpu_pct fields"
 else
-  fail_at "G8.A: notes missing wall/rss_kb/cpu_pct" \
+  fail_at "G8.A: notes missing wall_seconds/max_rss_kb/cpu_pct" \
     "events: $(cat "$G8_EVENTS" 2>/dev/null)"
+fi
+
+# wall_seconds must be a numeric scalar (gtime emits m:ss.ff / h:mm:ss;
+# the dispatcher normalises to total seconds so downstream tonumber
+# works). Locate the wall_seconds=<val> token and assert it parses.
+if [[ -f "$G8_EVENTS" ]]; then
+  G8_WALL="$(jq -r 'select(.event == "dispatch-resource-sample") | .notes' "$G8_EVENTS" 2>/dev/null \
+            | sed -nE 's/.*wall_seconds=([0-9]+(\.[0-9]+)?).*/\1/p' | head -1)"
+  if [[ -n "$G8_WALL" ]] && awk -v v="$G8_WALL" 'BEGIN { exit (v+0 == 0 && v != "0") }'; then
+    pass_at "G8.A: wall_seconds is numeric ($G8_WALL)"
+  else
+    fail_at "G8.A: wall_seconds not numeric" "got: '$G8_WALL'"
+  fi
 fi
 
 # Sub-fixture B: gtime absent → dispatch still succeeds; warning logged;
 # no metric emitted. Use a fresh state dir to keep counters disjoint.
-G8B_PATH_NO_GTIME="$_TEST_STUB_DIR/g8b-bin"
-mkdir -p "$G8B_PATH_NO_GTIME"
-# Re-stub claude + gtimeout in the no-gtime PATH dir (so dispatch can
-# still reach them but `command -v gtime` returns nothing).
-cp "$_TEST_STUB_DIR/claude" "$G8B_PATH_NO_GTIME/claude"
-cp "$_TEST_STUB_DIR/gtimeout" "$G8B_PATH_NO_GTIME/gtimeout"
-
+#
+# Pre-review the test used `PATH="$G8B_PATH_NO_GTIME:/usr/bin:/bin:/opt/homebrew/bin"`
+# which broke deterministic execution on hosts that had `gnu-time`
+# installed at /opt/homebrew/bin/gtime — the test was supposed to model
+# the "no gtime on PATH" case but the production host (which actually
+# uses gtime!) re-introduced it. ENG-81 review.minor: drive the degraded
+# branch via `_PIPELINE_FORCE_NO_GTIME=1` env-var instead so the test
+# is deterministic regardless of host PATH.
 G8B_PROJECT_STATE="$G8_STATE_ROOT/g8b-slug"
 mkdir -p "$G8B_PROJECT_STATE/ENG-G8B"
 G8B_TARGET="$_TEST_STUB_DIR/g8b-target"
@@ -2907,10 +2924,9 @@ jq -n '{
 jq -n '{labels:{},states:{}}' > "$G8B_TARGET/.pipeline-config/schemas/linear-ids.json"
 
 G8B_OUT="$_TEST_STUB_DIR/g8b-dispatch.out"
-# PATH must include /usr/bin and /bin so bash + system tools (jq, awk,
-# date, etc.) remain reachable; ONLY gtime is removed.
 PIPELINE_DRY_RUN=0 \
-PATH="$G8B_PATH_NO_GTIME:/usr/bin:/bin:/opt/homebrew/bin" \
+_PIPELINE_FORCE_NO_GTIME=1 \
+PATH="$_TEST_STUB_DIR:$PATH" \
 TARGET_REPO="$G8B_TARGET" \
 PROJECT_SLUG="g8b-slug" \
 HARNESS_STATE_DIR="$G8_STATE_ROOT" \

@@ -2806,18 +2806,75 @@ test_self_leak_callsite_wired() {
   # injection vector. Catches refactor regressions that move the
   # cleanup downstream of the failure exit (the bug correctness
   # reviewer caught in v3).
+  #
+  # ENG-81 review.minor: the rc-gate idiom is now the clean form
+  # `if [[ $rc -ne 0 ]]; then return $rc; fi` (was the opaque
+  # `&& exit $rc; then :; fi` workaround that pinned the test grep).
+  # This regex accepts the canonical `if-then-return-fi` shape.
+  # Suppress set -e from sourced common.sh: grep no-match returns 1
+  # under pipefail and kills the test before report_fail can run. Using
+  # `|| true` on the subshell preserves report_fail's diagnostic.
   local cleanup_line rcgate_line
-  cleanup_line="$(grep -n 'clean_scratch_dir[[:space:]]\+"\$dispatch_cwd"' "$rl" | head -1 | cut -d: -f1)"
-  rcgate_line="$(grep -nE '\[\[[[:space:]]+\$rc[[:space:]]+-ne[[:space:]]+0[[:space:]]+\]\][[:space:]]+&&[[:space:]]+exit' "$rl" | head -1 | cut -d: -f1)"
-  if [[ -n "$cleanup_line" && -n "$rcgate_line" && "$cleanup_line" -lt "$rcgate_line" ]]; then
+  cleanup_line="$(grep -n 'clean_scratch_dir[[:space:]]\+"\$dispatch_cwd"' "$rl" | head -1 | cut -d: -f1 || true)"
+  rcgate_line="$(grep -nE '\[\[[[:space:]]+\$rc[[:space:]]+-ne[[:space:]]+0[[:space:]]+\]\][[:space:]]*;[[:space:]]*then[[:space:]]+return[[:space:]]+\$rc' "$rl" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "$cleanup_line" || -z "$rcgate_line" ]]; then
+    report_fail 'wire-up #6: positional invariant' \
+      "clean_scratch_dir must appear before [[ \$rc -ne 0 ]]; then return \$rc (cleanup=${cleanup_line:-MISSING}, rc-gate=${rcgate_line:-MISSING})" \
+      'one or both anchors missing — agent-failure ticks would leak stale .scratch/ across --action continue'
+  elif (( cleanup_line < rcgate_line )); then
     report_ok "wire-up #6: clean_scratch_dir at line $cleanup_line runs BEFORE rc-gate at line $rcgate_line"
   else
     report_fail 'wire-up #6: positional invariant' \
-      "clean_scratch_dir must appear before [[ \$rc -ne 0 ]] && exit (cleanup=${cleanup_line:-MISSING}, rc-gate=${rcgate_line:-MISSING})" \
+      "clean_scratch_dir line < rc-gate line (cleanup=$cleanup_line, rc-gate=$rcgate_line)" \
       'cleanup is at or after rc-gate — agent-failure ticks would leak stale .scratch/ across --action continue'
   fi
 }
 test_self_leak_callsite_wired
+
+# ─── ENG-81 review.major: scheduler-side in-flight lock wire-up ───────
+# Production code (run-local.sh) must:
+#   1. Declare `_SCHEDULER_INFLIGHT_LOCKS=()` array.
+#   2. Push to it after every try_acquire_lock claim.
+#   3. Reap it inside cleanup_on_exit (EXIT trap).
+#   4. Clear it just before forking workers (so the trap stops reaping
+#      locks that workers now own).
+# Without each of these, the leak path described in the review re-opens.
+test_scheduler_inflight_lock_wireup() {
+  local rl="$SCRIPT_DIR/run-local.sh"
+  if [[ ! -f "$rl" ]]; then
+    report_fail 'scheduler-leak: run-local.sh present' 'present' 'missing'
+    return
+  fi
+  if grep -qE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl"; then
+    report_ok "wire-up scheduler-leak #1: _SCHEDULER_INFLIGHT_LOCKS=() declared"
+  else
+    report_fail "wire-up scheduler-leak #1: tracking array missing" \
+      "_SCHEDULER_INFLIGHT_LOCKS=()" "not found"
+  fi
+  if grep -qE '_SCHEDULER_INFLIGHT_LOCKS\+=\(.*inflight_lock' "$rl"; then
+    report_ok "wire-up scheduler-leak #2: array push after try_acquire_lock claim"
+  else
+    report_fail "wire-up scheduler-leak #2: array push missing" \
+      '_SCHEDULER_INFLIGHT_LOCKS+=("$inflight_lock")' "not found"
+  fi
+  # Cleanup must walk the array and call release_lock on each entry.
+  if grep -qE 'for[[:space:]]+_[a-z_]+[[:space:]]+in[[:space:]]+.*_SCHEDULER_INFLIGHT_LOCKS' "$rl"; then
+    report_ok "wire-up scheduler-leak #3: cleanup_on_exit walks _SCHEDULER_INFLIGHT_LOCKS"
+  else
+    report_fail "wire-up scheduler-leak #3: cleanup loop missing" \
+      'for _l in "${_SCHEDULER_INFLIGHT_LOCKS[@]}"' "not found"
+  fi
+  # Pre-fork clear so workers own their locks.
+  if grep -qE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl" \
+    && [[ "$(grep -cE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl")" -ge 2 ]]; then
+    report_ok "wire-up scheduler-leak #4: array cleared (init + pre-fork)"
+  else
+    report_fail "wire-up scheduler-leak #4: missing pre-fork clear" \
+      "two _SCHEDULER_INFLIGHT_LOCKS=() lines (init + before worker fork)" \
+      "fewer than 2 occurrences in run-local.sh"
+  fi
+}
+test_scheduler_inflight_lock_wireup
 
 # ─── ENG-81 Task 4: per-issue .in-flight.lock contention ──────────────
 # Acquired by the run-local.sh scheduler arm before forking a worker
@@ -2827,13 +2884,20 @@ test_self_leak_callsite_wired
 # per-issue gate). Uses try_acquire_lock from common.sh (added in this
 # ticket; non-blocking by design — acquire_lock with timeout=0 means
 # "wait forever" and would hang the scheduler).
+#
+# Post-stale-lock-recovery (ENG-81 review.major bin/common.sh:411-414):
+# the contention check uses a LIVE background process as the lock
+# holder. A dead-pid lock is reclaimed by the new acquirer (covered by
+# AC-TAL-RECLAIM-DEAD in common-test.sh), so the "second-acquire
+# blocked" assertion only holds when the holder is actually alive.
 test_inflight_lock_contention() {
   local case_name="AC-INFLIGHT-LOCK"
   local eh_dir; eh_dir="$(mktemp -d -t twinning-inflight.XXXXXX)"
   local issue_root="$eh_dir/issue-state-test"
   mkdir -p "$issue_root/ENG-INFLIGHT"
+  local lock_dir="$issue_root/ENG-INFLIGHT/.in-flight.lock"
 
-  # First acquire (no contention) succeeds with empty stdout.
+  # First acquire by the test runner (live pid = $$).
   local out1
   out1="$(PROJECT_STATE_DIR="$issue_root" bash -c '
     SCRIPT_DIR="'"$SCRIPT_DIR"'"
@@ -2846,10 +2910,14 @@ test_inflight_lock_contention() {
     report_fail "$case_name first acquire" "empty stdout" "got: $out1"
   fi
 
-  # Second acquire (with the lock dir from the prior call still in place)
-  # must fail with rc=1 → the script prints SECOND_FAILED. The lock dir
-  # is left in place by the prior call so this models the real failure
-  # mode: tick N+1 fires while tick N's worker still holds the lock.
+  # Now overwrite the pid file with a LIVE backgrounded sleep so the
+  # next acquire sees a live holder (not a dead subshell pid). This
+  # models the real failure mode: tick N+1 fires while tick N's
+  # WORKER (still alive) holds the lock.
+  ( sleep 30 ) &
+  local live_pid=$!
+  printf '%s\n' "$live_pid" > "$lock_dir/pid"
+
   local out2
   out2="$(PROJECT_STATE_DIR="$issue_root" bash -c '
     SCRIPT_DIR="'"$SCRIPT_DIR"'"
@@ -2857,14 +2925,71 @@ test_inflight_lock_contention() {
     try_acquire_lock "$(issue_dir ENG-INFLIGHT)/.in-flight.lock" || echo SECOND_FAILED
   ' 2>&1)"
   if grep -q SECOND_FAILED <<<"$out2"; then
-    report_ok "$case_name second-acquire blocks (rc=1 → SECOND_FAILED)"
+    report_ok "$case_name second-acquire blocks (live holder → rc=1 → SECOND_FAILED)"
   else
     report_fail "$case_name second-acquire" "SECOND_FAILED in output" "got: $out2"
   fi
 
+  kill "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
   rm -rf "$eh_dir"
 }
 test_inflight_lock_contention
+
+# ─── ENG-81 review.major: scheduler-side in-flight lock leak ──────────
+# Pre-fix, the run-local.sh scheduler acquired .in-flight.lock BEFORE
+# every error-prone call (linear.sh transition-state, add-label,
+# reconcile.sh, branch-name.sh, resolve_worktree_path, ensure_worktree).
+# With set -e, any of those failing on a transient blip killed the
+# scheduler; the EXIT trap reaped LOCK_DIR but not the per-issue
+# in-flight locks, leaving the issue silently stuck across ticks.
+#
+# The fix: track scheduler-acquired-but-unforked locks in an array;
+# release them all via the existing cleanup_on_exit trap. After
+# workers fork, the array is cleared so each worker's own trap owns
+# its lock.
+test_scheduler_inflight_lock_cleanup_on_error() {
+  local case_name="AC-SCHEDULER-INFLIGHT-CLEANUP"
+  local eh_dir; eh_dir="$(mktemp -d -t twinning-sched-cleanup.XXXXXX)"
+  local issue_root="$eh_dir/issue-state-test"
+  mkdir -p "$issue_root/ENG-SCHED-LEAK"
+  local lock_dir="$issue_root/ENG-SCHED-LEAK/.in-flight.lock"
+
+  # Simulate the scheduler arm's pattern: acquire, register cleanup
+  # trap, then die mid-claim before any worker forks.
+  bash -c '
+    set -euo pipefail
+    SCRIPT_DIR="'"$SCRIPT_DIR"'"
+    PROJECT_STATE_DIR="'"$issue_root"'"
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/common.sh"
+    _SCHEDULER_INFLIGHT_LOCKS=()
+    cleanup_on_exit() {
+      local _l
+      for _l in "${_SCHEDULER_INFLIGHT_LOCKS[@]+"${_SCHEDULER_INFLIGHT_LOCKS[@]}"}"; do
+        release_lock "$_l"
+      done
+    }
+    trap cleanup_on_exit EXIT
+
+    try_acquire_lock "'"$lock_dir"'"
+    _SCHEDULER_INFLIGHT_LOCKS+=("'"$lock_dir"'")
+
+    # set -e bites here, simulating a Linear API blip.
+    false
+  ' >/dev/null 2>&1 || true
+
+  if [[ ! -d "$lock_dir" ]]; then
+    report_ok "$case_name scheduler EXIT trap releases unclaimed in-flight lock"
+  else
+    report_fail "$case_name lock leaked across scheduler error" \
+      "lock dir absent" \
+      "lock dir still present at $lock_dir"
+  fi
+
+  rm -rf "$eh_dir"
+}
+test_scheduler_inflight_lock_cleanup_on_error
 
 # ─── ENG-81 Task 6: parallel events.jsonl writes (POSIX O_APPEND) ────
 # 50 paired metrics.sh invocations from two issue identities, each
