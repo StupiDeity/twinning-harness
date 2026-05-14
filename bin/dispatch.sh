@@ -17,59 +17,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# ENG-81 Phase 2/4: counting semaphore replaces the binary mutex.
-# Each in-flight dispatch claims one of N slot dirs at
-# $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/. mkdir is atomic on
-# POSIX so multiple acquirers race for distinct slots safely.
-#
-# Cap resolution flows through _resolve_K (common.sh): env
-# CLAUDE_MAX_CONCURRENT > config orchestrator.max_concurrent_features
-# > built-in default 2. Phase 2 shipped at cap=1 (a hardcoded default
-# constant); Phase 4 (this commit) flips to _resolve_K so the
-# documented default 2 takes effect on hosts that have not set an
-# override.
-#
-# A-024 / A-033 contract: the `[claude-mutex] waiting for lock held by
-# <pid>` log text is preserved verbatim so mutex-test.sh's grep on
-# `claude-mutex.*waiting` keeps anchoring the same operator-visible
-# signal across the migration.
-CLAUDE_SEMAPHORE_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
-CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
-_ACQUIRED_SLOT_DIR=""
-
-acquire_claude_mutex() {
-  mkdir -p "$CLAUDE_SEMAPHORE_DIR"
-  local cap
-  cap="$(_resolve_K)"
-  local waited=0 slot
-  while :; do
-    for (( slot=1; slot <= cap; slot++ )); do
-      local d="$CLAUDE_SEMAPHORE_DIR/slot-$slot"
-      if mkdir "$d" 2>/dev/null; then
-        printf '%s\n' "$$" > "$d/pid"
-        _ACQUIRED_SLOT_DIR="$d"
-        return 0
-      fi
-    done
-    if (( waited == 0 )); then
-      # Preserve the exact log text mutex-test.sh greps for.
-      local holder=""
-      [[ -f "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" ]] \
-        && holder="$(cat "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" 2>/dev/null || true)"
-      log "[claude-mutex] waiting for lock held by ${holder:-<unknown>}"
-    fi
-    (( waited >= CLAUDE_MUTEX_TIMEOUT )) \
-      && die "[claude-mutex] timeout after ${CLAUDE_MUTEX_TIMEOUT}s (cap=$cap, all slots held)"
-    sleep 1
-    waited=$((waited + 1))
-  done
-}
-
-release_claude_mutex() {
-  [[ -n "$_ACQUIRED_SLOT_DIR" ]] || return 0
-  rm -rf "$_ACQUIRED_SLOT_DIR"
-  _ACQUIRED_SLOT_DIR=""
-}
+# ENG-81 review.major: the counting-semaphore primitives
+# (acquire_claude_mutex / release_claude_mutex, CLAUDE_SEMAPHORE_DIR,
+# CLAUDE_MUTEX_TIMEOUT, _ACQUIRED_SLOT_DIR) live in common.sh so
+# setup.sh::phase_project_profile can use them without `source`-ing
+# dispatch.sh (which would pull in main(), the stream renderer, the
+# allowlist table, and every future top-level addition). common.sh is
+# already sourced above at line 18 — no new include needed here.
+# See common.sh's "ENG-81 Phase 2/4: counting semaphore" block.
 
 # ENG-87: assert_no_tool_invocation (formerly defined here) hoisted to
 # bin/common.sh so run-stage.sh::_validate_dispatch_envelope can call it

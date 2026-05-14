@@ -450,6 +450,64 @@ release_lock() {
 
 export -f acquire_lock try_acquire_lock release_lock
 
+# ENG-81 Phase 2/4: counting semaphore (was a binary mutex pre-ENG-81).
+# Each in-flight `claude -p` dispatch claims one of N slot dirs at
+# $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/. mkdir is atomic on
+# POSIX so multiple acquirers race for distinct slots safely.
+#
+# Lives in common.sh (not dispatch.sh) so setup.sh::phase_project_profile
+# can call the helpers without pulling dispatch.sh's main()/renderer/
+# allowlist surface in via `source` — that was the review.major shape
+# bug. dispatch.sh, run-stage.sh, and setup.sh all source common.sh
+# already, so the helpers are reachable without any new include.
+#
+# A-024 / A-033 contract: the `[claude-mutex] waiting for lock held by
+# <pid>` log text is preserved verbatim so mutex-test.sh's grep on
+# `claude-mutex.*waiting` keeps anchoring the same operator-visible
+# signal across the migration. CLAUDE_MUTEX_TIMEOUT is similarly
+# preserved as an env-var contract (operators may have set it in
+# launchd plists pre-ENG-81); the variable name uses "MUTEX" rather
+# than "SEMAPHORE" for that reason.
+CLAUDE_SEMAPHORE_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
+CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
+_ACQUIRED_SLOT_DIR=""
+
+acquire_claude_mutex() {
+  mkdir -p "$CLAUDE_SEMAPHORE_DIR"
+  local cap
+  cap="$(_resolve_K)"
+  local waited=0 slot
+  while :; do
+    for (( slot=1; slot <= cap; slot++ )); do
+      local d="$CLAUDE_SEMAPHORE_DIR/slot-$slot"
+      if mkdir "$d" 2>/dev/null; then
+        printf '%s\n' "$$" > "$d/pid"
+        _ACQUIRED_SLOT_DIR="$d"
+        return 0
+      fi
+    done
+    if (( waited == 0 )); then
+      # Preserve the exact log text mutex-test.sh greps for.
+      local holder=""
+      [[ -f "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" ]] \
+        && holder="$(cat "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" 2>/dev/null || true)"
+      log "[claude-mutex] waiting for lock held by ${holder:-<unknown>}"
+    fi
+    (( waited >= CLAUDE_MUTEX_TIMEOUT )) \
+      && die "[claude-mutex] timeout after ${CLAUDE_MUTEX_TIMEOUT}s (cap=$cap, all slots held)"
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+release_claude_mutex() {
+  [[ -n "$_ACQUIRED_SLOT_DIR" ]] || return 0
+  rm -rf "$_ACQUIRED_SLOT_DIR"
+  _ACQUIRED_SLOT_DIR=""
+}
+
+export -f acquire_claude_mutex release_claude_mutex
+
 # ENG-81: per-tick concurrency cap.
 # Precedence (mirrors the ENG-65 dispatch_timeout_minutes pattern):
 #   1. env CLAUDE_MAX_CONCURRENT

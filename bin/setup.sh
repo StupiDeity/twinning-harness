@@ -311,15 +311,12 @@ phase_project_profile() {
   mkdir -p "$log_dir"
   local log_file="$log_dir/setup-discovery-$date.log"
 
-  # ENG-81 Phase 2: route through the shared counting semaphore so
-  # setup-time discovery contends for a slot just like dispatch does.
-  # Cap=1 (Phase 2 default) preserves today's strict serialization
-  # between setup-discovery and dispatched stage runs; Phase 4 (Task 7)
-  # widens the cap via _resolve_K. Sourcing dispatch.sh re-uses
-  # acquire_claude_mutex/release_claude_mutex without firing
-  # dispatch.sh::main (sentinel guard at the file tail).
-  # shellcheck source=dispatch.sh
-  source "$SCRIPT_DIR/dispatch.sh"
+  # ENG-81: route through the shared counting semaphore so setup-time
+  # discovery contends for a slot just like dispatch does. The helpers
+  # live in common.sh (sourced near the top of this script) so we DO
+  # NOT `source dispatch.sh` — pre-fix that pulled in dispatch's
+  # main()/renderer/allowlist surface and was flagged by review.major
+  # as the wrong shape.
   log "project-profile: waiting for claude-semaphore"
   acquire_claude_mutex
 
