@@ -13,6 +13,10 @@
 #
 # Tiers (applied to files NOT matching the plan's allowed files/dirs):
 #   - BENIGN (silently allowed, counted toward exit 0):
+#       * `.scratch/**`                 — sanctioned agent scratch namespace
+#                                         (gitignored; sweep-invisible on
+#                                         implementing|ui|qa; tick-end auto-
+#                                         clean on reviewing|building|released)
 #       * `.pipeline/metrics/**`        — orchestrator-owned telemetry
 #       * `docs/knowledge/**`           — learned-rules / knowledge-doc updates
 #       * `docs/plans/**`               — plan docs (cannot self-reference pre-creation)
@@ -169,13 +173,18 @@ extract_scope_section() {
 # Does $1 look benign regardless of plan?
 is_benign() {
   local f="$1"
-  # (a) stack-agnostic harness-owned path classes (ENG-96 D-001)
+  # (a) sanctioned agent scratch namespace — gitignored, sweep-invisible
+  # on implementing|ui|qa. Mirrored from partition_dirty_paths so the
+  # agent-side scope-check accepts the same paths the orchestrator-side
+  # sweep already filters.
+  case "$f" in .scratch/*) return 0 ;; esac
+  # (b) stack-agnostic harness-owned path classes (ENG-96 D-001)
   local cls
   for cls in "${_BENIGN_PATH_CLASSES[@]}"; do
     # shellcheck disable=SC2053
     case "$f" in $cls) return 0 ;; esac
   done
-  # (b) profile-derived lockfile basenames (ENG-96 D-002 / D-003).
+  # (c) profile-derived lockfile basenames (ENG-96 D-002 / D-003).
   # Bash 3.2 + set -u: an empty-array `"${arr[@]}"` expansion errors with
   # "unbound variable". Guard with explicit count check so the empty-set
   # fallback (D-005) does not crash the script.
@@ -185,7 +194,7 @@ is_benign() {
       [[ "$f" == "$lf" ]] && return 0
     done
   fi
-  # (c) Rust crate-tests carve-out (OUT of ENG-96 scope per Linear; preserved verbatim).
+  # (d) Rust crate-tests carve-out (OUT of ENG-96 scope per Linear; preserved verbatim).
   # Requires $allowed_files / $allowed_dirs from main scope.
   if [[ "$f" =~ ^(crates/[^/]+)/tests/ ]]; then
     local crate_dir="${BASH_REMATCH[1]}"
