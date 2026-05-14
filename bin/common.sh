@@ -408,14 +408,44 @@ acquire_lock() {
 # timeout=0 means "wait forever" (existing single-flight contract for
 # the tick lock), so a separate try-mode helper is required to keep
 # existing callers' semantics intact.
+#
+# Self-healing stale-lock recovery: a SIGKILL'd / oomkilled / host-
+# rebooted holder leaves the lock dir behind because the EXIT trap
+# never fired. On every acquire attempt that finds the dir present we
+# read the recorded holder pid and reclaim if it is no longer alive
+# (or no pid was recorded — legacy locks, or an interrupted acquire
+# between mkdir and pid-write). Without this, K=2's larger fork
+# surface doubles the chance of producing operator-stuck issues that
+# only `rmdir` can recover.
 try_acquire_lock() {
   local dir="$1"
-  mkdir "$dir" 2>/dev/null
+  if mkdir "$dir" 2>/dev/null; then
+    printf '%s\n' "$$" > "$dir/pid" 2>/dev/null || true
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/timestamp" 2>/dev/null || true
+    return 0
+  fi
+  local holder_pid=""
+  [[ -f "$dir/pid" ]] && holder_pid="$(cat "$dir/pid" 2>/dev/null || printf '')"
+  if [[ -z "$holder_pid" ]] || ! kill -0 "$holder_pid" 2>/dev/null; then
+    log "try_acquire_lock: reclaiming stale lock at $dir (holder=${holder_pid:-<missing>} not alive)"
+    rm -rf "$dir" 2>/dev/null || true
+    if mkdir "$dir" 2>/dev/null; then
+      printf '%s\n' "$$" > "$dir/pid" 2>/dev/null || true
+      date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/timestamp" 2>/dev/null || true
+      return 0
+    fi
+  fi
+  return 1
 }
 
+# rm -rf (not rmdir) because try_acquire_lock now writes pid+timestamp
+# files into the lock dir. rmdir would silently fail and the lock would
+# survive release, blocking the next acquire until the stale-recovery
+# branch fires. rm -rf handles both pidless legacy dirs and the new
+# shape uniformly.
 release_lock() {
   local dir="$1"
-  rmdir "$dir" 2>/dev/null || true
+  rm -rf "$dir" 2>/dev/null || true
 }
 
 export -f acquire_lock try_acquire_lock release_lock
