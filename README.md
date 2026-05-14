@@ -35,10 +35,12 @@ runs weekly and proposes updates to the harness's own learned-rule files.
 - "Set it and forget it" expectations — you remain the operator-in-the-loop
   for halts, scope-approvals, and review
 
-If your stack isn't Tauri, you'll need a one-time `.pipeline-config/`
-allowlist edit per the **Configuration** section below. Other than that, the
-harness is stack-agnostic — the agents just run whatever build/test commands
-your target repo already has.
+The harness is stack-agnostic. The first-time setup (`bash bin/setup.sh
+/path`) discovers your target's stack and writes a per-target profile
+that the orchestrator reads at dispatch time. The agents then run
+whatever build/test commands your target already uses.
+→ See [docs/architecture.md "Discovery and the project profile"](docs/architecture.md#discovery-and-the-project-profile)
+for the full lifecycle.
 
 ## How it works
 
@@ -343,7 +345,7 @@ Two locations:
 
 Most operators only edit `config.json` for: per-stage dispatch timeouts (if
 the default 30 min cap fires SIGTERM during legitimate persona-review work),
-the dispatch.tools allowlist (required for non-Tauri stacks), or
+the dispatch.tools allowlist (operator-curated extras on top of the profile-derived list), or
 entry-conditions (cost-recovery on build).
 
 → See [`docs/configuration.md`](docs/configuration.md) for the full
@@ -414,9 +416,13 @@ any of these silently breaks things in confusing ways:
   serialized via a global mutex; cross-machine concurrency is not supported.
 - **Auth**: Claude subscription session on the host — `ANTHROPIC_API_KEY` is
   intentionally never set.
-- **Stack**: Default per-stage allowed-tools list is Tauri-shaped. Other
-  stacks need a `.pipeline-config/config.json::dispatch.tools` extras
-  block.
+- **Stack**: Per-stage allowed-tools is composed of **stack-neutral
+  base + profile-derived stack tools + operator-curated extras**.
+  The profile (`learned-rules/<slug>/project-profile.md::## Tool
+  allowlist`) is authored by the discovery agent during setup; the
+  extras (`.pipeline-config/config.json::dispatch.tools`) are
+  operator-curated. Adding a new target runs discovery (Phase 5b)
+  to populate the profile.
 
 → See [`docs/assumptions.md`](docs/assumptions.md) for the full list with
 the failure mode each assumption defends against.
@@ -495,8 +501,9 @@ to the host can read every secret.
   `$HARNESS_CONFIG_DIR`
 
 **Highest-impact gaps in the current threat model**:
-1. **No supply-chain isolation** — agent dispatches run `cargo build` /
-   `bun install` / `npm install` against the target repo with full
+1. **No supply-chain isolation** — agent dispatches run your target's
+   package-manager commands (e.g. `cargo build`, `bun install`,
+   `pip install`, `go build`) against the target repo with full
    filesystem access. Malicious post-install scripts execute in your
    shell context.
 2. **No prompt-injection filtering on Linear issue bodies** — if you
