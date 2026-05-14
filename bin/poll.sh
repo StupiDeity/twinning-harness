@@ -619,6 +619,21 @@ idle() {
 main() {
   require_env LINEAR_API_KEY
 
+  # ENG-81 Task 3: optional --max <K> flag. Default 1 preserves the
+  # pre-ENG-81 single-object emission contract (run-local.sh:149's
+  # single-decision reader). With K>1, emits a JSON array of up to K
+  # decisions on stdout. Non-integer / <1 falls through to 1
+  # (defensive — mirror _resolve_K's policy on bad operator input).
+  local _max_decisions=1
+  while (( $# > 0 )); do
+    case "$1" in
+      --max) _max_decisions="${2:-1}"; shift 2 ;;
+      *)     shift ;;
+    esac
+  done
+  [[ "$_max_decisions" =~ ^[0-9]+$ ]] || _max_decisions=1
+  (( _max_decisions < 1 )) && _max_decisions=1
+
   local paused
   paused="$(is_orchestrator_paused)"
   [[ "$paused" == "true" ]] && idle "orchestrator-paused"
@@ -667,15 +682,22 @@ main() {
   # violation surfaces as the held being silently excluded from the
   # pool, caught by the AC-OAR-* fixtures in bin/poll-slot-test.sh,
   # not by a defensive guard here.
+  # ENG-81 Task 3: collect up to _max_decisions decisions instead of
+  # exiting on the first hit. The legacy single-emission behavior
+  # corresponds to _max_decisions=1 (the default), and the JSON shape
+  # in that case stays a single object (not a 1-element array) so the
+  # pre-ENG-81 reader at run-local.sh:149 keeps parsing.
   local pool n i=0
+  local _emitted='[]' _decisions_count=0
   pool="$(_picker_build_pool "$classified" "$held_count" "$max_concurrent")"
   n="$(jq 'length' <<<"$pool")"
   while (( i < n )); do
-    local cand source ident stage_label labels_json has_halt cur_stage_suffix arg
+    local cand source ident stage_label labels_json has_halt cur_stage_suffix arg _d
     cand="$(jq -c ".[$i]" <<<"$pool")"
     source="$(jq -r '.picker_source' <<<"$cand")"
     ident="$(jq -r '.identifier'  <<<"$cand")"
 
+    _d=""
     case "$source" in
       held)
         stage_label="$(jq -r '.stage_label' <<<"$cand")"
@@ -690,32 +712,48 @@ main() {
           i=$((i+1)); continue
         fi
         arg="$(stage_arg_for_label "$stage_label")"
-        jq -nc \
+        _d="$(jq -nc \
           --arg issue_id "$ident" \
           --arg stage    "$arg" \
           --arg reason   "held slot at $stage_label" \
-          '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
-        exit 0 ;;
+          '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}')"
+        ;;
 
       wait_recallable)
         stage_label="$(jq -r '.stage_label' <<<"$cand")"
         arg="$(stage_arg_for_label "$stage_label")"
-        jq -nc \
+        _d="$(jq -nc \
           --arg issue_id "$ident" \
           --arg stage    "$arg" \
           --arg reason   "wait re-pickup at $stage_label (predicate ready)" \
-          '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}'
-        exit 0 ;;
+          '{issue_id:$issue_id, stage:$stage, entry_action:"run", reason:$reason}')"
+        ;;
 
       inbox)
-        jq -nc \
+        _d="$(jq -nc \
           --arg issue_id "$ident" \
           --arg stage    "brainstorming" \
           --arg reason   "inbox pickup" \
-          '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}'
-        exit 0 ;;
+          '{issue_id:$issue_id, stage:$stage, entry_action:"apply-stage-label", reason:$reason}')"
+        ;;
     esac
+
+    if [[ -n "$_d" ]]; then
+      _emitted="$(jq -nc --argjson p "$_emitted" --argjson x "$_d" '$p + [$x]')"
+      _decisions_count=$((_decisions_count + 1))
+      if (( _decisions_count >= _max_decisions )); then break; fi
+    fi
+    i=$((i+1))
   done
+
+  if (( _decisions_count > 0 )); then
+    if (( _max_decisions == 1 )); then
+      jq -c '.[0]' <<<"$_emitted"   # legacy single-object output
+    else
+      printf '%s\n' "$_emitted"     # new array output
+    fi
+    exit 0
+  fi
 
   # Reached here with no work to dispatch.
   if (( held_count >= max_concurrent )); then
