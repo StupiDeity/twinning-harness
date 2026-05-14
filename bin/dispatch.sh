@@ -17,26 +17,56 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-CLAUDE_MUTEX_DIR="$HARNESS_STATE_DIR/.claude-mutex.lock"
+# ENG-81 Phase 2: counting semaphore replaces the binary mutex.
+# Each in-flight dispatch claims one of N slot dirs at
+# $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/. mkdir is atomic on
+# POSIX so multiple acquirers race for distinct slots safely.
+# Cap defaults to 1 in Phase 2 (preserves the pre-ENG-81 strict
+# serialization). Phase 4 (Task 7) widens the default to 2 by routing
+# `cap` through `_resolve_K` from common.sh.
+#
+# A-024 / A-033 contract: the `[claude-mutex] waiting for lock held by
+# <pid>` log text is preserved verbatim so mutex-test.sh's grep on
+# `claude-mutex.*waiting` keeps anchoring the same operator-visible
+# signal across the migration.
+CLAUDE_SEMAPHORE_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
 CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
+CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2=1   # Phase 4 (Task 7) flips to _resolve_K.
+_ACQUIRED_SLOT_DIR=""
 
 acquire_claude_mutex() {
-  local waited=0
-  while ! mkdir "$CLAUDE_MUTEX_DIR" 2>/dev/null; do
+  mkdir -p "$CLAUDE_SEMAPHORE_DIR"
+  local cap="${CLAUDE_MAX_CONCURRENT:-$CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2}"
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap="$CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2"
+  (( cap < 1 )) && cap="$CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2"
+  local waited=0 slot
+  while :; do
+    for (( slot=1; slot <= cap; slot++ )); do
+      local d="$CLAUDE_SEMAPHORE_DIR/slot-$slot"
+      if mkdir "$d" 2>/dev/null; then
+        printf '%s\n' "$$" > "$d/pid"
+        _ACQUIRED_SLOT_DIR="$d"
+        return 0
+      fi
+    done
     if (( waited == 0 )); then
+      # Preserve the exact log text mutex-test.sh greps for.
       local holder=""
-      [[ -f "$CLAUDE_MUTEX_DIR/pid" ]] && holder="$(cat "$CLAUDE_MUTEX_DIR/pid" 2>/dev/null || true)"
+      [[ -f "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" ]] \
+        && holder="$(cat "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" 2>/dev/null || true)"
       log "[claude-mutex] waiting for lock held by ${holder:-<unknown>}"
     fi
-    (( waited >= CLAUDE_MUTEX_TIMEOUT )) && die "[claude-mutex] timeout after ${CLAUDE_MUTEX_TIMEOUT}s"
+    (( waited >= CLAUDE_MUTEX_TIMEOUT )) \
+      && die "[claude-mutex] timeout after ${CLAUDE_MUTEX_TIMEOUT}s (cap=$cap, all slots held)"
     sleep 1
     waited=$((waited + 1))
   done
-  printf '%s\n' "$$" > "$CLAUDE_MUTEX_DIR/pid"
 }
 
 release_claude_mutex() {
-  rm -rf "$CLAUDE_MUTEX_DIR"
+  [[ -n "$_ACQUIRED_SLOT_DIR" ]] || return 0
+  rm -rf "$_ACQUIRED_SLOT_DIR"
+  _ACQUIRED_SLOT_DIR=""
 }
 
 # ENG-87: assert_no_tool_invocation (formerly defined here) hoisted to

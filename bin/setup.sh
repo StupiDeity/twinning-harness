@@ -311,17 +311,17 @@ phase_project_profile() {
   mkdir -p "$log_dir"
   local log_file="$log_dir/setup-discovery-$date.log"
 
-  # Hold the claude-mutex tightly around the claude call only; releasing
-  # in the same block (rather than via RETURN trap) survives a die()
-  # inside the validation steps that follow. RETURN does not fire on exit.
-  local mutex="$HARNESS_STATE_DIR/.claude-mutex.lock"
-  local waited=0
-  while ! mkdir "$mutex" 2>/dev/null; do
-    (( waited == 0 )) && log "project-profile: waiting for claude-mutex"
-    (( waited >= 600 )) && { rm -f "$rendered_prompt"; die "project-profile: claude-mutex timeout after 600s"; }
-    sleep 1; waited=$((waited + 1))
-  done
-  printf '%s\n' "$$" > "$mutex/pid"
+  # ENG-81 Phase 2: route through the shared counting semaphore so
+  # setup-time discovery contends for a slot just like dispatch does.
+  # Cap=1 (Phase 2 default) preserves today's strict serialization
+  # between setup-discovery and dispatched stage runs; Phase 4 (Task 7)
+  # widens the cap via _resolve_K. Sourcing dispatch.sh re-uses
+  # acquire_claude_mutex/release_claude_mutex without firing
+  # dispatch.sh::main (sentinel guard at the file tail).
+  # shellcheck source=dispatch.sh
+  source "$SCRIPT_DIR/dispatch.sh"
+  log "project-profile: waiting for claude-semaphore"
+  acquire_claude_mutex
 
   local tools='Read,Glob,Grep,Write,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(head:*),Bash(tail:*),Bash(wc:*)'
 
@@ -342,8 +342,8 @@ phase_project_profile() {
       --allowed-tools "$tools" \
     < "$rendered_prompt" | tee "$log_file" || claude_rc=$?
 
-  # Release the mutex and the temp prompt before any further die() can fire.
-  rm -rf "$mutex"
+  # Release the slot and the temp prompt before any further die() can fire.
+  release_claude_mutex
   rm -f "$rendered_prompt"
 
   if (( claude_rc != 0 )); then

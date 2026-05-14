@@ -335,6 +335,11 @@ run_phase() {
     cp "$SCRIPT_DIR/common.sh" "$HARNESS_ROOT/bin/common.sh"
     cp "$SCRIPT_DIR/setup-helpers.sh" "$HARNESS_ROOT/bin/setup-helpers.sh"
     cp "$SCRIPT_DIR/setup.sh" "$HARNESS_ROOT/bin/setup.sh"
+    # ENG-81: setup.sh::phase_project_profile sources dispatch.sh to
+    # share the counting-semaphore helpers; metrics.sh is sourced for
+    # dispatch-resource-sample emission. The sandbox needs both.
+    cp "$SCRIPT_DIR/dispatch.sh" "$HARNESS_ROOT/bin/dispatch.sh"
+    cp "$SCRIPT_DIR/metrics.sh" "$HARNESS_ROOT/bin/metrics.sh"
     SCRIPT_DIR="$HARNESS_ROOT/bin"
     # shellcheck disable=SC1091
     source "$HARNESS_ROOT/bin/common.sh" 2>/dev/null || true

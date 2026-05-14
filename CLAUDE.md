@@ -222,7 +222,7 @@ Per-issue scratch lives under `$PROJECT_STATE_DIR/ENG-N/`:
 
 ```
 $HARNESS_STATE_DIR/
-├── .claude-mutex.lock/         # global single-flight around dispatch.sh
+├── .claude-semaphore/          # global counting semaphore (slot-<N>/pid each); replaces .claude-mutex.lock (ENG-81)
 └── <slug>/                     # per-project
     ├── target-repo             # collision sentinel
     ├── .consecutive-failures
