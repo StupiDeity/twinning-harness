@@ -346,27 +346,55 @@ tokens degrade gracefully to "path-classes-only benign" with a `log`
 warning, **strictly more restrictive** than today's hardcoded Cargo
 carve-out on non-Rust stacks.
 
-**Sanctioned agent scratch dir (`.scratch/`).** Agents (especially
-reviewer and QA) sometimes need to drop verification fixtures or ad-hoc
-test scripts. Without a sanctioned namespace these trip the tick-end
-sweep as self-leaks, because `reviewing | building | released` have no
-allowlist by design (read-mostly) and `implementing | ui | qa` only
-allow profile-derived paths plus the lockfile catalog. The `.scratch/`
-prefix is the carve-out:
+**Sanctioned agent scratch dir (`.scratch/`) — applies to allowlisted
+stages.** For `implementing | ui | qa`, agents may need throwaway
+fixtures alongside legitimate in-scope writes. `.scratch/` is the
+carve-out:
 
 - `partition_dirty_paths` (`bin/run-local-helpers.sh`) treats `.scratch/*`
-  as invisible — neither in-scope nor leaked nor observed. The sweep
-  never commits, never halts on it.
+  as invisible — neither in-scope nor leaked nor observed.
 - `is_benign` (`bin/scope-check.sh`) mirrors this for the agent-side
-  scope-check that runs inside the implementing stage's flow.
-- `.scratch/` is in the repo's `.gitignore`, so even if an agent `git add`s
-  the directory it never reaches a commit.
+  scope-check inside the implementing stage's flow.
+- `.scratch/` is in the repo's `.gitignore`, so even if an agent
+  `git add`s the directory it never reaches a commit.
 
 The trailing slash is load-bearing in both case globs (`.scratch/*`), so
 a top-level file literally named `.scratchpad` is NOT carved out — only
-paths under the directory. Reviewers/QA writing scratch elsewhere
-(repo-root `tmp-*.md`, etc.) still self-leak; the convention is that
-all throwaway work lives under `.scratch/`.
+paths under the directory.
+
+**Read-mostly stages auto-clean residue, never halt on it.** For
+`reviewing | building | released`, `stage_output_paths` returns empty
+*by design* — the contract is "no worktree writes." Stage summaries go
+to `$(issue_dir)/stage-summary-<stage>.md` (outside the worktree),
+Linear comments go via `bin/linear.sh`, gh/git operations target
+origin or sibling state dirs. There is no legitimate in-worktree
+write.
+
+Anything dirty in the worktree at tick-end on these stages is therefore
+agent verification residue — fixtures, ad-hoc scripts the agent
+materialized to spot-check the implementer's work. The verdict + stage
+summary are already in Linear; residue has no upstream consumer.
+
+`clean_readonly_stage_residue` (`bin/run-local-helpers.sh`) runs *before*
+`partition_dirty_paths` for these stages. It:
+- Reverts modifications to tracked files (`git checkout -- .`).
+- Removes untracked files and dirs including gitignored ones
+  (`git clean -fdx`), except `-e .pipeline-config` and `-e .claude`
+  (operator-local config preserved).
+- Emits a `sweep-readonly-residue-cleaned` metric with the cleaned
+  count for retrospective audit.
+
+Result: the partition sweep sees a clean tree → no out-of-scope rows
+→ no self-leak halt → next tick advances. Eliminates the ENG-96-shape
+operator-touch halt (reviewer left `.scratch/bte_*.md` + root-level
+`tmp-awk-dup-test.md` to verify a parser, sweep self-leaked, operator
+had to manually `decide --action continue` to recover).
+
+Defensive guards: refuses on `main`/`master`/empty branch (prevents
+accidental nuke of operator's checkout in case of regression); no-op
+on missing worktree; dry-run mode logs without mutating. `implementing |
+ui | qa` are NOT affected — their allowlists are real signal, self-leak
+halts there remain the correct policy.
 
 ## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-53 #8, ENG-94)
 

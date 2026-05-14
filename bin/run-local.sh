@@ -268,6 +268,18 @@ set -e
 route_run_stage_exit "$issue_id" "$stage" "$rc"
 [[ $rc -ne 0 ]] && exit $rc
 
+# Read-mostly contract enforcement for reviewing|building|released:
+# those stages have empty stage_output_paths by design and no
+# legitimate worktree-write affordance. Anything dirty here is agent
+# verification residue (e.g. .scratch/* fixtures, ad-hoc test scripts
+# written to spot-check the implementer's work). Discard it before the
+# partition sweep runs — the verdict + stage summary are already in
+# Linear, and residue has no upstream consumer. Eliminates the
+# operator-touch halt that ENG-96's reviewer triggered with
+# .scratch/bte_*.md + tmp-awk-dup-test.md verification fixtures.
+# No-op for implementing|ui|qa — those keep the existing self-leak halt.
+clean_readonly_stage_residue "$issue_id" "$stage" "$dispatch_cwd"
+
 # 3-stream partition sweep (ENG-14 D-3).
 in_scope_file="$(mktemp -t twinning-inscope.XXXXXX)"
 leaked_file="$(mktemp -t twinning-leaked.XXXXXX)"

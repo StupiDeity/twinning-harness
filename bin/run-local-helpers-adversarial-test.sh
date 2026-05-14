@@ -2277,6 +2277,241 @@ assert_eq 'eng95_qa_adv_digit_leading_slug' 'learned-rules/99slug/' "$_got"
 rm -rf "$_tdir"
 _eng95_restore_env
 
+# ─── clean_readonly_stage_residue (auto-clean on read-mostly stages) ────
+#
+# Verify the four invariants:
+#   (a) read-mostly stages with dirty residue → worktree cleaned, rc=0
+#   (b) non-read-mostly stages (implementing/ui/qa) → no-op even with residue
+#   (c) main/master/empty branch → defensive refuse (no clean), rc=0
+#   (d) missing worktree → no-op, rc=0
+#   (e) dry-run mode → no FS mutation, rc=0
+# Plus: gitignored .pipeline-config / .claude preserved across clean.
+
+_autoclean_make_repo() {
+  # Creates a minimal git worktree on a non-default branch with a tracked
+  # file and some residue. Returns the worktree path.
+  local td="$1" branch="$2"
+  mkdir -p "$td"
+  (
+    cd "$td"
+    git init -q
+    git config user.email t@example.com
+    git config user.name 'Test'
+    printf 'baseline\n' > tracked.md
+    git add tracked.md
+    git commit -qm 'init'
+    git branch -m main
+    git checkout -qb "$branch"
+  )
+}
+
+test_autoclean_cleans_residue_on_reviewing() {
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local wt="$td/wt"
+  _autoclean_make_repo "$wt" "feat/test-reviewing"
+  # Drop residue: untracked file + scratch dir + modified tracked file.
+  echo "scratch" > "$wt/tmp-foo.md"
+  mkdir -p "$wt/.scratch"
+  echo "fixture" > "$wt/.scratch/bte.md"
+  echo "modified" >> "$wt/tracked.md"
+
+  STUB_METRICS_LOG="$td/metrics.log"; : > "$STUB_METRICS_LOG"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  cat > "$stub_dir/metrics.sh" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$STUB_METRICS_LOG"
+EOF
+  chmod +x "$stub_dir/metrics.sh"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    clean_readonly_stage_residue ENG-9001 reviewing "$wt"
+  ) >/dev/null 2>&1
+
+  local dirty_after; dirty_after="$(git -C "$wt" status --porcelain | wc -l | tr -d ' ')"
+  assert_eq 'autoclean: reviewing leaves worktree clean' '0' "$dirty_after"
+  # tracked.md modification reverted to baseline.
+  local content; content="$(cat "$wt/tracked.md")"
+  assert_eq 'autoclean: reviewing reverts tracked modifications' 'baseline' "$content"
+  # Metric emitted.
+  case "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" in
+    *sweep-readonly-residue-cleaned*) report_ok 'autoclean: reviewing emits cleaned metric' ;;
+    *) report_fail 'autoclean: reviewing emits cleaned metric' \
+         'sweep-readonly-residue-cleaned' "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" ;;
+  esac
+  rm -rf "$td"
+}
+test_autoclean_cleans_residue_on_reviewing
+
+test_autoclean_cleans_residue_on_building() {
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local wt="$td/wt"
+  _autoclean_make_repo "$wt" "feat/test-building"
+  echo "scratch" > "$wt/build-tmp.md"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    clean_readonly_stage_residue ENG-9002 building "$wt"
+  ) >/dev/null 2>&1
+
+  local dirty_after; dirty_after="$(git -C "$wt" status --porcelain | wc -l | tr -d ' ')"
+  assert_eq 'autoclean: building leaves worktree clean' '0' "$dirty_after"
+  rm -rf "$td"
+}
+test_autoclean_cleans_residue_on_building
+
+test_autoclean_cleans_residue_on_released() {
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local wt="$td/wt"
+  _autoclean_make_repo "$wt" "feat/test-released"
+  echo "rel-scratch" > "$wt/release-notes.draft"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    clean_readonly_stage_residue ENG-9003 released "$wt"
+  ) >/dev/null 2>&1
+
+  local dirty_after; dirty_after="$(git -C "$wt" status --porcelain | wc -l | tr -d ' ')"
+  assert_eq 'autoclean: released leaves worktree clean' '0' "$dirty_after"
+  rm -rf "$td"
+}
+test_autoclean_cleans_residue_on_released
+
+test_autoclean_noop_on_implementing() {
+  # Implementing has a real allowlist; residue there is real signal.
+  # Auto-clean MUST NOT fire for implementing/ui/qa.
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local wt="$td/wt"
+  _autoclean_make_repo "$wt" "feat/test-implementing"
+  echo "untouchable" > "$wt/should-stay.md"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    clean_readonly_stage_residue ENG-9004 implementing "$wt"
+  ) >/dev/null 2>&1
+
+  if [[ -f "$wt/should-stay.md" ]]; then
+    report_ok 'autoclean: implementing is a no-op (file preserved)'
+  else
+    report_fail 'autoclean: implementing is a no-op' 'should-stay.md present' 'removed'
+  fi
+  rm -rf "$td"
+}
+test_autoclean_noop_on_implementing
+
+test_autoclean_refuses_on_main_branch() {
+  # Defensive: refuse to clean on main/master/empty even if stage matches.
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local wt="$td/wt"
+  mkdir -p "$wt"
+  (
+    cd "$wt"
+    git init -q
+    git config user.email t@example.com
+    git config user.name 'Test'
+    printf 'baseline\n' > tracked.md
+    git add tracked.md
+    git commit -qm 'init'
+    git branch -m main
+  )
+  echo "scratch" > "$wt/tmp-foo.md"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    clean_readonly_stage_residue ENG-9005 reviewing "$wt"
+  ) >/dev/null 2>&1
+
+  if [[ -f "$wt/tmp-foo.md" ]]; then
+    report_ok 'autoclean: defensive refuse on main branch (file preserved)'
+  else
+    report_fail 'autoclean: defensive refuse on main' 'tmp-foo.md present' 'cleaned'
+  fi
+  rm -rf "$td"
+}
+test_autoclean_refuses_on_main_branch
+
+test_autoclean_noop_on_missing_worktree() {
+  # No worktree path → return cleanly without error.
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+
+  local rc=0
+  (
+    SCRIPT_DIR="$stub_dir"
+    clean_readonly_stage_residue ENG-9006 reviewing "$td/does-not-exist"
+  ) >/dev/null 2>&1 || rc=$?
+  assert_eq 'autoclean: missing worktree no-op rc=0' '0' "$rc"
+  rm -rf "$td"
+}
+test_autoclean_noop_on_missing_worktree
+
+test_autoclean_dry_run_skips_mutation() {
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local wt="$td/wt"
+  _autoclean_make_repo "$wt" "feat/test-dryrun"
+  echo "scratch" > "$wt/tmp-foo.md"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    PIPELINE_DRY_RUN=1
+    clean_readonly_stage_residue ENG-9007 reviewing "$wt"
+  ) >/dev/null 2>&1
+
+  if [[ -f "$wt/tmp-foo.md" ]]; then
+    report_ok 'autoclean: dry-run preserves worktree'
+  else
+    report_fail 'autoclean: dry-run' 'tmp-foo.md present' 'removed'
+  fi
+  rm -rf "$td"
+}
+test_autoclean_dry_run_skips_mutation
+
+test_autoclean_preserves_gitignored_operator_config() {
+  # .pipeline-config/ and .claude/ are operator-local + gitignored.
+  # `git clean -fdx -e .pipeline-config -e .claude` must spare them.
+  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
+  local wt="$td/wt"
+  _autoclean_make_repo "$wt" "feat/test-preserve-config"
+  mkdir -p "$wt/.pipeline-config" "$wt/.claude"
+  echo "op-local" > "$wt/.pipeline-config/config.json"
+  echo "claude-session" > "$wt/.claude/state.json"
+  printf '.pipeline-config/\n.claude/\n' > "$wt/.gitignore"
+  (cd "$wt" && git add .gitignore && git commit -qm 'add gitignore')
+  echo "residue" > "$wt/tmp-foo.md"
+  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+
+  (
+    SCRIPT_DIR="$stub_dir"
+    clean_readonly_stage_residue ENG-9008 reviewing "$wt"
+  ) >/dev/null 2>&1
+
+  if [[ -f "$wt/.pipeline-config/config.json" && -f "$wt/.claude/state.json" ]]; then
+    report_ok 'autoclean: preserves gitignored .pipeline-config and .claude'
+  else
+    report_fail 'autoclean: preserves gitignored config' \
+      'both files exist' 'one or both removed'
+  fi
+  if [[ ! -f "$wt/tmp-foo.md" ]]; then
+    report_ok 'autoclean: still removes non-excluded residue'
+  else
+    report_fail 'autoclean: removes residue' 'tmp-foo.md removed' 'present'
+  fi
+  rm -rf "$td"
+}
+test_autoclean_preserves_gitignored_operator_config
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
