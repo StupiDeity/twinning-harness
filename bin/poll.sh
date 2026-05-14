@@ -628,7 +628,7 @@ main() {
   while (( $# > 0 )); do
     case "$1" in
       --max) _max_decisions="${2:-1}"; shift 2 ;;
-      *)     shift ;;
+      *)     die "poll.sh: unknown flag: $1" ;;
     esac
   done
   [[ "$_max_decisions" =~ ^[0-9]+$ ]] || _max_decisions=1

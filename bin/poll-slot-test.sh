@@ -2185,18 +2185,21 @@ fi
 # AC-MAX-K-UNKNOWN-FLAG: a typo'd flag (e.g. --mx) must die with a clear
 # message — pre-fix the parser silently swallowed unknown args via `*) shift`
 # and returned a single decision with no warning, masking operator typos.
+# main() runs in the parent shell (poll.sh is sourced); die would exit the
+# whole test, so invoke main in a $( ... ) subshell with `|| true` and
+# capture stderr via redirection.
 reset_fixtures
 write_label_fixture "stage:planning" \
   "ENG-MAX-UNK|In Progress|3|Bug,stage:planning"
-err="$(main --mx 2 2>&1 >/dev/null || true)"
-case "$err" in
-  *"unknown flag"*"--mx"*)
-    pass_at "AC-MAX-K-UNKNOWN-FLAG: --mx dies with 'unknown flag --mx'"
-    ;;
-  *)
-    fail_at "AC-MAX-K-UNKNOWN-FLAG" "expected 'unknown flag --mx' die, got: $err"
-    ;;
-esac
+set +e
+err="$( (main --mx 2) 2>&1 >/dev/null )"
+unknown_rc=$?
+set -e
+if (( unknown_rc != 0 )) && [[ "$err" == *"unknown flag"*"--mx"* ]]; then
+  pass_at "AC-MAX-K-UNKNOWN-FLAG: --mx dies (rc=$unknown_rc) with 'unknown flag --mx'"
+else
+  fail_at "AC-MAX-K-UNKNOWN-FLAG" "expected rc!=0 and 'unknown flag --mx' in stderr, got rc=$unknown_rc err=$err"
+fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"

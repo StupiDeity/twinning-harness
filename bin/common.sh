@@ -426,8 +426,12 @@ try_acquire_lock() {
   fi
   local holder_pid=""
   [[ -f "$dir/pid" ]] && holder_pid="$(cat "$dir/pid" 2>/dev/null || printf '')"
-  if [[ -z "$holder_pid" ]] || ! kill -0 "$holder_pid" 2>/dev/null; then
-    log "try_acquire_lock: reclaiming stale lock at $dir (holder=${holder_pid:-<missing>} not alive)"
+  # Only reclaim when the pid record is non-empty AND its process is dead.
+  # An empty/absent pid file means "owner still arming" — another acquirer
+  # has the mkdir but has not yet written its pid. Reclaiming in that
+  # window would `rm -rf` a LIVE owner's lock dir.
+  if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+    log "try_acquire_lock: reclaiming stale lock at $dir (holder=$holder_pid not alive)"
     rm -rf "$dir" 2>/dev/null || true
     if mkdir "$dir" 2>/dev/null; then
       printf '%s\n' "$$" > "$dir/pid" 2>/dev/null || true
@@ -472,11 +476,23 @@ CLAUDE_SEMAPHORE_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
 CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
 _ACQUIRED_SLOT_DIR=""
 
+_claude_mutex_format_holders() {
+  local d holders="" basename pid
+  for d in "$CLAUDE_SEMAPHORE_DIR"/slot-*/; do
+    [[ -d "$d" ]] || continue
+    basename="${d%/}"; basename="${basename##*/}"
+    pid=""
+    [[ -f "$d/pid" ]] && pid="$(cat "$d/pid" 2>/dev/null || true)"
+    holders="${holders:+${holders},}${basename}:${pid:-<unknown>}"
+  done
+  printf '%s\n' "${holders:-<none>}"
+}
+
 acquire_claude_mutex() {
   mkdir -p "$CLAUDE_SEMAPHORE_DIR"
   local cap
   cap="$(_resolve_K)"
-  local waited=0 slot
+  local waited=0 slot last_relog=0
   while :; do
     for (( slot=1; slot <= cap; slot++ )); do
       local d="$CLAUDE_SEMAPHORE_DIR/slot-$slot"
@@ -486,12 +502,19 @@ acquire_claude_mutex() {
         return 0
       fi
     done
-    if (( waited == 0 )); then
-      # Preserve the exact log text mutex-test.sh greps for.
-      local holder=""
-      [[ -f "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" ]] \
-        && holder="$(cat "$CLAUDE_SEMAPHORE_DIR/slot-1/pid" 2>/dev/null || true)"
-      log "[claude-mutex] waiting for lock held by ${holder:-<unknown>}"
+    # Emit the wait log immediately on first contention, then re-log every
+    # ~60s so an operator tailing the log sees that the wait is progressing
+    # and which slots are currently held (slot-2's holder may differ from
+    # slot-1's after Phase 4 widens cap > 1).
+    if (( waited == 0 )) || (( waited - last_relog >= 60 )); then
+      local holders
+      holders="$(_claude_mutex_format_holders)"
+      if (( waited == 0 )); then
+        log "[claude-mutex] waiting for lock held by ${holders}"
+      else
+        log "[claude-mutex] still waiting (${waited}s elapsed) — slots held by ${holders}"
+      fi
+      last_relog=$waited
     fi
     (( waited >= CLAUDE_MUTEX_TIMEOUT )) \
       && die "[claude-mutex] timeout after ${CLAUDE_MUTEX_TIMEOUT}s (cap=$cap, all slots held)"
@@ -534,6 +557,8 @@ _resolve_K() {
     elif [[ -n "$k" ]]; then
       log "_resolve_K: invalid orchestrator.max_concurrent_features=$k (ignoring; falling through)"
     fi
+  else
+    log "_resolve_K: CONFIG not readable at ${CONFIG:-<unset>}; using built-in default 2"
   fi
   printf '%s\n' "2"
 }
