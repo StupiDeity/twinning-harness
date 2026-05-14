@@ -362,4 +362,115 @@ grep -q 'worker_log=.*local-.*\${issue_id}' "$RUN_LOCAL_SRC" \
 
 printf 'OK AC-K2-PARALLEL-WORKERS structural invariants (4 of 4): _run_worker, pre-fork clear, ) & wait, per-issue log filename\n'
 
+# ──────────────────────────────────────────────────────────────────────
+# AC-K2-PARALLEL-WORKERS-BEHAVIORAL (ENG-81 review-3 critical finding #1)
+# ──────────────────────────────────────────────────────────────────────
+# The structural greps above catch literal-text regressions (`) &` drop,
+# `wait` drop, missing `_run_worker` invocation). They do NOT catch
+# regressions that preserve the literal tokens but break semantics —
+# e.g. inserting `wait` INSIDE the fork loop body (serializes), moving
+# `) &` to a non-loop context, or reordering so workers never start
+# concurrently. A behavioral test that drives the production fork-loop
+# block end-to-end is the only defense against those classes.
+#
+# Approach: awk-extract the fork loop block from run-local.sh source,
+# install stubs for `_run_worker` (a sleep-then-touch-sentinel function)
+# and `release_lock` (no-op rmdir), then `eval` the extracted block with
+# two pre-claimed worker specs. Assert:
+#   1. Both sentinel files exist (both workers ran)
+#   2. Total elapsed time < 2× per-worker sleep (proves parallel, not serial)
+#   3. Worker start times are within 1s of each other (proves
+#      simultaneous fork, not staggered serial)
+RUN_LOCAL_BEHAVIORAL_BLOCK="$(awk '
+  /^for spec in "\$\{_claimed_workers\[@\]\}"; do/ { in_loop=1 }
+  in_loop { print }
+  in_loop && /^done$/ { exit }
+' "$RUN_LOCAL_SRC")"
+
+if [[ -z "$RUN_LOCAL_BEHAVIORAL_BLOCK" ]]; then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-BEHAVIORAL: could not extract fork loop block from %s\n' "$RUN_LOCAL_SRC" >&2
+  exit 1
+fi
+
+# Sanity-check the extracted block: must contain ) &, _run_worker, NO wait
+# (wait belongs OUTSIDE the loop). This guards against an awk extraction
+# that grabbed the wrong region — without these checks the eval below
+# could silently exercise nothing.
+grep -qF ') &' <<<"$RUN_LOCAL_BEHAVIORAL_BLOCK" \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-BEHAVIORAL: extracted block missing `) &` — awk grabbed wrong region\n' >&2; exit 1; }
+grep -qF '_run_worker "$w_issue" "$w_stage" "$w_worktree"' <<<"$RUN_LOCAL_BEHAVIORAL_BLOCK" \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-BEHAVIORAL: extracted block missing _run_worker invocation\n' >&2; exit 1; }
+if grep -qE '^[[:space:]]*wait[[:space:]]*$' <<<"$RUN_LOCAL_BEHAVIORAL_BLOCK"; then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-BEHAVIORAL: `wait` found INSIDE fork loop body — would serialize K=2 workers\n' >&2
+  exit 1
+fi
+
+K2_SENTINEL_DIR="$(mktemp -d -t twinning-k2-behavioral.XXXXXX)"
+trap 'rm -rf "$K2_SENTINEL_DIR"' EXIT
+
+# Stub _run_worker (overrides any inherited definition). Records start
+# time, sleeps 2s, records end time. Two parallel invocations should
+# overlap; sequential would not.
+_run_worker() {
+  local issue="$1"
+  date +%s > "$K2_SENTINEL_DIR/$issue.start"
+  sleep 2
+  date +%s > "$K2_SENTINEL_DIR/$issue.end"
+}
+# Stub release_lock (no-op — the eval'd block's per-subshell trap fires
+# release_lock on subshell exit; we don't want it to die).
+release_lock() { :; }
+
+# Populate the input array the loop iterates over.
+_claimed_workers=(
+  "ENG-K2BX|implementing|/tmp/wt-X|/tmp/lock-X"
+  "ENG-K2BY|implementing|/tmp/wt-Y|/tmp/lock-Y"
+)
+
+start_ts="$(date +%s)"
+# Disable `set -e` propagation locally so a single subshell's nonzero rc
+# doesn't kill the test before we assert (mirrors run-local.sh's
+# `set +e; wait; set -e` block around the production wait).
+set +e
+eval "$RUN_LOCAL_BEHAVIORAL_BLOCK"
+wait
+set -e
+end_ts="$(date +%s)"
+elapsed=$((end_ts - start_ts))
+
+# Assert 1: both sentinels present (both workers ran to completion).
+if [[ ! -f "$K2_SENTINEL_DIR/ENG-K2BX.end" || ! -f "$K2_SENTINEL_DIR/ENG-K2BY.end" ]]; then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-BEHAVIORAL: one or both workers did not run to completion (X.end=%s, Y.end=%s)\n' \
+    "$([[ -f $K2_SENTINEL_DIR/ENG-K2BX.end ]] && echo present || echo absent)" \
+    "$([[ -f $K2_SENTINEL_DIR/ENG-K2BY.end ]] && echo present || echo absent)" >&2
+  exit 1
+fi
+
+# Assert 2: total elapsed < 2× per-worker sleep (would-be-serial 4s; parallel ~2s).
+# Allow a generous upper bound (3s) so slow CI host doesn't flake.
+if (( elapsed >= 4 )); then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-BEHAVIORAL: workers appear to run sequentially (elapsed=%ds, expected <4s for 2x 2s parallel)\n' "$elapsed" >&2
+  exit 1
+fi
+
+# Assert 3: worker start times are within 1s of each other (proves the
+# fork loop iterates fast, not staggered with sleeps).
+start_x="$(cat "$K2_SENTINEL_DIR/ENG-K2BX.start")"
+start_y="$(cat "$K2_SENTINEL_DIR/ENG-K2BY.start")"
+if (( start_x > start_y )); then
+  start_diff=$((start_x - start_y))
+else
+  start_diff=$((start_y - start_x))
+fi
+if (( start_diff > 1 )); then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-BEHAVIORAL: worker start times diverge (Δ=%ds, expected ≤1s — fork loop should iterate near-instantly)\n' "$start_diff" >&2
+  exit 1
+fi
+
+printf 'OK AC-K2-PARALLEL-WORKERS-BEHAVIORAL (elapsed=%ds<4s, start_diff=%ds≤1s, both sentinels present)\n' "$elapsed" "$start_diff"
+
+# Cleanup stubs/array so subsequent test runs aren't polluted.
+unset -f _run_worker release_lock
+unset _claimed_workers
+
 printf 'All sweep-test cases passed.\n'

@@ -2903,7 +2903,7 @@ fi
 
 # Sub-fixture B: gtime absent → dispatch still succeeds; warning logged;
 # no metric emitted. Use a fresh state dir to keep counters disjoint.
-# Drive the degraded branch via `_PIPELINE_FORCE_NO_GTIME=1` so the test
+# Drive the degraded branch via `_PIPELINE_GTIME_DISABLED=1` so the test
 # is deterministic regardless of host PATH.
 G8B_PROJECT_STATE="$G8_STATE_ROOT/g8b-slug"
 mkdir -p "$G8B_PROJECT_STATE/ENG-G8B"
@@ -2918,7 +2918,7 @@ jq -n '{labels:{},states:{}}' > "$G8B_TARGET/.pipeline-config/schemas/linear-ids
 
 G8B_OUT="$_TEST_STUB_DIR/g8b-dispatch.out"
 PIPELINE_DRY_RUN=0 \
-_PIPELINE_FORCE_NO_GTIME=1 \
+_PIPELINE_GTIME_DISABLED=1 \
 PATH="$_TEST_STUB_DIR:$PATH" \
 TARGET_REPO="$G8B_TARGET" \
 PROJECT_SLUG="g8b-slug" \

@@ -3079,15 +3079,35 @@ test_parallel_rc24_counter_race() {
 
   local final
   final="$(cat "$fail_counter" 2>/dev/null || printf '0')"
-  # Brainstorm §6.5 / E-7 bound: at K parallel writers, worst-case lost
-  # increments = K-1, so the floor is 1. The test asserts >= 1, pinning the
-  # counter-bump LANE works under contention without claiming linearizability.
-  if (( final >= 1 )); then
-    report_ok "$case_name 5 parallel rc=24 bumps → counter=$final (>= 1, race bounded by K-1=4)"
+
+  # Review-3 finding #5: tighten the bound AND check lane-split.
+  # Brainstorm §6.5 / E-7 bound: at K=5 parallel writers, worst-case lost
+  # increments = K-1 = 4, so the global counter lands at 1..5 inclusive.
+  # Pin the UPPER bound (catches a bug that double-counts) AND the LOWER
+  # bound (catches a bug that never increments).
+  local lane_ok=1
+  local per_issue_total=0 i pic
+  for i in 2401 2402 2403 2404 2405; do
+    pic="$rd/ENG-$i/.consecutive-failures"
+    if [[ -f "$pic" ]]; then
+      local n
+      n="$(cat "$pic" 2>/dev/null || printf '0')"
+      per_issue_total=$((per_issue_total + n))
+    fi
+  done
+  # Lane-split (ENG-69): rc=24 routes EXCLUSIVELY to the global counter
+  # (infrastructure outage, project-wide). The per-issue counters at
+  # $rd/ENG-240X/.consecutive-failures MUST remain absent or zero. A
+  # regression that crossed the lanes (e.g. bumped per-issue on rc=24
+  # too) would make per_issue_total > 0.
+  (( per_issue_total == 0 )) || lane_ok=0
+
+  if (( final >= 1 && final <= 5 && lane_ok == 1 )); then
+    report_ok "$case_name 5 parallel rc=24 bumps → global=$final (in [1,5], K-1=4 bound), per-issue=$per_issue_total (lane-split holds)"
   else
-    report_fail "$case_name counter never incremented under K=5 parallel rc=24" \
-      "counter >= 1 (at least 1 successful write under 5 racers)" \
-      "counter=$final; stderr samples: $(head -c 500 "$err_dir"/err-* 2>/dev/null || printf 'empty')"
+    report_fail "$case_name rc=24 race bound violated OR per-issue lane contaminated" \
+      "global in [1,5] AND per-issue total == 0 (ENG-69 lane-split)" \
+      "global=$final per-issue=$per_issue_total lane_ok=$lane_ok; stderr samples: $(head -c 500 "$err_dir"/err-* 2>/dev/null || printf 'empty')"
   fi
   rm -rf "$rd" "$stub_dir" "$err_dir"
 }
@@ -3108,6 +3128,11 @@ test_worker_isolation_under_halt() {
   # halt_issue_for_self_leak / classify_failure / route_run_stage_exit each
   # validate the issue id against ^ENG-[0-9]+$ — use real numeric ids so the
   # function reaches the per-issue state mutation it is meant to exercise.
+  # Review-3 finding #6: drive worker A and worker B in TRUE parallel
+  # subshells (not single-threaded), so a cross-worker mutation that only
+  # surfaces under concurrent calls (e.g. a shared temp filename collision
+  # in classify_failure) is observable. Pre-fix the test fork-ran a single
+  # halt call, so the K>1 lane-split invariant was claimed but not exercised.
   mkdir -p "$wi_dir/ENG-8101" "$wi_dir/ENG-8102"
 
   # Stub linear.sh / slack.sh / metrics.sh / branch-name.sh as no-ops so
@@ -3125,35 +3150,72 @@ test_worker_isolation_under_halt() {
   # makes halt_issue_for_self_leak return at run-local-helpers.sh:142
   # BEFORE classify_failure runs, so the assertion that ENG-8102's state
   # is untouched would pass even if the lane-split were broken.
-  local err_log; err_log="$(mktemp -t twinning-isolation-err.XXXXXX)"
-  PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
-    bash -c '
-      SCRIPT_DIR_REAL="'"$SCRIPT_DIR"'"
-      SCRIPT_DIR="'"$stub_dir"'"
-      # shellcheck disable=SC1091
-      source "$SCRIPT_DIR_REAL/common.sh"
-      # shellcheck disable=SC1091
-      source "$SCRIPT_DIR_REAL/classify-failure.sh"
-      # Redirect classify-failure.sh internal calls (bin/linear.sh, slack.sh,
-      # metrics.sh) at the stub dir post-source.
-      _CFS_SCRIPT_DIR="'"$stub_dir"'"
-      # shellcheck disable=SC1091
-      source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
-      halt_issue_for_self_leak ENG-8101 implementing abc123def456
-    ' >/dev/null 2>"$err_log" || true
+  local err_log_a err_log_b
+  err_log_a="$(mktemp -t twinning-isolation-err-a.XXXXXX)"
+  err_log_b="$(mktemp -t twinning-isolation-err-b.XXXXXX)"
+
+  # Fork TWO parallel subshells: worker A halts ENG-8101 via
+  # halt_issue_for_self_leak; worker B routes a clean rc=0 on ENG-8102 (a
+  # different issue) and MUST remain unaffected by A's per-issue state
+  # mutation. The wait collects both before assertions run. This mimics
+  # the actual K=2 fork pattern in run-local.sh: two _run_worker subshells
+  # backgrounded, then `wait`.
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    # shellcheck disable=SC1091
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/common.sh"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        halt_issue_for_self_leak ENG-8101 implementing abc123def456
+      ' >/dev/null 2>"$err_log_a" || true
+  ) &
+  local pid_a=$!
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    # shellcheck disable=SC1091
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      FAIL_COUNTER="$wi_dir/.global-failures" FAIL_THRESHOLD=99 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/common.sh"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        # rc=0 clears both counters; ENG-8102 should remain pristine.
+        route_run_stage_exit ENG-8102 implementing 0
+      ' >/dev/null 2>"$err_log_b" || true
+  ) &
+  local pid_b=$!
+  wait "$pid_a" 2>/dev/null || true
+  wait "$pid_b" 2>/dev/null || true
 
   # classify_failure writes issue-state.json (the canonical durable-state
-  # artifact). ENG-8102 must remain untouched.
+  # artifact). ENG-8102 must remain untouched (no issue-state.json created
+  # by A's halt path).
   local a_state="$wi_dir/ENG-8101/issue-state.json"
   local b_state="$wi_dir/ENG-8102/issue-state.json"
   if [[ -f "$a_state" && ! -f "$b_state" ]]; then
-    report_ok "$case_name ENG-8101 halted (issue-state.json present), ENG-8102 untouched"
+    report_ok "$case_name parallel A=halt B=clean → ENG-8101 issue-state.json present, ENG-8102 untouched (lane-split intact under K>1 fork)"
   else
-    report_fail "$case_name cross-issue state contamination" \
+    report_fail "$case_name cross-issue state contamination under parallel workers" \
       "ENG-8101 state present, ENG-8102 absent" \
-      "ENG-8101=$([[ -f $a_state ]] && echo present || echo absent), ENG-8102=$([[ -f $b_state ]] && echo present || echo absent); stderr: $(head -c 500 "$err_log" 2>/dev/null)"
+      "ENG-8101=$([[ -f $a_state ]] && echo present || echo absent), ENG-8102=$([[ -f $b_state ]] && echo present || echo absent); stderr A: $(head -c 250 "$err_log_a" 2>/dev/null); stderr B: $(head -c 250 "$err_log_b" 2>/dev/null)"
   fi
-  rm -rf "$wi_dir" "$stub_dir" "$err_log"
+  rm -rf "$wi_dir" "$stub_dir" "$err_log_a" "$err_log_b"
 }
 test_worker_isolation_under_halt
 

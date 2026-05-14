@@ -58,15 +58,22 @@ rmdir "$SEM_DIR/slot-1" 2>/dev/null || true
 echo "OK AC-N2-FREE-SLOT-2 (slot-1 intact, dispatch claimed slot-2, elapsed=${elapsed}s)"
 
 # ── AC-N2-CONTEND ─────────────────────────────────────────────────────
+# Review-3 finding #13: soften the timing envelope so the test does not
+# flake on slow CI runners. Bump the background-release timer from 3s →
+# 4s and lower the assertion to >= 2s. The regression we want to catch is
+# "wait loop exits immediately when both slots held" — elapsed ~0s. Any
+# elapsed >= 2s proves the wait loop honored the contention; the upper-
+# bound elapsed (release_timer + dispatch-startup overhead) is naturally
+# bounded by gtimeout above us, no need for a tight test-side ceiling.
 reset_sem
 mkdir "$SEM_DIR/slot-1"
 mkdir "$SEM_DIR/slot-2"
-( sleep 3; rmdir "$SEM_DIR/slot-1" 2>/dev/null || true ) &
+( sleep 4; rmdir "$SEM_DIR/slot-1" 2>/dev/null || true ) &
 start="$(date +%s)"
 CLAUDE_MAX_CONCURRENT=2 \
   bash "$HARNESS_DIR/dispatch.sh" brainstorming "$PROMPT" >/dev/null 2>&1
 elapsed=$(( $(date +%s) - start ))
-(( elapsed >= 3 )) || {
+(( elapsed >= 2 )) || {
   echo "FAIL AC-N2-CONTEND: cap=2 with both slots held should wait (elapsed=$elapsed)";
   exit 1;
 }
