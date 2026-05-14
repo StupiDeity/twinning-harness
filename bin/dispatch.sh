@@ -513,6 +513,19 @@ main() {
   fi
   local timeout_seconds=$(( timeout_minutes * 60 ))
 
+  # ENG-81 Phase 1: optional gtime -v wrapper for resource-sample metric.
+  # `gtime` ships in Homebrew's `gnu-time` package (NOT `coreutils` — that
+  # package only ships gtimeout). Discovery is best-effort; absence
+  # degrades to "no metric emit" and is non-fatal so hosts that haven't
+  # installed gnu-time keep dispatching.
+  local _gtime_bin="" _gtime_out=""
+  if command -v gtime >/dev/null 2>&1; then
+    _gtime_bin="$(command -v gtime)"
+    _gtime_out="$(mktemp -t pipeline-gtime-XXXXXX)"
+  else
+    log "[dispatch-resource-sample] gtime not on PATH; resource sample will be skipped (install: brew install gnu-time)"
+  fi
+
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
     log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
@@ -552,10 +565,18 @@ main() {
   # directly (without going through run-stage.sh::main) propagates an
   # empty value rather than a "literal-when-set" leak — neither name
   # matches secret-probe-lint.sh's regex, so this is lint-clean.
+  # ENG-81: the optional gtime prefix slots BETWEEN the env block and
+  # gtimeout. Order: env <vars> | gtime -v -o <tmp> | gtimeout … | claude.
+  # gtime captures the resource sample of the entire wrapped tree (gtimeout
+  # + claude), giving an honest "what did one dispatch cost" baseline.
   local cmd=(env PIPELINE_WRITER=agent
     "PIPELINE_DISPATCH_ID=${PIPELINE_DISPATCH_ID-}"
     "PIPELINE_STAGE=$stage"
-    gtimeout --signal=TERM --kill-after=10 "$timeout_seconds"
+  )
+  if [[ -n "$_gtime_bin" ]]; then
+    cmd+=("$_gtime_bin" -v -o "$_gtime_out")
+  fi
+  cmd+=(gtimeout --signal=TERM --kill-after=10 "$timeout_seconds"
     claude -p
     --output-format stream-json --verbose
     --setting-sources project,local
@@ -587,6 +608,25 @@ main() {
       "${cmd[@]}" < "$prompt_file"
     fi
   fi
+
+  # ENG-81 Phase 1: parse gtime -v output and emit dispatch-resource-sample
+  # metric. Best-effort — a missing/empty file, missing fields, or a
+  # metrics.sh failure must NOT propagate to dispatch's exit code.
+  # PIPELINE_ISSUE_ID is the same gate the cost-renderer uses for the
+  # usage-<stage>.json write; ungated callers (release / retrospective /
+  # mutex-test / dry-run-self-check) don't have an issue dir to attribute
+  # the sample to, so they skip.
+  if [[ -n "$_gtime_out" && -s "$_gtime_out" && -n "${PIPELINE_ISSUE_ID:-}" ]]; then
+    local _wall_s _rss_kb _cpu_pct
+    _wall_s="$(awk -F': ' '/Elapsed \(wall clock\) time/ {print $2}' "$_gtime_out" | head -1)"
+    _rss_kb="$(awk -F': ' '/Maximum resident set size/ {print $2}' "$_gtime_out" | head -1)"
+    _cpu_pct="$(awk -F': ' '/Percent of CPU this job got/ {print $2}' "$_gtime_out" | tr -d '%' | head -1)"
+    bash "$SCRIPT_DIR/metrics.sh" dispatch-resource-sample \
+      "$PIPELINE_ISSUE_ID" "$stage" measured 0 \
+      "wall=${_wall_s:-?} rss_kb=${_rss_kb:-?} cpu_pct=${_cpu_pct:-?}" \
+      || log "[dispatch-resource-sample] metric emit failed (non-blocking)"
+  fi
+  [[ -n "$_gtime_out" ]] && rm -f "$_gtime_out"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
