@@ -341,7 +341,12 @@ fi
 log "poll decisions: $decisions_json"
 
 # Filter null/empty (idle) decisions.
-decisions_json="$(jq -c '[.[] | select(.issue_id != null and .issue_id != "")]' <<<"$decisions_json")"
+# ENG-81 review.minor: normalize the input shape — poll.sh's idle()
+# branch emits a single JSON OBJECT (not an array) regardless of --max,
+# and `jq '.[] | …'` on an object iterates its VALUES (jq quirk) which
+# was accidentally correct here but brittle to future shape changes.
+# Wrap defensively: arrays pass through, anything else collapses to [].
+decisions_json="$(jq -c '(if type == "array" then . else [] end) | [.[] | select(.issue_id != null and .issue_id != "")]' <<<"$decisions_json")"
 decisions_count="$(jq 'length' <<<"$decisions_json")"
 if (( decisions_count == 0 )); then
   log "no work this tick"
