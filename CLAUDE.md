@@ -617,6 +617,42 @@ inspect each surface.
 | scope-check halts on files from a recent upstream merge | Pre-ENG-59 bug; post-ENG-59 (`bin/scope-check.sh:155-…`) fetches `origin main` per run. If symptom persists, check transcript for `scope-check: fetch origin main failed` — fetch unreachable + no `refs/remotes/origin/main` falls back to local `main` (degraded mode with warning). |
 | Issue at `stage:building` idles with `dispatch-skipped` events and no halt label | Inspect `wait-building.json::attempts` — ENG-86 entry-conditions gate firing skip per `gh pr view`. If PR is approved by a non-bot Code Owner, check whether `gh` is on PATH for launchd. If not approved, operator action is the underlying remedy. |
 
+## Per-project dispatch concurrency (ENG-81)
+
+`orchestrator.max_concurrent_features` (default 2) caps **simultaneous
+`claude -p` dispatches per project per tick** AND the WIP cap on issues
+in any `stage:*` label. Pre-ENG-81 it only enforced the WIP cap; the
+per-tick dispatch count was hardwired to 1 by `bin/run-local.sh`. After
+ENG-81 a default config (`max_concurrent_features=2`) produces ~2× the
+per-tick dispatch volume on busy days — operators upgrading should
+expect this.
+
+Resolution precedence (mirrors ENG-65 timeouts):
+
+1. `CLAUDE_MAX_CONCURRENT` env var (set in
+   `~/Library/LaunchAgents/com.twinning.pipeline.plist`'s
+   `EnvironmentVariables` block + `launchctl bootstrap`) — highest.
+2. `.orchestrator.max_concurrent_features` in target's
+   `.pipeline-config/config.json`.
+3. Built-in default 2.
+
+Non-integer or `<1` falls through to the next layer with a `log` warning
+on stderr (visible in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log`).
+
+Inspect live concurrency:
+
+```
+ls $HARNESS_STATE_DIR/.claude-semaphore/slot-*/pid
+```
+
+Each slot directory carries the `dispatch.sh` PID that owns it; an empty
+listing means no live dispatches. `bash bin/status.sh` aggregates this
+plus the recent `dispatch-resource-sample` baseline.
+
+**Emergency rollback** (no deploy needed): `CLAUDE_MAX_CONCURRENT=1` in
+the launchd plist + `launchctl bootstrap`. Per-project rollback: edit
+that target's `config.json::orchestrator.max_concurrent_features` to 1.
+
 **What `--action continue` clears (atomic):**
 
 1. `pipeline:halted` label

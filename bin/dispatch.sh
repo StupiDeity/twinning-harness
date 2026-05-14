@@ -17,13 +17,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# ENG-81 Phase 2: counting semaphore replaces the binary mutex.
+# ENG-81 Phase 2/4: counting semaphore replaces the binary mutex.
 # Each in-flight dispatch claims one of N slot dirs at
 # $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/. mkdir is atomic on
 # POSIX so multiple acquirers race for distinct slots safely.
-# Cap defaults to 1 in Phase 2 (preserves the pre-ENG-81 strict
-# serialization). Phase 4 (Task 7) widens the default to 2 by routing
-# `cap` through `_resolve_K` from common.sh.
+#
+# Cap resolution flows through _resolve_K (common.sh): env
+# CLAUDE_MAX_CONCURRENT > config orchestrator.max_concurrent_features
+# > built-in default 2. Phase 2 shipped at cap=1 (a hardcoded default
+# constant); Phase 4 (this commit) flips to _resolve_K so the
+# documented default 2 takes effect on hosts that have not set an
+# override.
 #
 # A-024 / A-033 contract: the `[claude-mutex] waiting for lock held by
 # <pid>` log text is preserved verbatim so mutex-test.sh's grep on
@@ -31,14 +35,12 @@ source "$SCRIPT_DIR/common.sh"
 # signal across the migration.
 CLAUDE_SEMAPHORE_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
 CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
-CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2=1   # Phase 4 (Task 7) flips to _resolve_K.
 _ACQUIRED_SLOT_DIR=""
 
 acquire_claude_mutex() {
   mkdir -p "$CLAUDE_SEMAPHORE_DIR"
-  local cap="${CLAUDE_MAX_CONCURRENT:-$CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2}"
-  [[ "$cap" =~ ^[0-9]+$ ]] || cap="$CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2"
-  (( cap < 1 )) && cap="$CLAUDE_MAX_CONCURRENT_DEFAULT_PHASE2"
+  local cap
+  cap="$(_resolve_K)"
   local waited=0 slot
   while :; do
     for (( slot=1; slot <= cap; slot++ )); do
