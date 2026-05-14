@@ -703,9 +703,7 @@ release_lock "$_TAL_DIR/lock1"
 
 # AC-TAL-PID-RECORDED: a successful acquire writes the holder pid into
 # the lock dir so future acquirers can stale-check on liveness. Without
-# the pid record, an SIGKILL'd worker would leak the lock indefinitely
-# (review.major: bin/common.sh:411-414 + bin/run-local.sh:349 — no
-# stale-lock recovery).
+# the pid record, an SIGKILL'd worker would leak the lock indefinitely.
 try_acquire_lock "$_TAL_DIR/lock-pid" || true
 [[ -f "$_TAL_DIR/lock-pid/pid" && "$(cat "$_TAL_DIR/lock-pid/pid")" == "$$" ]] \
   && pass_at "AC-TAL-PID-RECORDED: try_acquire_lock writes pid file" \

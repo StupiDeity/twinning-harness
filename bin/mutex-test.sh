@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 # Verify dispatch.sh serializes claude calls via the counting semaphore at
-# $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/ (ENG-81; replaces the
-# pre-ENG-81 binary mkdir-mutex at .claude-mutex.lock/).
+# $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/.
 #
-# Three contention scenarios:
-#   K=1 contention  — pre-acquire slot-1; second dispatch waits ≥3s.
-#   K=2 free-slot   — pre-acquire slot-1 only, with cap=2; second dispatch
-#                     takes slot-2 immediately (elapsed <2s).
-#   K=2 contention  — pre-acquire slot-1 + slot-2, with cap=2; third
-#                     dispatch waits ≥3s.
-#
-# The `[claude-mutex] waiting for lock held by <pid>` log line is preserved
-# verbatim across the K=1/binary-mutex → counting-semaphore migration so
-# this test's grep keeps anchoring the same operator-visible signal.
+# K=1 contention: pre-acquire slot-1; second dispatch waits ≥3s and the
+# wait log enumerates the held slot. K=2 cases live in
+# bin/mutex-k2-test.sh — this file is on the pre-commit KNOWN_BROKEN
+# allowlist for a pre-existing tempdir-cleanup race, so the K=2 cases
+# (which need to gate the commit) are in a separate file.
 
 set -euo pipefail
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,10 +56,9 @@ grep -q 'claude-mutex.*waiting' <<<"$out" \
 (( elapsed >= 3 )) || { echo "FAIL K=1: did not wait (elapsed=$elapsed)"; exit 1; }
 echo "OK K=1 contention (waited ${elapsed}s)"
 
-# Slot-enumeration in the wait log (review.minor m3): under K>1 the
+# Slot enumeration in the wait log: under K>1 the
 # "[claude-mutex] waiting for lock held by …" message must enumerate
-# ALL held slots, not just slot-1. Pre-fix it only carried slot-1's pid
-# even when slot-2 was the actual blocker.
+# ALL held slots (by slot id and pid), not just slot-1.
 case "$out" in
   *"slot-1"*)
     echo "OK K=1 wait log enumerates slot-1 (slot-enumeration contract)"
@@ -76,43 +69,4 @@ case "$out" in
     ;;
 esac
 
-# ── AC-N2-FREE-SLOT-2: cap=2 + slot-1 held → second acquirer takes slot-2 ──
-# Also pins the slot-allocation contract: not just "fast acquire," but the
-# acquirer specifically claimed slot-2 and DID NOT race slot-1. We
-# pre-acquire slot-1 from the test process and assert slot-1 is STILL
-# present after dispatch returns. dispatch's release_claude_mutex only
-# rms its OWN _ACQUIRED_SLOT_DIR (slot-2 in this scenario); if the
-# allocator buggily raced slot-1 it would have rm -rf'd the test's lock.
-reset_sem
-mkdir "$SEM_DIR/slot-1"
-start="$(date +%s)"
-CLAUDE_MAX_CONCURRENT=2 \
-  bash "$HARNESS_DIR/dispatch.sh" brainstorming "$PROMPT" >/dev/null 2>&1
-elapsed=$(( $(date +%s) - start ))
-(( elapsed < 2 )) || {
-  echo "FAIL AC-N2-FREE-SLOT-2: cap=2 with only slot-1 held should not wait (elapsed=$elapsed)";
-  exit 1;
-}
-[[ -d "$SEM_DIR/slot-1" ]] || {
-  echo "FAIL AC-N2-FREE-SLOT-2: slot-1 was destroyed by dispatch (allocator raced slot-1 instead of claiming slot-2)";
-  exit 1;
-}
-rmdir "$SEM_DIR/slot-1" 2>/dev/null || true
-echo "OK AC-N2-FREE-SLOT-2 (slot-1 intact, dispatch claimed slot-2, elapsed=${elapsed}s)"
-
-# ── AC-N2-CONTEND: cap=2 with BOTH slots held → third acquirer waits ──
-reset_sem
-mkdir "$SEM_DIR/slot-1"
-mkdir "$SEM_DIR/slot-2"
-( sleep 3; rmdir "$SEM_DIR/slot-1" 2>/dev/null || true ) &
-start="$(date +%s)"
-CLAUDE_MAX_CONCURRENT=2 \
-  bash "$HARNESS_DIR/dispatch.sh" brainstorming "$PROMPT" >/dev/null 2>&1
-elapsed=$(( $(date +%s) - start ))
-(( elapsed >= 3 )) || {
-  echo "FAIL AC-N2-CONTEND: cap=2 with both slots held should wait (elapsed=$elapsed)";
-  exit 1;
-}
-echo "OK AC-N2-CONTEND (waited ${elapsed}s)"
-
-echo "OK (Phase-2 capacity=1 + N=2 free-slot + N=2 contention covered)"
+echo "OK (K=1 contention + slot-enumeration; K=2 cases in mutex-k2-test.sh)"

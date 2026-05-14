@@ -311,13 +311,11 @@ phase_project_profile() {
   mkdir -p "$log_dir"
   local log_file="$log_dir/setup-discovery-$date.log"
 
-  # ENG-81: route through the shared counting semaphore so setup-time
-  # discovery contends for a slot just like dispatch does. The helpers
-  # live in common.sh (sourced near the top of this script).
-  #
-  # Install the release trap BEFORE the acquire so a die() between the
-  # two cannot leak the slot. release_claude_mutex is a no-op when
-  # _ACQUIRED_SLOT_DIR is empty, so arming the trap pre-acquire is safe.
+  # Route through the shared counting semaphore so setup-time discovery
+  # contends for a slot just like dispatch does. Install the release
+  # trap BEFORE the acquire so a die() between the two cannot leak the
+  # slot — release_claude_mutex is a no-op when _ACQUIRED_SLOT_DIR is
+  # empty, so arming the trap pre-acquire is safe.
   trap 'release_claude_mutex; rm -f "$rendered_prompt" 2>/dev/null || true' EXIT
   log "project-profile: waiting for claude-semaphore"
   acquire_claude_mutex

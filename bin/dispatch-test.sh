@@ -2876,10 +2876,9 @@ else
     "events.jsonl=$(cat "$G8_EVENTS" 2>/dev/null || printf 'absent') stderr=$(cat "$G8_OUT")"
 fi
 
-# Notes field carries wall_seconds/max_rss_kb/cpu_pct (the parsed gtime
-# -v fields, with names matching the brainstorm contract — review.minor
-# renamed wall→wall_seconds and rss_kb→max_rss_kb so downstream
-# consumers can `tonumber` the wall value).
+# Notes field carries wall_seconds/max_rss_kb/cpu_pct — the parsed gtime
+# -v fields named per the brainstorm contract so downstream consumers
+# can `tonumber` the wall value.
 if [[ -f "$G8_EVENTS" ]] \
    && jq -e 'select(.event == "dispatch-resource-sample") | .notes | test("wall_seconds=") and test("max_rss_kb=") and test("cpu_pct=")' \
         "$G8_EVENTS" >/dev/null 2>&1; then
@@ -2904,13 +2903,7 @@ fi
 
 # Sub-fixture B: gtime absent → dispatch still succeeds; warning logged;
 # no metric emitted. Use a fresh state dir to keep counters disjoint.
-#
-# Pre-review the test used `PATH="$G8B_PATH_NO_GTIME:/usr/bin:/bin:/opt/homebrew/bin"`
-# which broke deterministic execution on hosts that had `gnu-time`
-# installed at /opt/homebrew/bin/gtime — the test was supposed to model
-# the "no gtime on PATH" case but the production host (which actually
-# uses gtime!) re-introduced it. ENG-81 review.minor: drive the degraded
-# branch via `_PIPELINE_FORCE_NO_GTIME=1` env-var instead so the test
+# Drive the degraded branch via `_PIPELINE_FORCE_NO_GTIME=1` so the test
 # is deterministic regardless of host PATH.
 G8B_PROJECT_STATE="$G8_STATE_ROOT/g8b-slug"
 mkdir -p "$G8B_PROJECT_STATE/ENG-G8B"

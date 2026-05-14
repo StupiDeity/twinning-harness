@@ -2807,7 +2807,7 @@ test_self_leak_callsite_wired() {
   # cleanup downstream of the failure exit (the bug correctness
   # reviewer caught in v3).
   #
-  # ENG-81 review.minor: the rc-gate idiom is now the clean form
+  # rc-gate idiom: clean form
   # `if [[ $rc -ne 0 ]]; then return $rc; fi` (was the opaque
   # `&& exit $rc; then :; fi` workaround that pinned the test grep).
   # This regex accepts the canonical `if-then-return-fi` shape.
@@ -2831,14 +2831,15 @@ test_self_leak_callsite_wired() {
 }
 test_self_leak_callsite_wired
 
-# ─── ENG-81 review.major: scheduler-side in-flight lock wire-up ───────
+# ─── Scheduler-side in-flight lock wire-up invariants ────────────────
 # Production code (run-local.sh) must:
 #   1. Declare `_SCHEDULER_INFLIGHT_LOCKS=()` array.
 #   2. Push to it after every try_acquire_lock claim.
 #   3. Reap it inside cleanup_on_exit (EXIT trap).
 #   4. Clear it just before forking workers (so the trap stops reaping
 #      locks that workers now own).
-# Without each of these, the leak path described in the review re-opens.
+# Without each of these, the per-issue lock leaks on any scheduler-side
+# error path (Linear blip, set -e between acquire and fork).
 test_scheduler_inflight_lock_wireup() {
   local rl="$SCRIPT_DIR/run-local.sh"
   if [[ ! -f "$rl" ]]; then
@@ -2885,9 +2886,8 @@ test_scheduler_inflight_lock_wireup
 # ticket; non-blocking by design — acquire_lock with timeout=0 means
 # "wait forever" and would hang the scheduler).
 #
-# Post-stale-lock-recovery (ENG-81 review.major bin/common.sh:411-414):
-# the contention check uses a LIVE background process as the lock
-# holder. A dead-pid lock is reclaimed by the new acquirer (covered by
+# Contention check uses a LIVE background process as the lock holder.
+# A dead-pid lock is reclaimed by the new acquirer (covered by
 # AC-TAL-RECLAIM-DEAD in common-test.sh), so the "second-acquire
 # blocked" assertion only holds when the holder is actually alive.
 test_inflight_lock_contention() {
@@ -2936,18 +2936,11 @@ test_inflight_lock_contention() {
 }
 test_inflight_lock_contention
 
-# ─── ENG-81 review.major: scheduler-side in-flight lock leak ──────────
-# Pre-fix, the run-local.sh scheduler acquired .in-flight.lock BEFORE
-# every error-prone call (linear.sh transition-state, add-label,
-# reconcile.sh, branch-name.sh, resolve_worktree_path, ensure_worktree).
-# With set -e, any of those failing on a transient blip killed the
-# scheduler; the EXIT trap reaped LOCK_DIR but not the per-issue
-# in-flight locks, leaving the issue silently stuck across ticks.
-#
-# The fix: track scheduler-acquired-but-unforked locks in an array;
-# release them all via the existing cleanup_on_exit trap. After
-# workers fork, the array is cleared so each worker's own trap owns
-# its lock.
+# ─── Scheduler-side in-flight lock leak on transient errors ──────────
+# The scheduler arm acquires .in-flight.lock as part of the per-decision
+# claim loop. Any error between acquire and worker fork (Linear blip,
+# set -e crash) would leave the per-issue lock orphaned without the
+# cleanup_on_exit trap reaping _SCHEDULER_INFLIGHT_LOCKS.
 test_scheduler_inflight_lock_cleanup_on_error() {
   local case_name="AC-SCHEDULER-INFLIGHT-CLEANUP"
   local eh_dir; eh_dir="$(mktemp -d -t twinning-sched-cleanup.XXXXXX)"

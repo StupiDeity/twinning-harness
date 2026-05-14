@@ -17,21 +17,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# ENG-81 review.major: the counting-semaphore primitives
-# (acquire_claude_mutex / release_claude_mutex, CLAUDE_SEMAPHORE_DIR,
-# CLAUDE_MUTEX_TIMEOUT, _ACQUIRED_SLOT_DIR) live in common.sh so
-# setup.sh::phase_project_profile can use them without `source`-ing
-# dispatch.sh (which would pull in main(), the stream renderer, the
-# allowlist table, and every future top-level addition). common.sh is
-# already sourced above at line 18 — no new include needed here.
-# See common.sh's "ENG-81 Phase 2/4: counting semaphore" block.
-
-# ENG-87: assert_no_tool_invocation (formerly defined here) hoisted to
-# bin/common.sh so run-stage.sh::_validate_dispatch_envelope can call it
-# without sourcing dispatch.sh (which would fire dispatch's mutex setup).
-# Sourced via `source "$SCRIPT_DIR/common.sh"` above; available to both
-# this script and any sibling that sources common.sh.
-
 # ─── Stream-json renderer (ENG-26 D-002) ─────────────────────────────────
 # Reads NDJSON on stdin; emits prose-ish progress lines on STDOUT (so the
 # caller's `tee "$log_file"` captures them); mirrors the raw NDJSON to a
@@ -617,9 +602,8 @@ main() {
     local _wall_raw _wall_seconds _rss_kb _cpu_pct
     _wall_raw="$(awk -F': ' '/Elapsed \(wall clock\) time/ {print $2}' "$_gtime_out" | head -1)"
     # gtime emits wall in `h:mm:ss`, `m:ss.ff`, or `ss.ff`. Normalise
-    # to total seconds so downstream consumers (status.sh, retro)
-    # can `tonumber` the field — matches the brainstorm contract
-    # name `wall_seconds`. ENG-81 review.minor.
+    # to total seconds so downstream consumers (status.sh, retro) can
+    # `tonumber` the field.
     _wall_seconds="$(awk -F: -v v="$_wall_raw" 'BEGIN {
       n = split(v, p, /:/)
       if (n == 3)      printf "%.2f\n", p[1]*3600 + p[2]*60 + p[3]

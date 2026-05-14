@@ -319,10 +319,11 @@ Spot it: `ls ~/.local/state/twinning-harness/.claude-semaphore/slot-*/pid`
 means no live dispatches. If a slot persists without a corresponding
 `claude -p` process, the slot is stale.
 
-Fix the stale slot:
+Fix the stale slot (each slot dir contains a `pid` file written by
+`acquire_claude_mutex` — `rmdir` would fail with "Directory not empty"):
 
 ```bash
-rmdir ~/.local/state/twinning-harness/.claude-semaphore/slot-1
+rm -rf ~/.local/state/twinning-harness/.claude-semaphore/slot-1
 ```
 
 Only remove if you've confirmed no `claude -p` is actually running:

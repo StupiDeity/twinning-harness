@@ -335,10 +335,10 @@ run_phase() {
     cp "$SCRIPT_DIR/common.sh" "$HARNESS_ROOT/bin/common.sh"
     cp "$SCRIPT_DIR/setup-helpers.sh" "$HARNESS_ROOT/bin/setup-helpers.sh"
     cp "$SCRIPT_DIR/setup.sh" "$HARNESS_ROOT/bin/setup.sh"
-    # ENG-81 review.major: the counting-semaphore helpers now live in
-    # common.sh (sourced at the top of setup.sh), so the sandbox no
-    # longer needs dispatch.sh. metrics.sh is still required for the
-    # dispatch-resource-sample emission path.
+    # The counting-semaphore helpers live in common.sh (sourced at the
+    # top of setup.sh), so the sandbox does not need dispatch.sh.
+    # metrics.sh is still required for the dispatch-resource-sample
+    # emission path.
     cp "$SCRIPT_DIR/metrics.sh" "$HARNESS_ROOT/bin/metrics.sh"
     SCRIPT_DIR="$HARNESS_ROOT/bin"
     # shellcheck disable=SC1091

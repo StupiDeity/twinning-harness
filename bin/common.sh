@@ -454,24 +454,13 @@ release_lock() {
 
 export -f acquire_lock try_acquire_lock release_lock
 
-# ENG-81 Phase 2/4: counting semaphore (was a binary mutex pre-ENG-81).
-# Each in-flight `claude -p` dispatch claims one of N slot dirs at
-# $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/. mkdir is atomic on
-# POSIX so multiple acquirers race for distinct slots safely.
+# Counting semaphore: each in-flight `claude -p` dispatch claims one of
+# N slot dirs at $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/. mkdir is
+# atomic on POSIX so multiple acquirers race for distinct slots safely.
 #
-# Lives in common.sh (not dispatch.sh) so setup.sh::phase_project_profile
-# can call the helpers without pulling dispatch.sh's main()/renderer/
-# allowlist surface in via `source` — that was the review.major shape
-# bug. dispatch.sh, run-stage.sh, and setup.sh all source common.sh
-# already, so the helpers are reachable without any new include.
-#
-# A-024 / A-033 contract: the `[claude-mutex] waiting for lock held by
-# <pid>` log text is preserved verbatim so mutex-test.sh's grep on
-# `claude-mutex.*waiting` keeps anchoring the same operator-visible
-# signal across the migration. CLAUDE_MUTEX_TIMEOUT is similarly
-# preserved as an env-var contract (operators may have set it in
-# launchd plists pre-ENG-81); the variable name uses "MUTEX" rather
-# than "SEMAPHORE" for that reason.
+# CLAUDE_MUTEX_TIMEOUT keeps its "MUTEX" name as an env-var contract —
+# operators may have set it in launchd plists. The wait log preserves
+# the `[claude-mutex] waiting` token that mutex-test.sh's regex anchors.
 CLAUDE_SEMAPHORE_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
 CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
 _ACQUIRED_SLOT_DIR=""
