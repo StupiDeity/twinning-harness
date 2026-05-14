@@ -459,8 +459,11 @@ main() {
     rm -f "$usage_file"
   fi
 
-  acquire_claude_mutex
+  # Install the release trap BEFORE the acquire so a die() between the two
+  # cannot leak the slot. release_claude_mutex is a no-op when
+  # _ACQUIRED_SLOT_DIR is empty, so arming the trap pre-acquire is safe.
   trap 'release_claude_mutex' EXIT
+  acquire_claude_mutex
 
   local denies
   denies="$(disallowed_platform_tools)"
