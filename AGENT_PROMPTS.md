@@ -1122,6 +1122,12 @@ Read these files first (in order, where present):
 Branch: `{branch_name}` (already carries backend + frontend commits and the open PR
 from the review stage). Check it out; you may commit additional test files here.
 
+Branch-shape detection (MANDATORY, BEFORE running gates):
+  Determine whether this PR introduces new code paths by running:
+    git diff main..HEAD --name-only
+  - If every changed path matches `^docs/` (i.e., `git diff main..HEAD --name-only | grep -vE '^docs/'` returns zero lines), this is a **back-fill PR**: the issue scope is to document a fix already shipped on `main`. Skip to Decision path **D** at the end of this section.
+  - Otherwise, proceed normally with the gate runs, coverage audit, and adversarial-testing budget below.
+
 Authoritative test manifest:
   The plan's Failure Mode → Test Map is the contract. For every row, the named test MUST
   (a) exist on the branch, (b) execute, (c) assert the "Expected behavior" column (not
@@ -1234,6 +1240,19 @@ Decision path (apply exactly one):
          rationale for letting it through; bug-issue links if any bugs were filed.
        The full coverage-audit table and adversarial-test list stay in the PR summary
        comment, not this Linear comment.
+     - Orchestrator advances to `stage:building`.
+
+  D. **Back-fill PR** (branch-shape detection above flagged this PR as docs-only — every path under `git diff main..HEAD --name-only` matches `^docs/`):
+     - Run the gate commands listed in the Project profile addendum's "Build & test gates" section. The gates protect against a regression on `main` between when the original fix shipped and this PR opened; they must still pass.
+     - SKIP the coverage audit (§3), the regression-intent audit (§4), and the adversarial-testing budget (§5). The new-code-path budget is vacuously satisfied — zero new code paths means zero required tests.
+     - Verify the brainstorm's specification matches the in-tree implementation. Use Read + Grep on `main` to confirm the code described in the brainstorm exists at the paths the brainstorm names. If the brainstorm describes something that is NOT in the tree, this is a P0 finding — treat as Decision-path B (genuine failure, loop back to implementing).
+     - Commit no new tests (none required).
+     - Post a QA summary comment on the PR (gates green + back-fill confirmation: brainstorm spec ↔ in-tree code match).
+     - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary comment format contract (preamble). Orchestrator posts it to Linear as `completion/qa/{issue_id}`. Stage-specific slots:
+       - Artifact link: the PR URL.
+       - TL;DR: 1–2 sentences confirming this is a back-fill PR and that the brainstorm spec matches the shipped code.
+       - Status line (clean): `Back-fill verified · 0 new code paths · 0 adversarial tests added · proceeding to building`.
+       - Notes (only on partial-match): one paragraph if the brainstorm spec is partially out of date relative to the shipped code; cite specific drift.
      - Orchestrator advances to `stage:building`.
 
 Do NOT change the Linear stage label yourself. The orchestrator owns state transitions.

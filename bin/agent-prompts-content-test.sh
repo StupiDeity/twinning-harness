@@ -1110,6 +1110,33 @@ assert_overwrite_mandate "## 5. Review Agent"                   reviewing
 assert_overwrite_mandate "## 6. QA Agent"                       qa
 assert_overwrite_mandate "## 7. Build Agent"                    building
 
+# ─── ENG-82: §6 back-fill detection clause + Decision-path D ────────
+# Without this rule, the QA agent on a back-fill PR (issue scope =
+# document a fix already shipped) spends reasoning budget rediscovering
+# the workaround and emits a non-canonical status line. See
+# docs/brainstorms/2026-05-14-eng-82-…-design.md and ENG-79's
+# 2026-05-08 monitoring run for the source incident.
+s6="$(section_body "## 6. QA Agent")"
+if printf '%s\n' "$s6" | grep -qiF 'back-fill'; then
+  ok "§6 ENG-82: carries 'back-fill' detection clause"
+else
+  nope "§6 ENG-82: carries 'back-fill' detection clause" \
+       "phrase missing — QA agent will re-derive the workaround per dispatch"
+fi
+if printf '%s\n' "$s6" | grep -qF 'git diff main..HEAD --name-only'; then
+  ok "§6 ENG-82: cites detection command 'git diff main..HEAD --name-only'"
+else
+  nope "§6 ENG-82: cites detection command 'git diff main..HEAD --name-only'" \
+       "without the exact command, agents may invent different signals"
+fi
+if printf '%s\n' "$s6" | grep -qF 'Back-fill verified · 0 new code paths'; then
+  ok "§6 ENG-82: pins canonical status line 'Back-fill verified · 0 new code paths · …'"
+else
+  nope "§6 ENG-82: pins canonical status line 'Back-fill verified · 0 new code paths · …'" \
+       "non-canonical status lines break grep-based operator audit on completion/qa/ENG-N comments"
+fi
+unset s6
+
 # ─── ENG-87 review-iter-7 C2: dispatch-id contract delivered to agents ──
 # Iter-4/5 review found that the `### Dispatch identifier and freshness
 # contract` subsection lived inside the unnumbered `## Verdict-marker
