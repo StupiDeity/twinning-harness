@@ -1122,6 +1122,12 @@ Read these files first (in order, where present):
 Branch: `{branch_name}` (already carries backend + frontend commits and the open PR
 from the review stage). Check it out; you may commit additional test files here.
 
+Branch-shape detection (MANDATORY, BEFORE running gates):
+  Determine whether this PR introduces new code paths by running:
+    git diff main..HEAD --name-only
+  - If every changed path matches `^docs/` (i.e., `git diff main..HEAD --name-only | grep -vE '^docs/'` returns zero lines), this is a **back-fill PR**: the issue scope is to document a fix already shipped on `main`. Skip to Decision path **D** at the end of this section.
+  - Otherwise, proceed normally with the gate runs, coverage audit, and adversarial-testing budget below.
+
 Authoritative test manifest:
   The plan's Failure Mode → Test Map is the contract. For every row, the named test MUST
   (a) exist on the branch, (b) execute, (c) assert the "Expected behavior" column (not
