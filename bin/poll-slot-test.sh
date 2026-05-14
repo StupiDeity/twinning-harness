@@ -2114,6 +2114,74 @@ else
     "got slot=$slot adv=$adv full=$out"
 fi
 
+# ─── ENG-81 Task 3: poll.sh --max <K> CLI flag ───────────────────────
+# poll.sh ships an additive --max <K> flag (default 1, back-compat with
+# run-local.sh:149's single-decision reader). With --max 1 the legacy
+# single-object output shape is preserved; with --max > 1 a JSON array
+# of up to K decisions is emitted. Idle / no-work paths are unchanged.
+
+# AC-MAX-K-DEFAULT: omitted --max emits single object (legacy contract).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-D|In Progress|3|Bug,stage:planning"
+out="$(main 2>/dev/null || true)"
+if jq -e 'type == "object" and .issue_id == "ENG-MAX-D"' <<<"$out" >/dev/null 2>&1; then
+  pass_at "AC-MAX-K-DEFAULT: no --max → single-object output (legacy)"
+else
+  fail_at "AC-MAX-K-DEFAULT" "expected object with issue_id ENG-MAX-D, got: $out"
+fi
+
+# AC-MAX-K-LEGACY-1: --max 1 emits single object (legacy contract).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-1|In Progress|3|Bug,stage:planning"
+out="$(main --max 1 2>/dev/null || true)"
+if jq -e 'type == "object" and .issue_id == "ENG-MAX-1"' <<<"$out" >/dev/null 2>&1; then
+  pass_at "AC-MAX-K-LEGACY-1: --max 1 → single-object output (legacy)"
+else
+  fail_at "AC-MAX-K-LEGACY-1" "expected object with issue_id ENG-MAX-1, got: $out"
+fi
+
+# AC-MAX-K-2-HELDS: --max 2 with two ready helds emits 2-element array.
+reset_fixtures
+write_label_fixture "stage:reviewing" \
+  "ENG-MAX-A|In Progress|3|Bug,stage:reviewing"
+write_label_fixture "stage:implementing" \
+  "ENG-MAX-B|In Progress|3|Bug,stage:implementing"
+out="$(main --max 2 2>/dev/null || true)"
+count="$(jq 'if type == "array" then length else 0 end' <<<"$out" 2>/dev/null || printf '0')"
+if (( count == 2 )); then
+  pass_at "AC-MAX-K-2-HELDS: --max 2 with 2 helds → 2-element array"
+else
+  fail_at "AC-MAX-K-2-HELDS" "expected length 2 array, got count=$count out=$out"
+fi
+
+# AC-MAX-K-2-ONE-HELD: --max 2 with only 1 ready held + 1 inbox emits
+# a 2-element array (the held + the inbox pickup, in pool sort order).
+reset_fixtures
+write_label_fixture "stage:reviewing" \
+  "ENG-MAX-C|In Progress|3|Bug,stage:reviewing"
+write_inbox_fixture \
+  "ENG-MAX-INBOX|Todo|3|Bug"
+out="$(main --max 2 2>/dev/null || true)"
+count="$(jq 'if type == "array" then length else 0 end' <<<"$out" 2>/dev/null || printf '0')"
+if (( count == 2 )); then
+  pass_at "AC-MAX-K-2-ONE-HELD: --max 2 with 1 held + 1 inbox → 2-element array"
+else
+  fail_at "AC-MAX-K-2-ONE-HELD" "expected length 2 array, got count=$count out=$out"
+fi
+
+# AC-MAX-K-INVALID: non-integer --max coerces to 1 (defensive).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-INV|In Progress|3|Bug,stage:planning"
+out="$(main --max abc 2>/dev/null || true)"
+if jq -e 'type == "object" and .issue_id == "ENG-MAX-INV"' <<<"$out" >/dev/null 2>&1; then
+  pass_at "AC-MAX-K-INVALID: --max abc coerces to 1 → single object"
+else
+  fail_at "AC-MAX-K-INVALID" "expected object output, got: $out"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
