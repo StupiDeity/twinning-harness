@@ -180,8 +180,10 @@ The argv composition order is
 
 - **Stack-neutral base** — `bin/dispatch.sh::allowed_tools_for` ships
   a stack-agnostic per-stage allowlist: Read/Write/Edit/Grep/Glob,
-  the git family, `jq`, `awk`, `bash bin/linear.sh`,
-  `bash bin/pipeline.sh`, etc. No language-specific tokens.
+  the git family, `bash bin/linear.sh`, `bash bin/pipeline.sh`, plus
+  per-stage tools like `jq` / `awk` where the stage needs them (varies
+  by stage — see `dispatch.sh::allowed_tools_for` for the exact
+  per-stage shape). No language-specific tokens.
 - **Profile-derived stack tools** — `learned-rules/<slug>/project-profile.md`
   carries a `## Tool allowlist` section authored by the discovery
   agent (`bash bin/setup.sh /path project-profile`, Phase 5b). The
