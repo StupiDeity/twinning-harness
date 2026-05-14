@@ -2803,6 +2803,140 @@ HARNESS_ROOT="$_ENG94_SAVED_HARNESS_ROOT"
 PROJECT_SLUG="$_ENG94_SAVED_PROJECT_SLUG"
 unset _ENG94_SAVED_HARNESS_ROOT _ENG94_SAVED_PROJECT_SLUG
 
+# ─── Group 8 (ENG-81): dispatch-resource-sample metric via gtime wrapper ─
+# Phase 1 instrumentation. dispatch.sh wraps `claude -p` with `gtime -v -o
+# <tmp>` when gtime is on PATH; on success it parses the wall/RSS/CPU
+# fields and emits a `dispatch-resource-sample` event to events.jsonl
+# (via metrics.sh). When gtime is absent the dispatch still succeeds and
+# logs a one-liner "gtime not on PATH" warning; no metric is emitted
+# (degraded mode). Both branches are exercised here.
+
+printf '\n--- ENG-81 Group 8: dispatch-resource-sample emission ---\n'
+
+# Sub-fixture A: gtime present (stubbed) → metric event lands.
+G8_TARGET="$_TEST_STUB_DIR/g8-target"
+mkdir -p "$G8_TARGET/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "g8-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5 }
+}' > "$G8_TARGET/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$G8_TARGET/.pipeline-config/schemas/linear-ids.json"
+G8_STATE_ROOT="$_TEST_STUB_DIR/g8-state"
+G8_PROJECT_STATE="$G8_STATE_ROOT/g8-slug"
+mkdir -p "$G8_PROJECT_STATE/ENG-G8"
+
+# Stub gtime: writes a fixed `-v` output to its `-o <path>` arg, then
+# execs the rest of the command (mirrors how real gtime works — it wraps
+# the inner cmd transparently except for the resource-sample sidecar).
+G8_STUB_GTIME="$_TEST_STUB_DIR/gtime"
+cat > "$G8_STUB_GTIME" <<'SH'
+#!/usr/bin/env bash
+# Skip leading -v / -o <path> flags; capture -o's path argument; emit
+# fixture gtime -v output to that path, then exec the inner command.
+out=""
+while (( $# > 0 )); do
+  case "$1" in
+    -v) shift ;;
+    -o) out="$2"; shift 2 ;;
+    --) shift; break ;;
+    *)  break ;;
+  esac
+done
+if [[ -n "$out" ]]; then
+  cat > "$out" <<GTIME
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:42.10
+	Maximum resident set size (kbytes): 384256
+	Percent of CPU this job got: 28%
+GTIME
+fi
+exec "$@"
+SH
+chmod +x "$G8_STUB_GTIME"
+
+# Reuse the existing claude + gtimeout stubs already in $_TEST_STUB_DIR.
+G8_OUT="$_TEST_STUB_DIR/g8-dispatch.out"
+G8_PATH="$_TEST_STUB_DIR:$PATH"
+PIPELINE_DRY_RUN=0 \
+PATH="$G8_PATH" \
+TARGET_REPO="$G8_TARGET" \
+PROJECT_SLUG="g8-slug" \
+HARNESS_STATE_DIR="$G8_STATE_ROOT" \
+PROJECT_STATE_DIR="$G8_PROJECT_STATE" \
+PIPELINE_ISSUE_ID=ENG-G8 \
+LINEAR_API_KEY="$LINEAR_API_KEY" \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$G8_OUT" >/dev/null || true
+
+G8_EVENTS="$G8_PROJECT_STATE/metrics/events.jsonl"
+if [[ -f "$G8_EVENTS" ]] \
+   && grep -q '"event":"dispatch-resource-sample"' "$G8_EVENTS"; then
+  pass_at "G8.A: dispatch-resource-sample event landed in events.jsonl when gtime is on PATH"
+else
+  fail_at "G8.A: dispatch-resource-sample missing" \
+    "events.jsonl=$(cat "$G8_EVENTS" 2>/dev/null || printf 'absent') stderr=$(cat "$G8_OUT")"
+fi
+
+# Notes field carries wall/rss/cpu (the parsed gtime -v fields).
+if [[ -f "$G8_EVENTS" ]] \
+   && jq -e 'select(.event == "dispatch-resource-sample") | .notes | test("wall=") and test("rss_kb=") and test("cpu_pct=")' \
+        "$G8_EVENTS" >/dev/null 2>&1; then
+  pass_at "G8.A: dispatch-resource-sample notes carry wall/rss_kb/cpu_pct fields"
+else
+  fail_at "G8.A: notes missing wall/rss_kb/cpu_pct" \
+    "events: $(cat "$G8_EVENTS" 2>/dev/null)"
+fi
+
+# Sub-fixture B: gtime absent → dispatch still succeeds; warning logged;
+# no metric emitted. Use a fresh state dir to keep counters disjoint.
+G8B_PATH_NO_GTIME="$_TEST_STUB_DIR/g8b-bin"
+mkdir -p "$G8B_PATH_NO_GTIME"
+# Re-stub claude + gtimeout in the no-gtime PATH dir (so dispatch can
+# still reach them but `command -v gtime` returns nothing).
+cp "$_TEST_STUB_DIR/claude" "$G8B_PATH_NO_GTIME/claude"
+cp "$_TEST_STUB_DIR/gtimeout" "$G8B_PATH_NO_GTIME/gtimeout"
+
+G8B_PROJECT_STATE="$G8_STATE_ROOT/g8b-slug"
+mkdir -p "$G8B_PROJECT_STATE/ENG-G8B"
+G8B_TARGET="$_TEST_STUB_DIR/g8b-target"
+mkdir -p "$G8B_TARGET/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "g8b-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5 }
+}' > "$G8B_TARGET/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$G8B_TARGET/.pipeline-config/schemas/linear-ids.json"
+
+G8B_OUT="$_TEST_STUB_DIR/g8b-dispatch.out"
+# PATH must include /usr/bin and /bin so bash + system tools (jq, awk,
+# date, etc.) remain reachable; ONLY gtime is removed.
+PIPELINE_DRY_RUN=0 \
+PATH="$G8B_PATH_NO_GTIME:/usr/bin:/bin:/opt/homebrew/bin" \
+TARGET_REPO="$G8B_TARGET" \
+PROJECT_SLUG="g8b-slug" \
+HARNESS_STATE_DIR="$G8_STATE_ROOT" \
+PROJECT_STATE_DIR="$G8B_PROJECT_STATE" \
+PIPELINE_ISSUE_ID=ENG-G8B \
+LINEAR_API_KEY="$LINEAR_API_KEY" \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$G8B_OUT" >/dev/null || true
+
+# Warning log line emitted (the [dispatch-resource-sample] gtime not on PATH ...).
+if grep -q 'dispatch-resource-sample.*gtime' "$G8B_OUT"; then
+  pass_at "G8.B: dispatch logs gtime-absent warning when gtime missing from PATH"
+else
+  fail_at "G8.B: gtime-absent warning missing" \
+    "stderr: $(cat "$G8B_OUT")"
+fi
+
+# No metric emitted in degraded mode.
+G8B_EVENTS="$G8B_PROJECT_STATE/metrics/events.jsonl"
+if [[ ! -f "$G8B_EVENTS" ]] \
+   || ! grep -q '"event":"dispatch-resource-sample"' "$G8B_EVENTS"; then
+  pass_at "G8.B: no dispatch-resource-sample event when gtime absent (degraded mode)"
+else
+  fail_at "G8.B: spurious metric in degraded mode" \
+    "events: $(cat "$G8B_EVENTS")"
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
