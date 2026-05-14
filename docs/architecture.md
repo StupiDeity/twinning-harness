@@ -43,6 +43,40 @@ Derived (do not override):
 - `STATE_FILE = $TARGET_CONFIG_DIR/state.local.json` — runtime override
   for `orchestrator.paused`; writes go here, not to `config.json`
 
+## Discovery and the project profile
+
+The orchestrator is stack-neutral. Per-target stack knowledge lives in
+`$HARNESS_ROOT/learned-rules/<slug>/project-profile.md` — a markdown
+file with a YAML frontmatter `schema_version: 2` and six H2 sections
+(Stack, Build & test gates, Tool allowlist, File layout, Language
+idioms, Don'ts).
+
+The profile is authored by a **one-shot discovery agent** run via
+`bash bin/setup.sh /path/to/target project-profile` (Phase 5b of
+setup). The discovery prompt at `bin/setup-prompts/discovery.md` walks
+the target's manifests, `.github/workflows/`, and dotfiles to elicit
+the six sections. The result is checked into the harness repo (NOT
+the target) under `learned-rules/<slug>/`.
+
+The profile drives three things:
+
+| Consumer | Reads | Effect |
+|---|---|---|
+| `bin/dispatch.sh::_dispatch_tools_from_profile` | `## Tool allowlist` | Per-stage `--allowed-tools` argv composition (the profile-derived middle tier of **stack-neutral base + profile-derived stack tools + operator-curated extras**) |
+| `bin/run-local-helpers.sh::stage_output_paths` | `## File layout` | Per-stage scope allowlist for the post-dispatch sweep |
+| `bin/render-prompt.sh::append_project_profile` | Entire file | Appended to every non-retrospective dispatch's prompt |
+
+If a profile is missing or its schema is wrong, dispatch falls back to
+**stack-neutral base + operator-curated extras** (the middle tier
+drops out) and emits one `[allowed-tools]` warning per stage to
+stderr. The target keeps working on the universal lockfile catalog +
+`docs/` scope allowlist (see Sweep + scope partition below) until the
+operator re-runs discovery.
+
+The profile is the canonical source of stack truth. To change the
+stack (add a manifest, swap a test runner), edit the profile and
+commit; the next dispatch picks it up automatically.
+
 ## Harness vs target — the load-bearing distinction
 
 This repo holds **no application code**. It's pure orchestration. The
@@ -71,7 +105,7 @@ that operate on a separate target repo.
 │  │                                                   │      │
 │  │  src/                                             │      │
 │  │  tests/                                           │      │
-│  │  Cargo.toml / package.json / ...                  │      │
+│  │  Cargo.toml / package.json / pyproject.toml / ... │      │
 │  │  .pipeline-config/                                │      │
 │  │     ├─ config.json                                │      │
 │  │     ├─ state.local.json                           │      │
