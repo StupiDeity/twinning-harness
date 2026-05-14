@@ -402,12 +402,54 @@ acquire_lock() {
   return 0
 }
 
+# ENG-81: non-blocking lock acquisition for the per-issue
+# .in-flight.lock used by run-local.sh's scheduler arm. Returns rc=0 on
+# acquire, rc=1 if the lock is already held. acquire_lock with
+# timeout=0 means "wait forever" (existing single-flight contract for
+# the tick lock), so a separate try-mode helper is required to keep
+# existing callers' semantics intact.
+try_acquire_lock() {
+  local dir="$1"
+  mkdir "$dir" 2>/dev/null
+}
+
 release_lock() {
   local dir="$1"
   rmdir "$dir" 2>/dev/null || true
 }
 
-export -f acquire_lock release_lock
+export -f acquire_lock try_acquire_lock release_lock
+
+# ENG-81: per-tick concurrency cap.
+# Precedence (mirrors the ENG-65 dispatch_timeout_minutes pattern):
+#   1. env CLAUDE_MAX_CONCURRENT
+#   2. config.json::orchestrator.max_concurrent_features
+#   3. built-in default 2
+# Non-integer / <1 falls through to the next layer with a `log`
+# warning. The warning lands on stderr (log() writes to >&2), so
+# stdout stays the resolved integer for `K=$(_resolve_K)` callers.
+_resolve_K() {
+  local k=""
+  if [[ -n "${CLAUDE_MAX_CONCURRENT-}" ]]; then
+    if [[ "$CLAUDE_MAX_CONCURRENT" =~ ^[0-9]+$ ]] && (( CLAUDE_MAX_CONCURRENT >= 1 )); then
+      printf '%s\n' "$CLAUDE_MAX_CONCURRENT"
+      return 0
+    else
+      log "_resolve_K: invalid CLAUDE_MAX_CONCURRENT=$CLAUDE_MAX_CONCURRENT (ignoring; falling through)"
+    fi
+  fi
+  if [[ -f "${CONFIG:-}" ]]; then
+    k="$(jq -r '.orchestrator.max_concurrent_features // empty' "$CONFIG" 2>/dev/null || printf '')"
+    if [[ "$k" =~ ^[0-9]+$ ]] && (( k >= 1 )); then
+      printf '%s\n' "$k"
+      return 0
+    elif [[ -n "$k" ]]; then
+      log "_resolve_K: invalid orchestrator.max_concurrent_features=$k (ignoring; falling through)"
+    fi
+  fi
+  printf '%s\n' "2"
+}
+export -f _resolve_K
 
 PIPELINE_DRY_RUN="${PIPELINE_DRY_RUN:-0}"
 export PIPELINE_DRY_RUN
