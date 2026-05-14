@@ -616,6 +616,7 @@ inspect each surface.
 | Brainstorm halts at iteration 2 with `iteration-exhausted` | ENG-65: voluntarily halts after 2 persona-review iterations with unresolved P0. Resume via `--action continue` or fix underlying P0. Bounded worst-case spend; one extra operator touch on slow-converging brainstorms. |
 | scope-check halts on files from a recent upstream merge | Pre-ENG-59 bug; post-ENG-59 (`bin/scope-check.sh:155-…`) fetches `origin main` per run. If symptom persists, check transcript for `scope-check: fetch origin main failed` — fetch unreachable + no `refs/remotes/origin/main` falls back to local `main` (degraded mode with warning). |
 | Issue at `stage:building` idles with `dispatch-skipped` events and no halt label | Inspect `wait-building.json::attempts` — ENG-86 entry-conditions gate firing skip per `gh pr view`. If PR is approved by a non-bot Code Owner, check whether `gh` is on PATH for launchd. If not approved, operator action is the underlying remedy. |
+| Concurrent dispatches not running (expected K=2, observed K=1) | `bash bin/status.sh` "Concurrent dispatches active" row + "Dispatch resource baseline" tail; check `_resolve_K` resolved value in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log` (look for `scheduler: K=…`); inspect `CLAUDE_MAX_CONCURRENT` env in the launchd plist; inspect `orchestrator.max_concurrent_features` in the target's `.pipeline-config/config.json`. |
 
 ## Per-project dispatch concurrency (ENG-81)
 

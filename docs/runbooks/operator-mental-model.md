@@ -64,6 +64,12 @@ gets every tick until it transitions or halts.
 Spot it: in the held-slot list, the issue closer to released is the one
 running. The earlier-stage one is starved.
 
+After ENG-81 (K=2 parallel dispatch), this starvation applies only when
+`held_count ≥ K` — the documented WIP cap (see CLAUDE.md "Per-project
+dispatch concurrency"). At K=2 (the post-ENG-81 default), two earlier-stage
+helds advance per tick; starvation re-emerges only when a third issue is
+also held.
+
 Fix: there's no per-issue priority bump today. Either let the front-of-queue
 finish, or temporarily mark the front-of-queue with `pipeline:halted` to
 push ENG-B forward (then unhalt). Heavy-handed; usually just wait.
