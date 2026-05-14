@@ -2182,6 +2182,22 @@ else
   fail_at "AC-MAX-K-INVALID" "expected object output, got: $out"
 fi
 
+# AC-MAX-K-UNKNOWN-FLAG: a typo'd flag (e.g. --mx) must die with a clear
+# message — pre-fix the parser silently swallowed unknown args via `*) shift`
+# and returned a single decision with no warning, masking operator typos.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-UNK|In Progress|3|Bug,stage:planning"
+err="$(main --mx 2 2>&1 >/dev/null || true)"
+case "$err" in
+  *"unknown flag"*"--mx"*)
+    pass_at "AC-MAX-K-UNKNOWN-FLAG: --mx dies with 'unknown flag --mx'"
+    ;;
+  *)
+    fail_at "AC-MAX-K-UNKNOWN-FLAG" "expected 'unknown flag --mx' die, got: $err"
+    ;;
+esac
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

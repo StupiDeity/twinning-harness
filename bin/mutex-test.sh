@@ -62,6 +62,20 @@ grep -q 'claude-mutex.*waiting' <<<"$out" \
 (( elapsed >= 3 )) || { echo "FAIL K=1: did not wait (elapsed=$elapsed)"; exit 1; }
 echo "OK K=1 contention (waited ${elapsed}s)"
 
+# Slot-enumeration in the wait log (review.minor m3): under K>1 the
+# "[claude-mutex] waiting for lock held by …" message must enumerate
+# ALL held slots, not just slot-1. Pre-fix it only carried slot-1's pid
+# even when slot-2 was the actual blocker.
+case "$out" in
+  *"slot-1"*)
+    echo "OK K=1 wait log enumerates slot-1 (slot-enumeration contract)"
+    ;;
+  *)
+    echo "FAIL K=1: wait log does not enumerate slot-1 holders: $out"
+    exit 1
+    ;;
+esac
+
 # ── AC-N2-FREE-SLOT-2: cap=2 + slot-1 held → second acquirer takes slot-2 ──
 reset_sem
 mkdir "$SEM_DIR/slot-1"

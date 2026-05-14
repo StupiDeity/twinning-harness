@@ -657,6 +657,21 @@ got="$(unset CLAUDE_MAX_CONCURRENT; CONFIG="$_RK_CFG_NEG" _resolve_K 2>/dev/null
 [[ "$got" == "2" ]] && pass_at "AC-RK-CONFIG-NEGATIVE: config=-3 falls through to 2" \
   || fail_at "AC-RK-CONFIG-NEGATIVE" "got=$got"
 
+# AC-RK-NO-CONFIG-BREADCRUMB: env unset + CONFIG path nonexistent → resolved
+# to 2 + a stderr breadcrumb distinguishes "config absent" from "config present
+# but value invalid." Without the breadcrumb, an operator debugging
+# "K=2 when I set 4" has no signal that the config was never consulted.
+unset CLAUDE_MAX_CONCURRENT
+warn="$(CONFIG="$_TEST_ROOT/_resolve_K-truly-absent.json" _resolve_K 2>&1 >/dev/null)"
+case "$warn" in
+  *"_resolve_K: CONFIG not readable"*)
+    pass_at "AC-RK-NO-CONFIG-BREADCRUMB: missing config emits 'CONFIG not readable' breadcrumb"
+    ;;
+  *)
+    fail_at "AC-RK-NO-CONFIG-BREADCRUMB" "expected 'CONFIG not readable' breadcrumb, got: $warn"
+    ;;
+esac
+
 # ─── ENG-81 Task 4b: try_acquire_lock contract ────────────────────────
 printf '\n--- ENG-81 Task 4b: try_acquire_lock ---\n'
 
@@ -712,16 +727,30 @@ try_acquire_lock "$_TAL_DIR/lock-dead" || rc=$?
   || fail_at "AC-TAL-RECLAIM-DEAD" "rc=$rc pid=$(cat "$_TAL_DIR/lock-dead/pid" 2>/dev/null || echo absent)"
 release_lock "$_TAL_DIR/lock-dead"
 
-# AC-TAL-RECLAIM-NO-PID: a lock dir with no pid file (legacy, or
-# interrupted acquire between mkdir and write) is also stale and
-# reclaimable.
+# AC-TAL-EMPTY-PID-BLOCKS: a lock dir with no pid file (or an empty pid
+# file) is treated as "owner still arming" — the mkdir succeeded for
+# another acquirer but it has not yet written the pid record. Reclaiming
+# in that TOCTOU window would `rm -rf` a LIVE owner's dir. Contract:
+# only reclaim when pid is non-empty AND the recorded process is dead.
 mkdir "$_TAL_DIR/lock-nopid"
 rc=0
 try_acquire_lock "$_TAL_DIR/lock-nopid" || rc=$?
-[[ "$rc" == "0" && "$(cat "$_TAL_DIR/lock-nopid/pid")" == "$$" ]] \
-  && pass_at "AC-TAL-RECLAIM-NO-PID: pidless lock dir reclaimed" \
-  || fail_at "AC-TAL-RECLAIM-NO-PID" "rc=$rc"
-release_lock "$_TAL_DIR/lock-nopid"
+[[ "$rc" == "1" && ! -f "$_TAL_DIR/lock-nopid/pid" ]] \
+  && pass_at "AC-TAL-EMPTY-PID-BLOCKS: pidless lock dir BLOCKS (rc=1, dir intact)" \
+  || fail_at "AC-TAL-EMPTY-PID-BLOCKS" "rc=$rc pid-file=$([[ -f $_TAL_DIR/lock-nopid/pid ]] && echo present || echo absent)"
+rm -rf "$_TAL_DIR/lock-nopid"
+
+# AC-TAL-EMPTY-PID-FILE-BLOCKS: same as above but with a zero-byte pid
+# file (acquire interrupted AFTER mkdir, BEFORE the pid-file write). The
+# acquirer is still arming; blocking is correct.
+mkdir "$_TAL_DIR/lock-emptyfile"
+: > "$_TAL_DIR/lock-emptyfile/pid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-emptyfile" || rc=$?
+[[ "$rc" == "1" ]] \
+  && pass_at "AC-TAL-EMPTY-PID-FILE-BLOCKS: zero-byte pid file blocks (rc=1)" \
+  || fail_at "AC-TAL-EMPTY-PID-FILE-BLOCKS" "rc=$rc"
+rm -rf "$_TAL_DIR/lock-emptyfile"
 
 # AC-TAL-LIVE-BLOCKS: a lock held by a live process must NOT be reclaimed
 # (false reclaim would race two workers onto the same issue). Use a
