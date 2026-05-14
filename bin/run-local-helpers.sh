@@ -153,68 +153,115 @@ halt_issue_for_self_leak() {
     27
 }
 
-# clean_readonly_stage_residue <issue> <stage> <worktree>
+# stage_is_read_mostly <stage>
 #
-# Read-mostly stages (reviewing, building, released — every stage whose
-# stage_output_paths case arm returns empty) have a "no worktree writes"
-# contract: stage summaries go to $(issue_dir)/stage-summary-<stage>.md
-# OUTSIDE the worktree, Linear comments go via bin/linear.sh, gh/git
-# operations go to origin or sibling worktrees. There is no legitimate
-# in-worktree write.
+# Single source of truth for "this stage has no legitimate worktree
+# writes." Derives the predicate directly from stage_output_paths
+# (whose case arm for reviewing|building|released returns empty
+# *by design*) — no duplicate stage list to drift.
 #
-# Anything dirty in the worktree at tick-end is therefore *agent
-# verification residue* — scratch fixtures, ad-hoc test scripts, files
-# the agent materialized to spot-check the implementer's work. The
-# verdict and stage summary are already in Linear; the residue has no
-# upstream consumer. Discarding it preserves the contract and lets the
-# next dispatch start clean.
+# Reviewing/building/released agents write stage-summary files to
+# $(issue_dir)/stage-summary-<stage>.md OUTSIDE the worktree, post
+# Linear comments via bin/linear.sh, and target origin via gh/git.
+# Their dispatch.sh allowed-tools surface confirms this: released
+# has no Write tool at all; reviewing/building have Write only for
+# the stage-summary path (verified pre-PR).
 #
-# Pre-ENG-* the sweep treated this residue as bot-introduced
-# out-of-scope and halted skip-until-human-acts (e.g. ENG-96 reviewer
-# leaving .scratch/bte_*.md + tmp-awk-dup-test.md to verify a parser).
-# That halt class required operator action to recover. This helper
-# eliminates the class entirely for stages where the contract makes
-# residue meaning-free.
+# Returns 0 if stage is read-mostly (stage_output_paths empty),
+# else 1.
+stage_is_read_mostly() {
+  [[ -z "$(stage_output_paths "$1" 2>/dev/null || true)" ]]
+}
+
+# clean_self_leak_residue <issue> <stage> <worktree> <path>...
 #
-# Implementing/UI/QA are NOT affected — their allowlists are real, their
-# self-leaks are real signal, the halt remains correct.
+# Called from run-local.sh's self-leak handler when the affected
+# stage is read-mostly (per stage_is_read_mostly). Removes paths the
+# partition sweep already identified as bot-introduced self-leak —
+# i.e. NEW since tick-start (the sweep's snapshot comparison at
+# run-local.sh has done the observed-vs-self-leak split). Operator's
+# pre-existing 'observed' edits are NEVER touched because they don't
+# appear in this path list.
 #
-# Returns 0 always: no-op on non-read-mostly stages, no-op on missing
-# worktree, refuse-and-return on main/master/empty branch (defensive),
-# clean otherwise. Failures of git checkout/clean are non-blocking;
-# the subsequent partition sweep is the safety net.
-clean_readonly_stage_residue() {
+# Eliminates the operator-touch halt that would otherwise fire (the
+# halt_issue_for_self_leak skip-until-human-acts path) — the verdict
+# and stage summary are already in Linear, residue has no upstream
+# consumer. Implementing/UI/QA self-leaks still halt as before; this
+# helper is only invoked for stages where the contract makes residue
+# meaning-free.
+#
+# Forensic audit: emits sha12 hashes for every cleaned path in the
+# metric notes payload so the retrospective can reconstruct what was
+# wiped. Path strings themselves are NOT logged to Linear comments
+# (matches halt_issue_for_self_leak's adversarial-filename
+# discipline).
+#
+# Per-path strategy:
+#   - tracked-modified (git ls-files succeeds): git checkout -- <p>
+#   - untracked (anything else): rm -rf "$worktree/$p"
+#
+# Returns 0 always:
+#   - empty path list → no-op
+#   - missing worktree → no-op + warn
+#   - main/master/empty branch → defensive refuse + warn
+#   - dry-run → log only, no FS mutation
+#   - partial per-path failure → log the rc count and emit metric anyway
+clean_self_leak_residue() {
   local issue="$1" stage="$2" worktree="$3"
-  case "$stage" in
-    reviewing|building|released) ;;
-    *) return 0 ;;
-  esac
-  [[ -d "$worktree" ]] || return 0
-  git -C "$worktree" rev-parse --show-toplevel >/dev/null 2>&1 || return 0
+  shift 3
+  local -a paths=("$@")
+  local count="${#paths[@]}"
+  (( count == 0 )) && return 0
+
+  if [[ ! -d "$worktree" ]]; then
+    log "auto-clean: no worktree at $worktree for ENG=$issue stage=$stage; skipping"
+    return 0
+  fi
+  if ! git -C "$worktree" rev-parse --show-toplevel >/dev/null 2>&1; then
+    log "auto-clean: $worktree is not a git working tree; skipping"
+    return 0
+  fi
+
   local branch
   branch="$(git -C "$worktree" branch --show-current 2>/dev/null || true)"
   case "$branch" in
     main|master|"")
-      log "auto-clean: refusing on branch=${branch:-<detached>} for stage=$stage (defensive — read-mostly cleanup never runs on main)"
+      log "auto-clean: defensive refuse on branch='${branch:-<empty-or-detached>}' for stage=$stage (read-mostly cleanup must never run on main)"
       return 0
       ;;
   esac
-  local dirty_count
-  dirty_count="$(git -C "$worktree" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-  (( dirty_count == 0 )) && return 0
+
+  # Audit hashes first so the metric payload is reconstructible even
+  # on partial failure (security review #4).
+  local hash_csv="" sha p
+  for p in "${paths[@]}"; do
+    sha="$(sha12 "$p")"
+    hash_csv="${hash_csv:+${hash_csv},}${sha}"
+  done
+
   if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then
-    log "[DRY_RUN] auto-clean: stage=$stage on $branch — would clean ${dirty_count} residue path(s)"
+    log "[DRY_RUN] auto-clean: stage=$stage on $branch — would clean ${count} self-leak path(s); hashes=${hash_csv}"
     return 0
   fi
-  log "auto-clean: stage=$stage is read-mostly; cleaning ${dirty_count} residue path(s) on $branch"
-  # Revert tracked modifications (-- . so the path-spec covers
-  # everything under the worktree root). Then remove untracked files
-  # and untracked directories, including gitignored ones (-x), but
-  # preserve operator-local config dirs that are gitignored on purpose.
-  git -C "$worktree" checkout -- . >/dev/null 2>&1 || true
-  git -C "$worktree" clean -fdx -e .pipeline-config -e .claude >/dev/null 2>&1 || true
+
+  log "auto-clean: stage=$stage is read-mostly; cleaning ${count} self-leak path(s) on $branch; hashes=${hash_csv}"
+
+  # Per-path classification + cleanup. Failures are non-blocking — but
+  # we DO log the per-class rc count so triage has signal.
+  local rm_fail=0 ck_fail=0
+  for p in "${paths[@]}"; do
+    if git -C "$worktree" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+      git -C "$worktree" checkout -- "$p" >/dev/null 2>&1 || ck_fail=$((ck_fail + 1))
+    else
+      rm -rf -- "$worktree/$p" 2>/dev/null || rm_fail=$((rm_fail + 1))
+    fi
+  done
+  if (( rm_fail > 0 || ck_fail > 0 )); then
+    log "auto-clean: partial failure (rm_fail=${rm_fail} checkout_fail=${ck_fail}); some residue may survive — partition sweep on next tick will catch it"
+  fi
+
   bash "$SCRIPT_DIR/metrics.sh" sweep-readonly-residue-cleaned "$issue" "$stage" \
-    "cleaned" 0 "count=${dirty_count} branch=${branch}" \
+    "cleaned" 0 "count=${count} branch=${branch} hashes=${hash_csv} rm_fail=${rm_fail} checkout_fail=${ck_fail}" \
     || log "metrics.sh sweep-readonly-residue-cleaned emission failed (non-blocking)"
 }
 
@@ -460,12 +507,28 @@ partition_dirty_paths() {
       skip_next=1
     fi
 
-    # Sanctioned agent scratch dir — invisible to sweep classification.
-    # Gitignored so contents can never reach a commit; the reviewer/QA
-    # agents can use it to drop verification fixtures without tripping
-    # the self-leak halt (which would otherwise fire because reviewing/
-    # building/released stages have no allowlist by design).
-    case "$path" in .scratch/*) continue ;; esac
+    # Sanctioned agent scratch dir for ALLOWLISTED stages
+    # (implementing/ui/qa). On those stages agents drop verification
+    # fixtures alongside legitimate in-scope writes; .scratch/* is
+    # gitignored and has no upstream consumer, so the sweep skips it
+    # rather than misclassifying it as out-of-scope.
+    #
+    # NOT applied to brainstorming/planning: those stages have D-004
+    # issue-id constraints + a tight docs/{brainstorms,plans}/ allow-
+    # list. Letting them silently drop .scratch/* would create a
+    # cross-dispatch state-injection vector (planted file readable by
+    # later-stage agents via Read). Brainstorm/plan .scratch/* writes
+    # therefore flow through to out-of-scope and self-leak halt.
+    #
+    # NOT applied to reviewing/building/released either: those stages
+    # are read-mostly (stage_output_paths empty) and the self-leak
+    # handler in run-local.sh auto-cleans the residue (per
+    # stage_is_read_mostly). This carve-out would be redundant there.
+    case "$stage" in
+      implementing|ui|qa)
+        case "$path" in .scratch/*) continue ;; esac
+        ;;
+    esac
 
     local matched_dir=0 matched_exact=0 entry
     if (( ${#allowlist[@]} > 0 )); then

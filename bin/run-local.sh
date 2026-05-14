@@ -268,18 +268,6 @@ set -e
 route_run_stage_exit "$issue_id" "$stage" "$rc"
 [[ $rc -ne 0 ]] && exit $rc
 
-# Read-mostly contract enforcement for reviewing|building|released:
-# those stages have empty stage_output_paths by design and no
-# legitimate worktree-write affordance. Anything dirty here is agent
-# verification residue (e.g. .scratch/* fixtures, ad-hoc test scripts
-# written to spot-check the implementer's work). Discard it before the
-# partition sweep runs — the verdict + stage summary are already in
-# Linear, and residue has no upstream consumer. Eliminates the
-# operator-touch halt that ENG-96's reviewer triggered with
-# .scratch/bte_*.md + tmp-awk-dup-test.md verification fixtures.
-# No-op for implementing|ui|qa — those keep the existing self-leak halt.
-clean_readonly_stage_residue "$issue_id" "$stage" "$dispatch_cwd"
-
 # 3-stream partition sweep (ENG-14 D-3).
 in_scope_file="$(mktemp -t twinning-inscope.XXXXXX)"
 leaked_file="$(mktemp -t twinning-leaked.XXXXXX)"
@@ -300,6 +288,7 @@ observed_count="$(tr -cd '\0' < "$out_scope_file" | wc -c | tr -d ' ')"
 # what to do with each.
 observed_buckets=()
 self_leak_hashes=()
+self_leak_paths=()
 if (( observed_count > 0 )); then
   while IFS= read -r -d '' p; do
     if grep -qxF -- "$p" "$snapshot_file"; then
@@ -315,6 +304,7 @@ if (( observed_count > 0 )); then
       fi
     else
       self_leak_hashes+=("$(sha12 "$p")")
+      self_leak_paths+=("$p")
     fi
   done < "$out_scope_file"
 fi
@@ -322,13 +312,33 @@ fi
 # Precedence: self-leak (hard-fail) > leaked-in-scope (counter+conditional
 # trip) > in-scope commit > observed bucketed (info only). Brainstorm OQ-4.
 
-# 1. Self-leak has highest severity. Halt the affected issue via
+# 1. Self-leak has highest severity. For implementing|ui|qa (where
+#    the allowlist is real signal) halt the affected issue via
 #    classify_failure (skip-until-human-acts); the global breaker stays
 #    untouched so other issues keep polling. (ENG-69 lane separation —
 #    helper owns metric emit, hash truncation, and reason rendering.)
+#
+#    For reviewing|building|released (stage_is_read_mostly — the
+#    contract guarantees no legitimate worktree writes) the residue
+#    is agent verification scratch with no upstream consumer. The
+#    verdict + stage summary are already in Linear. Clean the
+#    self-leak paths and continue the tick instead of halting —
+#    eliminates the operator-touch halt that ENG-96's reviewer
+#    triggered with .scratch/bte_*.md + tmp-awk-dup-test.md
+#    verification fixtures.
+#
+#    Snapshot safety: self_leak_paths are by construction NEW since
+#    tick-start (the observed-vs-self-leak classification above
+#    already filtered out paths present at tick-start). The
+#    operator's pre-existing 'observed' edits are NEVER in this list
+#    and therefore NEVER touched by the clean.
 if (( ${#self_leak_hashes[@]} > 0 )); then
-  halt_issue_for_self_leak "$issue_id" "$stage" "${self_leak_hashes[@]}"
-  [[ "$PIPELINE_DRY_RUN" != "1" ]] && exit 1
+  if stage_is_read_mostly "$stage"; then
+    clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}"
+  else
+    halt_issue_for_self_leak "$issue_id" "$stage" "${self_leak_hashes[@]}"
+    [[ "$PIPELINE_DRY_RUN" != "1" ]] && exit 1
+  fi
 fi
 
 # 2. Leaked-in-scope: soft failure. Tally against the per-issue counter

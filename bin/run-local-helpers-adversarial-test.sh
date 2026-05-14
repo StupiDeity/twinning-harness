@@ -2277,19 +2277,40 @@ assert_eq 'eng95_qa_adv_digit_leading_slug' 'learned-rules/99slug/' "$_got"
 rm -rf "$_tdir"
 _eng95_restore_env
 
-# ─── clean_readonly_stage_residue (auto-clean on read-mostly stages) ────
+# ─── stage_is_read_mostly (predicate over stage_output_paths SoT) ───────
 #
-# Verify the four invariants:
-#   (a) read-mostly stages with dirty residue → worktree cleaned, rc=0
-#   (b) non-read-mostly stages (implementing/ui/qa) → no-op even with residue
-#   (c) main/master/empty branch → defensive refuse (no clean), rc=0
-#   (d) missing worktree → no-op, rc=0
-#   (e) dry-run mode → no FS mutation, rc=0
-# Plus: gitignored .pipeline-config / .claude preserved across clean.
+# Single source of truth: predicate derives from stage_output_paths
+# returning empty. No duplicate stage list to drift.
 
-_autoclean_make_repo() {
-  # Creates a minimal git worktree on a non-default branch with a tracked
-  # file and some residue. Returns the worktree path.
+test_read_mostly_predicate() {
+  if stage_is_read_mostly reviewing; then
+    report_ok 'read_mostly: reviewing is read-mostly'
+  else
+    report_fail 'read_mostly: reviewing' 'true' 'false'
+  fi
+  if stage_is_read_mostly building; then
+    report_ok 'read_mostly: building is read-mostly'
+  else
+    report_fail 'read_mostly: building' 'true' 'false'
+  fi
+  if stage_is_read_mostly released; then
+    report_ok 'read_mostly: released is read-mostly'
+  else
+    report_fail 'read_mostly: released' 'true' 'false'
+  fi
+  for s in brainstorming planning implementing ui qa retrospective; do
+    if stage_is_read_mostly "$s"; then
+      report_fail "read_mostly: $s should NOT be read-mostly" 'false' 'true'
+    else
+      report_ok "read_mostly: $s correctly not read-mostly"
+    fi
+  done
+}
+test_read_mostly_predicate
+
+# ─── clean_self_leak_residue (per-path cleanup taking explicit paths) ───
+
+_self_leak_make_repo() {
   local td="$1" branch="$2"
   mkdir -p "$td"
   (
@@ -2305,111 +2326,122 @@ _autoclean_make_repo() {
   )
 }
 
-test_autoclean_cleans_residue_on_reviewing() {
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local wt="$td/wt"
-  _autoclean_make_repo "$wt" "feat/test-reviewing"
-  # Drop residue: untracked file + scratch dir + modified tracked file.
-  echo "scratch" > "$wt/tmp-foo.md"
-  mkdir -p "$wt/.scratch"
-  echo "fixture" > "$wt/.scratch/bte.md"
-  echo "modified" >> "$wt/tracked.md"
-
-  STUB_METRICS_LOG="$td/metrics.log"; : > "$STUB_METRICS_LOG"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
+_self_leak_stub_metrics() {
+  local stub_dir="$1" sink="$2"
+  mkdir -p "$stub_dir"
   cat > "$stub_dir/metrics.sh" <<EOF
 #!/bin/bash
-printf '%s\n' "\$*" >> "$STUB_METRICS_LOG"
+printf '%s\n' "\$*" >> "$sink"
 EOF
   chmod +x "$stub_dir/metrics.sh"
-
-  (
-    SCRIPT_DIR="$stub_dir"
-    clean_readonly_stage_residue ENG-9001 reviewing "$wt"
-  ) >/dev/null 2>&1
-
-  local dirty_after; dirty_after="$(git -C "$wt" status --porcelain | wc -l | tr -d ' ')"
-  assert_eq 'autoclean: reviewing leaves worktree clean' '0' "$dirty_after"
-  # tracked.md modification reverted to baseline.
-  local content; content="$(cat "$wt/tracked.md")"
-  assert_eq 'autoclean: reviewing reverts tracked modifications' 'baseline' "$content"
-  # Metric emitted.
-  case "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" in
-    *sweep-readonly-residue-cleaned*) report_ok 'autoclean: reviewing emits cleaned metric' ;;
-    *) report_fail 'autoclean: reviewing emits cleaned metric' \
-         'sweep-readonly-residue-cleaned' "$(cat "$STUB_METRICS_LOG" 2>/dev/null)" ;;
-  esac
-  rm -rf "$td"
 }
-test_autoclean_cleans_residue_on_reviewing
 
-test_autoclean_cleans_residue_on_building() {
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local wt="$td/wt"
-  _autoclean_make_repo "$wt" "feat/test-building"
-  echo "scratch" > "$wt/build-tmp.md"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
-  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
-
+test_self_leak_cleans_untracked() {
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-untracked"
+  echo "junk" > "$wt/tmp-foo.md"
+  mkdir -p "$wt/.scratch"; echo "f" > "$wt/.scratch/bte.md"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
   (
-    SCRIPT_DIR="$stub_dir"
-    clean_readonly_stage_residue ENG-9002 building "$wt"
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL01 reviewing "$wt" \
+      "tmp-foo.md" ".scratch/bte.md"
   ) >/dev/null 2>&1
-
-  local dirty_after; dirty_after="$(git -C "$wt" status --porcelain | wc -l | tr -d ' ')"
-  assert_eq 'autoclean: building leaves worktree clean' '0' "$dirty_after"
-  rm -rf "$td"
-}
-test_autoclean_cleans_residue_on_building
-
-test_autoclean_cleans_residue_on_released() {
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local wt="$td/wt"
-  _autoclean_make_repo "$wt" "feat/test-released"
-  echo "rel-scratch" > "$wt/release-notes.draft"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
-  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
-
-  (
-    SCRIPT_DIR="$stub_dir"
-    clean_readonly_stage_residue ENG-9003 released "$wt"
-  ) >/dev/null 2>&1
-
-  local dirty_after; dirty_after="$(git -C "$wt" status --porcelain | wc -l | tr -d ' ')"
-  assert_eq 'autoclean: released leaves worktree clean' '0' "$dirty_after"
-  rm -rf "$td"
-}
-test_autoclean_cleans_residue_on_released
-
-test_autoclean_noop_on_implementing() {
-  # Implementing has a real allowlist; residue there is real signal.
-  # Auto-clean MUST NOT fire for implementing/ui/qa.
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local wt="$td/wt"
-  _autoclean_make_repo "$wt" "feat/test-implementing"
-  echo "untouchable" > "$wt/should-stay.md"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
-  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
-
-  (
-    SCRIPT_DIR="$stub_dir"
-    clean_readonly_stage_residue ENG-9004 implementing "$wt"
-  ) >/dev/null 2>&1
-
-  if [[ -f "$wt/should-stay.md" ]]; then
-    report_ok 'autoclean: implementing is a no-op (file preserved)'
+  if [[ -f "$wt/tmp-foo.md" || -f "$wt/.scratch/bte.md" ]]; then
+    report_fail 'self_leak: untracked files removed' 'both removed' 'one or both remain'
   else
-    report_fail 'autoclean: implementing is a no-op' 'should-stay.md present' 'removed'
+    report_ok 'self_leak: untracked files removed'
   fi
   rm -rf "$td"
 }
-test_autoclean_noop_on_implementing
+test_self_leak_cleans_untracked
 
-test_autoclean_refuses_on_main_branch() {
-  # Defensive: refuse to clean on main/master/empty even if stage matches.
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local wt="$td/wt"
-  mkdir -p "$wt"
+test_self_leak_reverts_tracked_modification() {
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-tracked"
+  echo "modified" >> "$wt/tracked.md"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+  (
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL02 reviewing "$wt" "tracked.md"
+  ) >/dev/null 2>&1
+  local content; content="$(cat "$wt/tracked.md")"
+  assert_eq 'self_leak: tracked modification reverted via git checkout' 'baseline' "$content"
+  rm -rf "$td"
+}
+test_self_leak_reverts_tracked_modification
+
+test_self_leak_preserves_paths_NOT_in_list() {
+  # Core correctness invariant from review finding C1 — the helper
+  # NEVER touches a path it wasn't told to touch. Snapshot protection
+  # comes from run-local.sh's observed-vs-self-leak split upstream.
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-preserve"
+  echo "operator-work-in-progress" > "$wt/operator-edit.md"
+  echo "agent-junk" > "$wt/agent-residue.md"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+  (
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL03 reviewing "$wt" "agent-residue.md"
+  ) >/dev/null 2>&1
+  if [[ ! -f "$wt/operator-edit.md" ]]; then
+    report_fail 'self_leak: operator pre-existing edit preserved' 'present' 'removed'
+  else
+    local op_content; op_content="$(cat "$wt/operator-edit.md")"
+    if [[ "$op_content" == "operator-work-in-progress" ]]; then
+      report_ok 'self_leak: operator pre-existing edit preserved (C1 correctness)'
+    else
+      report_fail 'self_leak: operator content preserved' \
+        'operator-work-in-progress' "$op_content"
+    fi
+  fi
+  if [[ -f "$wt/agent-residue.md" ]]; then
+    report_fail 'self_leak: agent residue removed' 'removed' 'present'
+  else
+    report_ok 'self_leak: agent residue removed (the path passed in)'
+  fi
+  rm -rf "$td"
+}
+test_self_leak_preserves_paths_NOT_in_list
+
+test_self_leak_empty_path_list_noop() {
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-empty"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+  (
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL04 reviewing "$wt"
+  ) >/dev/null 2>&1
+  if [[ -s "$sink" ]]; then
+    report_fail 'self_leak: empty list emits no metric' 'no metric' "$(cat "$sink")"
+  else
+    report_ok 'self_leak: empty path list is a no-op (no metric emitted)'
+  fi
+  rm -rf "$td"
+}
+test_self_leak_empty_path_list_noop
+
+test_self_leak_missing_worktree_noop() {
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+  local rc=0
+  (
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL05 reviewing "$td/nope" "any.md"
+  ) >/dev/null 2>&1 || rc=$?
+  assert_eq 'self_leak: missing worktree rc=0' '0' "$rc"
+  rm -rf "$td"
+}
+test_self_leak_missing_worktree_noop
+
+test_self_leak_refuses_on_main_branch() {
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; mkdir -p "$wt"
   (
     cd "$wt"
     git init -q
@@ -2420,97 +2452,127 @@ test_autoclean_refuses_on_main_branch() {
     git commit -qm 'init'
     git branch -m main
   )
-  echo "scratch" > "$wt/tmp-foo.md"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
-  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
-
+  echo "should-survive" > "$wt/residue.md"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
   (
-    SCRIPT_DIR="$stub_dir"
-    clean_readonly_stage_residue ENG-9005 reviewing "$wt"
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL06 reviewing "$wt" "residue.md"
   ) >/dev/null 2>&1
-
-  if [[ -f "$wt/tmp-foo.md" ]]; then
-    report_ok 'autoclean: defensive refuse on main branch (file preserved)'
+  if [[ -f "$wt/residue.md" ]]; then
+    report_ok 'self_leak: defensive refuse on main (residue preserved)'
   else
-    report_fail 'autoclean: defensive refuse on main' 'tmp-foo.md present' 'cleaned'
+    report_fail 'self_leak: defensive refuse on main' 'preserved' 'cleaned'
   fi
   rm -rf "$td"
 }
-test_autoclean_refuses_on_main_branch
+test_self_leak_refuses_on_main_branch
 
-test_autoclean_noop_on_missing_worktree() {
-  # No worktree path → return cleanly without error.
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
-  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
+test_self_leak_dry_run_skips_mutation() {
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-dry"
+  echo "junk" > "$wt/tmp.md"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+  (
+    SCRIPT_DIR="$td/stubs"
+    PIPELINE_DRY_RUN=1
+    clean_self_leak_residue ENG-SL07 reviewing "$wt" "tmp.md"
+  ) >/dev/null 2>&1
+  if [[ -f "$wt/tmp.md" ]]; then
+    report_ok 'self_leak: dry-run preserves worktree'
+  else
+    report_fail 'self_leak: dry-run' 'preserved' 'cleaned'
+  fi
+  rm -rf "$td"
+}
+test_self_leak_dry_run_skips_mutation
 
+test_self_leak_metric_payload_pinned() {
+  # Review finding M4: assertion must pin event name + issue + stage +
+  # outcome + exit-code + notes including count, branch, hashes, and
+  # per-class failure counts. Substring-match is not enough — a
+  # regression that drops `count=` or `hashes=` would slip past.
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-metric"
+  echo "a" > "$wt/p1.md"
+  echo "b" > "$wt/p2.md"
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+  (
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL08 reviewing "$wt" "p1.md" "p2.md"
+  ) >/dev/null 2>&1
+  local line; line="$(cat "$sink")"
+  case "$line" in
+    *'sweep-readonly-residue-cleaned ENG-SL08 reviewing cleaned 0 count=2 branch=feat/sl-metric hashes='*'rm_fail=0 checkout_fail=0'*)
+      report_ok 'self_leak: metric payload pinned (event/issue/stage/count/branch/hashes/fail-counts)'
+      ;;
+    *)
+      report_fail 'self_leak: metric payload pinned' \
+        'full positional argv with count=2, branch, hashes, fail counts' \
+        "$line"
+      ;;
+  esac
+  rm -rf "$td"
+}
+test_self_leak_metric_payload_pinned
+
+test_self_leak_partial_failure_still_emits_metric() {
+  # Review finding M5: per-class rc bookkeeping does not propagate
+  # rc≠0, AND the metric still emits so retrospective sees the
+  # partial-failure event. Seed a path rm can't remove by making the
+  # parent dir read-only.
+  local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
+  local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-fail"
+  mkdir -p "$wt/locked"
+  echo "locked-content" > "$wt/locked/payload.md"
+  chmod 555 "$wt/locked"  # parent read-only: child rm fails
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
   local rc=0
   (
-    SCRIPT_DIR="$stub_dir"
-    clean_readonly_stage_residue ENG-9006 reviewing "$td/does-not-exist"
+    SCRIPT_DIR="$td/stubs"
+    clean_self_leak_residue ENG-SL09 reviewing "$wt" "locked/payload.md"
   ) >/dev/null 2>&1 || rc=$?
-  assert_eq 'autoclean: missing worktree no-op rc=0' '0' "$rc"
+  assert_eq 'self_leak: partial-failure path returns rc=0' '0' "$rc"
+  case "$(cat "$sink")" in
+    *'sweep-readonly-residue-cleaned'*'rm_fail=1'*)
+      report_ok 'self_leak: partial failure still emits metric with rm_fail=1'
+      ;;
+    *)
+      report_fail 'self_leak: partial-failure metric' \
+        'rm_fail=1 in payload' "$(cat "$sink")"
+      ;;
+  esac
+  chmod 755 "$wt/locked" 2>/dev/null || true
   rm -rf "$td"
 }
-test_autoclean_noop_on_missing_worktree
+test_self_leak_partial_failure_still_emits_metric
 
-test_autoclean_dry_run_skips_mutation() {
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local wt="$td/wt"
-  _autoclean_make_repo "$wt" "feat/test-dryrun"
-  echo "scratch" > "$wt/tmp-foo.md"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
-  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
-
-  (
-    SCRIPT_DIR="$stub_dir"
-    PIPELINE_DRY_RUN=1
-    clean_readonly_stage_residue ENG-9007 reviewing "$wt"
-  ) >/dev/null 2>&1
-
-  if [[ -f "$wt/tmp-foo.md" ]]; then
-    report_ok 'autoclean: dry-run preserves worktree'
-  else
-    report_fail 'autoclean: dry-run' 'tmp-foo.md present' 'removed'
+# ─── Wire-up assertion (review finding m1) ──────────────────────────────
+# A regression that deletes the call from run-local.sh would leave every
+# unit test green while removing the production fix entirely. Grep for
+# the call site directly.
+test_self_leak_callsite_wired() {
+  local rl="$SCRIPT_DIR/run-local.sh"
+  if [[ ! -f "$rl" ]]; then
+    report_fail 'self_leak: run-local.sh exists for wire-up grep' 'present' 'missing'
+    return
   fi
-  rm -rf "$td"
+  if grep -qE 'clean_self_leak_residue.*\$issue_id.*\$stage.*\$dispatch_cwd' "$rl"; then
+    report_ok 'self_leak: clean_self_leak_residue callsite wired into bin/run-local.sh'
+  else
+    report_fail 'self_leak: callsite present' \
+      'grep finds clean_self_leak_residue invocation in run-local.sh' 'not found'
+  fi
+  if grep -qE 'stage_is_read_mostly' "$rl"; then
+    report_ok 'self_leak: stage_is_read_mostly gate present in bin/run-local.sh'
+  else
+    report_fail 'self_leak: predicate gate' 'present' 'not found'
+  fi
 }
-test_autoclean_dry_run_skips_mutation
-
-test_autoclean_preserves_gitignored_operator_config() {
-  # .pipeline-config/ and .claude/ are operator-local + gitignored.
-  # `git clean -fdx -e .pipeline-config -e .claude` must spare them.
-  local td; td="$(mktemp -d -t twinning-autoclean.XXXXXX)"
-  local wt="$td/wt"
-  _autoclean_make_repo "$wt" "feat/test-preserve-config"
-  mkdir -p "$wt/.pipeline-config" "$wt/.claude"
-  echo "op-local" > "$wt/.pipeline-config/config.json"
-  echo "claude-session" > "$wt/.claude/state.json"
-  printf '.pipeline-config/\n.claude/\n' > "$wt/.gitignore"
-  (cd "$wt" && git add .gitignore && git commit -qm 'add gitignore')
-  echo "residue" > "$wt/tmp-foo.md"
-  local stub_dir="$td/stubs"; mkdir -p "$stub_dir"
-  printf '#!/bin/bash\n' > "$stub_dir/metrics.sh"; chmod +x "$stub_dir/metrics.sh"
-
-  (
-    SCRIPT_DIR="$stub_dir"
-    clean_readonly_stage_residue ENG-9008 reviewing "$wt"
-  ) >/dev/null 2>&1
-
-  if [[ -f "$wt/.pipeline-config/config.json" && -f "$wt/.claude/state.json" ]]; then
-    report_ok 'autoclean: preserves gitignored .pipeline-config and .claude'
-  else
-    report_fail 'autoclean: preserves gitignored config' \
-      'both files exist' 'one or both removed'
-  fi
-  if [[ ! -f "$wt/tmp-foo.md" ]]; then
-    report_ok 'autoclean: still removes non-excluded residue'
-  else
-    report_fail 'autoclean: removes residue' 'tmp-foo.md removed' 'present'
-  fi
-  rm -rf "$td"
-}
-test_autoclean_preserves_gitignored_operator_config
+test_self_leak_callsite_wired
 
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"

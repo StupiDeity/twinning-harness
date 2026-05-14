@@ -346,55 +346,82 @@ tokens degrade gracefully to "path-classes-only benign" with a `log`
 warning, **strictly more restrictive** than today's hardcoded Cargo
 carve-out on non-Rust stacks.
 
-**Sanctioned agent scratch dir (`.scratch/`) — applies to allowlisted
+**Sanctioned agent scratch dir (`.scratch/`) — gated to allowlisted
 stages.** For `implementing | ui | qa`, agents may need throwaway
 fixtures alongside legitimate in-scope writes. `.scratch/` is the
 carve-out:
 
 - `partition_dirty_paths` (`bin/run-local-helpers.sh`) treats `.scratch/*`
-  as invisible — neither in-scope nor leaked nor observed.
+  as invisible **only on `implementing | ui | qa`** — neither in-scope
+  nor leaked nor observed.
 - `is_benign` (`bin/scope-check.sh`) mirrors this for the agent-side
   scope-check inside the implementing stage's flow.
 - `.scratch/` is in the repo's `.gitignore`, so even if an agent
   `git add`s the directory it never reaches a commit.
 
+**On `brainstorming | planning`** the carve-out does NOT apply — those
+stages have a tight `docs/{brainstorms,plans}/` allowlist and D-004
+issue-id constraint. Letting them silently drop `.scratch/*` would
+create a cross-dispatch state-injection vector (planted file readable
+by later-stage agents via `Read`). Brainstorm/plan `.scratch/*` writes
+flow through to out-of-scope and self-leak halt.
+
 The trailing slash is load-bearing in both case globs (`.scratch/*`), so
 a top-level file literally named `.scratchpad` is NOT carved out — only
 paths under the directory.
 
-**Read-mostly stages auto-clean residue, never halt on it.** For
-`reviewing | building | released`, `stage_output_paths` returns empty
-*by design* — the contract is "no worktree writes." Stage summaries go
-to `$(issue_dir)/stage-summary-<stage>.md` (outside the worktree),
-Linear comments go via `bin/linear.sh`, gh/git operations target
-origin or sibling state dirs. There is no legitimate in-worktree
+**Read-mostly stages auto-clean self-leak residue, never halt on it.**
+For `reviewing | building | released`, `stage_output_paths` returns
+empty *by design* — the contract is "no worktree writes." Stage
+summaries go to `$(issue_dir)/stage-summary-<stage>.md` (outside the
+worktree), Linear comments go via `bin/linear.sh`, gh/git operations
+target origin or sibling state dirs. There is no legitimate in-worktree
 write.
 
-Anything dirty in the worktree at tick-end on these stages is therefore
-agent verification residue — fixtures, ad-hoc scripts the agent
-materialized to spot-check the implementer's work. The verdict + stage
-summary are already in Linear; residue has no upstream consumer.
+The single source of truth for "stage is read-mostly" lives in
+`stage_is_read_mostly` (`bin/run-local-helpers.sh`), which is just
+`[[ -z "$(stage_output_paths "$stage")" ]]` — no duplicate stage list
+to drift. A future stage added with empty `stage_output_paths` is
+automatically picked up.
 
-`clean_readonly_stage_residue` (`bin/run-local-helpers.sh`) runs *before*
-`partition_dirty_paths` for these stages. It:
-- Reverts modifications to tracked files (`git checkout -- .`).
-- Removes untracked files and dirs including gitignored ones
-  (`git clean -fdx`), except `-e .pipeline-config` and `-e .claude`
-  (operator-local config preserved).
-- Emits a `sweep-readonly-residue-cleaned` metric with the cleaned
-  count for retrospective audit.
+Intervention point is **inside the self-leak handler** in
+`bin/run-local.sh`, *after* `partition_dirty_paths` has already done
+the snapshot-based observed-vs-self-leak classification. The partition
+guarantees `self_leak_paths` is by construction the set of paths NEW
+since tick-start — operator's pre-existing 'observed' edits are NEVER
+in that list and are therefore NEVER touched by the clean. This is
+the C1 correctness invariant from the cold-pass review.
 
-Result: the partition sweep sees a clean tree → no out-of-scope rows
-→ no self-leak halt → next tick advances. Eliminates the ENG-96-shape
-operator-touch halt (reviewer left `.scratch/bte_*.md` + root-level
-`tmp-awk-dup-test.md` to verify a parser, sweep self-leaked, operator
-had to manually `decide --action continue` to recover).
+`clean_self_leak_residue` (`bin/run-local-helpers.sh`) per-path:
+- Tracked-modified (`git ls-files --error-unmatch` succeeds):
+  `git checkout -- <path>` reverts to index.
+- Untracked (anything else): `rm -rf "$worktree/<path>"`.
 
-Defensive guards: refuses on `main`/`master`/empty branch (prevents
-accidental nuke of operator's checkout in case of regression); no-op
-on missing worktree; dry-run mode logs without mutating. `implementing |
-ui | qa` are NOT affected — their allowlists are real signal, self-leak
-halts there remain the correct policy.
+Emits `sweep-readonly-residue-cleaned` with the full audit payload —
+event, issue, stage, outcome, exit-code, then notes that include
+`count=N branch=<b> hashes=<sha12-csv> rm_fail=N checkout_fail=N`.
+The sha12 list is the forensic reconstruction surface the
+retrospective consumes; path strings themselves never reach Linear
+comments (matches `halt_issue_for_self_leak`'s adversarial-filename
+discipline).
+
+Result: the harness advances autonomously through reviewing → qa →
+building → released even when those agents drop verification residue.
+Eliminates the ENG-96-shape operator-touch halt (reviewer left
+`.scratch/bte_*.md` + root-level `tmp-awk-dup-test.md` to verify a
+parser, sweep self-leaked, operator had to manually `decide --action
+continue` to recover).
+
+Defensive guards: empty path list → no-op (no metric); missing
+worktree → no-op + warn; main/master/empty branch → defensive refuse
++ warn; dry-run mode logs without mutating; per-path failures are
+non-blocking and surface in the metric's `rm_fail` / `checkout_fail`
+counters.
+
+`implementing | ui | qa` are NOT affected — their allowlists are real
+signal, self-leak halts there remain the correct policy (operator
+must inspect; an agent that wrote source files to wrong paths is
+real evidence of a bug).
 
 ## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-53 #8, ENG-94)
 
@@ -807,7 +834,7 @@ inspect each surface.
 | Symptom | Where to look |
 |---|---|
 | Tick is silent | `$PROJECT_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
-| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure) | Linear comments under sig `halt/<stage>/<issue>` (verdict `result=halt reason=agent-blocked`); `pipeline:halted` + `pipeline:skip-until-human-acts` labels; `$(issue_dir <issue>)/.consecutive-failures` carries the per-issue count. Other issues continue to be polled — do NOT touch `orchestrator.paused`. **One-command recovery:** `bash bin/pipeline.sh decide <ENG-N> --action continue` (clears halt label, skip labels, per-issue counter, issue-state, posts operator-resume waypoint). |
+| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure) | Linear comments under sig `halt/<stage>/<issue>` (verdict `result=halt reason=agent-blocked`); `pipeline:halted` + `pipeline:skip-until-human-acts` labels; `$(issue_dir <issue>)/.consecutive-failures` carries the per-issue count. Other issues continue to be polled — do NOT touch `orchestrator.paused`. **One-command recovery:** `bash bin/pipeline.sh decide <ENG-N> --action continue` (clears halt label, skip labels, per-issue counter, issue-state, posts operator-resume waypoint). **NOTE:** self-leak halts only fire on `implementing | ui | qa`. On `reviewing | building | released`, `clean_self_leak_residue` auto-cleans the residue and the tick advances without halting (see "Sweep + scope partition" section). If you expected a halt on those stages and didn't see one, that's working as designed; check the `sweep-readonly-residue-cleaned` metric for what was cleaned. |
 | Global breaker (infrastructure outage) | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 from `rc=24` (`linear-post-failed`) accumulated across ticks; `orchestrator.paused=true` in `STATE_FILE` or `CONFIG`. Resolve with `set_orchestrator_paused false` (or any `decide --action continue`, which also clears the breaker via `_pipeline_clear_breaker`). The next clean tick clears the global counter. |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>` (comment `createdAt` reflects FIRST emission only; check the `<!-- meta: reapplied at=… -->` footer for the latest re-apply moment — see `docs/runbooks/recovery.md` §4) |
 | Approved/ready ticket at later stage (e.g. `stage:building` post-approval, or `stage:reviewing` post-PR-mergeable) sits idle while an earlier-stage or inbox issue dispatches each tick | Pre-ENG-91 the picker walked Pass 4 (held) → Pass 5 (inbox) → Pass 6 (wait re-pickup) sequentially and `exit 0`'d after the first dispatch — a later-stage wait_recallable could starve behind an earlier-stage held even when its recall predicate was ready. ENG-91's unified Pass 4U picker (`bin/poll.sh::_picker_build_pool`) sorts by `[-stage_index, -priority_sort_rank, fifo_ts]` and gates wait_recallable inclusion on `bin/entry-conditions.sh::should_dispatch == proceed`. Inspect `$PROJECT_STATE_DIR/<slug>/logs/local-YYYY-MM-DD.log` for `picker: wait_recallable <ENG-N> skipped (predicate not ready)` lines — that is the gate firing. If the predicate is `proceed` and the issue still loses to an earlier-stage / inbox issue, the picker sort is the bug — see ENG-91. Recovery while waiting for a fix: `bash bin/linear.sh add-label <held-issue> pipeline:paused`, let the next tick re-pick the wait, then `remove-label`. |
