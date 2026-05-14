@@ -58,20 +58,39 @@ the target's manifests, `.github/workflows/`, and dotfiles to elicit
 the six sections. The result is checked into the harness repo (NOT
 the target) under `learned-rules/<slug>/`.
 
-The profile drives three things:
+The profile drives four things:
 
 | Consumer | Reads | Effect |
 |---|---|---|
 | `bin/dispatch.sh::_dispatch_tools_from_profile` | `## Tool allowlist` | Per-stage `--allowed-tools` argv composition (the profile-derived middle tier of **stack-neutral base + profile-derived stack tools + operator-curated extras**) |
 | `bin/run-local-helpers.sh::stage_output_paths` | `## File layout` | Per-stage scope allowlist for the post-dispatch sweep |
+| `bin/scope-check.sh::is_benign` (ENG-96) | `## Build & test gates` | Benign lockfile basename set for the post-agent dirty-path gate |
 | `bin/render-prompt.sh::append_project_profile` | Entire file | Appended to every non-retrospective dispatch's prompt |
 
-If a profile is missing or its schema is wrong, dispatch falls back to
-**stack-neutral base + operator-curated extras** (the middle tier
-drops out) and emits one `[allowed-tools]` warning per stage to
-stderr. The target keeps working on the universal lockfile catalog +
-`docs/` scope allowlist (see Sweep + scope partition below) until the
-operator re-runs discovery.
+**Failure asymmetry.** The four consumers do NOT fail the same way on a
+broken profile:
+
+- **Profile file missing entirely** → `bin/render-prompt.sh:184-200`
+  dies loud (`die "render-prompt: no project-profile.md for
+  slug=$PROJECT_SLUG; run: bash bin/setup.sh project-profile"`).
+  Dispatch composition is never reached on that tick; the operator
+  MUST re-run discovery before the next dispatch can proceed.
+- **Profile file present but a consumed section is malformed or absent**
+  (e.g. `## Tool allowlist` / `## File layout` / `## Build & test gates`
+  missing, or `schema_version != 2`) → the three dispatch-side consumers
+  fall back stack-neutral with a `log` warning (no `die`): tools
+  collapses to **stack-neutral base + operator-curated extras**;
+  `stage_output_paths` falls back to the universal lockfile catalog +
+  `docs/`; `scope-check::is_benign` falls back to path-classes-only
+  (strictly more restrictive than the pre-ENG-96 hardcoded Cargo
+  carve-out). The warning lands in
+  `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log`. The target keeps
+  working on the universal lockfile catalog + `docs/` scope allowlist
+  (see Sweep + scope partition below) until the operator re-runs
+  discovery.
+- **Profile file present with unresolved `<<NEEDS-INPUT:>>` markers**
+  → also `bin/render-prompt.sh:199` dies loud (setup-time configuration
+  error the operator must address).
 
 The profile is the canonical source of stack truth. To change the
 stack (add a manifest, swap a test runner), edit the profile and
