@@ -2865,14 +2865,17 @@ test_scheduler_inflight_lock_wireup() {
     report_fail "wire-up scheduler-leak #3: cleanup loop missing" \
       'for _l in "${_SCHEDULER_INFLIGHT_LOCKS[@]}"' "not found"
   fi
-  # Pre-fork clear so workers own their locks.
-  if grep -qE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl" \
-    && [[ "$(grep -cE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl")" -ge 2 ]]; then
-    report_ok "wire-up scheduler-leak #4: array cleared (init + pre-fork)"
+  # No pre-fork clear: the global init line is the only `_SCHEDULER_INFLIGHT_LOCKS=()`.
+  # Keeping the array populated through fork means a `die` between
+  # try_acquire_lock and `( ... ) &` still releases any locks already
+  # claimed. Double-release via worker EXIT trap is harmless.
+  init_count="$(grep -cE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl")"
+  if [[ "$init_count" == "1" ]]; then
+    report_ok "wire-up scheduler-leak #4: array stays populated through fork (no pre-fork clear; global init only)"
   else
-    report_fail "wire-up scheduler-leak #4: missing pre-fork clear" \
-      "two _SCHEDULER_INFLIGHT_LOCKS=() lines (init + before worker fork)" \
-      "fewer than 2 occurrences in run-local.sh"
+    report_fail "wire-up scheduler-leak #4: unexpected _SCHEDULER_INFLIGHT_LOCKS=() count" \
+      "exactly 1 (global init only)" \
+      "$init_count occurrences in run-local.sh"
   fi
 }
 test_scheduler_inflight_lock_wireup
@@ -3218,6 +3221,84 @@ test_worker_isolation_under_halt() {
   rm -rf "$wi_dir" "$stub_dir" "$err_log_a" "$err_log_b"
 }
 test_worker_isolation_under_halt
+
+# AC-WORKER-ISOLATION-BOTH-HALT sub-variant: drive BOTH workers through
+# halt_issue_for_self_leak in parallel on distinct issues. Two halts at
+# once is the realistic K>1 worst case (e.g. two self-leak failures
+# coinciding). Asserts each issue's issue-state.json reflects its OWN
+# halt, not the other worker's — i.e. neither subshell overwrites the
+# sibling's per-issue state via a shared global / shared tempfile name.
+test_worker_isolation_both_halt() {
+  local case_name="AC-WORKER-ISOLATION-BOTH-HALT"
+  local wi_dir; wi_dir="$(mktemp -d -t twinning-isolation-both.XXXXXX)"
+  mkdir -p "$wi_dir/ENG-8201" "$wi_dir/ENG-8202"
+
+  local stub_dir; stub_dir="$(mktemp -d -t twinning-isolation-both-stubs.XXXXXX)"
+  for stub in linear.sh slack.sh metrics.sh branch-name.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_dir/$stub"
+    chmod +x "$stub_dir/$stub"
+  done
+
+  local err_log_a err_log_b
+  err_log_a="$(mktemp -t twinning-isolation-both-err-a.XXXXXX)"
+  err_log_b="$(mktemp -t twinning-isolation-both-err-b.XXXXXX)"
+
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/common.sh"
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        halt_issue_for_self_leak ENG-8201 implementing aaaa1111aaaa
+      ' >/dev/null 2>"$err_log_a" || true
+  ) &
+  local pid_a=$!
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/common.sh"
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        halt_issue_for_self_leak ENG-8202 implementing bbbb2222bbbb
+      ' >/dev/null 2>"$err_log_b" || true
+  ) &
+  local pid_b=$!
+  wait "$pid_a" 2>/dev/null || true
+  wait "$pid_b" 2>/dev/null || true
+
+  local a_state="$wi_dir/ENG-8201/issue-state.json"
+  local b_state="$wi_dir/ENG-8202/issue-state.json"
+  local ok=1
+  [[ -f "$a_state" ]] || ok=0
+  [[ -f "$b_state" ]] || ok=0
+  # Each state file's `.issue` field must match its OWN directory. If a
+  # subshell overwrote the sibling's tempfile mid-write, the JSON would
+  # carry the other issue's id.
+  local a_id="" b_id=""
+  [[ -f "$a_state" ]] && a_id="$(jq -r '.issue // ""' "$a_state" 2>/dev/null || printf '')"
+  [[ -f "$b_state" ]] && b_id="$(jq -r '.issue // ""' "$b_state" 2>/dev/null || printf '')"
+  [[ "$a_id" == "ENG-8201" ]] || ok=0
+  [[ "$b_id" == "ENG-8202" ]] || ok=0
+  if (( ok == 1 )); then
+    report_ok "$case_name two parallel halts → each issue-state.json carries its own id (no cross-contamination)"
+  else
+    report_fail "$case_name two parallel halts contaminated each other's state" \
+      "ENG-8201 state.issue=ENG-8201, ENG-8202 state.issue=ENG-8202" \
+      "ENG-8201 id='$a_id' (state $([[ -f $a_state ]] && echo present || echo absent)); ENG-8202 id='$b_id' (state $([[ -f $b_state ]] && echo present || echo absent)); stderr A: $(head -c 250 "$err_log_a" 2>/dev/null); stderr B: $(head -c 250 "$err_log_b" 2>/dev/null)"
+  fi
+  rm -rf "$wi_dir" "$stub_dir" "$err_log_a" "$err_log_b"
+}
+test_worker_isolation_both_halt
 
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"

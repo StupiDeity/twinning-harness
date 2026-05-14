@@ -125,11 +125,6 @@ fi
 # Worktrees now live under ~/.twinning-pipeline/ENG-N/worktree/ alongside
 # issue-state.json + scope-approval. Parent is created on demand.
 resolve_worktree_path() {
-  # Review-3 minor #10: dropped the dead `branch` parameter. Pre-fix this
-  # function took (branch, issue) for historic call-site compat but
-  # ignored `branch`; ENG-67's worktree-per-issue layout means the
-  # branch name is irrelevant to the path computation. Sole caller in
-  # this file now passes just $issue_id.
   local issue="$1"
   [[ -n "$issue" ]] || die "resolve_worktree_path: issue id required"
   printf '%s/worktree' "$(issue_dir "$issue")"
@@ -210,11 +205,9 @@ _run_worker() {
   # split. rc=24 (linear-post-failed) → global counter; every other
   # non-zero rc → per-issue counter; rc=0 clears both.
   route_run_stage_exit "$issue_id" "$stage" "$rc"
-  # Review-3 finding #3: reap tempfiles before returning so every failed
-  # dispatch path (timeout, envelope, scope, crash) cleans up. Pre-fix
-  # the `return $rc` ran unconditionally and leaked the snapshot tempfile.
-  # Kept on a single line so the wire-up #6 anchor's regex
-  # `[[ $rc -ne 0 ]]; then return $rc` stays matched.
+  # Reap tempfiles on every non-zero exit (timeout, envelope, scope, crash).
+  # Single-line form matches the wire-up anchor regex
+  # `[[ $rc -ne 0 ]]; then return $rc`.
   if [[ $rc -ne 0 ]]; then rm -f "${_worker_tmps[@]}"; return $rc; fi
 
   # 3-stream partition sweep (ENG-14 D-3).
@@ -461,10 +454,11 @@ if (( ${#_claimed_workers[@]} == 0 )); then
 fi
 
 # Hand off lock ownership to workers. Each worker subshell re-traps EXIT
-# with its own release; the scheduler-side cleanup_on_exit must NOT reap
-# these locks after fork. Clear the array pre-fork.
-_SCHEDULER_INFLIGHT_LOCKS=()
-
+# with its own release. The scheduler-side `_SCHEDULER_INFLIGHT_LOCKS`
+# array stays populated through the fork loop so a `die` between
+# `try_acquire_lock` and `( ... ) &` still releases locks of any workers
+# already forked. Double-release via worker EXIT trap is a harmless
+# `rm -rf` of a freed dir.
 for spec in "${_claimed_workers[@]}"; do
   IFS='|' read -r w_issue w_stage w_worktree w_lock <<<"$spec"
   (

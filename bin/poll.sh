@@ -638,10 +638,8 @@ main() {
   paused="$(is_orchestrator_paused)"
   [[ "$paused" == "true" ]] && idle "orchestrator-paused"
 
-  # ENG-81 review-3 finding #4: route through _resolve_K so CLAUDE_MAX_CONCURRENT
-  # env-var precedence is honored uniformly across scheduler (run-local.sh)
-  # AND picker (poll.sh). Pre-fix poll.sh read .orchestrator.max_concurrent_features
-  # directly, producing split-brain if an operator rolled back via env var.
+  # Route via _resolve_K so CLAUDE_MAX_CONCURRENT env-var precedence is
+  # honored uniformly across scheduler (run-local.sh) and picker (poll.sh).
   local max_concurrent
   max_concurrent="$(_resolve_K)"
 

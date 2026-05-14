@@ -2946,6 +2946,36 @@ else
     "events: $(cat "$G8B_EVENTS")"
 fi
 
+# ─── AC-TRAP-BEFORE-ACQUIRE ────────────────────────────────────────────
+# Commit 4f81492 ("install release_claude_mutex trap BEFORE acquire")
+# fixed a slot-leak: a die() between the acquire and the trap-install
+# would have leaked the slot dir for the rest of the dispatch.sh
+# subshell's life. Pin the structural invariant — the non-empty line
+# immediately preceding `acquire_claude_mutex` in dispatch.sh must be
+# `trap 'release_claude_mutex' EXIT`. A future reorder regression would
+# fail silently otherwise.
+_TBA_ACQUIRE_LINE="$(grep -n '^[[:space:]]*acquire_claude_mutex[[:space:]]*$' "$SCRIPT_DIR/dispatch.sh" | head -1 | cut -d: -f1)"
+if [[ -z "$_TBA_ACQUIRE_LINE" ]]; then
+  fail_at "AC-TRAP-BEFORE-ACQUIRE" "no top-level acquire_claude_mutex call found in dispatch.sh"
+else
+  _TBA_PRIOR=""
+  _TBA_PROBE=$((_TBA_ACQUIRE_LINE - 1))
+  while (( _TBA_PROBE > 0 )); do
+    _TBA_LINE_CONTENT="$(sed -n "${_TBA_PROBE}p" "$SCRIPT_DIR/dispatch.sh")"
+    _TBA_TRIMMED="${_TBA_LINE_CONTENT#"${_TBA_LINE_CONTENT%%[![:space:]]*}"}"
+    if [[ -n "$_TBA_TRIMMED" && "$_TBA_TRIMMED" != "#"* ]]; then
+      _TBA_PRIOR="$_TBA_TRIMMED"
+      break
+    fi
+    _TBA_PROBE=$((_TBA_PROBE - 1))
+  done
+  if [[ "$_TBA_PRIOR" == "trap 'release_claude_mutex' EXIT" ]]; then
+    pass_at "AC-TRAP-BEFORE-ACQUIRE: dispatch.sh installs release trap on the line immediately preceding acquire_claude_mutex (line $_TBA_ACQUIRE_LINE)"
+  else
+    fail_at "AC-TRAP-BEFORE-ACQUIRE" "expected prior non-blank/non-comment line to be \"trap 'release_claude_mutex' EXIT\", got: $_TBA_PRIOR"
+  fi
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

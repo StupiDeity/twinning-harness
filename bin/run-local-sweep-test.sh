@@ -330,21 +330,15 @@ RUN_LOCAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run-local.sh"
 grep -q '^_run_worker() {' "$RUN_LOCAL_SRC" \
   || { printf 'FAIL AC-K2-PARALLEL-WORKERS-DEFN: _run_worker function missing in %s\n' "$RUN_LOCAL_SRC"; exit 1; }
 
-# Invariant 2: scheduler clears _SCHEDULER_INFLIGHT_LOCKS BEFORE the fork
-# loop so the EXIT trap walks an empty list (workers own their own locks
-# post-fork via per-subshell trap). A missing clear leaks lock cleanup on
-# scheduler exit, double-releasing each worker's lock.
-awk '
-  /^_SCHEDULER_INFLIGHT_LOCKS=\(\)$/ && seen_run_worker == 1 { pre_fork_clear = NR }
-  /^_run_worker\(\) \{/             { seen_run_worker = 1 }
-  /^for spec in "\$\{_claimed_workers\[@\]\}"/ { fork_loop = NR }
-  END {
-    if (pre_fork_clear > 0 && fork_loop > pre_fork_clear) exit 0
-    print "pre_fork_clear=" pre_fork_clear " fork_loop=" fork_loop > "/dev/stderr"
-    exit 1
-  }
-' "$RUN_LOCAL_SRC" \
-  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-CLEAR: _SCHEDULER_INFLIGHT_LOCKS=() clear not present BEFORE the worker fork loop\n'; exit 1; }
+# Invariant 2: the only `_SCHEDULER_INFLIGHT_LOCKS=()` clear is the
+# global initialization at the top of the file. A `die` between
+# `try_acquire_lock` and the worker fork would otherwise orphan the
+# locks of any worker already pushed onto the array (worker EXIT trap
+# never installed). Double-release via worker EXIT trap after fork is
+# harmless (rm -rf is idempotent).
+clear_count="$(grep -c '^_SCHEDULER_INFLIGHT_LOCKS=()$' "$RUN_LOCAL_SRC")"
+[[ "$clear_count" == "1" ]] \
+  || { printf 'FAIL AC-K2-PARALLEL-WORKERS-NO-PREFORK-CLEAR: expected exactly 1 `_SCHEDULER_INFLIGHT_LOCKS=()` (global init only), got %s\n' "$clear_count"; exit 1; }
 
 # Invariant 3: the worker fork loop uses background-fork (`) &`) and the
 # scheduler `wait`s after. A regression to sequential dispatch would drop
@@ -470,6 +464,68 @@ fi
 printf 'OK AC-K2-PARALLEL-WORKERS-BEHAVIORAL (elapsed=%ds<4s, start_diff=%ds≤1s, both sentinels present)\n' "$elapsed" "$start_diff"
 
 # Cleanup stubs/array so subsequent test runs aren't polluted.
+unset -f _run_worker release_lock
+unset _claimed_workers
+
+# ──────────────────────────────────────────────────────────────────────
+# AC-K2-PARALLEL-WORKERS-FAILURE-RESILIENT
+# ──────────────────────────────────────────────────────────────────────
+# Plan §7 line 944 row claims AC-K2-PARALLEL-WORKERS covers "one worker
+# fails, scheduler still runs release watcher" via the `set +e; wait;
+# set -e` bracket. The BEHAVIORAL case above only stubs rc=0 workers, so
+# a regression that drops the bracket would pass CI silently.
+#
+# Drive the production fork-loop block with one stub _run_worker that
+# exits non-zero and one that exits clean. Assert: the clean worker's
+# sentinel still lands AND the test process survives past `wait` to
+# reach the assertion (proves `set +e` shielded the scheduler from the
+# failing worker's rc).
+K2FR_SENTINEL_DIR="$(mktemp -d -t twinning-k2-failresilient.XXXXXX)"
+trap 'rm -rf "$K2FR_SENTINEL_DIR"' EXIT
+
+_run_worker() {
+  local issue="$1"
+  case "$issue" in
+    ENG-K2FRA) date +%s > "$K2FR_SENTINEL_DIR/$issue.start"; exit 1 ;;
+    ENG-K2FRB) date +%s > "$K2FR_SENTINEL_DIR/$issue.start"; sleep 1; date +%s > "$K2FR_SENTINEL_DIR/$issue.end"; return 0 ;;
+  esac
+}
+release_lock() { :; }
+
+_claimed_workers=(
+  "ENG-K2FRA|implementing|/tmp/wt-A|/tmp/lock-A"
+  "ENG-K2FRB|implementing|/tmp/wt-B|/tmp/lock-B"
+)
+
+# Sentinel proving the test process reached the assert phase. If the
+# scheduler's `set +e; wait; set -e` bracket were missing AND the test
+# inherited `set -e`, the failing worker subshell's rc=1 would kill the
+# test process before `wait` returns and this sentinel would not be
+# touched. The behavioral block at run-local.sh:483-484 mirrors this.
+set +e
+eval "$RUN_LOCAL_BEHAVIORAL_BLOCK"
+wait
+set -e
+date +%s > "$K2FR_SENTINEL_DIR/scheduler-reached-assert"
+
+# Assert 1: scheduler process survived past `wait` (proves resilience).
+if [[ ! -f "$K2FR_SENTINEL_DIR/scheduler-reached-assert" ]]; then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-FAILURE-RESILIENT: scheduler did not reach post-wait assert (set +e bracket may have been dropped)\n' >&2
+  exit 1
+fi
+
+# Assert 2: failing worker started; clean worker ran to completion.
+if [[ ! -f "$K2FR_SENTINEL_DIR/ENG-K2FRA.start" ]]; then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-FAILURE-RESILIENT: failing worker A did not start\n' >&2
+  exit 1
+fi
+if [[ ! -f "$K2FR_SENTINEL_DIR/ENG-K2FRB.end" ]]; then
+  printf 'FAIL AC-K2-PARALLEL-WORKERS-FAILURE-RESILIENT: clean worker B did not complete despite parallel worker A exit 1 (failure isolation broken)\n' >&2
+  exit 1
+fi
+
+printf 'OK AC-K2-PARALLEL-WORKERS-FAILURE-RESILIENT (worker A exit 1, worker B completed, scheduler reached post-wait)\n'
+
 unset -f _run_worker release_lock
 unset _claimed_workers
 

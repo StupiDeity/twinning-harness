@@ -486,7 +486,22 @@ _claude_mutex_format_holders() {
   printf '%s\n' "${holders:-<none>}"
 }
 
+# Verify a freshly-claimed lock dir still carries our pid after mkdir+write.
+# A sibling reclaimer that interleaved its own rm-rf between our mkdir and
+# pid-write would either blow away the dir or replace our pid with its own.
+# Returns 0 on match, 1 on mismatch.
+_post_mkdir_readback_check() {
+  local dir="$1" expected_pid="$2"
+  local readback=""
+  [[ -f "$dir/pid" ]] && readback="$(cat "$dir/pid" 2>/dev/null || printf '')"
+  [[ "$readback" == "$expected_pid" ]] && return 0
+  log "post-mkdir pid-readback mismatch at $dir (got '${readback:-<absent>}', expected $expected_pid)"
+  return 1
+}
+
 acquire_claude_mutex() {
+  [[ -z "${_ACQUIRED_SLOT_DIR:-}" ]] \
+    || die "[claude-mutex] acquire_claude_mutex called twice without intervening release (already hold $_ACQUIRED_SLOT_DIR)"
   mkdir -p "$CLAUDE_SEMAPHORE_DIR"
   local cap
   cap="$(_resolve_K)"
@@ -496,8 +511,28 @@ acquire_claude_mutex() {
       local d="$CLAUDE_SEMAPHORE_DIR/slot-$slot"
       if mkdir "$d" 2>/dev/null; then
         printf '%s\n' "$$" > "$d/pid"
-        _ACQUIRED_SLOT_DIR="$d"
-        return 0
+        if _post_mkdir_readback_check "$d" "$$"; then
+          _ACQUIRED_SLOT_DIR="$d"
+          return 0
+        fi
+        log "[claude-mutex] post-mkdir pid-readback mismatch at $d; lost recovery race, retrying"
+        continue
+      fi
+      # Stale-slot reclaim: if the slot's holder pid is dead, free + retake.
+      # Mirrors try_acquire_lock's dead-pid recovery.
+      local holder_pid=""
+      [[ -f "$d/pid" ]] && holder_pid="$(cat "$d/pid" 2>/dev/null || printf '')"
+      if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+        log "[claude-mutex] reclaiming stale slot $d (holder=$holder_pid not alive)"
+        rm -rf "$d" 2>/dev/null || true
+        if mkdir "$d" 2>/dev/null; then
+          printf '%s\n' "$$" > "$d/pid"
+          if _post_mkdir_readback_check "$d" "$$"; then
+            _ACQUIRED_SLOT_DIR="$d"
+            return 0
+          fi
+          log "[claude-mutex] post-mkdir pid-readback mismatch at $d after reclaim; lost race"
+        fi
       fi
     done
     # Emit the wait log immediately on first contention, then re-log every

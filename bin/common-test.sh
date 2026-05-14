@@ -794,29 +794,118 @@ fi
 release_lock "$_TAL_DIR/lock-readback"
 rm -f "$_TAL_DIR/lock-readback.log"
 
-# AC-TAL-POST-MKDIR-PID-READBACK-MISMATCH: the sibling-clobber simulation.
-# Construct a dead-pid lock dir, then inject a different pid into the dir
-# AFTER mkdir would have completed (simulating a sibling reclaimer's
-# pid-write clobbering ours). The readback should detect the mismatch
-# and return rc=1.
-#
-# We accomplish this by exporting a tiny shell wrapper around the
-# critical-section sequence: call try_acquire_lock against a stale dir
-# whose pid file ALREADY shows a different pid (e.g. 99999) after the
-# function's first mkdir, and verify the recovery branch's readback
-# notices. Concrete fixture: drop a pid file with a non-$$ value into a
-# dir BEFORE calling try_acquire_lock. Since the function fails on the
-# initial mkdir (dir exists), then reads the pid (non-empty, alive or
-# not — we set a dead pid), passes dead-pid check, rm-rfs the dir,
-# mkdirs fresh, writes $$ pid, reads back. The readback finds $$ and
-# returns rc=0 — fine. The contract is "if readback mismatches, return
-# rc=1", which is a defensive-code path that is hard to exercise
-# without injecting a race. Stake the visible side of the contract
-# (log breadcrumb pattern) so a regression that removes the readback
-# also removes the log message, and document the limitation here.
-grep -qF 'post-mkdir pid-readback' "$SCRIPT_DIR/common.sh" \
-  && pass_at "AC-TAL-POST-MKDIR-PID-READBACK-MISMATCH (source-pin): readback log breadcrumb present in common.sh" \
-  || fail_at "AC-TAL-POST-MKDIR-PID-READBACK-MISMATCH" "expected 'post-mkdir pid-readback' log breadcrumb in common.sh — readback safety code may have been removed"
+# AC-PMRC-MATCH: the post-mkdir readback check returns rc=0 when the pid
+# file content equals the supplied expected pid. Drives the extracted
+# _post_mkdir_readback_check helper directly so a regression that drops
+# the rc=1-on-mismatch branch is caught by behavior, not a source grep.
+_PMRC_DIR="$(mktemp -d -t twinning-pmrc.XXXXXX)"
+mkdir "$_PMRC_DIR/lock-ok"
+printf '%s\n' "$$" > "$_PMRC_DIR/lock-ok/pid"
+rc=0
+_post_mkdir_readback_check "$_PMRC_DIR/lock-ok" "$$" 2>/dev/null || rc=$?
+[[ "$rc" == "0" ]] \
+  && pass_at "AC-PMRC-MATCH: readback helper returns 0 when pid file matches expected pid" \
+  || fail_at "AC-PMRC-MATCH" "expected rc=0 with pid file '$$', got rc=$rc"
+
+# AC-PMRC-MISMATCH: simulates the sibling-clobber race — pid file shows
+# a different pid than the expected one. Helper must return rc=1 and log
+# the breadcrumb.
+mkdir "$_PMRC_DIR/lock-mismatch"
+printf '99999\n' > "$_PMRC_DIR/lock-mismatch/pid"
+rc=0
+_post_mkdir_readback_check "$_PMRC_DIR/lock-mismatch" "$$" 2>"$_PMRC_DIR/lock-mismatch.log" || rc=$?
+if [[ "$rc" == "1" ]] && grep -qF 'post-mkdir pid-readback mismatch' "$_PMRC_DIR/lock-mismatch.log"; then
+  pass_at "AC-PMRC-MISMATCH: readback helper returns 1 + logs breadcrumb when sibling clobbered the pid file"
+else
+  fail_at "AC-PMRC-MISMATCH" "expected rc=1 + log 'post-mkdir pid-readback mismatch', got rc=$rc log='$(cat "$_PMRC_DIR/lock-mismatch.log" 2>/dev/null)'"
+fi
+
+# AC-PMRC-MISSING: pid file absent (sibling rm-rf'd the entire dir
+# between our mkdir and write). Helper must return rc=1.
+mkdir "$_PMRC_DIR/lock-missing"
+# No pid file written — the rm -rf interleaving case.
+rc=0
+_post_mkdir_readback_check "$_PMRC_DIR/lock-missing" "$$" 2>"$_PMRC_DIR/lock-missing.log" || rc=$?
+[[ "$rc" == "1" ]] \
+  && pass_at "AC-PMRC-MISSING: readback helper returns 1 when pid file absent (rm-rf race)" \
+  || fail_at "AC-PMRC-MISSING" "expected rc=1 on absent pid file, got rc=$rc"
+rm -rf "$_PMRC_DIR"
+
+# AC-ACM-DOUBLE-ACQUIRE-DIES: defense-in-depth on the single-acquire
+# contract. _ACQUIRED_SLOT_DIR is a single global; if a future code path
+# called acquire_claude_mutex twice in one shell, the second call would
+# silently overwrite the first slot reference and release_claude_mutex
+# would only release the second slot — leaking the first until process
+# exit. Function must die on double-acquire.
+_ACM_HARNESS_STATE_DIR="$(mktemp -d -t twinning-acm.XXXXXX)"
+_ACM_OUT="$_ACM_HARNESS_STATE_DIR/double.out"
+(
+  set +e
+  HARNESS_STATE_DIR="$_ACM_HARNESS_STATE_DIR" \
+  CLAUDE_SEMAPHORE_DIR="$_ACM_HARNESS_STATE_DIR/.claude-semaphore" \
+    bash -c '
+      set +e
+      SCRIPT_DIR="'"$SCRIPT_DIR"'"
+      source "$SCRIPT_DIR/common.sh"
+      CLAUDE_SEMAPHORE_DIR="'"$_ACM_HARNESS_STATE_DIR"'/.claude-semaphore"
+      acquire_claude_mutex
+      acquire_claude_mutex
+      printf "REACHED_AFTER_SECOND\n"
+    ' >"$_ACM_OUT" 2>&1
+)
+if grep -qF 'REACHED_AFTER_SECOND' "$_ACM_OUT"; then
+  fail_at "AC-ACM-DOUBLE-ACQUIRE-DIES" "expected die() on second acquire_claude_mutex, got success: $(cat "$_ACM_OUT")"
+elif grep -qE 'acquire_claude_mutex.*(double|already|twice)' "$_ACM_OUT"; then
+  pass_at "AC-ACM-DOUBLE-ACQUIRE-DIES: second acquire_claude_mutex in same shell dies (defense-in-depth)"
+else
+  fail_at "AC-ACM-DOUBLE-ACQUIRE-DIES" "expected die() with double/already/twice token, got: $(cat "$_ACM_OUT")"
+fi
+rm -rf "$_ACM_HARNESS_STATE_DIR"
+
+# AC-ACM-STALE-SLOT-RECLAIM: a SIGKILL'd/oomkilled prior dispatch leaves
+# slot-N/pid behind. Without stale-slot recovery a future acquirer spins
+# for CLAUDE_MUTEX_TIMEOUT (600s default) before dying — the K>=2 fork
+# surface doubles the chance of producing operator-stuck dispatches.
+# Mirror try_acquire_lock's `kill -0` self-heal inside the slot for-loop.
+_SSR_HARNESS_STATE_DIR="$(mktemp -d -t twinning-ssr.XXXXXX)"
+_SSR_SEM_DIR="$_SSR_HARNESS_STATE_DIR/.claude-semaphore"
+mkdir -p "$_SSR_SEM_DIR/slot-1"
+# Spawn a short-lived child, capture its pid, wait for it to exit — that
+# pid is now guaranteed dead.
+( true ) &
+_SSR_DEAD_PID=$!
+wait "$_SSR_DEAD_PID" 2>/dev/null || true
+printf '%s\n' "$_SSR_DEAD_PID" > "$_SSR_SEM_DIR/slot-1/pid"
+_SSR_OUT="$_SSR_HARNESS_STATE_DIR/reclaim.out"
+(
+  HARNESS_STATE_DIR="$_SSR_HARNESS_STATE_DIR" \
+  CLAUDE_MAX_CONCURRENT=1 \
+  CLAUDE_MUTEX_TIMEOUT=3 \
+    bash -c '
+      SCRIPT_DIR="'"$SCRIPT_DIR"'"
+      source "$SCRIPT_DIR/common.sh"
+      CLAUDE_SEMAPHORE_DIR="'"$_SSR_SEM_DIR"'"
+      _ssr_start=$(date +%s)
+      acquire_claude_mutex
+      _ssr_elapsed=$(( $(date +%s) - _ssr_start ))
+      printf "elapsed=%s\n" "$_ssr_elapsed"
+      printf "slot=%s\n" "$_ACQUIRED_SLOT_DIR"
+      release_claude_mutex
+    ' >"$_SSR_OUT" 2>&1
+)
+_ssr_elapsed_val="$(grep -E '^elapsed=' "$_SSR_OUT" | cut -d= -f2 | head -1)"
+_ssr_slot_val="$(grep -E '^slot=' "$_SSR_OUT" | cut -d= -f2 | head -1)"
+# Acquirer must NOT block until CLAUDE_MUTEX_TIMEOUT (3s); it should
+# detect the dead holder and reclaim within <2s. Tight bound catches
+# regressions where the dead-pid branch never fires.
+if [[ -n "$_ssr_elapsed_val" ]] && (( _ssr_elapsed_val < 2 )) && [[ "$_ssr_slot_val" == *"slot-1" ]]; then
+  pass_at "AC-ACM-STALE-SLOT-RECLAIM: dead-pid slot-1 reclaimed in ${_ssr_elapsed_val}s (<2s, well below CLAUDE_MUTEX_TIMEOUT=3s)"
+elif grep -qF 'claude-mutex timeout' "$_SSR_OUT"; then
+  fail_at "AC-ACM-STALE-SLOT-RECLAIM" "acquire_claude_mutex timed out on a slot held by a dead pid (no stale-slot recovery): $(cat "$_SSR_OUT")"
+else
+  fail_at "AC-ACM-STALE-SLOT-RECLAIM" "expected elapsed<2 and slot=slot-1, got elapsed=$_ssr_elapsed_val slot=$_ssr_slot_val out=$(cat "$_SSR_OUT")"
+fi
+rm -rf "$_SSR_HARNESS_STATE_DIR"
 
 # AC-TAL-LIVE-BLOCKS: a lock held by a live process must NOT be reclaimed
 # (false reclaim would race two workers onto the same issue). Use a
