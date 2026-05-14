@@ -2114,6 +2114,131 @@ else
     "got slot=$slot adv=$adv full=$out"
 fi
 
+# ─── ENG-81 Task 3: poll.sh --max <K> CLI flag ───────────────────────
+# poll.sh ships an additive --max <K> flag (default 1, back-compat with
+# run-local.sh:149's single-decision reader). With --max 1 the legacy
+# single-object output shape is preserved; with --max > 1 a JSON array
+# of up to K decisions is emitted. Idle / no-work paths are unchanged.
+
+# AC-MAX-K-DEFAULT: omitted --max emits single object (legacy contract).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-D|In Progress|3|Bug,stage:planning"
+out="$(main 2>/dev/null || true)"
+if jq -e 'type == "object" and .issue_id == "ENG-MAX-D"' <<<"$out" >/dev/null 2>&1; then
+  pass_at "AC-MAX-K-DEFAULT: no --max → single-object output (legacy)"
+else
+  fail_at "AC-MAX-K-DEFAULT" "expected object with issue_id ENG-MAX-D, got: $out"
+fi
+
+# AC-MAX-K-LEGACY-1: --max 1 emits single object (legacy contract).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-1|In Progress|3|Bug,stage:planning"
+out="$(main --max 1 2>/dev/null || true)"
+if jq -e 'type == "object" and .issue_id == "ENG-MAX-1"' <<<"$out" >/dev/null 2>&1; then
+  pass_at "AC-MAX-K-LEGACY-1: --max 1 → single-object output (legacy)"
+else
+  fail_at "AC-MAX-K-LEGACY-1" "expected object with issue_id ENG-MAX-1, got: $out"
+fi
+
+# AC-MAX-K-2-HELDS: --max 2 with two ready helds emits 2-element array.
+# Review-3 finding #7: assert ELEMENT IDENTITY (distinct ENG-MAX-A and
+# ENG-MAX-B) in addition to count. Pre-fix `count == 2` alone would pass
+# a picker bug that emitted [ENG-MAX-A, ENG-MAX-A] — the duplicate would
+# silently double-dispatch the same issue.
+reset_fixtures
+write_label_fixture "stage:reviewing" \
+  "ENG-MAX-A|In Progress|3|Bug,stage:reviewing"
+write_label_fixture "stage:implementing" \
+  "ENG-MAX-B|In Progress|3|Bug,stage:implementing"
+out="$(main --max 2 2>/dev/null || true)"
+count="$(jq 'if type == "array" then length else 0 end' <<<"$out" 2>/dev/null || printf '0')"
+ids="$(jq -r 'if type == "array" then map(.issue_id // "<missing>") | join(",") else "<not-array>" end' <<<"$out" 2>/dev/null || printf '<jq-err>')"
+unique_count="$(jq 'if type == "array" then map(.issue_id) | unique | length else 0 end' <<<"$out" 2>/dev/null || printf '0')"
+if (( count == 2 )) && (( unique_count == 2 )) && [[ "$ids" == *"ENG-MAX-A"* ]] && [[ "$ids" == *"ENG-MAX-B"* ]]; then
+  pass_at "AC-MAX-K-2-HELDS: --max 2 with 2 helds → 2 distinct decisions ($ids)"
+else
+  fail_at "AC-MAX-K-2-HELDS" "expected 2 distinct {ENG-MAX-A, ENG-MAX-B}; got count=$count unique=$unique_count ids=$ids out=$out"
+fi
+
+# AC-MAX-K-2-ONE-HELD: --max 2 with only 1 ready held + 1 inbox emits
+# a 2-element array (the held + the inbox pickup, in pool sort order).
+reset_fixtures
+write_label_fixture "stage:reviewing" \
+  "ENG-MAX-C|In Progress|3|Bug,stage:reviewing"
+write_inbox_fixture \
+  "ENG-MAX-INBOX|Todo|3|Bug"
+out="$(main --max 2 2>/dev/null || true)"
+count="$(jq 'if type == "array" then length else 0 end' <<<"$out" 2>/dev/null || printf '0')"
+if (( count == 2 )); then
+  pass_at "AC-MAX-K-2-ONE-HELD: --max 2 with 1 held + 1 inbox → 2-element array"
+else
+  fail_at "AC-MAX-K-2-ONE-HELD" "expected length 2 array, got count=$count out=$out"
+fi
+
+# AC-MAX-K-INVALID: non-integer --max coerces to 1 (defensive).
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-INV|In Progress|3|Bug,stage:planning"
+out="$(main --max abc 2>/dev/null || true)"
+if jq -e 'type == "object" and .issue_id == "ENG-MAX-INV"' <<<"$out" >/dev/null 2>&1; then
+  pass_at "AC-MAX-K-INVALID: --max abc coerces to 1 → single object"
+else
+  fail_at "AC-MAX-K-INVALID" "expected object output, got: $out"
+fi
+
+# AC-MAX-K-ENV-WINS (ENG-81 review-3 finding #4): CLAUDE_MAX_CONCURRENT env-var
+# must override .orchestrator.max_concurrent_features for poll.sh's held-slice
+# cap (resolves via _resolve_K). Pre-fix poll.sh::main read the config value
+# directly with `config_get`, so an operator who rolled back via env-var
+# (`launchctl bootstrap` flow) would see scheduler honoring K=1 while poll.sh
+# still emitted K=2 picks — split-brain.
+#
+# Drive the test: config says max=1 but env says K=3, with 3 helds. Expect
+# all 3 to be returned (env wins). Pre-fix this would return only 1
+# decision (config wins).
+reset_fixtures
+write_label_fixture "stage:reviewing" \
+  "ENG-MAX-E1|In Progress|3|Bug,stage:reviewing"
+write_label_fixture "stage:implementing" \
+  "ENG-MAX-E2|In Progress|3|Bug,stage:implementing"
+write_label_fixture "stage:planning" \
+  "ENG-MAX-E3|In Progress|3|Bug,stage:planning"
+# Override config to cap=1 ONLY for this case; the env var must win.
+jq '.orchestrator.max_concurrent_features = 1' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+set +e
+out="$(CLAUDE_MAX_CONCURRENT=3 main --max 3 2>/dev/null)"
+set -e
+count="$(jq 'if type == "array" then length else 0 end' <<<"$out" 2>/dev/null || printf '0')"
+unique_count="$(jq 'if type == "array" then map(.issue_id) | unique | length else 0 end' <<<"$out" 2>/dev/null || printf '0')"
+# Reset config back so subsequent cases see the default.
+jq '.orchestrator.max_concurrent_features = 2' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+if (( count == 3 )) && (( unique_count == 3 )); then
+  pass_at "AC-MAX-K-ENV-WINS: CLAUDE_MAX_CONCURRENT=3 overrides config=1 → 3 distinct held picks"
+else
+  fail_at "AC-MAX-K-ENV-WINS" "expected count=3 unique=3 (env override); got count=$count unique=$unique_count (split-brain: poll.sh ignored CLAUDE_MAX_CONCURRENT)"
+fi
+
+# AC-MAX-K-UNKNOWN-FLAG: a typo'd flag (e.g. --mx) must die with a clear
+# message — pre-fix the parser silently swallowed unknown args via `*) shift`
+# and returned a single decision with no warning, masking operator typos.
+# main() runs in the parent shell (poll.sh is sourced); die would exit the
+# whole test, so invoke main in a $( ... ) subshell with `|| true` and
+# capture stderr via redirection.
+reset_fixtures
+write_label_fixture "stage:planning" \
+  "ENG-MAX-UNK|In Progress|3|Bug,stage:planning"
+set +e
+err="$( (main --mx 2) 2>&1 >/dev/null )"
+unknown_rc=$?
+set -e
+if (( unknown_rc != 0 )) && [[ "$err" == *"unknown flag"*"--mx"* ]]; then
+  pass_at "AC-MAX-K-UNKNOWN-FLAG: --mx dies (rc=$unknown_rc) with 'unknown flag --mx'"
+else
+  fail_at "AC-MAX-K-UNKNOWN-FLAG" "expected rc!=0 and 'unknown flag --mx' in stderr, got rc=$unknown_rc err=$err"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

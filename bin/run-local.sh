@@ -56,8 +56,19 @@ fi
 # Bash traps are NOT stacked — a later `trap ... EXIT` REPLACES this one.
 # Register sweep tempfiles in TWINNING_SWEEP_TMPS so they are reaped here.
 TWINNING_SWEEP_TMPS=()
+
+# Track scheduler-acquired per-issue in-flight locks so cleanup_on_exit
+# can reap any that did NOT successfully hand off to a forked worker.
+# The scheduler pushes here right after every try_acquire_lock claim and
+# CLEARS the array just before forking; workers re-trap EXIT with their
+# own release inside the subshell.
+_SCHEDULER_INFLIGHT_LOCKS=()
 cleanup_on_exit() {
   rm -rf "$LOCK_DIR"
+  local _l
+  for _l in "${_SCHEDULER_INFLIGHT_LOCKS[@]+"${_SCHEDULER_INFLIGHT_LOCKS[@]}"}"; do
+    release_lock "$_l"
+  done
   if (( ${#TWINNING_SWEEP_TMPS[@]} > 0 )); then
     rm -f "${TWINNING_SWEEP_TMPS[@]}"
   fi
@@ -114,8 +125,7 @@ fi
 # Worktrees now live under ~/.twinning-pipeline/ENG-N/worktree/ alongside
 # issue-state.json + scope-approval. Parent is created on demand.
 resolve_worktree_path() {
-  # $1 = branch name (unused, kept for call-site compat), $2 = issue id
-  local branch="$1" issue="$2"
+  local issue="$1"
   [[ -n "$issue" ]] || die "resolve_worktree_path: issue id required"
   printf '%s/worktree' "$(issue_dir "$issue")"
 }
@@ -144,274 +154,331 @@ ensure_worktree() {
   fi
 }
 
+# ─── ENG-81: per-worker arm ────────────────────────────────────────────
+# Runs in a forked subshell, one per (issue, stage) decision claimed by
+# the scheduler. Performs everything that pre-ENG-81 lived inline in
+# run-local.sh's main body: tick-start snapshot, run-stage dispatch,
+# scratch cleanup, lane-routed exit, 3-stream partition sweep,
+# observed-vs-self-leak classification, halt/commit/push.
+#
+# Per-issue locks/state mutations are owned by the called helpers
+# (route_run_stage_exit, halt_issue_for_self_leak,
+# tally_leaked_in_scope_failure). Workers do NOT mutate
+# TWINNING_SWEEP_TMPS or any shared scheduler state — local arrays only.
+#
+# The wire-up patterns the run-local-helpers-adversarial-test.sh greps
+# (#1-#6) live in this function body so the existing pins keep
+# anchoring the same invariants.
+_run_worker() {
+  local issue_id="$1" stage="$2" dispatch_cwd="$3"
+
+  # Per-worker log file (Phase 3c). Replaces the shared daily log
+  # INSIDE the worker subshell. Scheduler-side messages still land in
+  # $LOG_FILE.
+  local worker_log="$LOG_DIR/local-$(date -u +%Y-%m-%d)-${issue_id}.log"
+  exec > >(tee -a "$worker_log") 2>&1
+  log "== worker start: $issue_id / $stage =="
+
+  # Tick-start dirty-path snapshot for self-leak detection (ENG-14 D-4).
+  local snapshot_file
+  snapshot_file="$(mktemp -t twinning-snapshot.XXXXXX)"
+  local _worker_tmps=("$snapshot_file")
+  git -C "$dispatch_cwd" status -z --porcelain \
+    | awk 'BEGIN{RS="\\0"} skip==1 { print; skip=0; next }
+           length >= 4 { print substr($0, 4); if ($0 ~ /^(R|C)/) skip=1 }' \
+    | sort -u > "$snapshot_file"
+
+  set +e
+  (cd "$dispatch_cwd" && bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage")
+  local rc=$?
+  set -e
+
+  # Tick-end .scratch/ cleanup — MUST appear BEFORE the rc-gate below
+  # so it fires on EVERY post-dispatch path including agent failures
+  # (timeout rc=124, envelope validator rc=29, scope-check rc=21,
+  # crashes). Placing this AFTER the rc-gate would leak stale
+  # .scratch/ across operator --action continue resumes on failure
+  # paths. .scratch/ is gitignored; cleanup is rc=0 always.
+  clean_scratch_dir "$dispatch_cwd"
+
+  # ENG-69: route the run-stage exit through the per-issue/global lane
+  # split. rc=24 (linear-post-failed) → global counter; every other
+  # non-zero rc → per-issue counter; rc=0 clears both.
+  route_run_stage_exit "$issue_id" "$stage" "$rc"
+  # Reap tempfiles on every non-zero exit (timeout, envelope, scope, crash).
+  # Single-line form matches the wire-up anchor regex
+  # `[[ $rc -ne 0 ]]; then return $rc`.
+  if [[ $rc -ne 0 ]]; then rm -f "${_worker_tmps[@]}"; return $rc; fi
+
+  # 3-stream partition sweep (ENG-14 D-3).
+  local in_scope_file leaked_file out_scope_file
+  in_scope_file="$(mktemp -t twinning-inscope.XXXXXX)"
+  leaked_file="$(mktemp -t twinning-leaked.XXXXXX)"
+  out_scope_file="$(mktemp -t twinning-outscope.XXXXXX)"
+  _worker_tmps+=("$in_scope_file" "$leaked_file" "$out_scope_file")
+  : > "$in_scope_file" "$leaked_file" "$out_scope_file"
+
+  git -C "$dispatch_cwd" status -z --porcelain \
+    | partition_dirty_paths "$stage" "$issue_id" \
+        3>"$in_scope_file" 4>"$leaked_file" 5>"$out_scope_file"
+
+  local in_scope_count leaked_count observed_count
+  in_scope_count="$(tr -cd '\0' < "$in_scope_file" | wc -c | tr -d ' ')"
+  leaked_count="$(tr -cd '\0' < "$leaked_file" | wc -c | tr -d ' ')"
+  observed_count="$(tr -cd '\0' < "$out_scope_file" | wc -c | tr -d ' ')"
+
+  # Classify out-of-scope into bucketed-observed (pre-existing, present
+  # in tick-start snapshot) vs self-leak (NEW since tick start).
+  # Review-3 minor #11: bucket de-duplication is `sort -u` on a tempfile
+  # rather than the prior manual seen-flag inner loop. Same behavior;
+  # less code; pattern matches the rest of the helpers (every other
+  # multiset dedup in run-local-helpers.sh uses `sort -u`).
+  local -a observed_buckets=()
+  local -a self_leak_hashes=()
+  local -a self_leak_paths=()
+  if (( observed_count > 0 )); then
+    local buckets_raw
+    buckets_raw="$(mktemp -t twinning-buckets.XXXXXX)"
+    _worker_tmps+=("$buckets_raw")
+    local p
+    while IFS= read -r -d '' p; do
+      if grep -qxF -- "$p" "$snapshot_file"; then
+        bucket_for_path "$p" >> "$buckets_raw"
+      else
+        self_leak_hashes+=("$(sha12 "$p")")
+        self_leak_paths+=("$p")
+      fi
+    done < "$out_scope_file"
+    if [[ -s "$buckets_raw" ]]; then
+      local b
+      while IFS= read -r b; do
+        [[ -n "$b" ]] && observed_buckets+=("$b")
+      done < <(sort -u "$buckets_raw")
+    fi
+  fi
+
+  # Precedence: self-leak (hard-fail) > leaked-in-scope > in-scope
+  # commit > observed bucketed.
+  if (( ${#self_leak_hashes[@]} > 0 )); then
+    if stage_is_read_mostly "$stage"; then
+      clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}"
+    else
+      halt_issue_for_self_leak "$issue_id" "$stage" "${self_leak_hashes[@]}"
+      if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
+        rm -f "${_worker_tmps[@]}"
+        log "== worker end: $issue_id / $stage (self-leak halt) =="
+        return 1
+      fi
+    fi
+  fi
+
+  if (( leaked_count > 0 )); then
+    local leaked_hashes="" h p
+    while IFS= read -r -d '' p; do
+      h="$(sha12 "$p")"
+      leaked_hashes="${leaked_hashes:+${leaked_hashes},}${h}"
+    done < "$leaked_file"
+    tally_leaked_in_scope_failure "$issue_id" "$stage" "$leaked_count" "$leaked_hashes"
+    if [[ "$PIPELINE_DRY_RUN" != "1" ]]; then
+      rm -f "${_worker_tmps[@]}"
+      log "== worker end: $issue_id / $stage (leaked-in-scope tally) =="
+      return 1
+    fi
+  fi
+
+  if (( in_scope_count > 0 )); then
+    if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
+      log "[DRY_RUN] would git add -- ($in_scope_count paths):"
+      tr '\0' '\n' < "$in_scope_file" | sed 's/^/[DRY_RUN]   /' >&2
+    else
+      log "committing pipeline artifacts for $issue_id / $stage ($in_scope_count paths)"
+      (cd "$dispatch_cwd" && xargs -0 git add -- < "$in_scope_file")
+      git -C "$dispatch_cwd" \
+        -c user.name="$BOT_NAME" \
+        -c user.email="$BOT_EMAIL" \
+        commit -m "chore(pipeline): $stage for $issue_id"
+      git -C "$dispatch_cwd" push -u origin HEAD
+    fi
+  else
+    log "no in-scope artifacts to commit"
+  fi
+
+  if (( ${#observed_buckets[@]} > 0 )); then
+    local observed_buckets_csv="" b
+    for b in "${observed_buckets[@]}"; do
+      observed_buckets_csv="${observed_buckets_csv:+${observed_buckets_csv},}${b}"
+    done
+    bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" \
+      "observed" 0 "count=${#observed_buckets[@]} buckets=${observed_buckets_csv}" \
+      || log "metrics.sh sweep-observed-out-of-scope emission failed (non-blocking)"
+  fi
+
+  rm -f "${_worker_tmps[@]}"
+  log "== worker end: $issue_id / $stage (success) =="
+  return 0
+}
+
 cd "$TARGET_REPO"
 
-decision="$(bash "$SCRIPT_DIR/poll.sh")"
-log "poll decision: $decision"
-issue_id="$(jq -r '.issue_id // ""' <<<"$decision")"
-stage="$(jq -r '.stage // ""' <<<"$decision")"
-entry_action="$(jq -r '.entry_action // "run"' <<<"$decision")"
+# ─── ENG-81 scheduler arm: poll up to K decisions, claim per-issue
+# locks, ensure worktrees, fork workers, wait for all ─────────────────
+K="$(_resolve_K)"
+log "scheduler: K=$K (concurrency cap)"
 
-if [[ -z "$issue_id" ]]; then
+# poll.sh emits an array when --max > 1; a single object when --max == 1.
+if (( K == 1 )); then
+  decision="$(bash "$SCRIPT_DIR/poll.sh")"
+  decisions_json="[$decision]"
+else
+  decisions_json="$(bash "$SCRIPT_DIR/poll.sh" --max "$K")"
+fi
+log "poll decisions: $decisions_json"
+
+# Filter null/empty (idle) decisions. poll.sh's idle() branch emits a
+# single JSON object (not an array) regardless of --max; wrap defensively
+# so arrays pass through and anything else collapses to [].
+decisions_json="$(jq -c '(if type == "array" then . else [] end) | [.[] | select(.issue_id != null and .issue_id != "")]' <<<"$decisions_json")"
+decisions_count="$(jq 'length' <<<"$decisions_json")"
+if (( decisions_count == 0 )); then
   log "no work this tick"
   exit 0
 fi
 
-if [[ "$entry_action" == "apply-stage-label" ]]; then
-  # Note: inline `case` inside `$( ... )` trips bash 3.2 (macOS default) — the
-  # `)` after each pattern closes the command substitution early. Assign
-  # directly in the case body instead.
-  case "$stage" in
-    brainstorming|planning|implementing|ui|reviewing|qa|building|released|retrospective) label_suffix="$stage" ;;
-    *) label_suffix="$stage" ;;
-  esac
-  active_state="$(config_get '.linear.native_states.active')"
-  bash "$SCRIPT_DIR/linear.sh" transition-state "$issue_id" "$active_state"
-  bash "$SCRIPT_DIR/linear.sh" add-label "$issue_id" "stage:$label_suffix"
-fi
+# Per-decision: handle entry-action, reconcile, ensure worktree,
+# claim per-issue .in-flight.lock. Releases the lock if this decision
+# short-circuits (link/human reconcile path).
+declare -a _claimed_workers=()   # entries: "<issue>|<stage>|<worktree>|<lock_dir>"
+for di in $(seq 0 $((decisions_count - 1))); do
+  decision="$(jq -c ".[$di]" <<<"$decisions_json")"
+  issue_id="$(jq -r '.issue_id' <<<"$decision")"
+  stage="$(jq -r '.stage' <<<"$decision")"
+  entry_action="$(jq -r '.entry_action // "run"' <<<"$decision")"
 
-reconcile_decision="proceed"
-if [[ "$stage" == "brainstorming" || "$stage" == "planning" ]]; then
-  reconcile_decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$issue_id" "$stage")"
-  log "reconcile decision: $reconcile_decision"
-fi
-
-# Handle link: and human reconcile outcomes before deciding to create a
-# worktree. These paths short-circuit: no dispatch, no worktree, just
-# Linear side effects + metrics. Per ENG-13 D-009 and recovery of the
-# side-effect logic that used to live in run-stage.sh:121-151.
-case "$reconcile_decision" in
-  link:*)
-    doc_path="${reconcile_decision#link:}"
-    bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
-      "Pipeline reconcile: existing $stage doc is canonical: \`$doc_path\`. Advancing without regeneration."
-    # Advance the stage label to the next happy-path stage.
+  # Acquire the per-issue .in-flight.lock as late as possible — after
+  # every error-prone scheduler-side call (linear.sh, reconcile.sh,
+  # branch-name.sh, resolve_worktree_path, ensure_worktree) so a
+  # transient failure does not orphan the lock and silently skip the
+  # issue on every subsequent tick.
+  if [[ "$entry_action" == "apply-stage-label" ]]; then
     case "$stage" in
-      brainstorming) nxt_label="planning" ;;
-      planning)      nxt_label="implementing" ;;
-      *)             nxt_label="" ;;
+      brainstorming|planning|implementing|ui|reviewing|qa|building|released|retrospective) label_suffix="$stage" ;;
+      *) label_suffix="$stage" ;;
     esac
-    if [[ -n "$nxt_label" ]]; then
-      bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$nxt_label"
-    fi
-    bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" "linked" 0 "doc=$doc_path"
-    log "== tick end (reconcile linked) =="
-    exit 0
-    ;;
-  human)
-    bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
-      "Pipeline reconcile: an existing $stage doc appears to cover this topic. Apply one of: \`pipeline:supersede\` (generate fresh and retire the old), \`pipeline:extend\` (generate fresh, referencing the old), or \`pipeline:ignore\` (link the old as canonical). Until a label is applied, this issue is paused."
-    bash "$SCRIPT_DIR/metrics.sh" stage-start "$issue_id" "$stage" "reconcile-human" 0
-    # ENG-10 D-004: emit a matching stage-end so retrospective §1 can pair
-    # the events. Direct-string emission (not via failure_outcome_for_exit)
-    # because exit_code=0 subcode="" would route to unknown-exit-0; this
-    # path is a short-circuit, not a classified failure.
-    bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" \
-      "reconcile-human" 0 "awaiting=supersede-or-extend-or-ignore" || true
-    log "== tick end (reconcile human gate) =="
-    exit 0
-    ;;
-esac
+    active_state="$(config_get '.linear.native_states.active')"
+    bash "$SCRIPT_DIR/linear.sh" transition-state "$issue_id" "$active_state"
+    bash "$SCRIPT_DIR/linear.sh" add-label "$issue_id" "stage:$label_suffix"
+  fi
 
-# Determine branch name and worktree path. The legacy `feature/*`
-# coexistence path that used to live here was deleted in ENG-67
-# (May 2026): it dispatched the agent from the operator's $TARGET_REPO
-# checkout when an agent had created a non-canonical
-# `feature/eng-N-...` branch (the May-2026 ENG-63/64/65 failure mode),
-# silently mutating the operator's HEAD and breaking scope-check.
-# PR #48 (commit 4635cd3) closed the upstream cause at the prompt
-# level (AGENT_PROMPTS.md:77-88 hard-rules 1-4 +
-# bin/agent-prompts-content-test.sh:447-491 pins); the orchestrator-
-# side coexistence is no longer needed. Any future feature/* branch
-# that somehow appears falls through to canonical resolution, where
-# ensure_worktree creates a fresh worktree off origin/main — a clean
-# error surface, not a silent dispatch into $TARGET_REPO.
-branch=""
-worktree_path=""
-if [[ "$reconcile_decision" == "proceed" ]]; then
+  reconcile_decision="proceed"
+  if [[ "$stage" == "brainstorming" || "$stage" == "planning" ]]; then
+    reconcile_decision="$(bash "$SCRIPT_DIR/reconcile.sh" "$issue_id" "$stage")"
+    log "reconcile decision ($issue_id): $reconcile_decision"
+  fi
+
+  case "$reconcile_decision" in
+    link:*)
+      doc_path="${reconcile_decision#link:}"
+      bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
+        "Pipeline reconcile: existing $stage doc is canonical: \`$doc_path\`. Advancing without regeneration."
+      case "$stage" in
+        brainstorming) nxt_label="planning" ;;
+        planning)      nxt_label="implementing" ;;
+        *)             nxt_label="" ;;
+      esac
+      [[ -n "$nxt_label" ]] && bash "$SCRIPT_DIR/linear.sh" swap-stage "$issue_id" "$nxt_label"
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" "linked" 0 "doc=$doc_path"
+      continue
+      ;;
+    human)
+      bash "$SCRIPT_DIR/linear.sh" add-comment "$issue_id" \
+        "Pipeline reconcile: an existing $stage doc appears to cover this topic. Apply one of: \`pipeline:supersede\`, \`pipeline:extend\`, or \`pipeline:ignore\`. Until a label is applied, this issue is paused."
+      bash "$SCRIPT_DIR/metrics.sh" stage-start "$issue_id" "$stage" "reconcile-human" 0
+      bash "$SCRIPT_DIR/metrics.sh" stage-end "$issue_id" "$stage" \
+        "reconcile-human" 0 "awaiting=supersede-or-extend-or-ignore" || true
+      continue
+      ;;
+  esac
+
+  # ENG-67 D-004 (set -u safety): initialize worktree_path BEFORE the
+  # `resolve_worktree_path` substitution. If a future edit drops the
+  # initializer and the substitution fails, the `[[ -n "$worktree_path" ]]`
+  # guard would error as "unbound variable" instead of dying with the
+  # operator-recognition message — pinned by
+  # bin/run-local-content-adversarial-test.sh::AD-4.
   branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
-  worktree_path="$(resolve_worktree_path "$branch" "$issue_id")"
+  worktree_path=""
+  worktree_path="$(resolve_worktree_path "$issue_id")"
   mkdir -p "$(dirname "$worktree_path")"
   ensure_worktree "$branch" "$worktree_path"
+  [[ -n "$worktree_path" ]] || die "internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from \$TARGET_REPO"
+
+  # Now that every error-prone call has succeeded, acquire the per-issue
+  # in-flight lock. The window between this line and the worker fork is
+  # tiny (one array append); cleanup_on_exit's EXIT trap covers it via
+  # _SCHEDULER_INFLIGHT_LOCKS.
+  inflight_lock="$(issue_dir "$issue_id")/.in-flight.lock"
+  mkdir -p "$(issue_dir "$issue_id")"
+  if ! try_acquire_lock "$inflight_lock"; then
+    log "scheduler: $issue_id .in-flight.lock held by prior tick worker; skipping this decision"
+    continue
+  fi
+  _SCHEDULER_INFLIGHT_LOCKS+=("$inflight_lock")
+
+  _claimed_workers+=("${issue_id}|${stage}|${worktree_path}|${inflight_lock}")
+done
+
+# ─── Periodic worktree sweep (BEFORE fork — Phase 3d) ─────────────────
+# Pre-ENG-81 this ran post-dispatch at the end of the tick. Moving it
+# here ensures it never races a worker (workers operate on per-issue
+# worktrees that cleanup-worktrees.sh would not touch in the same
+# tick anyway, but the ordering is the conservative choice).
+tick_count=0
+[[ -f "$TICK_COUNTER" ]] && tick_count="$(cat "$TICK_COUNTER")"
+tick_count=$((tick_count + 1))
+if (( tick_count % CLEANUP_EVERY_N_TICKS == 0 )); then
+  log "periodic sweep: running cleanup-worktrees.sh (scheduler arm, pre-fork)"
+  bash "$SCRIPT_DIR/cleanup-worktrees.sh" || log "cleanup-worktrees.sh exited nonzero (non-fatal)"
+fi
+printf '%s\n' "$tick_count" > "$TICK_COUNTER"
+
+# ─── Release tick lock BEFORE forking workers ─────────────────────────
+# cleanup_on_exit's `rm -rf "$LOCK_DIR"` is idempotent if the dir is
+# already gone, so we leave the EXIT trap registered (defensive
+# coverage in case a future scheduler-side mutation re-populates
+# TWINNING_SWEEP_TMPS).
+release_lock "$LOCK_DIR"
+
+if (( ${#_claimed_workers[@]} == 0 )); then
+  log "no workers claimed this tick (all decisions short-circuited in scheduler)"
+  exit 0
 fi
 
-# After ENG-67, every reconcile_decision=="proceed" tick resolves a
-# per-issue worktree_path; the link:/human reconcile branches `exit 0`
-# at lines 177-205 before reaching here. So the previous fallback
-# `dispatch_cwd=$TARGET_REPO` is unreachable by construction. Surface
-# any future regression that lets worktree_path stay empty as a loud
-# failure rather than a silent dispatch into the operator's checkout.
-[[ -n "$worktree_path" ]] || die "internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from \$TARGET_REPO"
-dispatch_cwd="$worktree_path"
+# Hand off lock ownership to workers. Each worker subshell re-traps EXIT
+# with its own release. The scheduler-side `_SCHEDULER_INFLIGHT_LOCKS`
+# array stays populated through the fork loop so a `die` between
+# `try_acquire_lock` and `( ... ) &` still releases locks of any workers
+# already forked. Double-release via worker EXIT trap is a harmless
+# `rm -rf` of a freed dir.
+for spec in "${_claimed_workers[@]}"; do
+  IFS='|' read -r w_issue w_stage w_worktree w_lock <<<"$spec"
+  (
+    # Worker subshell entry: REPLACE inherited scheduler trap with
+    # our own so we release ONLY this issue's per-issue lock on exit.
+    trap 'release_lock "'"$w_lock"'"' EXIT
+    _run_worker "$w_issue" "$w_stage" "$w_worktree"
+  ) &
+done
 
-# Tick-start dirty-path snapshot for self-leak detection (ENG-14 D-4).
-# Any out-of-scope path present at end-of-tick that is NOT in this
-# snapshot must have been introduced by the bot — hard-fail on first
-# occurrence after partition.
-snapshot_file="$(mktemp -t twinning-snapshot.XXXXXX)"
-TWINNING_SWEEP_TMPS+=("$snapshot_file")
-git -C "$dispatch_cwd" status -z --porcelain \
-  | awk 'BEGIN{RS="\\0"} skip==1 { print; skip=0; next }
-         length >= 4 { print substr($0, 4); if ($0 ~ /^(R|C)/) skip=1 }' \
-  | sort -u > "$snapshot_file"
-
+# set +e around wait so a worker's nonzero rc does not kill the
+# scheduler before sibling workers finish. Each worker's per-issue
+# mutations (counter, halt label, comments) are already done BEFORE
+# the subshell exits.
 set +e
-(cd "$dispatch_cwd" && bash "$SCRIPT_DIR/run-stage.sh" "$issue_id" "$stage")
-rc=$?
+wait
 set -e
 
-# Tick-end .scratch/ cleanup — runs BEFORE the rc-gate below so it
-# fires on EVERY post-dispatch path including agent failures (timeout
-# rc=124, envelope validator rc=29, scope-check rc=21, crashes).
-# Placing this AFTER the rc-gate (as in the original v3 patch) leaves
-# stale .scratch/ payload across operator --action continue resumes
-# on the failure path, re-opening the cross-dispatch state-injection
-# vector this helper exists to close. .scratch/ is gitignored, has no
-# upstream consumer regardless of dispatch outcome, and the cleanup
-# is rc=0 always (failures are non-blocking and logged).
-clean_scratch_dir "$dispatch_cwd"
-
-# ENG-69: route the run-stage exit through the per-issue/global lane
-# split. rc=24 (linear-post-failed) accumulates against the global
-# counter and trips the breaker at threshold; every other non-zero rc
-# accumulates against the issue's per-issue counter and halts only that
-# issue at threshold. rc=0 clears both counters.
-route_run_stage_exit "$issue_id" "$stage" "$rc"
-[[ $rc -ne 0 ]] && exit $rc
-
-# 3-stream partition sweep (ENG-14 D-3).
-in_scope_file="$(mktemp -t twinning-inscope.XXXXXX)"
-leaked_file="$(mktemp -t twinning-leaked.XXXXXX)"
-out_scope_file="$(mktemp -t twinning-outscope.XXXXXX)"
-TWINNING_SWEEP_TMPS+=("$in_scope_file" "$leaked_file" "$out_scope_file")
-: > "$in_scope_file" "$leaked_file" "$out_scope_file"
-
-git -C "$dispatch_cwd" status -z --porcelain \
-  | partition_dirty_paths "$stage" "$issue_id" \
-      3>"$in_scope_file" 4>"$leaked_file" 5>"$out_scope_file"
-
-in_scope_count="$(tr -cd '\0' < "$in_scope_file" | wc -c | tr -d ' ')"
-leaked_count="$(tr -cd '\0' < "$leaked_file" | wc -c | tr -d ' ')"
-observed_count="$(tr -cd '\0' < "$out_scope_file" | wc -c | tr -d ' ')"
-
-# Classify out-of-scope into bucketed-observed (pre-existing, present in
-# tick-start snapshot) vs self-leak (NEW since tick start). Task 10 decides
-# what to do with each.
-observed_buckets=()
-self_leak_hashes=()
-self_leak_paths=()
-if (( observed_count > 0 )); then
-  while IFS= read -r -d '' p; do
-    if grep -qxF -- "$p" "$snapshot_file"; then
-      b="$(bucket_for_path "$p")"
-      if (( ${#observed_buckets[@]} == 0 )); then
-        observed_buckets+=("$b")
-      else
-        seen=0
-        for existing in "${observed_buckets[@]}"; do
-          [[ "$existing" == "$b" ]] && { seen=1; break; }
-        done
-        (( seen )) || observed_buckets+=("$b")
-      fi
-    else
-      self_leak_hashes+=("$(sha12 "$p")")
-      self_leak_paths+=("$p")
-    fi
-  done < "$out_scope_file"
-fi
-
-# Tick-end .scratch/ cleanup. Stage-agnostic — runs BEFORE the
-# precedence block so it executes regardless of the halt/commit path
-# chosen below. .scratch/ is gitignored and therefore invisible to
-# git status / partition / self_leak_paths on every stage; without
-# this cleanup, an agent's verification scratch persists across
-# dispatches and creates a cross-dispatch state-injection vector
-# (planted file readable by subsequent agents via Read). The agent's
-# work product is in Linear comments + stage-summary outside the
-# worktree, not in .scratch/.
-clean_scratch_dir "$dispatch_cwd"
-
-# Precedence: self-leak (hard-fail) > leaked-in-scope (counter+conditional
-# trip) > in-scope commit > observed bucketed (info only). Brainstorm OQ-4.
-
-# 1. Self-leak has highest severity. For implementing|ui|qa (where
-#    the allowlist is real signal) halt the affected issue via
-#    classify_failure (skip-until-human-acts); the global breaker stays
-#    untouched so other issues keep polling. (ENG-69 lane separation —
-#    helper owns metric emit, hash truncation, and reason rendering.)
-#
-#    For reviewing|building|released (stage_is_read_mostly — the
-#    contract guarantees no legitimate worktree writes) the residue
-#    is agent verification scratch with no upstream consumer. The
-#    verdict + stage summary are already in Linear. Clean the
-#    self-leak paths and continue the tick instead of halting —
-#    eliminates the operator-touch halt that ENG-96's reviewer
-#    triggered with .scratch/bte_*.md + tmp-awk-dup-test.md
-#    verification fixtures.
-#
-#    Snapshot safety: self_leak_paths are by construction NEW since
-#    tick-start (the observed-vs-self-leak classification above
-#    already filtered out paths present at tick-start). The
-#    operator's pre-existing 'observed' edits are NEVER in this list
-#    and therefore NEVER touched by the clean.
-if (( ${#self_leak_hashes[@]} > 0 )); then
-  if stage_is_read_mostly "$stage"; then
-    clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}"
-  else
-    halt_issue_for_self_leak "$issue_id" "$stage" "${self_leak_hashes[@]}"
-    [[ "$PIPELINE_DRY_RUN" != "1" ]] && exit 1
-  fi
-fi
-
-# 2. Leaked-in-scope: soft failure. Tally against the per-issue counter
-#    and escalate to a per-issue halt at threshold. The global breaker
-#    is no longer touched on this lane (ENG-69). Leaves in-scope paths
-#    un-committed regardless of escalation.
-if (( leaked_count > 0 )); then
-  leaked_hashes=""
-  while IFS= read -r -d '' p; do
-    h="$(sha12 "$p")"
-    leaked_hashes="${leaked_hashes:+${leaked_hashes},}${h}"
-  done < "$leaked_file"
-  tally_leaked_in_scope_failure "$issue_id" "$stage" "$leaked_count" "$leaked_hashes"
-  [[ "$PIPELINE_DRY_RUN" != "1" ]] && exit 1
-fi
-
-# 3. Clean tick: commit in-scope artifacts if any.
-if (( in_scope_count > 0 )); then
-  if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
-    log "[DRY_RUN] would git add -- ($in_scope_count paths):"
-    tr '\0' '\n' < "$in_scope_file" | sed 's/^/[DRY_RUN]   /' >&2
-  else
-    log "committing pipeline artifacts for $issue_id / $stage ($in_scope_count paths)"
-    (cd "$dispatch_cwd" && xargs -0 git add -- < "$in_scope_file")
-    git -C "$dispatch_cwd" \
-      -c user.name="$BOT_NAME" \
-      -c user.email="$BOT_EMAIL" \
-      commit -m "chore(pipeline): $stage for $issue_id"
-    # -u origin HEAD: sets (or retargets) upstream to origin/<current-branch>. Without
-    # this, `git push` inherits push.default=simple behaviour and refuses when the
-    # branch was created off origin/main (see ensure_worktree above). Idempotent for
-    # already-correctly-tracked branches.
-    git -C "$dispatch_cwd" push -u origin HEAD
-  fi
-else
-  log "no in-scope artifacts to commit"
-fi
-
-# 4. Observed bucketed (info only — user concurrent work, no breaker).
-if (( ${#observed_buckets[@]} > 0 )); then
-  observed_buckets_csv=""
-  for b in "${observed_buckets[@]}"; do
-    observed_buckets_csv="${observed_buckets_csv:+${observed_buckets_csv},}${b}"
-  done
-  bash "$SCRIPT_DIR/metrics.sh" sweep-observed-out-of-scope "$issue_id" "$stage" \
-    "observed" 0 "count=${#observed_buckets[@]} buckets=${observed_buckets_csv}" \
-    || log "metrics.sh sweep-observed-out-of-scope emission failed (non-blocking)"
-fi
-
-# Release watcher: detect newly-published GitHub releases and trigger the local
-# on-new-release handler (sweep + observer agent). Replaces the old
+# Release watcher: detect newly-published GitHub releases and trigger
+# the local on-new-release handler. Replaces the old
 # pipeline-release.yml workflow. Cheap: one `gh api` call per tick.
 LAST_RELEASE_FILE="$PROJECT_STATE_DIR/last-observed-release"
 if command -v gh >/dev/null 2>&1; then
@@ -421,7 +488,6 @@ if command -v gh >/dev/null 2>&1; then
     prev_tag=""
     [[ -f "$LAST_RELEASE_FILE" ]] && prev_tag="$(cat "$LAST_RELEASE_FILE")"
     if [[ "$latest_tag" != "$prev_tag" ]]; then
-      # Version is the tag minus the leading `v`.
       latest_version="${latest_tag#v}"
       log "release watcher: detected new release $latest_tag (was: ${prev_tag:-none})"
       if bash "$SCRIPT_DIR/on-new-release.sh" "$latest_version" "$latest_tag"; then
@@ -435,16 +501,4 @@ else
   log "release watcher: gh CLI not on PATH; skipping"
 fi
 
-# Periodic worktree sweep (every N ticks).
-tick_count=0
-if [[ -f "$TICK_COUNTER" ]]; then
-  tick_count="$(cat "$TICK_COUNTER")"
-fi
-tick_count=$((tick_count + 1))
-if (( tick_count % CLEANUP_EVERY_N_TICKS == 0 )); then
-  log "periodic sweep: running cleanup-worktrees.sh"
-  bash "$SCRIPT_DIR/cleanup-worktrees.sh" || log "cleanup-worktrees.sh exited nonzero (non-fatal)"
-fi
-printf '%s\n' "$tick_count" > "$TICK_COUNTER"
-
-log "== tick end (success) =="
+log "== tick end (success, ${#_claimed_workers[@]} worker(s)) =="

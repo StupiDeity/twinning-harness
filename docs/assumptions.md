@@ -120,8 +120,11 @@ portability layer. The plist templates assume macOS conventions
 
 ### Single operator, single host
 
-A global mutex at `$HARNESS_STATE_DIR/.claude-mutex.lock/` serializes all
-`claude -p` dispatches, and `bin/run-local.sh` holds a per-tick lock at
+A global counting semaphore at
+`$HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/` caps concurrent
+`claude -p` dispatches at `orchestrator.max_concurrent_features`
+(default 2 since ENG-81; was a binary mutex pre-ENG-81), and
+`bin/run-local.sh` holds a per-tick lock at
 `$PROJECT_STATE_DIR/.run-local.lock/` to prevent overlapping ticks.
 
 **This means:**

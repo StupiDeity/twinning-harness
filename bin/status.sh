@@ -339,15 +339,58 @@ show_markers() {
   fi
 }
 
+# ─────────────────────────────────────── Section: concurrent dispatches (ENG-81)
+
+# Surface live slot occupancy from $HARNESS_STATE_DIR/.claude-semaphore/slot-*/pid.
+# Each slot directory holds the dispatch.sh pid that owns it. Empty listing ⇒
+# no live dispatches. This is the per-tick K cap operator-visible inspection
+# point referenced from CLAUDE.md "Per-project dispatch concurrency".
+show_concurrent_dispatches() {
+  section "Concurrent dispatches active right now"
+  local sem_dir="$HARNESS_STATE_DIR/.claude-semaphore"
+  if [[ ! -d "$sem_dir" ]]; then
+    printf '  %s(no semaphore dir; harness has not run yet)%s\n' "$C_DIM" "$C_RST"
+    return 0
+  fi
+  local n=0 slot pid
+  for slot in "$sem_dir"/slot-*/; do
+    [[ -d "$slot" ]] || continue
+    n=$((n + 1))
+    pid="$(cat "$slot/pid" 2>/dev/null || printf '?')"
+    printf '  slot=%s pid=%s\n' "$(basename "$slot" | sed 's/slot-//')" "$pid"
+  done
+  (( n == 0 )) && printf '  %s(no active dispatches)%s\n' "$C_DIM" "$C_RST"
+}
+
+# Tail recent dispatch-resource-sample events from events.jsonl. This is the
+# wall_seconds/max_rss_kb/cpu_pct baseline emitted post-dispatch by
+# bin/dispatch.sh::main when gtime is on PATH (ENG-81 Phase 1 instrumentation).
+show_resource_baseline() {
+  section "Dispatch resource baseline (last 20 samples)"
+  local ev="$PROJECT_STATE_DIR/metrics/events.jsonl"
+  [[ -f "$ev" ]] || { printf '  %s(no events.jsonl)%s\n' "$C_DIM" "$C_RST"; return 0; }
+  local lines
+  lines="$(jq -r 'select(.event == "dispatch-resource-sample") | "  \(.ts // "?")  \(.issue_id // "?")/\(.stage // "?")  \(.notes // "")"' \
+    "$ev" 2>/dev/null | tail -20 || true)"
+  if [[ -z "$lines" ]]; then
+    printf '  %s(no dispatch-resource-sample events yet — gtime may be absent on host)%s\n' \
+      "$C_DIM" "$C_RST"
+  else
+    printf '%s\n' "$lines"
+  fi
+}
+
 # ────────────────────────────────────────────────────────────────────────── main
 
 main() {
   printf '%sTwinning pipeline status — %s UTC%s\n' "$C_BLD" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$C_RST"
-  show_runs          || true
-  show_active_issues || true
-  show_cost_summary  || true
-  show_metrics       || true
-  show_markers       || true
+  show_runs                  || true
+  show_active_issues         || true
+  show_concurrent_dispatches || true
+  show_resource_baseline     || true
+  show_cost_summary          || true
+  show_metrics               || true
+  show_markers               || true
   printf '\n'
 }
 

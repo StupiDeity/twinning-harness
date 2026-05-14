@@ -222,7 +222,7 @@ Per-issue scratch lives under `$PROJECT_STATE_DIR/ENG-N/`:
 
 ```
 $HARNESS_STATE_DIR/
-├── .claude-mutex.lock/         # global single-flight around dispatch.sh
+├── .claude-semaphore/          # global counting semaphore (slot-<N>/pid each); replaces .claude-mutex.lock (ENG-81)
 └── <slug>/                     # per-project
     ├── target-repo             # collision sentinel
     ├── .consecutive-failures
@@ -243,10 +243,11 @@ a recomputed `pipeline_content_hash` (sha256 over `bin/**`, `config.json`,
 `AGENT_PROMPTS.md`) and branch-head SHA.
 
 The orchestrator NEVER dispatches into `$TARGET_REPO` — every dispatch resolves
-a per-issue worktree first (ENG-67). If you see `FATAL: internal: worktree_path
-empty after reconcile=proceed`, that's the D-003 invariant — usually a
-Linear-API outage in `branch-name.sh`. Inspect logs for the preceding error,
-fix the underlying cause, next tick resumes. Do NOT bypass via soft fallback.
+a per-issue worktree first (ENG-67). If you see the canonical operator-recognition
+phrase `FATAL: internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from $TARGET_REPO`,
+that's the D-003 invariant — usually a Linear-API outage in `branch-name.sh`.
+Inspect logs for the preceding error, fix the underlying cause, next tick
+resumes. Do NOT bypass via soft fallback.
 
 ## Sweep + scope partition (ENG-14)
 
@@ -616,6 +617,44 @@ inspect each surface.
 | Brainstorm halts at iteration 2 with `iteration-exhausted` | ENG-65: voluntarily halts after 2 persona-review iterations with unresolved P0. Resume via `--action continue` or fix underlying P0. Bounded worst-case spend; one extra operator touch on slow-converging brainstorms. |
 | scope-check halts on files from a recent upstream merge | Pre-ENG-59 bug; post-ENG-59 (`bin/scope-check.sh:155-…`) fetches `origin main` per run. If symptom persists, check transcript for `scope-check: fetch origin main failed` — fetch unreachable + no `refs/remotes/origin/main` falls back to local `main` (degraded mode with warning). |
 | Issue at `stage:building` idles with `dispatch-skipped` events and no halt label | Inspect `wait-building.json::attempts` — ENG-86 entry-conditions gate firing skip per `gh pr view`. If PR is approved by a non-bot Code Owner, check whether `gh` is on PATH for launchd. If not approved, operator action is the underlying remedy. |
+| Concurrent dispatches not running (expected K=2, observed K=1) | `bash bin/status.sh` "Concurrent dispatches active" row + "Dispatch resource baseline" tail; check `_resolve_K` resolved value in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log` (look for `scheduler: K=…`); inspect `CLAUDE_MAX_CONCURRENT` env in the launchd plist; inspect `orchestrator.max_concurrent_features` in the target's `.pipeline-config/config.json`. |
+| Issue stuck at one stage; `$(issue_dir <issue>)/.in-flight.lock` present | Scheduler-side pre-ENG-81 leak symptom: lock orphaned across a SIGKILL / oomkill / scheduler-error path. **Self-heal:** `try_acquire_lock` (common.sh) writes the holder pid+timestamp on every acquire and reclaims the lock on next attempt if `kill -0 $pid` fails — no operator action needed. If the holder pid IS alive but the issue still appears stuck, inspect `ps -p $(cat .in-flight.lock/pid)` and `.in-flight.lock/timestamp` (ISO-UTC); a manual `rm -rf` is the override of last resort. |
+
+## Per-project dispatch concurrency (ENG-81)
+
+`orchestrator.max_concurrent_features` (default 2) caps **simultaneous
+`claude -p` dispatches per project per tick** AND the WIP cap on issues
+in any `stage:*` label. Pre-ENG-81 it only enforced the WIP cap; the
+per-tick dispatch count was hardwired to 1 by `bin/run-local.sh`. After
+ENG-81 a default config (`max_concurrent_features=2`) produces ~2× the
+per-tick dispatch volume on busy days — operators upgrading should
+expect this.
+
+Resolution precedence (mirrors ENG-65 timeouts):
+
+1. `CLAUDE_MAX_CONCURRENT` env var (set in
+   `~/Library/LaunchAgents/com.twinning.pipeline.plist`'s
+   `EnvironmentVariables` block + `launchctl bootstrap`) — highest.
+2. `.orchestrator.max_concurrent_features` in target's
+   `.pipeline-config/config.json`.
+3. Built-in default 2.
+
+Non-integer or `<1` falls through to the next layer with a `log` warning
+on stderr (visible in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log`).
+
+Inspect live concurrency:
+
+```
+ls $HARNESS_STATE_DIR/.claude-semaphore/slot-*/pid
+```
+
+Each slot directory carries the `dispatch.sh` PID that owns it; an empty
+listing means no live dispatches. `bash bin/status.sh` aggregates this
+plus the recent `dispatch-resource-sample` baseline.
+
+**Emergency rollback** (no deploy needed): `CLAUDE_MAX_CONCURRENT=1` in
+the launchd plist + `launchctl bootstrap`. Per-project rollback: edit
+that target's `config.json::orchestrator.max_concurrent_features` to 1.
 
 **What `--action continue` clears (atomic):**
 

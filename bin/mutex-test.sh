@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Verify dispatch.sh serializes claude calls via $HARNESS_STATE_DIR/.claude-mutex.lock/.
-# We dry-run dispatch.sh from two parallel children; the second must report
-# waiting for the first's PID.
+# Verify dispatch.sh serializes claude calls via the counting semaphore at
+# $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/.
+#
+# K=1 contention: pre-acquire slot-1; second dispatch waits ≥3s and the
+# wait log enumerates the held slot. K=2 cases live in
+# bin/mutex-k2-test.sh — this file is on the pre-commit KNOWN_BROKEN
+# allowlist for a pre-existing tempdir-cleanup race, so the K=2 cases
+# (which need to gate the commit) are in a separate file.
 
 set -euo pipefail
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,21 +25,48 @@ trap 'rm -rf "$HARNESS_STATE_DIR"' EXIT
 PROMPT="$(mktemp)"
 echo "PROMPT BODY" > "$PROMPT"
 
+SEM_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
+
+reset_sem() {
+  rm -rf "$SEM_DIR"
+  mkdir -p "$SEM_DIR"
+}
+
+# ── K=1 contention (regression — preserves pre-ENG-81 contract) ──────
 # Slow-down dispatch.sh so the second invocation actually contends. We do
-# this by pre-acquiring the mutex from this test process for 3s before
+# this by pre-acquiring slot-1 from this test process for 3s before
 # launching the dispatch under-test.
-mkdir "$HARNESS_STATE_DIR/.claude-mutex.lock"
+#
+# CLAUDE_MAX_CONCURRENT=1 forces cap=1 so the pre-held slot-1 is the only
+# slot dispatch.sh can target — without this, Task 7's default cap=2 would
+# let dispatch take slot-2 immediately and the wait would never happen.
+reset_sem
+mkdir "$SEM_DIR/slot-1"
 (
   sleep 3
-  rmdir "$HARNESS_STATE_DIR/.claude-mutex.lock"
+  rmdir "$SEM_DIR/slot-1" 2>/dev/null || true
 ) &
 
 start="$(date +%s)"
-out="$(bash "$HARNESS_DIR/dispatch.sh" brainstorm "$PROMPT" 2>&1)"
+out="$(CLAUDE_MAX_CONCURRENT=1 bash "$HARNESS_DIR/dispatch.sh" brainstorming "$PROMPT" 2>&1)" || true
 elapsed=$(( $(date +%s) - start ))
 
 grep -q 'claude-mutex.*waiting' <<<"$out" \
-  || { echo "FAIL: no waiting log line: $out"; exit 1; }
-(( elapsed >= 3 )) || { echo "FAIL: did not wait (elapsed=$elapsed)"; exit 1; }
+  || { echo "FAIL K=1: no waiting log line: $out"; exit 1; }
+(( elapsed >= 3 )) || { echo "FAIL K=1: did not wait (elapsed=$elapsed)"; exit 1; }
+echo "OK K=1 contention (waited ${elapsed}s)"
 
-echo "OK (waited ${elapsed}s)"
+# Slot enumeration in the wait log: under K>1 the
+# "[claude-mutex] waiting for lock held by …" message must enumerate
+# ALL held slots (by slot id and pid), not just slot-1.
+case "$out" in
+  *"slot-1"*)
+    echo "OK K=1 wait log enumerates slot-1 (slot-enumeration contract)"
+    ;;
+  *)
+    echo "FAIL K=1: wait log does not enumerate slot-1 holders: $out"
+    exit 1
+    ;;
+esac
+
+echo "OK (K=1 contention + slot-enumeration; K=2 cases in mutex-k2-test.sh)"

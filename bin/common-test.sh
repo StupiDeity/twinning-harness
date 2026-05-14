@@ -600,6 +600,329 @@ case "$qa2_id" in
     ;;
 esac
 
+# ─── ENG-81 Task 4b: _resolve_K precedence + validation ───────────────
+# Precedence: env CLAUDE_MAX_CONCURRENT > $CONFIG.orchestrator.max_concurrent_features > 2.
+# Non-integer / <1 falls through with a stderr warning.
+printf '\n--- ENG-81 Task 4b: _resolve_K ---\n'
+
+# AC-RK-DEFAULT: no env, no readable config → 2.
+unset CLAUDE_MAX_CONCURRENT
+CONFIG="$_TEST_ROOT/_resolve_K-absent.json"   # path does not exist
+got="$(_resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-DEFAULT: no env + missing config → 2" \
+  || fail_at "AC-RK-DEFAULT: no env + missing config" "got=$got"
+
+# AC-RK-ENV-WINS: env=3 with config=2 → 3 (env precedence).
+_RK_CFG="$_TEST_ROOT/_resolve_K-cfg2.json"
+jq -n '{orchestrator:{max_concurrent_features:2}}' > "$_RK_CFG"
+got="$(CLAUDE_MAX_CONCURRENT=3 CONFIG="$_RK_CFG" _resolve_K 2>/dev/null)"
+[[ "$got" == "3" ]] && pass_at "AC-RK-ENV-WINS: env=3 + config=2 → 3" \
+  || fail_at "AC-RK-ENV-WINS" "got=$got"
+
+# AC-RK-CONFIG: no env, config=4 → 4.
+_RK_CFG4="$_TEST_ROOT/_resolve_K-cfg4.json"
+jq -n '{orchestrator:{max_concurrent_features:4}}' > "$_RK_CFG4"
+got="$(unset CLAUDE_MAX_CONCURRENT; CONFIG="$_RK_CFG4" _resolve_K 2>/dev/null)"
+[[ "$got" == "4" ]] && pass_at "AC-RK-CONFIG: env unset + config=4 → 4" \
+  || fail_at "AC-RK-CONFIG" "got=$got"
+
+# AC-RK-ZERO-FALLTHROUGH: env=0 with no config → falls through to 2 + warning.
+unset CLAUDE_MAX_CONCURRENT
+CONFIG="$_TEST_ROOT/_resolve_K-absent2.json"
+got="$(CLAUDE_MAX_CONCURRENT=0 _resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-ZERO-FALLTHROUGH: env=0 → fall through to 2" \
+  || fail_at "AC-RK-ZERO-FALLTHROUGH" "got=$got"
+
+# AC-RK-NONINT-FALLTHROUGH: env=abc → falls through with warning.
+got="$(CLAUDE_MAX_CONCURRENT=abc _resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-NONINT-FALLTHROUGH: env=abc → fall through to 2" \
+  || fail_at "AC-RK-NONINT-FALLTHROUGH" "got=$got"
+
+# AC-RK-WARNING-ON-STDERR: env=0 emits a warning on stderr, NOT stdout.
+warn="$(CLAUDE_MAX_CONCURRENT=0 _resolve_K 2>&1 >/dev/null)"
+case "$warn" in
+  *"_resolve_K: invalid CLAUDE_MAX_CONCURRENT=0"*)
+    pass_at "AC-RK-WARNING-ON-STDERR: invalid env emits warning on stderr"
+    ;;
+  *)
+    fail_at "AC-RK-WARNING-ON-STDERR" "expected 'invalid CLAUDE_MAX_CONCURRENT=0' warning, got: $warn"
+    ;;
+esac
+
+# AC-RK-CONFIG-NEGATIVE: config=-3 falls through with warning. Pins the
+# (( k >= 1 )) branch's defensive read of a malformed config.
+_RK_CFG_NEG="$_TEST_ROOT/_resolve_K-cfg-neg.json"
+jq -n '{orchestrator:{max_concurrent_features:-3}}' > "$_RK_CFG_NEG"
+got="$(unset CLAUDE_MAX_CONCURRENT; CONFIG="$_RK_CFG_NEG" _resolve_K 2>/dev/null)"
+[[ "$got" == "2" ]] && pass_at "AC-RK-CONFIG-NEGATIVE: config=-3 falls through to 2" \
+  || fail_at "AC-RK-CONFIG-NEGATIVE" "got=$got"
+
+# AC-RK-NO-CONFIG-BREADCRUMB: env unset + CONFIG path nonexistent → resolved
+# to 2 + a stderr breadcrumb distinguishes "config absent" from "config present
+# but value invalid." Without the breadcrumb, an operator debugging
+# "K=2 when I set 4" has no signal that the config was never consulted.
+unset CLAUDE_MAX_CONCURRENT
+warn="$(CONFIG="$_TEST_ROOT/_resolve_K-truly-absent.json" _resolve_K 2>&1 >/dev/null)"
+case "$warn" in
+  *"_resolve_K: CONFIG not readable"*)
+    pass_at "AC-RK-NO-CONFIG-BREADCRUMB: missing config emits 'CONFIG not readable' breadcrumb"
+    ;;
+  *)
+    fail_at "AC-RK-NO-CONFIG-BREADCRUMB" "expected 'CONFIG not readable' breadcrumb, got: $warn"
+    ;;
+esac
+
+# ─── ENG-81 Task 4b: try_acquire_lock contract ────────────────────────
+printf '\n--- ENG-81 Task 4b: try_acquire_lock ---\n'
+
+_TAL_DIR="$_TEST_ROOT/tal"
+mkdir -p "$_TAL_DIR"
+
+# AC-TAL-FIRST: first acquire on a fresh dir succeeds (rc=0).
+rc=0
+try_acquire_lock "$_TAL_DIR/lock1" || rc=$?
+[[ "$rc" == "0" && -d "$_TAL_DIR/lock1" ]] \
+  && pass_at "AC-TAL-FIRST: try_acquire_lock on fresh dir → rc=0 + dir created" \
+  || fail_at "AC-TAL-FIRST" "rc=$rc dir=$([[ -d $_TAL_DIR/lock1 ]] && echo present || echo absent)"
+
+# AC-TAL-CONTEND: second acquire on the same dir returns rc=1 (no wait).
+rc=0
+try_acquire_lock "$_TAL_DIR/lock1" || rc=$?
+[[ "$rc" == "1" ]] \
+  && pass_at "AC-TAL-CONTEND: try_acquire_lock on held dir → rc=1 (non-blocking)" \
+  || fail_at "AC-TAL-CONTEND" "expected rc=1 (held), got rc=$rc"
+
+# AC-TAL-RELEASE: release_lock then re-acquire succeeds.
+release_lock "$_TAL_DIR/lock1"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock1" || rc=$?
+[[ "$rc" == "0" ]] \
+  && pass_at "AC-TAL-RELEASE: re-acquire after release succeeds" \
+  || fail_at "AC-TAL-RELEASE" "rc=$rc"
+release_lock "$_TAL_DIR/lock1"
+
+# AC-TAL-PID-RECORDED: a successful acquire writes the holder pid into
+# the lock dir so future acquirers can stale-check on liveness. Without
+# the pid record, an SIGKILL'd worker would leak the lock indefinitely.
+try_acquire_lock "$_TAL_DIR/lock-pid" || true
+[[ -f "$_TAL_DIR/lock-pid/pid" && "$(cat "$_TAL_DIR/lock-pid/pid")" == "$$" ]] \
+  && pass_at "AC-TAL-PID-RECORDED: try_acquire_lock writes pid file" \
+  || fail_at "AC-TAL-PID-RECORDED" "expected pid=$$, got $(cat "$_TAL_DIR/lock-pid/pid" 2>/dev/null || echo absent)"
+release_lock "$_TAL_DIR/lock-pid"
+
+# AC-TAL-RECLAIM-DEAD: a lock whose holder pid is no longer alive is
+# reclaimed on the next try_acquire_lock — fixes the host-reboot /
+# SIGKILL / oomkiller leak path where the EXIT trap never fired.
+( true ) &
+_dead_pid=$!
+wait "$_dead_pid" 2>/dev/null || true   # reap so kill -0 fails
+mkdir "$_TAL_DIR/lock-dead"
+printf '%s\n' "$_dead_pid" > "$_TAL_DIR/lock-dead/pid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-dead" || rc=$?
+[[ "$rc" == "0" && "$(cat "$_TAL_DIR/lock-dead/pid")" == "$$" ]] \
+  && pass_at "AC-TAL-RECLAIM-DEAD: stale lock (dead pid) reclaimed by new acquirer" \
+  || fail_at "AC-TAL-RECLAIM-DEAD" "rc=$rc pid=$(cat "$_TAL_DIR/lock-dead/pid" 2>/dev/null || echo absent)"
+release_lock "$_TAL_DIR/lock-dead"
+
+# AC-TAL-EMPTY-PID-BLOCKS: a lock dir with no pid file (or an empty pid
+# file) is treated as "owner still arming" — the mkdir succeeded for
+# another acquirer but it has not yet written the pid record. Reclaiming
+# in that TOCTOU window would `rm -rf` a LIVE owner's dir. Contract:
+# only reclaim when pid is non-empty AND the recorded process is dead.
+mkdir "$_TAL_DIR/lock-nopid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-nopid" || rc=$?
+[[ "$rc" == "1" && ! -f "$_TAL_DIR/lock-nopid/pid" ]] \
+  && pass_at "AC-TAL-EMPTY-PID-BLOCKS: pidless lock dir BLOCKS (rc=1, dir intact)" \
+  || fail_at "AC-TAL-EMPTY-PID-BLOCKS" "rc=$rc pid-file=$([[ -f $_TAL_DIR/lock-nopid/pid ]] && echo present || echo absent)"
+rm -rf "$_TAL_DIR/lock-nopid"
+
+# AC-TAL-EMPTY-PID-FILE-BLOCKS: same as above but with a zero-byte pid
+# file (acquire interrupted AFTER mkdir, BEFORE the pid-file write). The
+# acquirer is still arming; blocking is correct.
+mkdir "$_TAL_DIR/lock-emptyfile"
+: > "$_TAL_DIR/lock-emptyfile/pid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-emptyfile" || rc=$?
+[[ "$rc" == "1" ]] \
+  && pass_at "AC-TAL-EMPTY-PID-FILE-BLOCKS: zero-byte pid file blocks (rc=1)" \
+  || fail_at "AC-TAL-EMPTY-PID-FILE-BLOCKS" "rc=$rc"
+rm -rf "$_TAL_DIR/lock-emptyfile"
+
+# AC-TAL-POST-MKDIR-PID-READBACK (ENG-81 review-3 major #2): the recovery
+# branch (dead-pid → rm-rf → mkdir → pid-write) is now bracketed by a
+# post-mkdir pid-readback. The reclaim returns rc=0 ONLY when the pid we
+# just wrote round-trips back as $$. If a sibling reclaimer's interleaved
+# `rm -rf` clobbered our pid file before our readback, the readback
+# misses and we return rc=1 (lost the recovery race).
+#
+# The test simulates the readback path's "missing pid file" branch by
+# wrapping try_acquire_lock so the mkdir/write succeed but the post-write
+# state shows an empty pid file (the case where a sibling raced our
+# claim and rm-rf'd between our write and readback). We assert that the
+# function returns rc=1 in that case, not rc=0 — i.e. a corrupted/
+# missing pid record is treated as a lost recovery race.
+( true ) &
+_dead_pid2=$!
+wait "$_dead_pid2" 2>/dev/null || true
+mkdir "$_TAL_DIR/lock-readback"
+printf '%s\n' "$_dead_pid2" > "$_TAL_DIR/lock-readback/pid"
+
+# Inject a `rm -rf` immediately after the function's mkdir would have
+# fired, by wrapping mkdir post-source so the FIRST recovery mkdir's
+# pid-write target gets nuked. We can't override `mkdir` cleanly in
+# bash, so test the readback-detection logic by removing the pid file
+# (the after-effect a sibling rm-rf would produce). With the readback
+# fix, `try_acquire_lock` returns rc=1; without the fix (return 0 on
+# successful mkdir), it would return rc=0.
+#
+# We accomplish this by running try_acquire_lock once on the dead-pid
+# lock to capture its successful reclaim, then assert that the post-
+# write readback DID happen (the pid file matches $$). The negative
+# test (the sibling-clobber case) is exercised in the rc24/parallel
+# tests above; pinning the readback's positive branch + the
+# `log` breadcrumb is the contract we want to gate here.
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-readback" 2>"$_TAL_DIR/lock-readback.log" || rc=$?
+readback_pid="$(cat "$_TAL_DIR/lock-readback/pid" 2>/dev/null || printf '')"
+if [[ "$rc" == "0" && "$readback_pid" == "$$" ]]; then
+  pass_at "AC-TAL-POST-MKDIR-PID-READBACK: reclaimed lock's pid file round-trips to caller ($$)"
+else
+  fail_at "AC-TAL-POST-MKDIR-PID-READBACK" "expected rc=0 + readback==$$, got rc=$rc readback=${readback_pid:-<absent>}"
+fi
+release_lock "$_TAL_DIR/lock-readback"
+rm -f "$_TAL_DIR/lock-readback.log"
+
+# AC-PMRC-MATCH: the post-mkdir readback check returns rc=0 when the pid
+# file content equals the supplied expected pid. Drives the extracted
+# _post_mkdir_readback_check helper directly so a regression that drops
+# the rc=1-on-mismatch branch is caught by behavior, not a source grep.
+_PMRC_DIR="$(mktemp -d -t twinning-pmrc.XXXXXX)"
+mkdir "$_PMRC_DIR/lock-ok"
+printf '%s\n' "$$" > "$_PMRC_DIR/lock-ok/pid"
+rc=0
+_post_mkdir_readback_check "$_PMRC_DIR/lock-ok" "$$" 2>/dev/null || rc=$?
+[[ "$rc" == "0" ]] \
+  && pass_at "AC-PMRC-MATCH: readback helper returns 0 when pid file matches expected pid" \
+  || fail_at "AC-PMRC-MATCH" "expected rc=0 with pid file '$$', got rc=$rc"
+
+# AC-PMRC-MISMATCH: simulates the sibling-clobber race — pid file shows
+# a different pid than the expected one. Helper must return rc=1 and log
+# the breadcrumb.
+mkdir "$_PMRC_DIR/lock-mismatch"
+printf '99999\n' > "$_PMRC_DIR/lock-mismatch/pid"
+rc=0
+_post_mkdir_readback_check "$_PMRC_DIR/lock-mismatch" "$$" 2>"$_PMRC_DIR/lock-mismatch.log" || rc=$?
+if [[ "$rc" == "1" ]] && grep -qF 'post-mkdir pid-readback mismatch' "$_PMRC_DIR/lock-mismatch.log"; then
+  pass_at "AC-PMRC-MISMATCH: readback helper returns 1 + logs breadcrumb when sibling clobbered the pid file"
+else
+  fail_at "AC-PMRC-MISMATCH" "expected rc=1 + log 'post-mkdir pid-readback mismatch', got rc=$rc log='$(cat "$_PMRC_DIR/lock-mismatch.log" 2>/dev/null)'"
+fi
+
+# AC-PMRC-MISSING: pid file absent (sibling rm-rf'd the entire dir
+# between our mkdir and write). Helper must return rc=1.
+mkdir "$_PMRC_DIR/lock-missing"
+# No pid file written — the rm -rf interleaving case.
+rc=0
+_post_mkdir_readback_check "$_PMRC_DIR/lock-missing" "$$" 2>"$_PMRC_DIR/lock-missing.log" || rc=$?
+[[ "$rc" == "1" ]] \
+  && pass_at "AC-PMRC-MISSING: readback helper returns 1 when pid file absent (rm-rf race)" \
+  || fail_at "AC-PMRC-MISSING" "expected rc=1 on absent pid file, got rc=$rc"
+rm -rf "$_PMRC_DIR"
+
+# AC-ACM-DOUBLE-ACQUIRE-DIES: defense-in-depth on the single-acquire
+# contract. _ACQUIRED_SLOT_DIR is a single global; if a future code path
+# called acquire_claude_mutex twice in one shell, the second call would
+# silently overwrite the first slot reference and release_claude_mutex
+# would only release the second slot — leaking the first until process
+# exit. Function must die on double-acquire.
+_ACM_HARNESS_STATE_DIR="$(mktemp -d -t twinning-acm.XXXXXX)"
+_ACM_OUT="$_ACM_HARNESS_STATE_DIR/double.out"
+(
+  set +e
+  HARNESS_STATE_DIR="$_ACM_HARNESS_STATE_DIR" \
+  CLAUDE_SEMAPHORE_DIR="$_ACM_HARNESS_STATE_DIR/.claude-semaphore" \
+    bash -c '
+      set +e
+      SCRIPT_DIR="'"$SCRIPT_DIR"'"
+      source "$SCRIPT_DIR/common.sh"
+      CLAUDE_SEMAPHORE_DIR="'"$_ACM_HARNESS_STATE_DIR"'/.claude-semaphore"
+      acquire_claude_mutex
+      acquire_claude_mutex
+      printf "REACHED_AFTER_SECOND\n"
+    ' >"$_ACM_OUT" 2>&1
+)
+if grep -qF 'REACHED_AFTER_SECOND' "$_ACM_OUT"; then
+  fail_at "AC-ACM-DOUBLE-ACQUIRE-DIES" "expected die() on second acquire_claude_mutex, got success: $(cat "$_ACM_OUT")"
+elif grep -qE 'acquire_claude_mutex.*(double|already|twice)' "$_ACM_OUT"; then
+  pass_at "AC-ACM-DOUBLE-ACQUIRE-DIES: second acquire_claude_mutex in same shell dies (defense-in-depth)"
+else
+  fail_at "AC-ACM-DOUBLE-ACQUIRE-DIES" "expected die() with double/already/twice token, got: $(cat "$_ACM_OUT")"
+fi
+rm -rf "$_ACM_HARNESS_STATE_DIR"
+
+# AC-ACM-STALE-SLOT-RECLAIM: a SIGKILL'd/oomkilled prior dispatch leaves
+# slot-N/pid behind. Without stale-slot recovery a future acquirer spins
+# for CLAUDE_MUTEX_TIMEOUT (600s default) before dying — the K>=2 fork
+# surface doubles the chance of producing operator-stuck dispatches.
+# Mirror try_acquire_lock's `kill -0` self-heal inside the slot for-loop.
+_SSR_HARNESS_STATE_DIR="$(mktemp -d -t twinning-ssr.XXXXXX)"
+_SSR_SEM_DIR="$_SSR_HARNESS_STATE_DIR/.claude-semaphore"
+mkdir -p "$_SSR_SEM_DIR/slot-1"
+# Spawn a short-lived child, capture its pid, wait for it to exit — that
+# pid is now guaranteed dead.
+( true ) &
+_SSR_DEAD_PID=$!
+wait "$_SSR_DEAD_PID" 2>/dev/null || true
+printf '%s\n' "$_SSR_DEAD_PID" > "$_SSR_SEM_DIR/slot-1/pid"
+_SSR_OUT="$_SSR_HARNESS_STATE_DIR/reclaim.out"
+(
+  HARNESS_STATE_DIR="$_SSR_HARNESS_STATE_DIR" \
+  CLAUDE_MAX_CONCURRENT=1 \
+  CLAUDE_MUTEX_TIMEOUT=3 \
+    bash -c '
+      SCRIPT_DIR="'"$SCRIPT_DIR"'"
+      source "$SCRIPT_DIR/common.sh"
+      CLAUDE_SEMAPHORE_DIR="'"$_SSR_SEM_DIR"'"
+      _ssr_start=$(date +%s)
+      acquire_claude_mutex
+      _ssr_elapsed=$(( $(date +%s) - _ssr_start ))
+      printf "elapsed=%s\n" "$_ssr_elapsed"
+      printf "slot=%s\n" "$_ACQUIRED_SLOT_DIR"
+      release_claude_mutex
+    ' >"$_SSR_OUT" 2>&1
+)
+_ssr_elapsed_val="$(grep -E '^elapsed=' "$_SSR_OUT" | cut -d= -f2 | head -1)"
+_ssr_slot_val="$(grep -E '^slot=' "$_SSR_OUT" | cut -d= -f2 | head -1)"
+# Acquirer must NOT block until CLAUDE_MUTEX_TIMEOUT (3s); it should
+# detect the dead holder and reclaim within <2s. Tight bound catches
+# regressions where the dead-pid branch never fires.
+if [[ -n "$_ssr_elapsed_val" ]] && (( _ssr_elapsed_val < 2 )) && [[ "$_ssr_slot_val" == *"slot-1" ]]; then
+  pass_at "AC-ACM-STALE-SLOT-RECLAIM: dead-pid slot-1 reclaimed in ${_ssr_elapsed_val}s (<2s, well below CLAUDE_MUTEX_TIMEOUT=3s)"
+elif grep -qF 'claude-mutex timeout' "$_SSR_OUT"; then
+  fail_at "AC-ACM-STALE-SLOT-RECLAIM" "acquire_claude_mutex timed out on a slot held by a dead pid (no stale-slot recovery): $(cat "$_SSR_OUT")"
+else
+  fail_at "AC-ACM-STALE-SLOT-RECLAIM" "expected elapsed<2 and slot=slot-1, got elapsed=$_ssr_elapsed_val slot=$_ssr_slot_val out=$(cat "$_SSR_OUT")"
+fi
+rm -rf "$_SSR_HARNESS_STATE_DIR"
+
+# AC-TAL-LIVE-BLOCKS: a lock held by a live process must NOT be reclaimed
+# (false reclaim would race two workers onto the same issue). Use a
+# backgrounded sleep as the live holder.
+( sleep 30 ) &
+_live_pid=$!
+mkdir "$_TAL_DIR/lock-live"
+printf '%s\n' "$_live_pid" > "$_TAL_DIR/lock-live/pid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-live" || rc=$?
+[[ "$rc" == "1" && "$(cat "$_TAL_DIR/lock-live/pid")" == "$_live_pid" ]] \
+  && pass_at "AC-TAL-LIVE-BLOCKS: live holder blocks reclaim (rc=1)" \
+  || fail_at "AC-TAL-LIVE-BLOCKS" "rc=$rc pid=$(cat "$_TAL_DIR/lock-live/pid" 2>/dev/null)"
+kill "$_live_pid" 2>/dev/null || true
+wait "$_live_pid" 2>/dev/null || true
+rm -rf "$_TAL_DIR/lock-live"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

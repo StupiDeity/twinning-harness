@@ -402,12 +402,200 @@ acquire_lock() {
   return 0
 }
 
-release_lock() {
+# ENG-81: non-blocking lock acquisition for the per-issue
+# .in-flight.lock used by run-local.sh's scheduler arm. Returns rc=0 on
+# acquire, rc=1 if the lock is already held. acquire_lock with
+# timeout=0 means "wait forever" (existing single-flight contract for
+# the tick lock), so a separate try-mode helper is required to keep
+# existing callers' semantics intact.
+#
+# Self-healing stale-lock recovery: a SIGKILL'd / oomkilled / host-
+# rebooted holder leaves the lock dir behind because the EXIT trap
+# never fired. On every acquire attempt that finds the dir present we
+# read the recorded holder pid and reclaim if it is no longer alive
+# (or no pid was recorded — legacy locks, or an interrupted acquire
+# between mkdir and pid-write). Without this, K=2's larger fork
+# surface doubles the chance of producing operator-stuck issues that
+# only `rmdir` can recover.
+try_acquire_lock() {
   local dir="$1"
-  rmdir "$dir" 2>/dev/null || true
+  if mkdir "$dir" 2>/dev/null; then
+    printf '%s\n' "$$" > "$dir/pid" 2>/dev/null || true
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/timestamp" 2>/dev/null || true
+    return 0
+  fi
+  local holder_pid=""
+  [[ -f "$dir/pid" ]] && holder_pid="$(cat "$dir/pid" 2>/dev/null || printf '')"
+  # Only reclaim when the pid record is non-empty AND its process is dead.
+  # An empty/absent pid file means "owner still arming" — another acquirer
+  # has the mkdir but has not yet written its pid. Reclaiming in that
+  # window would `rm -rf` a LIVE owner's lock dir.
+  if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+    log "try_acquire_lock: reclaiming stale lock at $dir (holder=$holder_pid not alive)"
+    rm -rf "$dir" 2>/dev/null || true
+    if mkdir "$dir" 2>/dev/null; then
+      printf '%s\n' "$$" > "$dir/pid" 2>/dev/null || true
+      date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/timestamp" 2>/dev/null || true
+      # Post-mkdir pid-readback: if a sibling reclaimer's rm-rf interleaved
+      # between our mkdir and pid-write (both passed the dead-pid check),
+      # the dir is now missing or holds a different pid. Treat that as
+      # "lost the recovery race" — return rc=1 so the caller retries.
+      local readback=""
+      [[ -f "$dir/pid" ]] && readback="$(cat "$dir/pid" 2>/dev/null || printf '')"
+      if [[ "$readback" == "$$" ]]; then
+        return 0
+      fi
+      log "try_acquire_lock: post-mkdir pid-readback mismatch at $dir (got '${readback:-<absent>}', expected $$); lost recovery race"
+    fi
+  fi
+  return 1
 }
 
-export -f acquire_lock release_lock
+# rm -rf (not rmdir) because try_acquire_lock now writes pid+timestamp
+# files into the lock dir. rmdir would silently fail and the lock would
+# survive release, blocking the next acquire until the stale-recovery
+# branch fires. rm -rf handles both pidless legacy dirs and the new
+# shape uniformly.
+release_lock() {
+  local dir="$1"
+  rm -rf "$dir" 2>/dev/null || true
+}
+
+export -f acquire_lock try_acquire_lock release_lock
+
+# Counting semaphore: each in-flight `claude -p` dispatch claims one of
+# N slot dirs at $HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/. mkdir is
+# atomic on POSIX so multiple acquirers race for distinct slots safely.
+#
+# CLAUDE_MUTEX_TIMEOUT keeps its "MUTEX" name as an env-var contract —
+# operators may have set it in launchd plists. The wait log preserves
+# the `[claude-mutex] waiting` token that mutex-test.sh's regex anchors.
+CLAUDE_SEMAPHORE_DIR="$HARNESS_STATE_DIR/.claude-semaphore"
+CLAUDE_MUTEX_TIMEOUT="${CLAUDE_MUTEX_TIMEOUT:-600}"
+_ACQUIRED_SLOT_DIR=""
+
+_claude_mutex_format_holders() {
+  local d holders="" basename pid
+  for d in "$CLAUDE_SEMAPHORE_DIR"/slot-*/; do
+    [[ -d "$d" ]] || continue
+    basename="${d%/}"; basename="${basename##*/}"
+    pid=""
+    [[ -f "$d/pid" ]] && pid="$(cat "$d/pid" 2>/dev/null || true)"
+    holders="${holders:+${holders},}${basename}:${pid:-<unknown>}"
+  done
+  printf '%s\n' "${holders:-<none>}"
+}
+
+# Verify a freshly-claimed lock dir still carries our pid after mkdir+write.
+# A sibling reclaimer that interleaved its own rm-rf between our mkdir and
+# pid-write would either blow away the dir or replace our pid with its own.
+# Returns 0 on match, 1 on mismatch.
+_post_mkdir_readback_check() {
+  local dir="$1" expected_pid="$2"
+  local readback=""
+  [[ -f "$dir/pid" ]] && readback="$(cat "$dir/pid" 2>/dev/null || printf '')"
+  [[ "$readback" == "$expected_pid" ]] && return 0
+  log "post-mkdir pid-readback mismatch at $dir (got '${readback:-<absent>}', expected $expected_pid)"
+  return 1
+}
+
+acquire_claude_mutex() {
+  [[ -z "${_ACQUIRED_SLOT_DIR:-}" ]] \
+    || die "[claude-mutex] acquire_claude_mutex called twice without intervening release (already hold $_ACQUIRED_SLOT_DIR)"
+  mkdir -p "$CLAUDE_SEMAPHORE_DIR"
+  local cap
+  cap="$(_resolve_K)"
+  local waited=0 slot last_relog=0
+  while :; do
+    for (( slot=1; slot <= cap; slot++ )); do
+      local d="$CLAUDE_SEMAPHORE_DIR/slot-$slot"
+      if mkdir "$d" 2>/dev/null; then
+        printf '%s\n' "$$" > "$d/pid"
+        if _post_mkdir_readback_check "$d" "$$"; then
+          _ACQUIRED_SLOT_DIR="$d"
+          return 0
+        fi
+        log "[claude-mutex] post-mkdir pid-readback mismatch at $d; lost recovery race, retrying"
+        continue
+      fi
+      # Stale-slot reclaim: if the slot's holder pid is dead, free + retake.
+      # Mirrors try_acquire_lock's dead-pid recovery.
+      local holder_pid=""
+      [[ -f "$d/pid" ]] && holder_pid="$(cat "$d/pid" 2>/dev/null || printf '')"
+      if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+        log "[claude-mutex] reclaiming stale slot $d (holder=$holder_pid not alive)"
+        rm -rf "$d" 2>/dev/null || true
+        if mkdir "$d" 2>/dev/null; then
+          printf '%s\n' "$$" > "$d/pid"
+          if _post_mkdir_readback_check "$d" "$$"; then
+            _ACQUIRED_SLOT_DIR="$d"
+            return 0
+          fi
+          log "[claude-mutex] post-mkdir pid-readback mismatch at $d after reclaim; lost race"
+        fi
+      fi
+    done
+    # Emit the wait log immediately on first contention, then re-log every
+    # ~60s so an operator tailing the log sees that the wait is progressing
+    # and which slots are currently held (slot-2's holder may differ from
+    # slot-1's after Phase 4 widens cap > 1).
+    if (( waited == 0 )) || (( waited - last_relog >= 60 )); then
+      local holders
+      holders="$(_claude_mutex_format_holders)"
+      if (( waited == 0 )); then
+        log "[claude-mutex] waiting for lock held by ${holders}"
+      else
+        log "[claude-mutex] still waiting (${waited}s elapsed) — slots held by ${holders}"
+      fi
+      last_relog=$waited
+    fi
+    (( waited >= CLAUDE_MUTEX_TIMEOUT )) \
+      && die "[claude-mutex] timeout after ${CLAUDE_MUTEX_TIMEOUT}s (cap=$cap, all slots held)"
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+release_claude_mutex() {
+  [[ -n "$_ACQUIRED_SLOT_DIR" ]] || return 0
+  rm -rf "$_ACQUIRED_SLOT_DIR"
+  _ACQUIRED_SLOT_DIR=""
+}
+
+export -f acquire_claude_mutex release_claude_mutex
+
+# ENG-81: per-tick concurrency cap.
+# Precedence (mirrors the ENG-65 dispatch_timeout_minutes pattern):
+#   1. env CLAUDE_MAX_CONCURRENT
+#   2. config.json::orchestrator.max_concurrent_features
+#   3. built-in default 2
+# Non-integer / <1 falls through to the next layer with a `log`
+# warning. The warning lands on stderr (log() writes to >&2), so
+# stdout stays the resolved integer for `K=$(_resolve_K)` callers.
+_resolve_K() {
+  local k=""
+  if [[ -n "${CLAUDE_MAX_CONCURRENT-}" ]]; then
+    if [[ "$CLAUDE_MAX_CONCURRENT" =~ ^[0-9]+$ ]] && (( CLAUDE_MAX_CONCURRENT >= 1 )); then
+      printf '%s\n' "$CLAUDE_MAX_CONCURRENT"
+      return 0
+    else
+      log "_resolve_K: invalid CLAUDE_MAX_CONCURRENT=$CLAUDE_MAX_CONCURRENT (ignoring; falling through)"
+    fi
+  fi
+  if [[ -f "${CONFIG:-}" ]]; then
+    k="$(jq -r '.orchestrator.max_concurrent_features // empty' "$CONFIG" 2>/dev/null || printf '')"
+    if [[ "$k" =~ ^[0-9]+$ ]] && (( k >= 1 )); then
+      printf '%s\n' "$k"
+      return 0
+    elif [[ -n "$k" ]]; then
+      log "_resolve_K: invalid orchestrator.max_concurrent_features=$k (ignoring; falling through)"
+    fi
+  else
+    log "_resolve_K: CONFIG not readable at ${CONFIG:-<unset>}; using built-in default 2"
+  fi
+  printf '%s\n' "2"
+}
+export -f _resolve_K
 
 PIPELINE_DRY_RUN="${PIPELINE_DRY_RUN:-0}"
 export PIPELINE_DRY_RUN

@@ -2803,6 +2803,179 @@ HARNESS_ROOT="$_ENG94_SAVED_HARNESS_ROOT"
 PROJECT_SLUG="$_ENG94_SAVED_PROJECT_SLUG"
 unset _ENG94_SAVED_HARNESS_ROOT _ENG94_SAVED_PROJECT_SLUG
 
+# ─── Group 8 (ENG-81): dispatch-resource-sample metric via gtime wrapper ─
+# Phase 1 instrumentation. dispatch.sh wraps `claude -p` with `gtime -v -o
+# <tmp>` when gtime is on PATH; on success it parses the wall/RSS/CPU
+# fields and emits a `dispatch-resource-sample` event to events.jsonl
+# (via metrics.sh). When gtime is absent the dispatch still succeeds and
+# logs a one-liner "gtime not on PATH" warning; no metric is emitted
+# (degraded mode). Both branches are exercised here.
+
+printf '\n--- ENG-81 Group 8: dispatch-resource-sample emission ---\n'
+
+# Sub-fixture A: gtime present (stubbed) → metric event lands.
+G8_TARGET="$_TEST_STUB_DIR/g8-target"
+mkdir -p "$G8_TARGET/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "g8-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5 }
+}' > "$G8_TARGET/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$G8_TARGET/.pipeline-config/schemas/linear-ids.json"
+G8_STATE_ROOT="$_TEST_STUB_DIR/g8-state"
+G8_PROJECT_STATE="$G8_STATE_ROOT/g8-slug"
+mkdir -p "$G8_PROJECT_STATE/ENG-G8"
+
+# Stub gtime: writes a fixed `-v` output to its `-o <path>` arg, then
+# execs the rest of the command (mirrors how real gtime works — it wraps
+# the inner cmd transparently except for the resource-sample sidecar).
+G8_STUB_GTIME="$_TEST_STUB_DIR/gtime"
+cat > "$G8_STUB_GTIME" <<'SH'
+#!/usr/bin/env bash
+# Skip leading -v / -o <path> flags; capture -o's path argument; emit
+# fixture gtime -v output to that path, then exec the inner command.
+out=""
+while (( $# > 0 )); do
+  case "$1" in
+    -v) shift ;;
+    -o) out="$2"; shift 2 ;;
+    --) shift; break ;;
+    *)  break ;;
+  esac
+done
+if [[ -n "$out" ]]; then
+  cat > "$out" <<GTIME
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:42.10
+	Maximum resident set size (kbytes): 384256
+	Percent of CPU this job got: 28%
+GTIME
+fi
+exec "$@"
+SH
+chmod +x "$G8_STUB_GTIME"
+
+# Reuse the existing claude + gtimeout stubs already in $_TEST_STUB_DIR.
+G8_OUT="$_TEST_STUB_DIR/g8-dispatch.out"
+G8_PATH="$_TEST_STUB_DIR:$PATH"
+PIPELINE_DRY_RUN=0 \
+PATH="$G8_PATH" \
+TARGET_REPO="$G8_TARGET" \
+PROJECT_SLUG="g8-slug" \
+HARNESS_STATE_DIR="$G8_STATE_ROOT" \
+PROJECT_STATE_DIR="$G8_PROJECT_STATE" \
+PIPELINE_ISSUE_ID=ENG-G8 \
+LINEAR_API_KEY="$LINEAR_API_KEY" \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$G8_OUT" >/dev/null || true
+
+G8_EVENTS="$G8_PROJECT_STATE/metrics/events.jsonl"
+if [[ -f "$G8_EVENTS" ]] \
+   && grep -q '"event":"dispatch-resource-sample"' "$G8_EVENTS"; then
+  pass_at "G8.A: dispatch-resource-sample event landed in events.jsonl when gtime is on PATH"
+else
+  fail_at "G8.A: dispatch-resource-sample missing" \
+    "events.jsonl=$(cat "$G8_EVENTS" 2>/dev/null || printf 'absent') stderr=$(cat "$G8_OUT")"
+fi
+
+# Notes field carries wall_seconds/max_rss_kb/cpu_pct — the parsed gtime
+# -v fields named per the brainstorm contract so downstream consumers
+# can `tonumber` the wall value.
+if [[ -f "$G8_EVENTS" ]] \
+   && jq -e 'select(.event == "dispatch-resource-sample") | .notes | test("wall_seconds=") and test("max_rss_kb=") and test("cpu_pct=")' \
+        "$G8_EVENTS" >/dev/null 2>&1; then
+  pass_at "G8.A: dispatch-resource-sample notes carry wall_seconds/max_rss_kb/cpu_pct fields"
+else
+  fail_at "G8.A: notes missing wall_seconds/max_rss_kb/cpu_pct" \
+    "events: $(cat "$G8_EVENTS" 2>/dev/null)"
+fi
+
+# wall_seconds must be a numeric scalar (gtime emits m:ss.ff / h:mm:ss;
+# the dispatcher normalises to total seconds so downstream tonumber
+# works). Locate the wall_seconds=<val> token and assert it parses.
+if [[ -f "$G8_EVENTS" ]]; then
+  G8_WALL="$(jq -r 'select(.event == "dispatch-resource-sample") | .notes' "$G8_EVENTS" 2>/dev/null \
+            | sed -nE 's/.*wall_seconds=([0-9]+(\.[0-9]+)?).*/\1/p' | head -1)"
+  if [[ -n "$G8_WALL" ]] && awk -v v="$G8_WALL" 'BEGIN { exit (v+0 == 0 && v != "0") }'; then
+    pass_at "G8.A: wall_seconds is numeric ($G8_WALL)"
+  else
+    fail_at "G8.A: wall_seconds not numeric" "got: '$G8_WALL'"
+  fi
+fi
+
+# Sub-fixture B: gtime absent → dispatch still succeeds; warning logged;
+# no metric emitted. Use a fresh state dir to keep counters disjoint.
+# Drive the degraded branch via `_PIPELINE_GTIME_DISABLED=1` so the test
+# is deterministic regardless of host PATH.
+G8B_PROJECT_STATE="$G8_STATE_ROOT/g8b-slug"
+mkdir -p "$G8B_PROJECT_STATE/ENG-G8B"
+G8B_TARGET="$_TEST_STUB_DIR/g8b-target"
+mkdir -p "$G8B_TARGET/.pipeline-config/schemas"
+jq -n '{
+  project: { slug: "g8b-slug" },
+  linear: { team_id: "t", project_id: "p", stage_label_prefix: "stage:", native_states: { inbox: "Todo", active: "In Progress", done: "Done" }, workflow_stages: [] },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5 }
+}' > "$G8B_TARGET/.pipeline-config/config.json"
+jq -n '{labels:{},states:{}}' > "$G8B_TARGET/.pipeline-config/schemas/linear-ids.json"
+
+G8B_OUT="$_TEST_STUB_DIR/g8b-dispatch.out"
+PIPELINE_DRY_RUN=0 \
+_PIPELINE_GTIME_DISABLED=1 \
+PATH="$_TEST_STUB_DIR:$PATH" \
+TARGET_REPO="$G8B_TARGET" \
+PROJECT_SLUG="g8b-slug" \
+HARNESS_STATE_DIR="$G8_STATE_ROOT" \
+PROJECT_STATE_DIR="$G8B_PROJECT_STATE" \
+PIPELINE_ISSUE_ID=ENG-G8B \
+LINEAR_API_KEY="$LINEAR_API_KEY" \
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$G8B_OUT" >/dev/null || true
+
+# Warning log line emitted (the [dispatch-resource-sample] gtime not on PATH ...).
+if grep -q 'dispatch-resource-sample.*gtime' "$G8B_OUT"; then
+  pass_at "G8.B: dispatch logs gtime-absent warning when gtime missing from PATH"
+else
+  fail_at "G8.B: gtime-absent warning missing" \
+    "stderr: $(cat "$G8B_OUT")"
+fi
+
+# No metric emitted in degraded mode.
+G8B_EVENTS="$G8B_PROJECT_STATE/metrics/events.jsonl"
+if [[ ! -f "$G8B_EVENTS" ]] \
+   || ! grep -q '"event":"dispatch-resource-sample"' "$G8B_EVENTS"; then
+  pass_at "G8.B: no dispatch-resource-sample event when gtime absent (degraded mode)"
+else
+  fail_at "G8.B: spurious metric in degraded mode" \
+    "events: $(cat "$G8B_EVENTS")"
+fi
+
+# ─── AC-TRAP-BEFORE-ACQUIRE ────────────────────────────────────────────
+# Commit 4f81492 ("install release_claude_mutex trap BEFORE acquire")
+# fixed a slot-leak: a die() between the acquire and the trap-install
+# would have leaked the slot dir for the rest of the dispatch.sh
+# subshell's life. Pin the structural invariant — the non-empty line
+# immediately preceding `acquire_claude_mutex` in dispatch.sh must be
+# `trap 'release_claude_mutex' EXIT`. A future reorder regression would
+# fail silently otherwise.
+_TBA_ACQUIRE_LINE="$(grep -n '^[[:space:]]*acquire_claude_mutex[[:space:]]*$' "$SCRIPT_DIR/dispatch.sh" | head -1 | cut -d: -f1)"
+if [[ -z "$_TBA_ACQUIRE_LINE" ]]; then
+  fail_at "AC-TRAP-BEFORE-ACQUIRE" "no top-level acquire_claude_mutex call found in dispatch.sh"
+else
+  _TBA_PRIOR=""
+  _TBA_PROBE=$((_TBA_ACQUIRE_LINE - 1))
+  while (( _TBA_PROBE > 0 )); do
+    _TBA_LINE_CONTENT="$(sed -n "${_TBA_PROBE}p" "$SCRIPT_DIR/dispatch.sh")"
+    _TBA_TRIMMED="${_TBA_LINE_CONTENT#"${_TBA_LINE_CONTENT%%[![:space:]]*}"}"
+    if [[ -n "$_TBA_TRIMMED" && "$_TBA_TRIMMED" != "#"* ]]; then
+      _TBA_PRIOR="$_TBA_TRIMMED"
+      break
+    fi
+    _TBA_PROBE=$((_TBA_PROBE - 1))
+  done
+  if [[ "$_TBA_PRIOR" == "trap 'release_claude_mutex' EXIT" ]]; then
+    pass_at "AC-TRAP-BEFORE-ACQUIRE: dispatch.sh installs release trap on the line immediately preceding acquire_claude_mutex (line $_TBA_ACQUIRE_LINE)"
+  else
+    fail_at "AC-TRAP-BEFORE-ACQUIRE" "expected prior non-blank/non-comment line to be \"trap 'release_claude_mutex' EXIT\", got: $_TBA_PRIOR"
+  fi
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

@@ -2755,11 +2755,13 @@ test_self_leak_callsite_wired() {
     return
   fi
   # Anchor 1: self_leak_paths array is declared empty alongside hashes.
-  if grep -qE '^[[:space:]]*self_leak_paths=\(\)' "$rl"; then
+  # ENG-81: also accept the function-local form `local -a self_leak_paths=()`
+  # introduced when the body moved into _run_worker() (Task 5 refactor).
+  if grep -qE '^[[:space:]]*(local[[:space:]]+-a[[:space:]]+)?self_leak_paths=\(\)' "$rl"; then
     report_ok 'wire-up #1: self_leak_paths=() declaration present in run-local.sh'
   else
     report_fail 'wire-up #1: self_leak_paths declaration' \
-      'self_leak_paths=() at column-aligned indentation' 'not found'
+      'self_leak_paths=() (with optional `local -a` prefix) at column-aligned indentation' 'not found'
   fi
   # Anchor 2: self_leak_paths is appended-to in the observed-vs-self-leak
   # loop (the load-bearing line that, if dropped, makes self_leak_paths
@@ -2804,18 +2806,499 @@ test_self_leak_callsite_wired() {
   # injection vector. Catches refactor regressions that move the
   # cleanup downstream of the failure exit (the bug correctness
   # reviewer caught in v3).
+  #
+  # rc-gate idiom: clean form
+  # `if [[ $rc -ne 0 ]]; then return $rc; fi` (was the opaque
+  # `&& exit $rc; then :; fi` workaround that pinned the test grep).
+  # This regex accepts the canonical `if-then-return-fi` shape.
+  # Suppress set -e from sourced common.sh: grep no-match returns 1
+  # under pipefail and kills the test before report_fail can run. Using
+  # `|| true` on the subshell preserves report_fail's diagnostic.
   local cleanup_line rcgate_line
-  cleanup_line="$(grep -n 'clean_scratch_dir[[:space:]]\+"\$dispatch_cwd"' "$rl" | head -1 | cut -d: -f1)"
-  rcgate_line="$(grep -nE '\[\[[[:space:]]+\$rc[[:space:]]+-ne[[:space:]]+0[[:space:]]+\]\][[:space:]]+&&[[:space:]]+exit' "$rl" | head -1 | cut -d: -f1)"
-  if [[ -n "$cleanup_line" && -n "$rcgate_line" && "$cleanup_line" -lt "$rcgate_line" ]]; then
+  cleanup_line="$(grep -n 'clean_scratch_dir[[:space:]]\+"\$dispatch_cwd"' "$rl" | head -1 | cut -d: -f1 || true)"
+  rcgate_line="$(grep -nE '\[\[[[:space:]]+\$rc[[:space:]]+-ne[[:space:]]+0[[:space:]]+\]\][[:space:]]*;[[:space:]]*then[[:space:]]+return[[:space:]]+\$rc' "$rl" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "$cleanup_line" || -z "$rcgate_line" ]]; then
+    report_fail 'wire-up #6: positional invariant' \
+      "clean_scratch_dir must appear before [[ \$rc -ne 0 ]]; then return \$rc (cleanup=${cleanup_line:-MISSING}, rc-gate=${rcgate_line:-MISSING})" \
+      'one or both anchors missing — agent-failure ticks would leak stale .scratch/ across --action continue'
+  elif (( cleanup_line < rcgate_line )); then
     report_ok "wire-up #6: clean_scratch_dir at line $cleanup_line runs BEFORE rc-gate at line $rcgate_line"
   else
     report_fail 'wire-up #6: positional invariant' \
-      "clean_scratch_dir must appear before [[ \$rc -ne 0 ]] && exit (cleanup=${cleanup_line:-MISSING}, rc-gate=${rcgate_line:-MISSING})" \
+      "clean_scratch_dir line < rc-gate line (cleanup=$cleanup_line, rc-gate=$rcgate_line)" \
       'cleanup is at or after rc-gate — agent-failure ticks would leak stale .scratch/ across --action continue'
   fi
 }
 test_self_leak_callsite_wired
+
+# ─── Scheduler-side in-flight lock wire-up invariants ────────────────
+# Production code (run-local.sh) must:
+#   1. Declare `_SCHEDULER_INFLIGHT_LOCKS=()` array.
+#   2. Push to it after every try_acquire_lock claim.
+#   3. Reap it inside cleanup_on_exit (EXIT trap).
+#   4. Clear it just before forking workers (so the trap stops reaping
+#      locks that workers now own).
+# Without each of these, the per-issue lock leaks on any scheduler-side
+# error path (Linear blip, set -e between acquire and fork).
+test_scheduler_inflight_lock_wireup() {
+  local rl="$SCRIPT_DIR/run-local.sh"
+  if [[ ! -f "$rl" ]]; then
+    report_fail 'scheduler-leak: run-local.sh present' 'present' 'missing'
+    return
+  fi
+  if grep -qE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl"; then
+    report_ok "wire-up scheduler-leak #1: _SCHEDULER_INFLIGHT_LOCKS=() declared"
+  else
+    report_fail "wire-up scheduler-leak #1: tracking array missing" \
+      "_SCHEDULER_INFLIGHT_LOCKS=()" "not found"
+  fi
+  if grep -qE '_SCHEDULER_INFLIGHT_LOCKS\+=\(.*inflight_lock' "$rl"; then
+    report_ok "wire-up scheduler-leak #2: array push after try_acquire_lock claim"
+  else
+    report_fail "wire-up scheduler-leak #2: array push missing" \
+      '_SCHEDULER_INFLIGHT_LOCKS+=("$inflight_lock")' "not found"
+  fi
+  # Cleanup must walk the array and call release_lock on each entry.
+  if grep -qE 'for[[:space:]]+_[a-z_]+[[:space:]]+in[[:space:]]+.*_SCHEDULER_INFLIGHT_LOCKS' "$rl"; then
+    report_ok "wire-up scheduler-leak #3: cleanup_on_exit walks _SCHEDULER_INFLIGHT_LOCKS"
+  else
+    report_fail "wire-up scheduler-leak #3: cleanup loop missing" \
+      'for _l in "${_SCHEDULER_INFLIGHT_LOCKS[@]}"' "not found"
+  fi
+  # No pre-fork clear: the global init line is the only `_SCHEDULER_INFLIGHT_LOCKS=()`.
+  # Keeping the array populated through fork means a `die` between
+  # try_acquire_lock and `( ... ) &` still releases any locks already
+  # claimed. Double-release via worker EXIT trap is harmless.
+  init_count="$(grep -cE '^[[:space:]]*_SCHEDULER_INFLIGHT_LOCKS=\(\)' "$rl")"
+  if [[ "$init_count" == "1" ]]; then
+    report_ok "wire-up scheduler-leak #4: array stays populated through fork (no pre-fork clear; global init only)"
+  else
+    report_fail "wire-up scheduler-leak #4: unexpected _SCHEDULER_INFLIGHT_LOCKS=() count" \
+      "exactly 1 (global init only)" \
+      "$init_count occurrences in run-local.sh"
+  fi
+}
+test_scheduler_inflight_lock_wireup
+
+# ─── ENG-81 Task 4: per-issue .in-flight.lock contention ──────────────
+# Acquired by the run-local.sh scheduler arm before forking a worker
+# for a specific issue. Prevents the same issue from being dispatched
+# twice if a tick-N worker is still running when tick-N+1 fires (the
+# K=1 lock cannot help here — it is a global single-flight, not a
+# per-issue gate). Uses try_acquire_lock from common.sh (added in this
+# ticket; non-blocking by design — acquire_lock with timeout=0 means
+# "wait forever" and would hang the scheduler).
+#
+# Contention check uses a LIVE background process as the lock holder.
+# A dead-pid lock is reclaimed by the new acquirer (covered by
+# AC-TAL-RECLAIM-DEAD in common-test.sh), so the "second-acquire
+# blocked" assertion only holds when the holder is actually alive.
+test_inflight_lock_contention() {
+  local case_name="AC-INFLIGHT-LOCK"
+  local eh_dir; eh_dir="$(mktemp -d -t twinning-inflight.XXXXXX)"
+  local issue_root="$eh_dir/issue-state-test"
+  mkdir -p "$issue_root/ENG-INFLIGHT"
+  local lock_dir="$issue_root/ENG-INFLIGHT/.in-flight.lock"
+
+  # First acquire by the test runner (live pid = $$).
+  local out1
+  out1="$(PROJECT_STATE_DIR="$issue_root" bash -c '
+    SCRIPT_DIR="'"$SCRIPT_DIR"'"
+    source "$SCRIPT_DIR/common.sh"
+    try_acquire_lock "$(issue_dir ENG-INFLIGHT)/.in-flight.lock" || echo SECOND_FAILED
+  ' 2>&1)"
+  if [[ -z "$out1" ]]; then
+    report_ok "$case_name first-acquire produces no output (lock taken)"
+  else
+    report_fail "$case_name first acquire" "empty stdout" "got: $out1"
+  fi
+
+  # Now overwrite the pid file with a LIVE backgrounded sleep so the
+  # next acquire sees a live holder (not a dead subshell pid). This
+  # models the real failure mode: tick N+1 fires while tick N's
+  # WORKER (still alive) holds the lock.
+  ( sleep 30 ) &
+  local live_pid=$!
+  printf '%s\n' "$live_pid" > "$lock_dir/pid"
+
+  local out2
+  out2="$(PROJECT_STATE_DIR="$issue_root" bash -c '
+    SCRIPT_DIR="'"$SCRIPT_DIR"'"
+    source "$SCRIPT_DIR/common.sh"
+    try_acquire_lock "$(issue_dir ENG-INFLIGHT)/.in-flight.lock" || echo SECOND_FAILED
+  ' 2>&1)"
+  if grep -q SECOND_FAILED <<<"$out2"; then
+    report_ok "$case_name second-acquire blocks (live holder → rc=1 → SECOND_FAILED)"
+  else
+    report_fail "$case_name second-acquire" "SECOND_FAILED in output" "got: $out2"
+  fi
+
+  kill "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
+  rm -rf "$eh_dir"
+}
+test_inflight_lock_contention
+
+# ─── Scheduler-side in-flight lock leak on transient errors ──────────
+# The scheduler arm acquires .in-flight.lock as part of the per-decision
+# claim loop. Any error between acquire and worker fork (Linear blip,
+# set -e crash) would leave the per-issue lock orphaned without the
+# cleanup_on_exit trap reaping _SCHEDULER_INFLIGHT_LOCKS.
+test_scheduler_inflight_lock_cleanup_on_error() {
+  local case_name="AC-SCHEDULER-INFLIGHT-CLEANUP"
+  local eh_dir; eh_dir="$(mktemp -d -t twinning-sched-cleanup.XXXXXX)"
+  local issue_root="$eh_dir/issue-state-test"
+  mkdir -p "$issue_root/ENG-SCHED-LEAK"
+  local lock_dir="$issue_root/ENG-SCHED-LEAK/.in-flight.lock"
+
+  # Simulate the scheduler arm's pattern: acquire, register cleanup
+  # trap, then die mid-claim before any worker forks.
+  bash -c '
+    set -euo pipefail
+    SCRIPT_DIR="'"$SCRIPT_DIR"'"
+    PROJECT_STATE_DIR="'"$issue_root"'"
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/common.sh"
+    _SCHEDULER_INFLIGHT_LOCKS=()
+    cleanup_on_exit() {
+      local _l
+      for _l in "${_SCHEDULER_INFLIGHT_LOCKS[@]+"${_SCHEDULER_INFLIGHT_LOCKS[@]}"}"; do
+        release_lock "$_l"
+      done
+    }
+    trap cleanup_on_exit EXIT
+
+    try_acquire_lock "'"$lock_dir"'"
+    _SCHEDULER_INFLIGHT_LOCKS+=("'"$lock_dir"'")
+
+    # set -e bites here, simulating a Linear API blip.
+    false
+  ' >/dev/null 2>&1 || true
+
+  if [[ ! -d "$lock_dir" ]]; then
+    report_ok "$case_name scheduler EXIT trap releases unclaimed in-flight lock"
+  else
+    report_fail "$case_name lock leaked across scheduler error" \
+      "lock dir absent" \
+      "lock dir still present at $lock_dir"
+  fi
+
+  rm -rf "$eh_dir"
+}
+test_scheduler_inflight_lock_cleanup_on_error
+
+# ─── ENG-81 Task 6: parallel events.jsonl writes (POSIX O_APPEND) ────
+# 50 paired metrics.sh invocations from two issue identities, each
+# backgrounded. POSIX O_APPEND guarantees atomic writes up to PIPE_BUF
+# (4 KB on macOS); each metrics.sh line is ~250-500 bytes (8 base
+# fields + 0-6 cost flags). Test pins: every line in events.jsonl
+# parses as JSON; total line count >= 100.
+test_parallel_events_jsonl_atomic() {
+  local case_name="AC-METRICS-CONCURRENT-WRITE"
+  local mc_dir; mc_dir="$(mktemp -d -t twinning-mcwrite.XXXXXX)"
+  local i
+  for i in $(seq 1 50); do
+    PROJECT_STATE_DIR="$mc_dir" \
+      bash "$SCRIPT_DIR/metrics.sh" stage-start "ENG-W1" "implementing" "test" 0 "iter=$i" &
+    PROJECT_STATE_DIR="$mc_dir" \
+      bash "$SCRIPT_DIR/metrics.sh" stage-start "ENG-W2" "implementing" "test" 0 "iter=$i" &
+  done
+  wait
+
+  local events="$mc_dir/metrics/events.jsonl"
+  if [[ ! -f "$events" ]]; then
+    report_fail "$case_name events.jsonl missing" "exists" "absent"
+    rm -rf "$mc_dir"
+    return
+  fi
+
+  local total bad=0 max_line=0
+  total="$(wc -l < "$events" | tr -d ' ')"
+  while IFS= read -r line; do
+    jq -e . <<<"$line" >/dev/null 2>&1 || bad=$((bad + 1))
+    (( ${#line} > max_line )) && max_line=${#line}
+  done < "$events"
+
+  # Pin the PIPE_BUF (4096 bytes on macOS / Linux) line-size envelope that
+  # the atomicity guarantee depends on. A future metrics.sh schema bump
+  # pushing lines past PIPE_BUF silently breaks POSIX O_APPEND atomicity
+  # while the parse-checks would continue to pass.
+  if (( bad == 0 && total >= 100 && max_line < 4096 )); then
+    report_ok "$case_name $total lines, 0 torn, max_line=$max_line < PIPE_BUF=4096"
+  else
+    report_fail "$case_name torn-write or oversize line" \
+      "0 torn, total >= 100, max_line < 4096" \
+      "$bad torn, total=$total, max_line=$max_line"
+  fi
+  rm -rf "$mc_dir"
+}
+test_parallel_events_jsonl_atomic
+
+# ─── E-7 (brainstorm §6.5): parallel rc=24 (linear-post-failed) ───────
+# Under K>1, multiple workers can exit with rc=24 in a single tick. Each
+# bump targets the global $FAIL_COUNTER lane (ENG-69 split — rc=24 is
+# infrastructure-wide). The under-count bound from brainstorm §6.5 is:
+# at K=2, worst-case 1 lost increment; at K=3, worst-case 2 lost.
+# Pin the bound by firing 5 parallel rc=24 routes and asserting the
+# counter lands at >= K-1 = 4 (the K=5 worst case under-count bound).
+test_parallel_rc24_counter_race() {
+  local case_name="AC-PARALLEL-RC24-COUNTER"
+  local rd; rd="$(mktemp -d -t twinning-rc24race.XXXXXX)"
+  local fail_counter="$rd/.consecutive-failures"
+
+  # route_run_stage_exit reads from $FAIL_COUNTER + $FAIL_THRESHOLD;
+  # mkdir issue dirs for the per-issue lane (unused here but required so
+  # the function does not die on a missing parent).
+  mkdir -p "$rd/ENG-2401" "$rd/ENG-2402" "$rd/ENG-2403" "$rd/ENG-2404" "$rd/ENG-2405"
+
+  # Stub set_orchestrator_paused (called by trip_breaker) and the bin/
+  # SCRIPT_DIR-anchored calls so the function does not touch real state.
+  local stub_dir; stub_dir="$(mktemp -d -t twinning-rc24-stubs.XXXXXX)"
+  for stub in linear.sh slack.sh metrics.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_dir/$stub"
+    chmod +x "$stub_dir/$stub"
+  done
+
+  local i pids=()
+  local err_dir; err_dir="$(mktemp -d -t twinning-rc24-err.XXXXXX)"
+  for i in 2401 2402 2403 2404 2405; do
+    (
+      PROJECT_STATE_DIR="$rd" FAIL_COUNTER="$fail_counter" \
+      FAIL_THRESHOLD=99 SCRIPT_DIR="$stub_dir" \
+        bash -c '
+          SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+          # shellcheck disable=SC1091
+          source "$SCRIPT_DIR_REAL/common.sh"
+          # shellcheck disable=SC1091
+          source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+          # Defang trip_breaker via FAIL_THRESHOLD=99 so the race tests the
+          # counter increment lane in isolation, never tripping the breaker.
+          route_run_stage_exit "ENG-'"$i"'" implementing 24
+        ' >"$err_dir/out-$i" 2>"$err_dir/err-$i"
+    ) &
+    pids+=("$!")
+  done
+  for i in "${pids[@]}"; do wait "$i" 2>/dev/null || true; done
+
+  local final
+  final="$(cat "$fail_counter" 2>/dev/null || printf '0')"
+
+  # Review-3 finding #5: tighten the bound AND check lane-split.
+  # Brainstorm §6.5 / E-7 bound: at K=5 parallel writers, worst-case lost
+  # increments = K-1 = 4, so the global counter lands at 1..5 inclusive.
+  # Pin the UPPER bound (catches a bug that double-counts) AND the LOWER
+  # bound (catches a bug that never increments).
+  local lane_ok=1
+  local per_issue_total=0 i pic
+  for i in 2401 2402 2403 2404 2405; do
+    pic="$rd/ENG-$i/.consecutive-failures"
+    if [[ -f "$pic" ]]; then
+      local n
+      n="$(cat "$pic" 2>/dev/null || printf '0')"
+      per_issue_total=$((per_issue_total + n))
+    fi
+  done
+  # Lane-split (ENG-69): rc=24 routes EXCLUSIVELY to the global counter
+  # (infrastructure outage, project-wide). The per-issue counters at
+  # $rd/ENG-240X/.consecutive-failures MUST remain absent or zero. A
+  # regression that crossed the lanes (e.g. bumped per-issue on rc=24
+  # too) would make per_issue_total > 0.
+  (( per_issue_total == 0 )) || lane_ok=0
+
+  if (( final >= 1 && final <= 5 && lane_ok == 1 )); then
+    report_ok "$case_name 5 parallel rc=24 bumps → global=$final (in [1,5], K-1=4 bound), per-issue=$per_issue_total (lane-split holds)"
+  else
+    report_fail "$case_name rc=24 race bound violated OR per-issue lane contaminated" \
+      "global in [1,5] AND per-issue total == 0 (ENG-69 lane-split)" \
+      "global=$final per-issue=$per_issue_total lane_ok=$lane_ok; stderr samples: $(head -c 500 "$err_dir"/err-* 2>/dev/null || printf 'empty')"
+  fi
+  rm -rf "$rd" "$stub_dir" "$err_dir"
+}
+# Export SCRIPT_DIR_REAL so the subshell can find the harness scripts even
+# after the per-process SCRIPT_DIR override above.
+SCRIPT_DIR_REAL="$SCRIPT_DIR"
+test_parallel_rc24_counter_race
+
+# ─── ENG-81 Task 6: worker-isolation under self-leak halt ─────────────
+# When worker A halts via halt_issue_for_self_leak, the per-issue
+# counter for worker B (a sibling issue) MUST NOT be touched. ENG-69's
+# lane separation is the load-bearing invariant; this test pins it
+# under the new K>1 worker fanout where worker A's halt could
+# inadvertently mutate sibling state if implementations share globals.
+test_worker_isolation_under_halt() {
+  local case_name="AC-WORKER-ISOLATION"
+  local wi_dir; wi_dir="$(mktemp -d -t twinning-isolation.XXXXXX)"
+  # halt_issue_for_self_leak / classify_failure / route_run_stage_exit each
+  # validate the issue id against ^ENG-[0-9]+$ — use real numeric ids so the
+  # function reaches the per-issue state mutation it is meant to exercise.
+  # Review-3 finding #6: drive worker A and worker B in TRUE parallel
+  # subshells (not single-threaded), so a cross-worker mutation that only
+  # surfaces under concurrent calls (e.g. a shared temp filename collision
+  # in classify_failure) is observable. Pre-fix the test fork-ran a single
+  # halt call, so the K>1 lane-split invariant was claimed but not exercised.
+  mkdir -p "$wi_dir/ENG-8101" "$wi_dir/ENG-8102"
+
+  # Stub linear.sh / slack.sh / metrics.sh / branch-name.sh as no-ops so
+  # classify_failure can reach the per-issue state mutation without firing
+  # real Linear/Slack writes. _CFS_SCRIPT_DIR (set inside classify-failure.sh
+  # on source) and SCRIPT_DIR (set by halt_issue_for_self_leak's metric
+  # emit) BOTH need to point at the stubs.
+  local stub_dir; stub_dir="$(mktemp -d -t twinning-isolation-stubs.XXXXXX)"
+  for stub in linear.sh slack.sh metrics.sh branch-name.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_dir/$stub"
+    chmod +x "$stub_dir/$stub"
+  done
+
+  # Drop PIPELINE_DRY_RUN explicitly — pre-fix the test set it to 1, which
+  # makes halt_issue_for_self_leak return at run-local-helpers.sh:142
+  # BEFORE classify_failure runs, so the assertion that ENG-8102's state
+  # is untouched would pass even if the lane-split were broken.
+  local err_log_a err_log_b
+  err_log_a="$(mktemp -t twinning-isolation-err-a.XXXXXX)"
+  err_log_b="$(mktemp -t twinning-isolation-err-b.XXXXXX)"
+
+  # Fork TWO parallel subshells: worker A halts ENG-8101 via
+  # halt_issue_for_self_leak; worker B routes a clean rc=0 on ENG-8102 (a
+  # different issue) and MUST remain unaffected by A's per-issue state
+  # mutation. The wait collects both before assertions run. This mimics
+  # the actual K=2 fork pattern in run-local.sh: two _run_worker subshells
+  # backgrounded, then `wait`.
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    # shellcheck disable=SC1091
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/common.sh"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        halt_issue_for_self_leak ENG-8101 implementing abc123def456
+      ' >/dev/null 2>"$err_log_a" || true
+  ) &
+  local pid_a=$!
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    # shellcheck disable=SC1091
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      FAIL_COUNTER="$wi_dir/.global-failures" FAIL_THRESHOLD=99 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/common.sh"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        # rc=0 clears both counters; ENG-8102 should remain pristine.
+        route_run_stage_exit ENG-8102 implementing 0
+      ' >/dev/null 2>"$err_log_b" || true
+  ) &
+  local pid_b=$!
+  wait "$pid_a" 2>/dev/null || true
+  wait "$pid_b" 2>/dev/null || true
+
+  # classify_failure writes issue-state.json (the canonical durable-state
+  # artifact). ENG-8102 must remain untouched (no issue-state.json created
+  # by A's halt path).
+  local a_state="$wi_dir/ENG-8101/issue-state.json"
+  local b_state="$wi_dir/ENG-8102/issue-state.json"
+  if [[ -f "$a_state" && ! -f "$b_state" ]]; then
+    report_ok "$case_name parallel A=halt B=clean → ENG-8101 issue-state.json present, ENG-8102 untouched (lane-split intact under K>1 fork)"
+  else
+    report_fail "$case_name cross-issue state contamination under parallel workers" \
+      "ENG-8101 state present, ENG-8102 absent" \
+      "ENG-8101=$([[ -f $a_state ]] && echo present || echo absent), ENG-8102=$([[ -f $b_state ]] && echo present || echo absent); stderr A: $(head -c 250 "$err_log_a" 2>/dev/null); stderr B: $(head -c 250 "$err_log_b" 2>/dev/null)"
+  fi
+  rm -rf "$wi_dir" "$stub_dir" "$err_log_a" "$err_log_b"
+}
+test_worker_isolation_under_halt
+
+# AC-WORKER-ISOLATION-BOTH-HALT sub-variant: drive BOTH workers through
+# halt_issue_for_self_leak in parallel on distinct issues. Two halts at
+# once is the realistic K>1 worst case (e.g. two self-leak failures
+# coinciding). Asserts each issue's issue-state.json reflects its OWN
+# halt, not the other worker's — i.e. neither subshell overwrites the
+# sibling's per-issue state via a shared global / shared tempfile name.
+test_worker_isolation_both_halt() {
+  local case_name="AC-WORKER-ISOLATION-BOTH-HALT"
+  local wi_dir; wi_dir="$(mktemp -d -t twinning-isolation-both.XXXXXX)"
+  mkdir -p "$wi_dir/ENG-8201" "$wi_dir/ENG-8202"
+
+  local stub_dir; stub_dir="$(mktemp -d -t twinning-isolation-both-stubs.XXXXXX)"
+  for stub in linear.sh slack.sh metrics.sh branch-name.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_dir/$stub"
+    chmod +x "$stub_dir/$stub"
+  done
+
+  local err_log_a err_log_b
+  err_log_a="$(mktemp -t twinning-isolation-both-err-a.XXXXXX)"
+  err_log_b="$(mktemp -t twinning-isolation-both-err-b.XXXXXX)"
+
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/common.sh"
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        halt_issue_for_self_leak ENG-8201 implementing aaaa1111aaaa
+      ' >/dev/null 2>"$err_log_a" || true
+  ) &
+  local pid_a=$!
+  (
+    SCRIPT_DIR_REAL="$SCRIPT_DIR"
+    SCRIPT_DIR="$stub_dir"
+    PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=0 \
+      bash -c '
+        SCRIPT_DIR_REAL="'"$SCRIPT_DIR_REAL"'"
+        SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/common.sh"
+        source "$SCRIPT_DIR_REAL/classify-failure.sh"
+        _CFS_SCRIPT_DIR="'"$stub_dir"'"
+        source "$SCRIPT_DIR_REAL/run-local-helpers.sh"
+        halt_issue_for_self_leak ENG-8202 implementing bbbb2222bbbb
+      ' >/dev/null 2>"$err_log_b" || true
+  ) &
+  local pid_b=$!
+  wait "$pid_a" 2>/dev/null || true
+  wait "$pid_b" 2>/dev/null || true
+
+  local a_state="$wi_dir/ENG-8201/issue-state.json"
+  local b_state="$wi_dir/ENG-8202/issue-state.json"
+  local ok=1
+  [[ -f "$a_state" ]] || ok=0
+  [[ -f "$b_state" ]] || ok=0
+  # Each state file's `.issue` field must match its OWN directory. If a
+  # subshell overwrote the sibling's tempfile mid-write, the JSON would
+  # carry the other issue's id.
+  local a_id="" b_id=""
+  [[ -f "$a_state" ]] && a_id="$(jq -r '.issue // ""' "$a_state" 2>/dev/null || printf '')"
+  [[ -f "$b_state" ]] && b_id="$(jq -r '.issue // ""' "$b_state" 2>/dev/null || printf '')"
+  [[ "$a_id" == "ENG-8201" ]] || ok=0
+  [[ "$b_id" == "ENG-8202" ]] || ok=0
+  if (( ok == 1 )); then
+    report_ok "$case_name two parallel halts → each issue-state.json carries its own id (no cross-contamination)"
+  else
+    report_fail "$case_name two parallel halts contaminated each other's state" \
+      "ENG-8201 state.issue=ENG-8201, ENG-8202 state.issue=ENG-8202" \
+      "ENG-8201 id='$a_id' (state $([[ -f $a_state ]] && echo present || echo absent)); ENG-8202 id='$b_id' (state $([[ -f $b_state ]] && echo present || echo absent)); stderr A: $(head -c 250 "$err_log_a" 2>/dev/null); stderr B: $(head -c 250 "$err_log_b" 2>/dev/null)"
+  fi
+  rm -rf "$wi_dir" "$stub_dir" "$err_log_a" "$err_log_b"
+}
+test_worker_isolation_both_halt
 
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"

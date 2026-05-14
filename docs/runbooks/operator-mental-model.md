@@ -64,6 +64,12 @@ gets every tick until it transitions or halts.
 Spot it: in the held-slot list, the issue closer to released is the one
 running. The earlier-stage one is starved.
 
+After ENG-81 (K=2 parallel dispatch), this starvation applies only when
+`held_count ≥ K` — the documented WIP cap (see CLAUDE.md "Per-project
+dispatch concurrency"). At K=2 (the post-ENG-81 default), two earlier-stage
+helds advance per tick; starvation re-emerges only when a third issue is
+also held.
+
 Fix: there's no per-issue priority bump today. Either let the front-of-queue
 finish, or temporarily mark the front-of-queue with `pipeline:halted` to
 push ENG-B forward (then unhalt). Heavy-handed; usually just wait.
@@ -300,20 +306,24 @@ Then update `config.json::project.slug`. Or just don't change the slug.
 
 ## §7 — Cross-project
 
-**Global claude mutex serializes ALL projects.**
-`~/.local/state/twinning-harness/.claude-mutex.lock` is held during every
-`claude -p` dispatch across every project. So if you have 2 projects each
-with 2 slots (4 logical slots), only **1** `claude -p` is running at a
-time. Tick latency adds up across projects.
+**Global claude counting semaphore caps system-wide concurrent dispatches.**
+`~/.local/state/twinning-harness/.claude-semaphore/slot-<N>/` slot dirs
+are held during each `claude -p` dispatch (one slot per in-flight
+dispatch). The cap defaults to 2 (`orchestrator.max_concurrent_features`,
+since ENG-81; was a binary mutex pre-ENG-81). With 2 projects each at
+2 slots, you can have up to 2 concurrent `claude -p` invocations
+system-wide — additional ticks contend for a slot until one frees.
 
-Spot it: `ls ~/.local/state/twinning-harness/.claude-mutex.lock` — if the
-directory exists, a dispatch is in flight (somewhere). If it persists
-without a corresponding `claude -p` process, the mutex is stale.
+Spot it: `ls ~/.local/state/twinning-harness/.claude-semaphore/slot-*/pid`
+— each present `pid` file is one in-flight dispatch. Empty listing
+means no live dispatches. If a slot persists without a corresponding
+`claude -p` process, the slot is stale.
 
-Fix:
+Fix the stale slot (each slot dir contains a `pid` file written by
+`acquire_claude_mutex` — `rmdir` would fail with "Directory not empty"):
 
 ```bash
-rmdir ~/.local/state/twinning-harness/.claude-mutex.lock
+rm -rf ~/.local/state/twinning-harness/.claude-semaphore/slot-1
 ```
 
 Only remove if you've confirmed no `claude -p` is actually running:
@@ -321,6 +331,10 @@ Only remove if you've confirmed no `claude -p` is actually running:
 ```bash
 ps -ef | grep -E 'claude -p|gtimeout' | grep -v grep
 ```
+
+To inspect concurrency / resource baseline operationally, prefer
+`bash bin/status.sh` over the raw `ls` form — it aggregates the live
+slot count and the recent `dispatch-resource-sample` baseline.
 
 ## When in doubt
 
