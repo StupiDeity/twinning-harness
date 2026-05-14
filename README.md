@@ -416,8 +416,8 @@ any of these silently breaks things in confusing ways:
   serialized via a global mutex; cross-machine concurrency is not supported.
 - **Auth**: Claude subscription session on the host — `ANTHROPIC_API_KEY` is
   intentionally never set.
-- **Stack**: Per-stage allowed-tools is composed of **stack-neutral
-  base + profile-derived stack tools + operator-curated extras**.
+- **Stack**: Per-stage allowed-tools composition order is
+  **stack-neutral base + profile-derived stack tools + operator-curated extras**.
   The profile (`learned-rules/<slug>/project-profile.md::## Tool
   allowlist`) is authored by the discovery agent during setup; the
   extras (`.pipeline-config/config.json::dispatch.tools`) are

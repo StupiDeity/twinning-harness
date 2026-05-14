@@ -173,16 +173,41 @@ The two are independent. Both must be present.
 
 ## Stack
 
-### Default allowed-tools list is Tauri-shaped
+### Per-stage allowed-tools is composed, not hardcoded
 
-`bin/dispatch.sh::allowed_tools_for` ships a per-stage allowlist that
-includes `cargo`, `bun`, `rustc`, `node`, `npx`, full `git`, `jq`, `awk`.
-Any stack outside Tauri (Rust + Bun) needs an extras block in
-`.pipeline-config/config.json::dispatch.tools`. See
-[`configuration.md`](configuration.md#dispatchtools--per-stage-allowlist-extras).
+The argv composition order is
+**stack-neutral base + profile-derived stack tools + operator-curated extras**:
+
+- **Stack-neutral base** — `bin/dispatch.sh::allowed_tools_for` ships
+  a stack-agnostic per-stage allowlist: Read/Write/Edit/Grep/Glob,
+  the git family, `jq`, `awk`, `bash bin/linear.sh`,
+  `bash bin/pipeline.sh`, etc. No language-specific tokens.
+- **Profile-derived stack tools** — `learned-rules/<slug>/project-profile.md`
+  carries a `## Tool allowlist` section authored by the discovery
+  agent (`bash bin/setup.sh /path project-profile`, Phase 5b). The
+  section is per-stage. Example for a Python target's `implementing`:
+
+      ## Tool allowlist
+
+      - implementing:
+        - `Bash(pytest:*)`
+        - `Bash(python:*)`
+        - `Bash(ruff:*)`
+        - `Bash(mypy:*)`
+      - qa:
+        - `Bash(pytest:*)`
+        - `Bash(ruff:*)`
+- **Operator-curated extras** — `.pipeline-config/config.json::dispatch.tools.<stage>[]`
+  appends per-target one-offs (e.g. the harness-self target's
+  enumerated `bin/*-test.sh` patterns) on top of the profile.
+
+See [`configuration.md`](configuration.md#dispatchtools--per-stage-allowlist-extras)
+for the full composition rules and the wildcard pitfall.
 
 **Failure mode:** "Agent halts with permission denied invoking pytest /
-go test / etc." Cause: command not in allowed-tools.
+go test / etc." Cause: the project profile's `## Tool allowlist`
+section is missing those entries — re-run discovery
+(`bash bin/setup.sh /path project-profile`) or hand-edit the profile.
 
 ### Project layout assumptions are minimal
 

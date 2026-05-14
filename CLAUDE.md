@@ -348,9 +348,10 @@ Per-target stack tools come from the profile's `## Tool allowlist` section
 (`learned-rules/<slug>/project-profile.md`, schema_version 2). Operator-curated
 extras come from `.pipeline-config/config.json::dispatch.tools.<stage>[]`.
 
-Per-stage `--allowed-tools` argv composition (left-to-right): **base + profile
-+ extras**. Empty segments elided. Claude's matcher is order-insensitive —
-ordering is for log readability only.
+Per-stage `--allowed-tools` argv composition (left-to-right):
+**stack-neutral base + profile-derived stack tools + operator-curated extras**.
+Empty segments elided. Claude's matcher is order-insensitive — ordering is
+for log readability only.
 
 **Fallback contract.** Missing profile / `schema_version != 2` / missing
 `## Tool allowlist` → `_dispatch_tools_from_profile` returns empty, emits a
