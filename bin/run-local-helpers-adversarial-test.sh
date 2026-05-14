@@ -2864,6 +2864,78 @@ test_inflight_lock_contention() {
 }
 test_inflight_lock_contention
 
+# ─── ENG-81 Task 6: parallel events.jsonl writes (POSIX O_APPEND) ────
+# 50 paired metrics.sh invocations from two issue identities, each
+# backgrounded. POSIX O_APPEND guarantees atomic writes up to PIPE_BUF
+# (4 KB on macOS); each metrics.sh line is ~250-500 bytes (8 base
+# fields + 0-6 cost flags). Test pins: every line in events.jsonl
+# parses as JSON; total line count >= 100.
+test_parallel_events_jsonl_atomic() {
+  local case_name="AC-METRICS-CONCURRENT-WRITE"
+  local mc_dir; mc_dir="$(mktemp -d -t twinning-mcwrite.XXXXXX)"
+  local i
+  for i in $(seq 1 50); do
+    PROJECT_STATE_DIR="$mc_dir" \
+      bash "$SCRIPT_DIR/metrics.sh" stage-start "ENG-W1" "implementing" "test" 0 "iter=$i" &
+    PROJECT_STATE_DIR="$mc_dir" \
+      bash "$SCRIPT_DIR/metrics.sh" stage-start "ENG-W2" "implementing" "test" 0 "iter=$i" &
+  done
+  wait
+
+  local events="$mc_dir/metrics/events.jsonl"
+  if [[ ! -f "$events" ]]; then
+    report_fail "$case_name events.jsonl missing" "exists" "absent"
+    rm -rf "$mc_dir"
+    return
+  fi
+
+  local total bad=0
+  total="$(wc -l < "$events" | tr -d ' ')"
+  while IFS= read -r line; do
+    jq -e . <<<"$line" >/dev/null 2>&1 || bad=$((bad + 1))
+  done < "$events"
+
+  if (( bad == 0 && total >= 100 )); then
+    report_ok "$case_name $total lines, 0 torn (POSIX O_APPEND atomic <= PIPE_BUF)"
+  else
+    report_fail "$case_name torn-write detected or short" \
+      "0 torn lines, total >= 100" \
+      "$bad torn lines, total=$total"
+  fi
+  rm -rf "$mc_dir"
+}
+test_parallel_events_jsonl_atomic
+
+# ─── ENG-81 Task 6: worker-isolation under self-leak halt ─────────────
+# When worker A halts via halt_issue_for_self_leak, the per-issue
+# counter for worker B (a sibling issue) MUST NOT be touched. ENG-69's
+# lane separation is the load-bearing invariant; this test pins it
+# under the new K>1 worker fanout where worker A's halt could
+# inadvertently mutate sibling state if implementations share globals.
+test_worker_isolation_under_halt() {
+  local case_name="AC-WORKER-ISOLATION"
+  local wi_dir; wi_dir="$(mktemp -d -t twinning-isolation.XXXXXX)"
+  mkdir -p "$wi_dir/ENG-WIA" "$wi_dir/ENG-WIB"
+
+  PROJECT_STATE_DIR="$wi_dir" PIPELINE_DRY_RUN=1 \
+    bash -c '
+      SCRIPT_DIR="'"$SCRIPT_DIR"'"
+      source "$SCRIPT_DIR/common.sh"
+      source "$SCRIPT_DIR/classify-failure.sh"
+      source "$SCRIPT_DIR/run-local-helpers.sh"
+      halt_issue_for_self_leak ENG-WIA implementing abc123def456
+    ' >/dev/null 2>&1 || true
+
+  if [[ ! -f "$wi_dir/ENG-WIB/.consecutive-failures" ]]; then
+    report_ok "$case_name ENG-WIB per-issue counter untouched by ENG-WIA halt"
+  else
+    report_fail "$case_name ENG-WIB counter mutated" \
+      "absent" "present"
+  fi
+  rm -rf "$wi_dir"
+}
+test_worker_isolation_under_halt
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
