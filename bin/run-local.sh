@@ -395,7 +395,14 @@ for di in $(seq 0 $((decisions_count - 1))); do
       ;;
   esac
 
+  # ENG-67 D-004 (set -u safety): initialize worktree_path BEFORE the
+  # `resolve_worktree_path` substitution. If a future edit drops the
+  # initializer and the substitution fails, the `[[ -n "$worktree_path" ]]`
+  # guard would error as "unbound variable" instead of dying with the
+  # operator-recognition message — pinned by
+  # bin/run-local-content-adversarial-test.sh::AD-4.
   branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
+  worktree_path=""
   worktree_path="$(resolve_worktree_path "$branch" "$issue_id")"
   mkdir -p "$(dirname "$worktree_path")"
   ensure_worktree "$branch" "$worktree_path"

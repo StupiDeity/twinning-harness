@@ -243,10 +243,11 @@ a recomputed `pipeline_content_hash` (sha256 over `bin/**`, `config.json`,
 `AGENT_PROMPTS.md`) and branch-head SHA.
 
 The orchestrator NEVER dispatches into `$TARGET_REPO` — every dispatch resolves
-a per-issue worktree first (ENG-67). If you see `FATAL: internal: worktree_path
-empty after reconcile=proceed`, that's the D-003 invariant — usually a
-Linear-API outage in `branch-name.sh`. Inspect logs for the preceding error,
-fix the underlying cause, next tick resumes. Do NOT bypass via soft fallback.
+a per-issue worktree first (ENG-67). If you see the canonical operator-recognition
+phrase `FATAL: internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from $TARGET_REPO`,
+that's the D-003 invariant — usually a Linear-API outage in `branch-name.sh`.
+Inspect logs for the preceding error, fix the underlying cause, next tick
+resumes. Do NOT bypass via soft fallback.
 
 ## Sweep + scope partition (ENG-14)
 
