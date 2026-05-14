@@ -240,9 +240,9 @@ date back to ENG-23 — both shapes are accepted for backwards-compat.
 Append to `dispatch.tools.<stage>`. The entries are merged with the
 stack-neutral base AND the profile-derived stack tools. The profile
 is the canonical place to declare stack tools (run discovery to
-populate); `dispatch.tools.<stage>` extras are for **operator-curated
-additions** on top — typically per-test-script enumeration or
-per-target one-offs. Examples:
+populate); `dispatch.tools.<stage>` is for **operator-curated extras**
+on top — typically per-test-script enumeration or per-target
+one-offs. Examples:
 
 - **Additional dev-tool patterns not declared in the profile** — for
   example, a per-target one-off `Bash(./scripts/migrate:*)` that doesn't
