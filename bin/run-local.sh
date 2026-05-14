@@ -309,6 +309,17 @@ if (( observed_count > 0 )); then
   done < "$out_scope_file"
 fi
 
+# Tick-end .scratch/ cleanup. Stage-agnostic — runs BEFORE the
+# precedence block so it executes regardless of the halt/commit path
+# chosen below. .scratch/ is gitignored and therefore invisible to
+# git status / partition / self_leak_paths on every stage; without
+# this cleanup, an agent's verification scratch persists across
+# dispatches and creates a cross-dispatch state-injection vector
+# (planted file readable by subsequent agents via Read). The agent's
+# work product is in Linear comments + stage-summary outside the
+# worktree, not in .scratch/.
+clean_scratch_dir "$dispatch_cwd"
+
 # Precedence: self-leak (hard-fail) > leaked-in-scope (counter+conditional
 # trip) > in-scope commit > observed bucketed (info only). Brainstorm OQ-4.
 

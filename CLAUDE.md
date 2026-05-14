@@ -379,10 +379,13 @@ target origin or sibling state dirs. There is no legitimate in-worktree
 write.
 
 The single source of truth for "stage is read-mostly" lives in
-`stage_is_read_mostly` (`bin/run-local-helpers.sh`), which is just
-`[[ -z "$(stage_output_paths "$stage")" ]]` — no duplicate stage list
-to drift. A future stage added with empty `stage_output_paths` is
-automatically picked up.
+`stage_is_read_mostly` (`bin/run-local-helpers.sh`) — captures the
+output of `stage_output_paths` and gates on empty AND on the
+subcommand returning zero. Unknown stages (where `stage_output_paths`
+dies) fall through to NOT read-mostly, conservative default that
+prevents a typo'd stage from silently routing into the auto-clean
+branch and discarding agent output. A future stage added with empty
+`stage_output_paths` is automatically picked up.
 
 Intervention point is **inside the self-leak handler** in
 `bin/run-local.sh`, *after* `partition_dirty_paths` has already done
@@ -422,6 +425,26 @@ counters.
 signal, self-leak halts there remain the correct policy (operator
 must inspect; an agent that wrote source files to wrong paths is
 real evidence of a bug).
+
+**Tick-end stage-agnostic `.scratch/` cleanup
+(`clean_scratch_dir`).** The `.scratch/*` partition carve-out only
+catches paths visible to `git status --porcelain` — but `.scratch/`
+is in `.gitignore`, so its contents are INVISIBLE to git status on
+every stage. Without an explicit cleanup, files an agent drops into
+`.scratch/` during one dispatch persist into the worktree for the
+next dispatch and could be `Read` by the subsequent agent. The
+threat surface is bounded today (no agent prompt instructs reading
+`.scratch/`) but the persistence is real and would compound under
+prompt injection on intervening stages.
+
+`clean_scratch_dir "$dispatch_cwd"` runs at tick-end in
+`bin/run-local.sh` *before* the self-leak / commit precedence block,
+so it executes regardless of subsequent halt or commit decisions.
+`rm -rf "$worktree/.scratch"` if the directory exists; no-op if
+absent; dry-run logs only. Failures are non-blocking (log + continue).
+The cleanup is stage-agnostic because no agent's work product lives
+in `.scratch/` after the dispatch ends — verdict + stage-summary
+capture work in Linear / `$(issue_dir)`.
 
 ## Per-target dispatch.tools extras and profile-derived tools (ENG-51, ENG-53 #8, ENG-94)
 

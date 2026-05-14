@@ -2550,26 +2550,251 @@ test_self_leak_partial_failure_still_emits_metric() {
 }
 test_self_leak_partial_failure_still_emits_metric
 
-# ─── Wire-up assertion (review finding m1) ──────────────────────────────
-# A regression that deletes the call from run-local.sh would leave every
-# unit test green while removing the production fix entirely. Grep for
-# the call site directly.
+# ─── stage_is_read_mostly unknown-stage hardening (post-v2 correctness) ──
+# Previous version's `2>/dev/null || true` swallowed stage_output_paths's
+# die on unknown stages → unknown classified as read-mostly. Hardened
+# version checks rc explicitly so unknown → NOT read-mostly (conservative).
+test_read_mostly_predicate_unknown_stage_returns_false() {
+  if stage_is_read_mostly bogus-stage-name 2>/dev/null; then
+    report_fail 'read_mostly: unknown stage should NOT be read-mostly' 'false' 'true'
+  else
+    report_ok 'read_mostly: unknown stage is NOT read-mostly (conservative)'
+  fi
+  # Empty-string stage also: stage_output_paths dies on empty, predicate
+  # must NOT silently classify as read-mostly.
+  if stage_is_read_mostly "" 2>/dev/null; then
+    report_fail 'read_mostly: empty-string stage should NOT be read-mostly' 'false' 'true'
+  else
+    report_ok 'read_mostly: empty-string stage is NOT read-mostly'
+  fi
+}
+test_read_mostly_predicate_unknown_stage_returns_false
+
+# ─── clean_scratch_dir (tick-end stage-agnostic cross-dispatch guard) ───
+# Closes the cross-dispatch persistence vector: .scratch/ is gitignored
+# and therefore invisible to git status / partition / self_leak_paths
+# on every stage. Without this cleanup, files an agent drops into
+# .scratch/ during one dispatch survive into the next.
+
+test_clean_scratch_dir_removes_directory() {
+  local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
+  mkdir -p "$td/.scratch/nested"
+  echo "leftover" > "$td/.scratch/payload.md"
+  echo "deep" > "$td/.scratch/nested/file.md"
+  clean_scratch_dir "$td" >/dev/null 2>&1
+  if [[ -e "$td/.scratch" ]]; then
+    report_fail 'scratch-clean: .scratch/ removed' 'absent' 'present'
+  else
+    report_ok 'scratch-clean: .scratch/ directory removed (including nested files)'
+  fi
+  rm -rf "$td"
+}
+test_clean_scratch_dir_removes_directory
+
+test_clean_scratch_dir_missing_noop() {
+  local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
+  local rc=0
+  clean_scratch_dir "$td" >/dev/null 2>&1 || rc=$?
+  assert_eq 'scratch-clean: missing .scratch/ returns rc=0 (no-op)' '0' "$rc"
+  rm -rf "$td"
+}
+test_clean_scratch_dir_missing_noop
+
+test_clean_scratch_dir_preserves_siblings() {
+  # Cleanup MUST NOT touch anything outside .scratch/. The worktree's
+  # source files, gitignored .pipeline-config, etc., all stay.
+  local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
+  mkdir -p "$td/.scratch" "$td/src" "$td/.pipeline-config"
+  echo "scratch" > "$td/.scratch/junk.md"
+  echo "source"  > "$td/src/main.rs"
+  echo "config"  > "$td/.pipeline-config/config.json"
+  clean_scratch_dir "$td" >/dev/null 2>&1
+  if [[ -f "$td/src/main.rs" && -f "$td/.pipeline-config/config.json" && ! -e "$td/.scratch" ]]; then
+    report_ok 'scratch-clean: preserves siblings (.scratch/ gone, src/ + .pipeline-config/ intact)'
+  else
+    report_fail 'scratch-clean: sibling preservation' \
+      'src/main.rs + .pipeline-config/config.json present; .scratch absent' \
+      "src=$([[ -f "$td/src/main.rs" ]] && echo y || echo n) cfg=$([[ -f "$td/.pipeline-config/config.json" ]] && echo y || echo n) scratch=$([[ -e "$td/.scratch" ]] && echo present || echo absent)"
+  fi
+  rm -rf "$td"
+}
+test_clean_scratch_dir_preserves_siblings
+
+test_clean_scratch_dir_dry_run_skips_mutation() {
+  local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
+  mkdir -p "$td/.scratch"
+  echo "preserved" > "$td/.scratch/payload.md"
+  (
+    PIPELINE_DRY_RUN=1
+    clean_scratch_dir "$td"
+  ) >/dev/null 2>&1
+  if [[ -f "$td/.scratch/payload.md" ]]; then
+    report_ok 'scratch-clean: dry-run preserves .scratch/ contents'
+  else
+    report_fail 'scratch-clean: dry-run' 'preserved' 'removed'
+  fi
+  rm -rf "$td"
+}
+test_clean_scratch_dir_dry_run_skips_mutation
+
+# ─── Integration test (M-T2): self-leak handler pipeline end-to-end ─────
+# All clean_self_leak_residue unit tests call the helper directly with
+# hand-crafted path lists. The full production flow is:
+#   tick-start snapshot → dispatch → partition → observed-vs-self-leak
+#   classification (populates self_leak_paths + self_leak_hashes) →
+#   stage_is_read_mostly branch → clean_self_leak_residue invocation
+# A regression dropping `self_leak_paths+=("$p")` from the classification
+# loop would cause clean_self_leak_residue to be invoked with an empty
+# array → silent no-op. The wire-up greps catch the deletion at source
+# level; this test exercises the dynamic behavior of the loop + helper
+# pair together.
+test_self_leak_handler_pipeline_e2e() {
+  local td; td="$(mktemp -d -t twinning-pipeline.XXXXXX)"
+  local wt="$td/wt"
+  _self_leak_make_repo "$wt" "feat/integration"
+
+  # Seed the OPERATOR's pre-existing edit (would be in tick-start snapshot).
+  echo "operator-wip" > "$wt/operator-edit.md"
+  # Seed two AGENT residue files (would self-leak post-dispatch).
+  echo "agent-fixture-A" > "$wt/agent-A.md"
+  echo "agent-fixture-B" > "$wt/agent-B.md"
+
+  # Build a snapshot_file containing ONLY the operator's path (the
+  # state at tick-start, before dispatch produced agent-A.md / agent-B.md).
+  local snapshot_file="$td/snapshot"
+  echo "operator-edit.md" > "$snapshot_file"
+
+  # Simulate partition's out_scope_file output. In production this comes
+  # from `git status -z | partition_dirty_paths ... 5>out_scope_file`.
+  # All three files are dirty post-dispatch and (since the test stage
+  # is `reviewing` with no allowlist) all three land in out-of-scope FD5.
+  local out_scope_file="$td/out_scope"
+  printf 'operator-edit.md\0agent-A.md\0agent-B.md\0' > "$out_scope_file"
+
+  # Stub metrics.sh so the helper's emit doesn't fail.
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+
+  # Now replay the observed-vs-self-leak classification loop from
+  # bin/run-local.sh:286-310. If the loop's self_leak_paths+=("$p") line
+  # is missing in the actual production file, this replay still works
+  # because we're executing OUR copy here — the wire-up grep is what
+  # catches the source-level regression. This test catches a different
+  # class: that the dynamic semantics work correctly when the loop IS
+  # wired up properly.
+  local observed_buckets=() self_leak_hashes=() self_leak_paths=()
+  while IFS= read -r -d '' p; do
+    if grep -qxF -- "$p" "$snapshot_file"; then
+      observed_buckets+=("$(bucket_for_path "$p")")
+    else
+      self_leak_hashes+=("$(sha12 "$p")")
+      self_leak_paths+=("$p")
+    fi
+  done < "$out_scope_file"
+
+  # Invariant: operator's path went to observed; agent's paths went to
+  # self_leak. The C1 correctness invariant is enforced HERE (the
+  # snapshot check in the classification loop), not in clean_self_leak_residue.
+  assert_eq 'pipeline: observed_buckets count' '1' "${#observed_buckets[@]}"
+  assert_eq 'pipeline: self_leak_paths count'   '2' "${#self_leak_paths[@]}"
+  assert_eq 'pipeline: self_leak_hashes count'  '2' "${#self_leak_hashes[@]}"
+
+  # stage_is_read_mostly branch — reviewing IS read-mostly, so clean path runs.
+  if stage_is_read_mostly reviewing; then
+    (
+      SCRIPT_DIR="$td/stubs"
+      clean_self_leak_residue ENG-INT01 reviewing "$wt" "${self_leak_paths[@]}"
+    ) >/dev/null 2>&1
+  fi
+
+  # Assert C1 — operator's edit survives.
+  local op_content; op_content="$(cat "$wt/operator-edit.md" 2>/dev/null)"
+  if [[ "$op_content" == "operator-wip" ]]; then
+    report_ok 'pipeline-e2e: operator pre-existing edit survives (C1 invariant preserved)'
+  else
+    report_fail 'pipeline-e2e: C1 invariant' 'operator-wip' "${op_content:-MISSING}"
+  fi
+
+  # Assert agent residue removed.
+  if [[ ! -f "$wt/agent-A.md" && ! -f "$wt/agent-B.md" ]]; then
+    report_ok 'pipeline-e2e: agent residue removed (both self-leak paths)'
+  else
+    report_fail 'pipeline-e2e: residue removal' \
+      'both agent-A.md and agent-B.md removed' \
+      "A=$([[ -f "$wt/agent-A.md" ]] && echo present || echo absent) B=$([[ -f "$wt/agent-B.md" ]] && echo present || echo absent)"
+  fi
+
+  # Assert metric was emitted with count=2.
+  case "$(cat "$sink")" in
+    *'sweep-readonly-residue-cleaned ENG-INT01 reviewing cleaned 0 count=2 branch=feat/integration'*)
+      report_ok 'pipeline-e2e: metric emitted with count=2 and integration branch'
+      ;;
+    *)
+      report_fail 'pipeline-e2e: metric payload' \
+        'sweep-readonly-residue-cleaned ENG-INT01 reviewing cleaned 0 count=2 branch=feat/integration ...' \
+        "$(cat "$sink")"
+      ;;
+  esac
+
+  rm -rf "$td"
+}
+test_self_leak_handler_pipeline_e2e
+
+# ─── Wire-up assertions (review finding m1 — strengthened post-v2) ──────
+# A regression that deletes any of the four load-bearing wire-up lines
+# from run-local.sh would leave every unit test green while removing
+# the production fix entirely. The previous version used a greedy
+# `.*$issue_id.*$stage.*$dispatch_cwd` regex that matched even when
+# args were reordered or padded with junk — testing-reviewer M-T1.
+# This version pins each load-bearing line with explicit quoted-token
+# anchors so a positional regression visibly fails.
 test_self_leak_callsite_wired() {
   local rl="$SCRIPT_DIR/run-local.sh"
   if [[ ! -f "$rl" ]]; then
     report_fail 'self_leak: run-local.sh exists for wire-up grep' 'present' 'missing'
     return
   fi
-  if grep -qE 'clean_self_leak_residue.*\$issue_id.*\$stage.*\$dispatch_cwd' "$rl"; then
-    report_ok 'self_leak: clean_self_leak_residue callsite wired into bin/run-local.sh'
+  # Anchor 1: self_leak_paths array is declared empty alongside hashes.
+  if grep -qE '^[[:space:]]*self_leak_paths=\(\)' "$rl"; then
+    report_ok 'wire-up #1: self_leak_paths=() declaration present in run-local.sh'
   else
-    report_fail 'self_leak: callsite present' \
-      'grep finds clean_self_leak_residue invocation in run-local.sh' 'not found'
+    report_fail 'wire-up #1: self_leak_paths declaration' \
+      'self_leak_paths=() at column-aligned indentation' 'not found'
   fi
-  if grep -qE 'stage_is_read_mostly' "$rl"; then
-    report_ok 'self_leak: stage_is_read_mostly gate present in bin/run-local.sh'
+  # Anchor 2: self_leak_paths is appended-to in the observed-vs-self-leak
+  # loop (the load-bearing line that, if dropped, makes self_leak_paths
+  # always empty and silently no-ops clean_self_leak_residue).
+  if grep -qE 'self_leak_paths\+=\("\$p"\)' "$rl"; then
+    report_ok 'wire-up #2: self_leak_paths+=("$p") push site present in run-local.sh'
   else
-    report_fail 'self_leak: predicate gate' 'present' 'not found'
+    report_fail 'wire-up #2: self_leak_paths push' \
+      'self_leak_paths+=("$p") inside the observed-vs-self-leak loop' 'not found'
+  fi
+  # Anchor 3: stage_is_read_mostly is the gate inside the self-leak
+  # handler — must appear with $stage as the sole positional argument.
+  if grep -qE 'if[[:space:]]+stage_is_read_mostly[[:space:]]+"\$stage";' "$rl"; then
+    report_ok 'wire-up #3: stage_is_read_mostly "$stage" gate present in run-local.sh'
+  else
+    report_fail 'wire-up #3: predicate gate' \
+      'if stage_is_read_mostly "$stage"; then' 'not found'
+  fi
+  # Anchor 4: clean_self_leak_residue invocation with the exact
+  # positional argv (issue, stage, worktree) AND the array splat as
+  # the trailing argument. A refactor that drops "${self_leak_paths[@]}"
+  # or reorders any positional silently breaks the production path.
+  if grep -qE 'clean_self_leak_residue[[:space:]]+"\$issue_id"[[:space:]]+"\$stage"[[:space:]]+"\$dispatch_cwd"[[:space:]]+"\$\{self_leak_paths\[@\]\}"' "$rl"; then
+    report_ok 'wire-up #4: clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}" exact invocation'
+  else
+    report_fail 'wire-up #4: callsite exact shape' \
+      'clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}"' \
+      'not found (refactor may have reordered args or dropped the array splat)'
+  fi
+  # Anchor 5: clean_scratch_dir tick-end cleanup wired.
+  if grep -qE '^[[:space:]]*clean_scratch_dir[[:space:]]+"\$dispatch_cwd"' "$rl"; then
+    report_ok 'wire-up #5: clean_scratch_dir "$dispatch_cwd" tick-end cleanup present in run-local.sh'
+  else
+    report_fail 'wire-up #5: scratch-dir cleanup' \
+      'clean_scratch_dir "$dispatch_cwd" before the precedence block' 'not found'
   fi
 }
 test_self_leak_callsite_wired

@@ -168,9 +168,15 @@ halt_issue_for_self_leak() {
 # the stage-summary path (verified pre-PR).
 #
 # Returns 0 if stage is read-mostly (stage_output_paths empty),
-# else 1.
+# else 1. UNKNOWN stages return 1 (NOT read-mostly) — conservative
+# default so a typo'd stage cannot trigger the auto-clean branch and
+# silently discard agent output. stage_output_paths dies on unknown
+# stage; we catch the non-zero rc explicitly rather than swallowing
+# it as empty stdout.
 stage_is_read_mostly() {
-  [[ -z "$(stage_output_paths "$1" 2>/dev/null || true)" ]]
+  local out
+  out="$(stage_output_paths "$1" 2>/dev/null)" || return 1
+  [[ -z "$out" ]]
 }
 
 # clean_self_leak_residue <issue> <stage> <worktree> <path>...
@@ -263,6 +269,49 @@ clean_self_leak_residue() {
   bash "$SCRIPT_DIR/metrics.sh" sweep-readonly-residue-cleaned "$issue" "$stage" \
     "cleaned" 0 "count=${count} branch=${branch} hashes=${hash_csv} rm_fail=${rm_fail} checkout_fail=${ck_fail}" \
     || log "metrics.sh sweep-readonly-residue-cleaned emission failed (non-blocking)"
+}
+
+# clean_scratch_dir <worktree>
+#
+# Tick-end stage-agnostic .scratch/ cleanup. Removes the directory if
+# present, regardless of stage. Closes the cross-dispatch persistence
+# vector: .scratch/ is gitignored, so its contents do NOT appear in
+# `git status --porcelain` and therefore never reach partition_dirty_paths
+# on any stage. Without an explicit cleanup, files an agent drops into
+# .scratch/ during one dispatch survive into the next dispatch's worktree
+# and could be read (via the Read tool, allowlisted on most stages) by
+# the subsequent agent — a planted-file behavior-conditioning vector if
+# combined with prompt injection on the intervening stage.
+#
+# Stage-agnostic because:
+#   - On implementing/ui/qa, the agent may have used .scratch/ for
+#     verification fixtures DURING its dispatch. Those fixtures have no
+#     consumer after the dispatch ends (the agent's verdict + Linear
+#     comments capture the work product).
+#   - On reviewing/building/released, the agent may have done the same.
+#     clean_self_leak_residue handles paths visible to git status, but
+#     gitignored .scratch/ contents are invisible to that path. This
+#     cleanup is the only defense.
+#   - On brainstorming/planning, .scratch/* writes would self-leak via
+#     partition (the .scratch/* filter is gated to impl/ui/qa). But if
+#     somehow the agent dropped a .scratch/ payload that escaped notice
+#     (e.g. an unmerged-but-staged write), this catches it.
+#
+# Returns 0 always. Missing .scratch/ → no-op. rm -rf failures →
+# non-blocking warning. The cleanup runs late in the tick after the
+# in-scope commit; it cannot disturb anything already committed.
+clean_scratch_dir() {
+  local worktree="$1"
+  [[ -d "$worktree/.scratch" ]] || return 0
+  if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then
+    log "[DRY_RUN] scratch-clean: would remove $worktree/.scratch (tick-end cross-dispatch persistence guard)"
+    return 0
+  fi
+  if rm -rf -- "$worktree/.scratch" 2>/dev/null; then
+    log "scratch-clean: removed $worktree/.scratch (tick-end cross-dispatch persistence guard)"
+  else
+    log "scratch-clean: failed to remove $worktree/.scratch (rc=$?, non-blocking)"
+  fi
 }
 
 # tally_leaked_in_scope_failure <issue> <stage> <leaked_count> <leaked_hashes_csv>  (ENG-69)
