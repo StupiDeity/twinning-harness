@@ -437,11 +437,20 @@ threat surface is bounded today (no agent prompt instructs reading
 `.scratch/`) but the persistence is real and would compound under
 prompt injection on intervening stages.
 
-`clean_scratch_dir "$dispatch_cwd"` runs at tick-end in
-`bin/run-local.sh` *before* the self-leak / commit precedence block,
-so it executes regardless of subsequent halt or commit decisions.
-`rm -rf "$worktree/.scratch"` if the directory exists; no-op if
-absent; dry-run logs only. Failures are non-blocking (log + continue).
+`clean_scratch_dir "$dispatch_cwd"` runs in `bin/run-local.sh`
+**immediately after dispatch returns, before the `[[ $rc -ne 0 ]] && exit`
+rc-gate** — load-bearing ordering. Placing the cleanup downstream of
+the rc-gate (as a naive read of "tick-end" would suggest) leaks stale
+`.scratch/` payload across the operator's `--action continue` resume
+for every failure mode that exits non-zero before the partition phase:
+dispatch timeout (rc=124), envelope validator (rc=29), scope-check
+violation (rc=21), agent crash. The cleanup must run on those paths
+too, because that's exactly when an agent's partial `.scratch/` writes
+are most likely to be left behind. `rm -rf "$worktree/.scratch"` if
+the directory exists; no-op if absent; dry-run logs only; failures
+are non-blocking. The position invariant is pinned by
+`bin/run-local-helpers-adversarial-test.sh` wire-up anchor #6.
+
 The cleanup is stage-agnostic because no agent's work product lives
 in `.scratch/` after the dispatch ends — verdict + stage-summary
 capture work in Linear / `$(issue_dir)`.

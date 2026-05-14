@@ -260,6 +260,17 @@ set +e
 rc=$?
 set -e
 
+# Tick-end .scratch/ cleanup — runs BEFORE the rc-gate below so it
+# fires on EVERY post-dispatch path including agent failures (timeout
+# rc=124, envelope validator rc=29, scope-check rc=21, crashes).
+# Placing this AFTER the rc-gate (as in the original v3 patch) leaves
+# stale .scratch/ payload across operator --action continue resumes
+# on the failure path, re-opening the cross-dispatch state-injection
+# vector this helper exists to close. .scratch/ is gitignored, has no
+# upstream consumer regardless of dispatch outcome, and the cleanup
+# is rc=0 always (failures are non-blocking and logged).
+clean_scratch_dir "$dispatch_cwd"
+
 # ENG-69: route the run-stage exit through the per-issue/global lane
 # split. rc=24 (linear-post-failed) accumulates against the global
 # counter and trips the breaker at threshold; every other non-zero rc

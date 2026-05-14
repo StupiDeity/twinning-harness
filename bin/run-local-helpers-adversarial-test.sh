@@ -2796,6 +2796,24 @@ test_self_leak_callsite_wired() {
     report_fail 'wire-up #5: scratch-dir cleanup' \
       'clean_scratch_dir "$dispatch_cwd" before the precedence block' 'not found'
   fi
+  # Anchor 6: clean_scratch_dir MUST appear BEFORE the rc-gate that
+  # exits on dispatch failure. Without this position invariant, agent
+  # failures (timeout rc=124, envelope validator rc=29, scope-check
+  # rc=21, crashes) leave stale .scratch/ payload across operator
+  # --action continue resumes — re-opening the cross-dispatch state-
+  # injection vector. Catches refactor regressions that move the
+  # cleanup downstream of the failure exit (the bug correctness
+  # reviewer caught in v3).
+  local cleanup_line rcgate_line
+  cleanup_line="$(grep -n 'clean_scratch_dir[[:space:]]\+"\$dispatch_cwd"' "$rl" | head -1 | cut -d: -f1)"
+  rcgate_line="$(grep -nE '\[\[[[:space:]]+\$rc[[:space:]]+-ne[[:space:]]+0[[:space:]]+\]\][[:space:]]+&&[[:space:]]+exit' "$rl" | head -1 | cut -d: -f1)"
+  if [[ -n "$cleanup_line" && -n "$rcgate_line" && "$cleanup_line" -lt "$rcgate_line" ]]; then
+    report_ok "wire-up #6: clean_scratch_dir at line $cleanup_line runs BEFORE rc-gate at line $rcgate_line"
+  else
+    report_fail 'wire-up #6: positional invariant' \
+      "clean_scratch_dir must appear before [[ \$rc -ne 0 ]] && exit (cleanup=${cleanup_line:-MISSING}, rc-gate=${rcgate_line:-MISSING})" \
+      'cleanup is at or after rc-gate — agent-failure ticks would leak stale .scratch/ across --action continue'
+  fi
 }
 test_self_leak_callsite_wired
 

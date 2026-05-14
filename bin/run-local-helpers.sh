@@ -298,8 +298,15 @@ clean_self_leak_residue() {
 #     (e.g. an unmerged-but-staged write), this catches it.
 #
 # Returns 0 always. Missing .scratch/ → no-op. rm -rf failures →
-# non-blocking warning. The cleanup runs late in the tick after the
-# in-scope commit; it cannot disturb anything already committed.
+# non-blocking warning. Caller is responsible for placing the
+# invocation BEFORE any rc-based exit gate so the cleanup fires on
+# agent-failure ticks (timeout rc=124, envelope rc=29, scope-check
+# rc=21, crash) as well as success ticks. Without that ordering,
+# stale .scratch/ payload from a failed dispatch persists across the
+# operator's --action continue resume and re-opens the cross-dispatch
+# state-injection vector this helper exists to close. The bin/run-local.sh
+# wire-up at the post-dispatch line satisfies this ordering invariant;
+# bin/run-local-helpers-adversarial-test.sh anchor #6 pins it.
 clean_scratch_dir() {
   local worktree="$1"
   [[ -d "$worktree/.scratch" ]] || return 0
