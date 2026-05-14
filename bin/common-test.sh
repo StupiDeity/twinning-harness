@@ -686,6 +686,59 @@ try_acquire_lock "$_TAL_DIR/lock1" || rc=$?
   || fail_at "AC-TAL-RELEASE" "rc=$rc"
 release_lock "$_TAL_DIR/lock1"
 
+# AC-TAL-PID-RECORDED: a successful acquire writes the holder pid into
+# the lock dir so future acquirers can stale-check on liveness. Without
+# the pid record, an SIGKILL'd worker would leak the lock indefinitely
+# (review.major: bin/common.sh:411-414 + bin/run-local.sh:349 — no
+# stale-lock recovery).
+try_acquire_lock "$_TAL_DIR/lock-pid" || true
+[[ -f "$_TAL_DIR/lock-pid/pid" && "$(cat "$_TAL_DIR/lock-pid/pid")" == "$$" ]] \
+  && pass_at "AC-TAL-PID-RECORDED: try_acquire_lock writes pid file" \
+  || fail_at "AC-TAL-PID-RECORDED" "expected pid=$$, got $(cat "$_TAL_DIR/lock-pid/pid" 2>/dev/null || echo absent)"
+release_lock "$_TAL_DIR/lock-pid"
+
+# AC-TAL-RECLAIM-DEAD: a lock whose holder pid is no longer alive is
+# reclaimed on the next try_acquire_lock — fixes the host-reboot /
+# SIGKILL / oomkiller leak path where the EXIT trap never fired.
+( true ) &
+_dead_pid=$!
+wait "$_dead_pid" 2>/dev/null || true   # reap so kill -0 fails
+mkdir "$_TAL_DIR/lock-dead"
+printf '%s\n' "$_dead_pid" > "$_TAL_DIR/lock-dead/pid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-dead" || rc=$?
+[[ "$rc" == "0" && "$(cat "$_TAL_DIR/lock-dead/pid")" == "$$" ]] \
+  && pass_at "AC-TAL-RECLAIM-DEAD: stale lock (dead pid) reclaimed by new acquirer" \
+  || fail_at "AC-TAL-RECLAIM-DEAD" "rc=$rc pid=$(cat "$_TAL_DIR/lock-dead/pid" 2>/dev/null || echo absent)"
+release_lock "$_TAL_DIR/lock-dead"
+
+# AC-TAL-RECLAIM-NO-PID: a lock dir with no pid file (legacy, or
+# interrupted acquire between mkdir and write) is also stale and
+# reclaimable.
+mkdir "$_TAL_DIR/lock-nopid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-nopid" || rc=$?
+[[ "$rc" == "0" && "$(cat "$_TAL_DIR/lock-nopid/pid")" == "$$" ]] \
+  && pass_at "AC-TAL-RECLAIM-NO-PID: pidless lock dir reclaimed" \
+  || fail_at "AC-TAL-RECLAIM-NO-PID" "rc=$rc"
+release_lock "$_TAL_DIR/lock-nopid"
+
+# AC-TAL-LIVE-BLOCKS: a lock held by a live process must NOT be reclaimed
+# (false reclaim would race two workers onto the same issue). Use a
+# backgrounded sleep as the live holder.
+( sleep 30 ) &
+_live_pid=$!
+mkdir "$_TAL_DIR/lock-live"
+printf '%s\n' "$_live_pid" > "$_TAL_DIR/lock-live/pid"
+rc=0
+try_acquire_lock "$_TAL_DIR/lock-live" || rc=$?
+[[ "$rc" == "1" && "$(cat "$_TAL_DIR/lock-live/pid")" == "$_live_pid" ]] \
+  && pass_at "AC-TAL-LIVE-BLOCKS: live holder blocks reclaim (rc=1)" \
+  || fail_at "AC-TAL-LIVE-BLOCKS" "rc=$rc pid=$(cat "$_TAL_DIR/lock-live/pid" 2>/dev/null)"
+kill "$_live_pid" 2>/dev/null || true
+wait "$_live_pid" 2>/dev/null || true
+rm -rf "$_TAL_DIR/lock-live"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
