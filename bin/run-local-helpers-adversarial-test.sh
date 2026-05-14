@@ -2817,6 +2817,53 @@ test_self_leak_callsite_wired() {
 }
 test_self_leak_callsite_wired
 
+# ─── ENG-81 Task 4: per-issue .in-flight.lock contention ──────────────
+# Acquired by the run-local.sh scheduler arm before forking a worker
+# for a specific issue. Prevents the same issue from being dispatched
+# twice if a tick-N worker is still running when tick-N+1 fires (the
+# K=1 lock cannot help here — it is a global single-flight, not a
+# per-issue gate). Uses try_acquire_lock from common.sh (added in this
+# ticket; non-blocking by design — acquire_lock with timeout=0 means
+# "wait forever" and would hang the scheduler).
+test_inflight_lock_contention() {
+  local case_name="AC-INFLIGHT-LOCK"
+  local eh_dir; eh_dir="$(mktemp -d -t twinning-inflight.XXXXXX)"
+  local issue_root="$eh_dir/issue-state-test"
+  mkdir -p "$issue_root/ENG-INFLIGHT"
+
+  # First acquire (no contention) succeeds with empty stdout.
+  local out1
+  out1="$(PROJECT_STATE_DIR="$issue_root" bash -c '
+    SCRIPT_DIR="'"$SCRIPT_DIR"'"
+    source "$SCRIPT_DIR/common.sh"
+    try_acquire_lock "$(issue_dir ENG-INFLIGHT)/.in-flight.lock" || echo SECOND_FAILED
+  ' 2>&1)"
+  if [[ -z "$out1" ]]; then
+    report_ok "$case_name first-acquire produces no output (lock taken)"
+  else
+    report_fail "$case_name first acquire" "empty stdout" "got: $out1"
+  fi
+
+  # Second acquire (with the lock dir from the prior call still in place)
+  # must fail with rc=1 → the script prints SECOND_FAILED. The lock dir
+  # is left in place by the prior call so this models the real failure
+  # mode: tick N+1 fires while tick N's worker still holds the lock.
+  local out2
+  out2="$(PROJECT_STATE_DIR="$issue_root" bash -c '
+    SCRIPT_DIR="'"$SCRIPT_DIR"'"
+    source "$SCRIPT_DIR/common.sh"
+    try_acquire_lock "$(issue_dir ENG-INFLIGHT)/.in-flight.lock" || echo SECOND_FAILED
+  ' 2>&1)"
+  if grep -q SECOND_FAILED <<<"$out2"; then
+    report_ok "$case_name second-acquire blocks (rc=1 → SECOND_FAILED)"
+  else
+    report_fail "$case_name second-acquire" "SECOND_FAILED in output" "got: $out2"
+  fi
+
+  rm -rf "$eh_dir"
+}
+test_inflight_lock_contention
+
 printf '\n'
 printf 'adversarial summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
