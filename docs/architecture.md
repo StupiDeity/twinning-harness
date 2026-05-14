@@ -343,16 +343,24 @@ Schema in [`operations.md#issue-statejson-schema`](operations.md#issue-statejson
 
 A directory-based counting semaphore at
 `$HARNESS_STATE_DIR/.claude-semaphore/slot-<N>/` caps concurrent
-`claude -p` invocations, system-wide. Cap defaults to 2 (per
-`orchestrator.max_concurrent_features`); operators override via env
-`CLAUDE_MAX_CONCURRENT` or per-project config (precedence: env >
-config > 2). Pre-ENG-81 this was a binary mutex at `.claude-mutex.lock/`
-(cap=1).
+`claude -p` invocations across every acquirer that shares
+`$HARNESS_STATE_DIR`. Each acquirer reads its own cap from
+`_resolve_K` (env `CLAUDE_MAX_CONCURRENT` > config
+`orchestrator.max_concurrent_features` > built-in 2) and races for
+slots `slot-1`..`slot-<cap>`. Pre-ENG-81 this was a binary mutex at
+`.claude-mutex.lock/` (cap=1).
 
 The cap applies:
 
 - Across **projects** — two projects' ticks may now run `claude -p`
-  simultaneously up to cap dispatches in flight.
+  simultaneously, each up to its own cap. The slot dir is shared so the
+  **system-wide max in-flight = `max(caps)`** across all acquirers (whoever
+  has the largest cap defines the largest slot index that gets created).
+  When project A has cap=2 and project B has cap=3, project B can reach
+  three concurrent dispatches; project A is bounded at two and never tries
+  `slot-3`. If you need a hard system-wide ceiling, set the same cap
+  everywhere (env `CLAUDE_MAX_CONCURRENT` on the host plist is the
+  simplest way).
 - Across the orchestrator and the retrospective.
 - Across stages of the same issue (impossible in practice — one tick
   runs one stage per worker; ENG-81's per-issue `.in-flight.lock`

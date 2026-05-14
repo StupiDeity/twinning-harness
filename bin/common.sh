@@ -436,7 +436,16 @@ try_acquire_lock() {
     if mkdir "$dir" 2>/dev/null; then
       printf '%s\n' "$$" > "$dir/pid" 2>/dev/null || true
       date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/timestamp" 2>/dev/null || true
-      return 0
+      # Post-mkdir pid-readback: if a sibling reclaimer's rm-rf interleaved
+      # between our mkdir and pid-write (both passed the dead-pid check),
+      # the dir is now missing or holds a different pid. Treat that as
+      # "lost the recovery race" — return rc=1 so the caller retries.
+      local readback=""
+      [[ -f "$dir/pid" ]] && readback="$(cat "$dir/pid" 2>/dev/null || printf '')"
+      if [[ "$readback" == "$$" ]]; then
+        return 0
+      fi
+      log "try_acquire_lock: post-mkdir pid-readback mismatch at $dir (got '${readback:-<absent>}', expected $$); lost recovery race"
     fi
   fi
   return 1

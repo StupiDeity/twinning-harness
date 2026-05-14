@@ -494,13 +494,13 @@ main() {
   # degrades to "no metric emit" and is non-fatal so hosts that haven't
   # installed gnu-time keep dispatching.
   #
-  # _PIPELINE_FORCE_NO_GTIME=1 (test-only) skips discovery so the
+  # _PIPELINE_GTIME_DISABLED=1 (test-only) skips discovery so the
   # degraded-mode test (G8.B) is deterministic on hosts that DO have
   # gnu-time installed — PATH-strip alone is fragile when the test PATH
   # has to keep /opt/homebrew for jq/awk reachability.
   local _gtime_bin="" _gtime_out=""
-  if [[ "${_PIPELINE_FORCE_NO_GTIME:-0}" == "1" ]]; then
-    log "[dispatch-resource-sample] gtime discovery forced off (_PIPELINE_FORCE_NO_GTIME=1)"
+  if [[ "${_PIPELINE_GTIME_DISABLED:-0}" == "1" ]]; then
+    log "[dispatch-resource-sample] gtime discovery forced off (_PIPELINE_GTIME_DISABLED=1)"
   elif command -v gtime >/dev/null 2>&1; then
     _gtime_bin="$(command -v gtime)"
     _gtime_out="$(mktemp -t pipeline-gtime-XXXXXX)"

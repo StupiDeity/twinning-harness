@@ -125,8 +125,12 @@ fi
 # Worktrees now live under ~/.twinning-pipeline/ENG-N/worktree/ alongside
 # issue-state.json + scope-approval. Parent is created on demand.
 resolve_worktree_path() {
-  # $1 = branch name (unused, kept for call-site compat), $2 = issue id
-  local branch="$1" issue="$2"
+  # Review-3 minor #10: dropped the dead `branch` parameter. Pre-fix this
+  # function took (branch, issue) for historic call-site compat but
+  # ignored `branch`; ENG-67's worktree-per-issue layout means the
+  # branch name is irrelevant to the path computation. Sole caller in
+  # this file now passes just $issue_id.
+  local issue="$1"
   [[ -n "$issue" ]] || die "resolve_worktree_path: issue id required"
   printf '%s/worktree' "$(issue_dir "$issue")"
 }
@@ -206,7 +210,12 @@ _run_worker() {
   # split. rc=24 (linear-post-failed) → global counter; every other
   # non-zero rc → per-issue counter; rc=0 clears both.
   route_run_stage_exit "$issue_id" "$stage" "$rc"
-  if [[ $rc -ne 0 ]]; then return $rc; fi
+  # Review-3 finding #3: reap tempfiles before returning so every failed
+  # dispatch path (timeout, envelope, scope, crash) cleans up. Pre-fix
+  # the `return $rc` ran unconditionally and leaked the snapshot tempfile.
+  # Kept on a single line so the wire-up #6 anchor's regex
+  # `[[ $rc -ne 0 ]]; then return $rc` stays matched.
+  if [[ $rc -ne 0 ]]; then rm -f "${_worker_tmps[@]}"; return $rc; fi
 
   # 3-stream partition sweep (ENG-14 D-3).
   local in_scope_file leaked_file out_scope_file
@@ -227,28 +236,32 @@ _run_worker() {
 
   # Classify out-of-scope into bucketed-observed (pre-existing, present
   # in tick-start snapshot) vs self-leak (NEW since tick start).
+  # Review-3 minor #11: bucket de-duplication is `sort -u` on a tempfile
+  # rather than the prior manual seen-flag inner loop. Same behavior;
+  # less code; pattern matches the rest of the helpers (every other
+  # multiset dedup in run-local-helpers.sh uses `sort -u`).
   local -a observed_buckets=()
   local -a self_leak_hashes=()
   local -a self_leak_paths=()
   if (( observed_count > 0 )); then
-    local p b seen existing
+    local buckets_raw
+    buckets_raw="$(mktemp -t twinning-buckets.XXXXXX)"
+    _worker_tmps+=("$buckets_raw")
+    local p
     while IFS= read -r -d '' p; do
       if grep -qxF -- "$p" "$snapshot_file"; then
-        b="$(bucket_for_path "$p")"
-        if (( ${#observed_buckets[@]} == 0 )); then
-          observed_buckets+=("$b")
-        else
-          seen=0
-          for existing in "${observed_buckets[@]}"; do
-            [[ "$existing" == "$b" ]] && { seen=1; break; }
-          done
-          (( seen )) || observed_buckets+=("$b")
-        fi
+        bucket_for_path "$p" >> "$buckets_raw"
       else
         self_leak_hashes+=("$(sha12 "$p")")
         self_leak_paths+=("$p")
       fi
     done < "$out_scope_file"
+    if [[ -s "$buckets_raw" ]]; then
+      local b
+      while IFS= read -r b; do
+        [[ -n "$b" ]] && observed_buckets+=("$b")
+      done < <(sort -u "$buckets_raw")
+    fi
   fi
 
   # Precedence: self-leak (hard-fail) > leaked-in-scope > in-scope
@@ -401,7 +414,7 @@ for di in $(seq 0 $((decisions_count - 1))); do
   # bin/run-local-content-adversarial-test.sh::AD-4.
   branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$issue_id")"
   worktree_path=""
-  worktree_path="$(resolve_worktree_path "$branch" "$issue_id")"
+  worktree_path="$(resolve_worktree_path "$issue_id")"
   mkdir -p "$(dirname "$worktree_path")"
   ensure_worktree "$branch" "$worktree_path"
   [[ -n "$worktree_path" ]] || die "internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from \$TARGET_REPO"
