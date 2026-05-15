@@ -429,21 +429,24 @@ config > built-in 2) against what you read above; a
 `_resolve_K: invalid …` line in the same log file flags any
 non-integer or `<1` value that fell through.
 
+**Rule out first — eligible-issue pool smaller than the cap.** Not a
+bug. The scheduler only dispatches issues whose `slot:hold,
+advanceable:true` classification fires; when fewer issues are
+advanceable than the cap allows, observed concurrency is the smaller
+of the two. Confirm via `bash bin/status.sh` (Pipeline state +
+slot-occupancy rows) before treating the symptom as a misconfiguration.
+
 ### Recover
 
 By cause:
 
 - **`CLAUDE_MAX_CONCURRENT` unintentionally `1`** → edit the launchd
   plist's `EnvironmentVariables` block (or `launchctl unsetenv`),
-  then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.twinning.pipeline.<slug>.plist`.
+  then `launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.twinning.pipeline.<slug>.plist`.
 - **Config explicitly `1`** → `jq '.orchestrator.max_concurrent_features = 2' "$TARGET_REPO/.pipeline-config/config.json" > /tmp/c && mv /tmp/c "$TARGET_REPO/.pipeline-config/config.json"`.
 - **Non-integer / `<1` resolved value silently fell through** → fix
   the offending value at whichever tier emitted the
   `_resolve_K: invalid …` warning (env or config).
-- **Eligible-issue pool smaller than the cap** → not a bug. The
-  scheduler only dispatches issues whose `slot:hold, advanceable:true`
-  classification fires; when fewer issues are advanceable than the
-  cap allows, observed concurrency is the smaller of the two.
 
 ### Root cause
 
