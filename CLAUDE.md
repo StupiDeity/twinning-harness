@@ -223,6 +223,51 @@ seen in Linear is human-applied.
   filed into `Backlog` (or any other state) are silently invisible to the poller until a
   human transitions them to Todo.
 
+## Ticket sizing rubric (autonomy boundary)
+
+Large tickets reliably need operator intervention to complete. File-time discipline
+keeps the queue dispatchable. Two axes plus an umbrella veto.
+
+**Axis 1 — Subsystems touched.** The harness has 7 separable subsystems:
+
+| Subsystem | Files |
+|---|---|
+| orchestrator | `run-local.sh`, `poll.sh`, `run-stage.sh`, `reconcile.sh`, `classify-failure.sh`, `metrics.sh` |
+| dispatch | `dispatch.sh`, `render-prompt.sh` |
+| agent prompts | `AGENT_PROMPTS.md`, `learned-rules/` |
+| Linear contract | `linear.sh`, markers, `pipeline-events.json`, labels |
+| scope/sweep | `scope-check.sh`, `run-local-helpers.sh::partition_dirty_paths` |
+| retrospective | `run-retrospective-local.sh`, retrospective-specific prompts |
+| tests/fixtures | `bin/*-test.sh` |
+
+- 1 subsystem → autonomy-safe; file as-is.
+- 2 subsystems with one clearly subordinate → autonomy-safe IF the scope boundary is
+  explicit in the ticket body.
+- 3+ subsystems → **split before filing.**
+
+**Axis 2 — Independent design decisions in the brainstorm.**
+
+- 1 decision → autonomy-safe.
+- 2 decisions where one is clearly subordinate → autonomy-safe.
+- 2+ independent decisions → **split before filing.**
+
+**Umbrella veto.** Any ticket framed as a "class", "umbrella", "structural", or
+"meta-" issue → automatically too large. File the underlying observed-instance
+tickets first; add a tracking parent only after the first instance ships.
+
+**Split mechanics.** When splitting an existing umbrella:
+
+1. Keep the umbrella in `Backlog` (becomes the parent).
+2. File sub-tickets via `save_issue` with `parentId` set to the umbrella's identifier.
+3. First-ready sub-tickets go to `Todo`; dependent ones stay in `Backlog` until their
+   predecessor merges.
+4. Sub-tickets carry their own type label (`Bug` / `Feature` / `Improvement`) per the
+   filing convention above.
+
+ENG-100, ENG-104, ENG-87 were all LARGE tickets that consumed disproportionate
+operator time before this rubric existed. The rubric was calibrated against the
+2026-05-15 audit of the open queue (18 tickets — 9 were LARGE).
+
 ## Per-issue state directory
 
 Per-issue scratch lives under `$PROJECT_STATE_DIR/ENG-N/`:
