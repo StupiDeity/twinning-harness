@@ -1211,6 +1211,36 @@ for stage_key in '## 1. Brainstorm Agent' '## 2. Plan Agent'; do
 done
 unset stage_key short rsb
 
+# ─── ENG-100 QA adversarial: §0 rule must reach EVERY stage body ────
+# The implement-side fixture above pins delivery for §§1-2 only
+# (brainstorm + planning — the two stages the rule was authored for).
+# Because §0 is the canonical cross-stage rule section, the
+# `Sub-agent debris (ENG-100)` paragraph MUST reach every dispatched
+# stage's rendered body. The Agent-tool sub-agent constraint applies
+# regardless of whether the parent agent is brainstorm, plan, or
+# implementing — any stage that dispatches an inner sub-agent could
+# generate debris. Pinning all 9 stages catches the regression where
+# the rule is accidentally promoted into §1 / §2 bodies (instead of
+# §0) and silently strips delivery to §§3-9.
+for stage_key in \
+  '## 3. Implementation Agent (Backend)' \
+  '## 4. UI Agent (Frontend)' \
+  '## 5. Review Agent' \
+  '## 6. QA Agent' \
+  '## 7. Build Agent' \
+  '## 8. Release Agent' \
+  '## 9. Retrospective Agent (Scheduled)'; do
+  short="${stage_key%% Agent*}"
+  rsb="$(rendered_stage_body "$stage_key")"
+  if printf '%s' "$rsb" | grep -qF 'Sub-agent debris (ENG-100)'; then
+    ok "QA-ADV ENG-100: rendered stage body ($short): §0 sub-agent debris rule delivered"
+  else
+    nope "QA-ADV ENG-100: rendered stage body ($short): §0 sub-agent debris rule delivered" \
+      "rule absent from rendered §0+§N for $short — promoting the rule out of §0 (or removing it) silently weakens debris discipline for non-docs stages"
+  fi
+done
+unset stage_key short rsb
+
 # ─── ENG-87 review-iter-7 M4: stage-summary mandate hoisted to §0 ──
 # Pre-iter-7 the staleness mandate ("MANDATORY — overwrite on every
 # dispatch / read-then-conditionally-skip") was duplicated across §§1-7

@@ -2941,6 +2941,132 @@ test_planning_self_leak_handler_pipeline_e2e() {
 }
 test_planning_self_leak_handler_pipeline_e2e
 
+# ─── ENG-100 QA adversarial: stage_auto_cleans_self_leak hardening ───
+# The implement-side test_auto_cleans_self_leak_predicate covers the
+# canonical positive + negative stage names. These additional cases
+# pin behavior under common drift surfaces a future refactor could
+# introduce silently: case folding, whitespace contamination from
+# upstream string handling, gerund/non-gerund divergence, and pattern
+# metacharacters that bash case-statements might (or might not) treat
+# as globs. Each variant MUST land on the halt lane — auto-clean is
+# the privileged path and any drift in the predicate's input space
+# must default to halt (the conservative, operator-visible choice).
+test_auto_cleans_self_leak_adversarial_inputs() {
+  local s
+
+  # Case folding — predicate is intentionally case-sensitive. A
+  # callsite refactor adding `,,` lowercase normalization would
+  # change semantics; pinning here forces that refactor to update
+  # this fixture deliberately.
+  for s in Planning PLANNING Brainstorming BRAINSTORMING Reviewing Building Released; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: case-sensitivity '$s' must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: case-sensitive — '$s' stays on halt lane"
+    fi
+  done
+
+  # Whitespace contamination — stage strings that arrive with leading,
+  # trailing, or embedded whitespace (CRLF state file, $(get_stage) with
+  # trailing newline, accidental quoting) must NOT silently route to
+  # auto-clean. The case-statement's literal match makes this true
+  # today; pinning keeps it true.
+  for s in 'planning ' ' planning' $'planning\n' $'planning\t' $'brainstorming ' ' brainstorming'; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: whitespace-padded must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: whitespace-padded — variant stays on halt lane"
+    fi
+  done
+
+  # Gerund/non-gerund divergence — the contract is gerund-only
+  # (matches STAGE_TO_SECTION keys in render-prompt.sh). A caller
+  # passing the base form silently routes a docs-only halt — a real
+  # halt-loop bug. Pin the base forms as halt-lane to surface the
+  # refactor.
+  for s in brainstorm plan review build release; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: non-gerund '$s' must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: non-gerund '$s' stays on halt lane (gerund contract)"
+    fi
+  done
+
+  # Glob/metachar in stage argument — bash case-statement treats the
+  # LEFT-side (subject) as a literal string and the RIGHT-side
+  # (patterns) as globs. So an attacker-controlled stage like '*' or
+  # 'br*' must NOT pattern-match any truthy stage. Pin to prevent a
+  # future refactor that quotes patterns differently or routes the
+  # check through `case "$normalized" in $(known_stages)) ...`.
+  for s in '*' '?' 'br*' 'plan*' '[bp]*'; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: glob-in-subject '$s' must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: glob-in-subject '$s' stays on halt lane"
+    fi
+  done
+
+  # Unset argument — calling with zero args (rather than '') should
+  # not crash under set -u and should stay on the halt lane. The
+  # function uses `case "$1" in` which under set -u would normally
+  # die, but the function is invoked from `if stage_auto_cleans_self_leak`
+  # which forks a subshell error if $1 is unbound. Confirm graceful
+  # halt-lane fallback.
+  if ( set -u; stage_auto_cleans_self_leak 2>/dev/null ); then
+    report_fail "auto_cleans-adv: zero-arg call must NOT auto-clean" 'false (or die)' 'true'
+  else
+    report_ok "auto_cleans-adv: zero-arg call stays on halt lane (no auto-clean privilege escalation)"
+  fi
+}
+test_auto_cleans_self_leak_adversarial_inputs
+
+# ─── ENG-100 QA adversarial: collision between operator-observed and ─
+# self-leak path. The C1 invariant (operator's pre-existing edit
+# survives) is pinned by test_planning_self_leak_handler_pipeline_e2e
+# for distinct paths. This fixture exercises the harder case: the
+# agent writes to the SAME path the operator was already editing.
+# Because the partition's observed-vs-self-leak split keys on
+# membership in the tick-start snapshot (path-literal `grep -qxF`),
+# a path present in the snapshot routes to observed_buckets — the
+# self-leak handler NEVER receives it. clean_self_leak_residue does
+# not touch the operator's edit even when the agent's write would
+# have collided with it. Pin the routing so a future partition
+# refactor that switches to symlink-resolved or canonicalized
+# membership testing cannot accidentally hand the path to cleanup.
+test_observed_path_never_reaches_cleanup() {
+  local td; td="$(mktemp -d -t twinning-collision.XXXXXX)"
+  local snapshot_file="$td/snapshot"
+  echo "shared-doc.md" > "$snapshot_file"
+
+  local out_scope_file="$td/out_scope"
+  printf 'shared-doc.md\0agent-debris.txt\0' > "$out_scope_file"
+
+  local -a observed_buckets=() self_leak_hashes=() self_leak_paths=()
+  local p
+  while IFS= read -r -d '' p; do
+    if grep -qxF -- "$p" "$snapshot_file"; then
+      observed_buckets+=("$(bucket_for_path "$p")")
+    else
+      self_leak_hashes+=("$(sha12 "$p")")
+      self_leak_paths+=("$p")
+    fi
+  done < "$out_scope_file"
+
+  if (( ${#observed_buckets[@]} == 1 )); then
+    report_ok 'collision: shared-doc.md routed to observed_buckets (operator edit protected)'
+  else
+    report_fail 'collision: observed_buckets count' '1' "${#observed_buckets[@]}"
+  fi
+  if (( ${#self_leak_paths[@]} == 1 )) && [[ "${self_leak_paths[0]}" == "agent-debris.txt" ]]; then
+    report_ok 'collision: only agent-debris.txt reaches self_leak_paths (cleanup will not see shared-doc.md)'
+  else
+    report_fail 'collision: self_leak_paths shape' '[agent-debris.txt]' "[${self_leak_paths[*]}]"
+  fi
+
+  rm -rf "$td"
+}
+test_observed_path_never_reaches_cleanup
+
 # ─── Scheduler-side in-flight lock wire-up invariants ────────────────
 # Production code (run-local.sh) must:
 #   1. Declare `_SCHEDULER_INFLIGHT_LOCKS=()` array.
