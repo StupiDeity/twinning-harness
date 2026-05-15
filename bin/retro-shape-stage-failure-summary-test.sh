@@ -454,6 +454,112 @@ STUB2
 }
 
 # ---------------------------------------------------------------------------
+# QA adversarial fixtures (test(ENG-129): QA adversarial coverage)
+# These are NOT in the plan's Failure Mode → Test Map.
+# ---------------------------------------------------------------------------
+
+# QA-ADV-1: _compute_retro_period happy path — git returns valid unix timestamp
+{
+  name="qa-adv-1-compute-retro-period-happy-path"
+  GIT_STUB_DIR2="$(mktemp -d)"
+  # A known unix timestamp: 1715000000 = 2024-05-06T19:33:20Z (approx)
+  FIXED_TS=1715000000
+  cat > "$GIT_STUB_DIR2/git" <<GITSTUB2
+#!/usr/bin/env bash
+args=("\$@")
+is_log=false
+for a in "\${args[@]}"; do [[ "\$a" == "log" ]] && is_log=true; done
+if \$is_log; then
+  printf '%s weekly retrospective merge\n' "$FIXED_TS"
+  exit 0
+fi
+command git "\$@"
+GITSTUB2
+  chmod +x "$GIT_STUB_DIR2/git"
+  ORIG_PATH2="$PATH"
+  export PATH="$GIT_STUB_DIR2:$PATH"
+
+  period_output2="$(
+    export PIPELINE_DRY_RUN=1
+    export TARGET_REPO="${TARGET_REPO:-$HARNESS_DIR}"
+    source "$HARNESS_DIR/run-retrospective-local.sh" 2>/dev/null || true
+    _compute_retro_period 2>/dev/null
+  )" || true
+  export PATH="$ORIG_PATH2"
+  rm -rf "$GIT_STUB_DIR2"
+
+  # The start should be derived from the fixed timestamp, not 30-day fallback.
+  # 1715000000 → 2024-05-06, so start should contain "2024-05-06"
+  start2="$(printf '%s' "$period_output2" | sed -n '1p')"
+  if printf '%s' "$start2" | grep -qF "2024-05-06"; then
+    _pass "$name"
+  else
+    _fail "$name (start=$start2; expected 2024-05-06 from fixed ts=$FIXED_TS)"
+  fi
+}
+
+# QA-ADV-2: unknown flag argument dies with clear message
+{
+  name="qa-adv-2-unknown-flag-dies"
+  artifact_path="$ARTIFACT_DIR/adv2.md"
+  rc=0
+  msg="$(main \
+    --bogus-flag value \
+    --artifact-path "$artifact_path" \
+    --period-start-iso 2026-05-08T00:00:00Z \
+    --period-end-iso   2026-05-15T00:00:00Z \
+    2>&1)" || rc=$?
+  if (( rc != 0 )) && printf '%s' "$msg" | grep -q "unknown argument"; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc msg=$msg)"
+  fi
+}
+
+# QA-ADV-3: _validate_no_unresolved_tokens passes on real rendered template
+{
+  name="qa-adv-3-validate-passes-on-real-template"
+  # Render the real template with all 5 tokens substituted; validator should pass.
+  tmp_rendered="$(mktemp -t adv3-rendered-XXXXXX.md)"
+  _ARTIFACT_PATH="$ARTIFACT_DIR/adv3-art.md"
+  _PERIOD_START_ISO="2026-05-08T00:00:00Z"
+  _PERIOD_END_ISO="2026-05-15T00:00:00Z"
+  _PREVIOUS_PERIOD_PATH="(none)"
+  rc=0
+  _render_prompt "$tmp_rendered" 2>/dev/null || rc=$?
+  if (( rc == 0 )); then
+    validator_rc=0
+    validator_msg="$(_validate_no_unresolved_tokens "$tmp_rendered" 2>&1)" || validator_rc=$?
+    if (( validator_rc == 0 )); then
+      _pass "$name"
+    else
+      _fail "$name (validator died: $validator_msg)"
+    fi
+  else
+    _fail "$name (_render_prompt failed rc=$rc)"
+  fi
+  rm -f "$tmp_rendered"
+}
+
+# QA-ADV-4: --previous-period-path explicitly empty string dies (requires a value)
+{
+  name="qa-adv-4-previous-period-path-empty-dies"
+  artifact_path="$ARTIFACT_DIR/adv4.md"
+  rc=0
+  msg="$(main \
+    --artifact-path "$artifact_path" \
+    --period-start-iso 2026-05-08T00:00:00Z \
+    --period-end-iso   2026-05-15T00:00:00Z \
+    --previous-period-path "" \
+    2>&1)" || rc=$?
+  if (( rc != 0 )) && printf '%s' "$msg" | grep -q "requires a value"; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc msg=$msg)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Cleanup and summary
 # ---------------------------------------------------------------------------
 rm -rf "$STUB_DIR" "$ARTIFACT_DIR"
