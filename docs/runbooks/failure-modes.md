@@ -470,13 +470,13 @@ dispatch concurrency" for the full resolution-precedence model.
 
 An issue with a `stage:*` label hasn't advanced for one or more
 ticks. `bin/status.sh` shows it as held but no dispatch fires. A
-directory `$(bash bin/pipeline.sh issue-dir ENG-N)/.in-flight.lock/`
+directory `$PROJECT_STATE_DIR/ENG-N/.in-flight.lock/`
 exists with `pid` and `timestamp` files inside.
 
 ### Diagnose
 
 ```bash
-issue_dir="$(bash bin/pipeline.sh issue-dir ENG-N)"
+issue_dir="$PROJECT_STATE_DIR/ENG-N"
 
 # 1. Confirm the lock dir is present
 ls "$issue_dir/.in-flight.lock"
