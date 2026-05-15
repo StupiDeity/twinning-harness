@@ -140,7 +140,7 @@ only role; ENG-81 added the per-tick dispatch role on top).
 - A resolved value `< 1` falls through (cap=0 would disable every
   dispatch).
 - Invalid values log a `_resolve_K: invalid …` warning to stderr,
-  visible in `$PROJECT_STATE_DIR/<slug>/logs/local-$(date -u +%Y-%m-%d).log`.
+  visible in `$PROJECT_STATE_DIR/logs/local-$(date -u +%Y-%m-%d).log`.
 
 **Inspect live concurrency:**
 
