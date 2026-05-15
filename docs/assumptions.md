@@ -132,8 +132,11 @@ A global counting semaphore at
   contend for the same locks.
 - Two machines cannot share a harness state directory — there's no
   cross-host coordination.
-- Cross-project ticks DO serialize correctly (the global mutex covers
-  every project's dispatch).
+- Cross-project ticks share the per-host counting semaphore at
+  `$HARNESS_STATE_DIR/.claude-semaphore/` (cap from
+  `orchestrator.max_concurrent_features`, default 2 since ENG-81), so
+  cross-project concurrent dispatch is bounded by that cap rather than
+  fully serialized.
 
 **Failure mode:** If you sync `$XDG_STATE_HOME` across machines (e.g.
 via cloud sync), you'll see corrupted lock dirs and confused state.

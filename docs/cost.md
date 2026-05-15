@@ -28,9 +28,9 @@ set; if it is, the harness will refuse to dispatch.
 
 If you want metered pricing, change the `claude` CLI to use an API key
 and unset the subscription session. **The harness is not designed for
-this** — the global mutex + 5-minute tick is calibrated against
-subscription rate limits, and you'll see throughput throttle on the
-API without any benefit.
+this** — the per-host counting semaphore (default cap 2) + 5-minute tick
+is calibrated against subscription rate limits, and you'll see throughput
+throttle on the API without any benefit.
 
 The rest of this document treats subscription mode as the baseline.
 
@@ -178,8 +178,9 @@ on a Pro subscription will hit the rolling cap; Max plans typically
 absorb it cleanly.
 
 The 5-minute tick is the natural rate-limiter — at most 12 dispatches
-per hour from one project. Multi-project setups serialize through the
-global mutex, so throughput is bounded regardless of project count.
+per hour from one project. Multi-project setups share the per-host
+counting semaphore (default cap 2 via `orchestrator.max_concurrent_features`),
+so throughput is bounded by the cap regardless of project count.
 
 ## Cost telemetry on disk
 

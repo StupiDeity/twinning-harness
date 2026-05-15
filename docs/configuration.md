@@ -32,6 +32,7 @@ recreate the per-target config on each fresh clone**.
   },
   "orchestrator": {
     "paused": false,
+    "max_concurrent_features": 2,
     "dispatch_timeout_minutes": 30,
     "dispatch_timeout_minutes_per_stage": {
       "brainstorming": 60,
@@ -114,6 +115,60 @@ Per-stage override. Wins over the global. Wins over the built-in default.
 After applying an override, grep `gtimeout ... <seconds>` in the per-stage
 transcript at `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log` to confirm
 it took effect.
+
+<!-- Anchor target: linked from README.md §Configuration and from
+     docs/runbooks/recovery.md §9. Renaming the slug or removing the
+     <a id="..."></a> tag breaks both incoming links — search for
+     `orchestratormax_concurrent_features` before editing. -->
+### `orchestrator.max_concurrent_features` (ENG-81) <a id="orchestratormax_concurrent_features"></a>
+
+Per-project cap on **simultaneous `claude -p` dispatches per tick**.
+See **Dual role** below for the WIP-cap interaction.
+
+**Default:** `2`.
+
+**Resolution precedence** (mirrors `dispatch_timeout_minutes_per_stage`):
+
+1. `CLAUDE_MAX_CONCURRENT` env var (set in
+   `~/Library/LaunchAgents/com.twinning.pipeline.<slug>.plist`'s
+   `EnvironmentVariables` block + `launchctl bootstrap`) — highest.
+2. `.orchestrator.max_concurrent_features` in target's
+   `.pipeline-config/config.json`.
+3. Built-in default `2`.
+
+**Validation rules:**
+- Values must be **integers**. `"2"`, `"K=2"`, `"2 "` all fail the
+  `^[0-9]+$` regex guard at `bin/common.sh::_resolve_K` and fall
+  through to the next layer.
+- A resolved value `< 1` falls through (cap=0 would disable every
+  dispatch).
+- Invalid values log a `_resolve_K: invalid …` warning to stderr,
+  visible in `$PROJECT_STATE_DIR/logs/local-$(date -u +%Y-%m-%d).log`.
+
+**Inspect live concurrency:**
+
+```bash
+ls $HARNESS_STATE_DIR/.claude-semaphore/slot-*/pid
+bash bin/status.sh   # "Concurrent dispatches active right now" row
+```
+
+Each slot dir carries the owning `dispatch.sh` PID; an empty listing
+means no live dispatches.
+
+**Emergency rollback** — see
+[`docs/runbooks/recovery.md`](runbooks/recovery.md#9-emergency-roll-back-concurrent-dispatches-to-k1)
+for the host-wide / per-project K=1 recipe.
+
+**Dual role.** The SAME knob is also the WIP cap on `stage:*`-labelled
+issues (the pre-ENG-81 meaning, still in force). A target with
+`max_concurrent_features=2` allows up to 2 issues simultaneously in
+any active-development stage AND up to 2 simultaneous `claude -p`
+dispatches per tick. Setting it to 1 reverts to the pre-ENG-81
+behaviour for both.
+
+For the full mechanism (counting-semaphore mkdir loop, slot reclaim,
+cross-project semantics), see `CLAUDE.md` §"Per-project dispatch
+concurrency".
 
 ### `orchestrator.entry_conditions` (ENG-86)
 
@@ -331,6 +386,16 @@ wildcards, test enumeration matches disk).
         { "name": "pr-approved-by-non-bot", "type": "github-pr-review" }
       ]
     }
+  }
+}
+```
+
+### Constrained concurrency (single-slot)
+
+```json
+{
+  "orchestrator": {
+    "max_concurrent_features": 1
   }
 }
 ```

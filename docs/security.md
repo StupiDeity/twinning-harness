@@ -17,7 +17,7 @@ The host machine is fully trusted. The harness runs as your user,
 reads/writes your home directory, and operates a long-lived `claude`
 subscription session. Anyone with shell access to the host can:
 
-- Trigger arbitrary `claude -p` dispatches (subject to the global mutex).
+- Trigger arbitrary `claude -p` dispatches (subject to the per-host concurrency cap from `orchestrator.max_concurrent_features`, default 2).
 - Read every secret in `$HARNESS_CONFIG_DIR` (mode `0600`, but readable
   by the same user).
 - Write to `$TARGET_REPO` and push commits under the bot's GitHub

@@ -158,7 +158,10 @@ This separation has two properties worth knowing:
   $TARGET_REPO`, that's the D-003 invariant `die`-ing.
 - **No cross-target state leakage**: each target has its own
   `$PROJECT_STATE_DIR`, its own `.pipeline-config/`, its own pair of
-  launchd jobs. The only shared thing is the global Claude mutex.
+  launchd jobs. The only shared thing is the host-wide Claude counting
+  semaphore at `$HARNESS_STATE_DIR/.claude-semaphore/` (default cap 2
+  since ENG-81; see [§Cross-cutting: the Claude counting
+  semaphore](#cross-cutting-the-claude-counting-semaphore)).
 
 ## Dispatch lifecycle (one tick)
 
@@ -191,10 +194,10 @@ launchd fires (every 5 min)
       │   │   ├─ extract fenced ``` block from AGENT_PROMPTS.md by stage section
       │   │   └─ append learned-rules/<stage>.md
       │   ├─ bin/dispatch.sh
-      │   │   ├─ acquire global Claude mutex
+      │   │   ├─ acquire slot in counting semaphore (.claude-semaphore/slot-<N>/)
       │   │   ├─ gtimeout <stage-cap> claude -p --allowed-tools <list>
       │   │   ├─ stream-json renderer: prose to log, raw to capture, usage-<stage>.json on result
-      │   │   └─ release Claude mutex
+      │   │   └─ release slot
       │   ├─ bin/scope-check.sh                            [post-agent]
       │   │   └─ partition dirty paths: in-scope / leaked-in-scope / out-of-scope
       │   ├─ bin/verdict-handler.sh
