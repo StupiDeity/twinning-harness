@@ -409,7 +409,7 @@ is half what you'd expect.
 ```bash
 # 1. What did _resolve_K resolve to on the most recent tick?
 grep 'scheduler: K=' \
-  "$PROJECT_STATE_DIR/$(jq -r .project.slug "$TARGET_REPO/.pipeline-config/config.json")/logs/local-$(date -u +%Y-%m-%d).log" \
+  "$PROJECT_STATE_DIR/logs/local-$(date -u +%Y-%m-%d).log" \
   | tail -3
 
 # 2. Is CLAUDE_MAX_CONCURRENT set in the launchd plist? (env wins over config)
