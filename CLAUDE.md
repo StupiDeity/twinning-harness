@@ -75,6 +75,25 @@ launchd (com.twinning.retrospective, Mon 09:00)
 The agent always runs `claude -p` with the **logged-in subscription session** on the host
 Mac. `ANTHROPIC_API_KEY` is intentionally never set.
 
+## Retrospective shapes (ENG-129)
+
+The weekly retrospective binary (`bin/run-retrospective-local.sh`) is
+being split into "shapes" — independently invocable sub-behaviors,
+each with its own prompt body under `bin/retro-prompts/<name>.md`,
+its own driver at `bin/retro-shape-<name>.sh`, and its own sibling
+test at `bin/retro-shape-<name>-test.sh`. Shapes write a markdown
+artifact under `$PROJECT_STATE_DIR/retrospective-${date}/<name>.md`;
+the parent retrospective Reads each artifact via a
+`{<name>_path}` token interpolated into AGENT_PROMPTS.md §9.
+
+ENG-129 ships the first shape (`stage-failure-summary`). The other
+§9 sub-behaviors stay inline in §9 until the coordinator ticket
+ships. To add a shape: drop a new prompt body under `bin/retro-prompts/`,
+write a driver + sibling test mirroring the `stage-failure-summary`
+pair, and invoke the driver from `run-retrospective-local.sh::main`
+before the §9 dispatch. Shapes reuse `dispatch.sh retrospective`'s
+allowed-tools (no new arm in `allowed_tools_for`).
+
 ## Common commands
 
 All commands need `TARGET_REPO` exported (point it at the target repo on disk).

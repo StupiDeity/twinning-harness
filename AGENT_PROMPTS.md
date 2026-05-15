@@ -1773,16 +1773,22 @@ Period of analysis:
   - Health metrics (§10) require N ≥ 5 completed features in the window to emit a
     numeric score; otherwise emit "insufficient-sample: N=<n>, need ≥5".
 
+Some sections below are pre-computed by retrospective shapes (see
+bin/retro-prompts/ in the harness). When a section references
+`{stage_failure_summary_path}` (or similar `{…_path}` token), Read
+the artifact at that path verbatim instead of recomputing the
+analysis.
+
 Your analysis (every pass below must produce at least "none found" — silent skipping
 is a P0 meta-finding against the retrospective itself):
 
-1. **Stage failure analysis:**
-   - Parse events.jsonl events: which stages produced outcome ∈
-     {failed, paused, scope-violation, pr-opened-too-early, premise-failure,
-      merge_conflict, reconcile-human, guards-tripped, dispatch-failed,
-      linear-post-failed, scope-approval-pending} most often?
-   - Compare this period's counts vs the previous period.
-   - For each stage with ≥3 rejections, name the top 2 recurring reasons.
+1. **Stage failure analysis (pre-computed):**
+   - Read the pre-computed artifact at `{stage_failure_summary_path}`.
+   - The artifact contains: the period's outcome breakdown, a
+     period-to-period comparison, and (for each stage with ≥3
+     rejections) the top 2 recurring reasons.
+   - Incorporate the artifact's findings verbatim into your "Systemic
+     findings (top 3)" section. Do NOT recompute the analysis.
 
 2. **Gotcha recurrence check (wired via commit trailers):**
    - `git log --all --grep='^Gotcha-hit:'` for the period.
