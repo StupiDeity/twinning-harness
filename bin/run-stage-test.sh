@@ -4371,6 +4371,41 @@ else
     "raw_pass=$(grep -cF '<!-- pipeline: verdict result=pass -->' "$CAPTURE_FILE" 2>/dev/null || echo 0) sanitized=$(grep -cF '<\!-- pipeline:' "$CAPTURE_FILE" 2>/dev/null || echo 0)"
 fi
 
+# INT-P (case 122-P): worktree directory missing → fail-open (rc=0, no halt comment).
+# Addresses C1: brainstorm D-004 pseudocode line 308 prescribes fail-open
+# when the worktree dir is absent.
+printf '\n--- ENG-122 INT-P (122-P): worktree missing → fail-open ---\n'
+reset_capture
+_eng122p_rc=0
+_validate_plan_contract ENG-122-NOWORKTREE 2>/dev/null || _eng122p_rc=$?
+(( _eng122p_rc == 0 )) \
+  && pass_at "ENG-122 INT-P (122-P): no worktree → fail-open (rc=0)" \
+  || fail_at "ENG-122 INT-P (122-P): no worktree" "expected rc=0, got rc=$_eng122p_rc"
+if [[ ! -s "$CAPTURE_FILE" ]]; then
+  pass_at "ENG-122 INT-P (122-P): no worktree → no halt comment posted"
+else
+  fail_at "ENG-122 INT-P (122-P): no worktree → unexpected halt comment" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# INT-Q (case 122-Q): worktree exists but no plan .md → fail-open (rc=0).
+# Addresses C1: brainstorm D-004 pseudocode lines 314-316 prescribe log + return 0
+# when the plan .md is absent (exit-25 agent-contract validator handles it upstream).
+printf '\n--- ENG-122 INT-Q (122-Q): plan .md missing → fail-open ---\n'
+reset_capture
+mkdir -p "$(issue_dir ENG-122-NOMD)/worktree/docs/plans"
+_eng122q_rc=0
+_validate_plan_contract ENG-122-NOMD 2>/dev/null || _eng122q_rc=$?
+(( _eng122q_rc == 0 )) \
+  && pass_at "ENG-122 INT-Q (122-Q): plan .md missing → fail-open (rc=0)" \
+  || fail_at "ENG-122 INT-Q (122-Q): plan .md missing" "expected rc=0, got rc=$_eng122q_rc"
+if [[ ! -s "$CAPTURE_FILE" ]]; then
+  pass_at "ENG-122 INT-Q (122-Q): plan .md missing → no halt comment posted"
+else
+  fail_at "ENG-122 INT-Q (122-Q): plan .md missing → unexpected halt comment" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
 # ─── ENG-87 C3: envelope-violation halt path preserves sidecar ─────────
 # CLAUDE.md and docs/runbooks/recovery.md both promise:
 #   "the transcript sidecar at $(issue_dir)/.envelope-transcript-<stage>
