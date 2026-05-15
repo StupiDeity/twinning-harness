@@ -244,6 +244,9 @@ failure_outcome_for_exit() {
     28) printf 'leaked-in-scope-threshold' ;;
     29) printf 'envelope-violation' ;;
     30) printf 'noop-implementation' ;;
+    33) printf 'plan-contract-malformed' ;;
+    34) printf 'plan-contract-incomplete' ;;
+    35) printf 'plan-contract-missing' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac

@@ -15,6 +15,9 @@
 #             28=leaked-in-scope-threshold (≥3 consecutive in-scope leaks; ENG-14),
 #             29=envelope-violation (dispatch envelope validator detected agent bypass
 #             of bin/linear.sh — ENG-87),
+#             30=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
+#             31=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
+#             32=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
