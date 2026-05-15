@@ -1006,6 +1006,28 @@ Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
   abstraction used only once? Any increase in crate / module / indirection count
   unjustified by the plan?
 
+**Defensive-code restraint:** scan added / changed code for try-blocks,
+  nil-guards, and internal-invariant validation. For each occurrence,
+  require ONE of:
+    (a) the file path is a boundary (`controllers/`, `handlers/`,
+        `routes/`, `api/`, `cli/`, `main.*`, or an entrypoint binary the
+        profile's File layout names), OR
+    (b) the commit message body OR the diff's surrounding context cites
+        the concrete reachable-failure mode the defensive code addresses.
+  Otherwise flag the occurrence as `[major] <path>:<line> — defensive
+  code at internal site; either move the check to the boundary, justify
+  the failure mode in commit, or remove`. The system prompt rule the
+  implementer should have followed is: "Don't add error handling,
+  fallbacks, or validation for scenarios that can't happen. Trust internal
+  code and framework guarantees. Only validate at system boundaries."
+  Apply the same boundary heuristic the implement agent uses (path-based;
+  defer to the profile's File layout for non-web stacks). Idiomatic
+  language error handling (Go `if err != nil { return err }`, Rust `?`,
+  Ruby `raise`) is NOT in scope — those propagate, they do not swallow.
+  Test code (paths under `tests/`, `__tests__/`, `*-test.sh`, `*_test.go`,
+  `*.spec.*`) is exempt — test assertions ARE the validation, not
+  defensive guards.
+
 **Scope enforcement (HARD REJECT, with safety valve):**
   - `scope-check.sh` already ran on the branch; re-diff PR files against the plan's
     File Structure to catch any post-hoc additions.
