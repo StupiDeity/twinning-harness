@@ -972,20 +972,23 @@ _validate_dispatch_envelope() {
 # out to bin/plan-schema.sh validate. Returns 0 = valid, 30 = malformed,
 # 31 = incomplete, 32 = missing-file. Caller must gate to stage=planning.
 _validate_plan_contract() {
-  local PIPELINE_WRITER=orchestrator
-  export PIPELINE_WRITER
   local ident="$1"
   local wt
   wt="$(issue_dir "$ident")/worktree"
+  # Fail-open if worktree is absent: caller's earlier preconditions handle it.
+  [[ -d "$wt" ]] || { log "plan-contract: no worktree dir for $ident; fail-open"; return 0; }
   local ident_lower
   ident_lower="$(printf '%s' "$ident" | tr '[:upper:]' '[:lower:]')"
+  local today
+  today="$(date +%Y-%m-%d)"
   local plan_md plan_json schema_out schema_rc=0
 
-  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "*${ident_lower}*.md" 2>/dev/null | sort | head -1)"
+  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}*.md" 2>/dev/null | sort | head -1)"
+  # Fail-open if no plan .md for today: exit-25 agent-contract validator
+  # handles the no-md case upstream (brainstorm D-004 pseudocode lines 314-316).
   if [[ -z "$plan_md" ]]; then
-    _post_plan_contract_halt "$ident" "missing-file" \
-      "no plan .md found in $wt/docs/plans/ matching *${ident_lower}*.md"
-    return 32
+    log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}*.md; fail-open"
+    return 0
   fi
 
   plan_json="${plan_md%.md}.json"
@@ -996,7 +999,7 @@ _validate_plan_contract() {
   fi
 
   schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
-    --ident "$ident" 2>&1)" || schema_rc=$?
+    --ident "$ident" 2>/dev/null)" || schema_rc=$?
   case "$schema_rc" in
     0)  return 0 ;;
     30) _post_plan_contract_halt "$ident" "malformed"  "$schema_out" ; return 30 ;;

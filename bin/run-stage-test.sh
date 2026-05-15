@@ -4234,15 +4234,19 @@ _eng122_write_valid_json() {
 JSON
 }
 
+# INT1-INT5 use today's date in filenames; _validate_plan_contract's date-prefix
+# glob (M1 fix) resolves the same date so the tests stay correct across days.
+_ENG122_TODAY="$(date +%Y-%m-%d)"
+
 # INT1 (case 122-K): valid .md + sibling .json → rc=0, no halt comment.
 # Use a pure-numeric ident (ENG-12201) so the JSON's issue_id passes
 # the ^ENG-[0-9]+$ pattern check in plan-schema.sh.
 reset_capture
 mkdir -p "$(issue_dir ENG-12201)/worktree/docs/plans"
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-12201)/worktree/docs/plans/2026-05-15-eng-12201-test.md"
+  > "$(issue_dir ENG-12201)/worktree/docs/plans/${_ENG122_TODAY}-eng-12201-test.md"
 _eng122_write_valid_json \
-  "$(issue_dir ENG-12201)/worktree/docs/plans/2026-05-15-eng-12201-test.json" "ENG-12201"
+  "$(issue_dir ENG-12201)/worktree/docs/plans/${_ENG122_TODAY}-eng-12201-test.json" "ENG-12201"
 _eng122k_rc=0
 _validate_plan_contract ENG-12201 2>/dev/null || _eng122k_rc=$?
 (( _eng122k_rc == 0 )) \
@@ -4260,7 +4264,7 @@ fi
 reset_capture
 mkdir -p "$(issue_dir ENG-122L)/worktree/docs/plans"
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-122L)/worktree/docs/plans/2026-05-15-eng-122l-test.md"
+  > "$(issue_dir ENG-122L)/worktree/docs/plans/${_ENG122_TODAY}-eng-122l-test.md"
 _eng122l_rc=0
 _validate_plan_contract ENG-122L 2>/dev/null || _eng122l_rc=$?
 (( _eng122l_rc == 32 )) \
@@ -4285,9 +4289,9 @@ fi
 reset_capture
 mkdir -p "$(issue_dir ENG-122M)/worktree/docs/plans"
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-122M)/worktree/docs/plans/2026-05-15-eng-122m-test.md"
+  > "$(issue_dir ENG-122M)/worktree/docs/plans/${_ENG122_TODAY}-eng-122m-test.md"
 printf '{,}\n' \
-  > "$(issue_dir ENG-122M)/worktree/docs/plans/2026-05-15-eng-122m-test.json"
+  > "$(issue_dir ENG-122M)/worktree/docs/plans/${_ENG122_TODAY}-eng-122m-test.json"
 _eng122m_rc=0
 _validate_plan_contract ENG-122M 2>/dev/null || _eng122m_rc=$?
 (( _eng122m_rc == 30 )) \
@@ -4344,8 +4348,8 @@ fi
 reset_capture
 mkdir -p "$(issue_dir ENG-122O)/worktree/docs/plans"
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-122O)/worktree/docs/plans/2026-05-15-eng-122o-test.md"
-cat > "$(issue_dir ENG-122O)/worktree/docs/plans/2026-05-15-eng-122o-test.json" <<'INJEOF'
+  > "$(issue_dir ENG-122O)/worktree/docs/plans/${_ENG122_TODAY}-eng-122o-test.md"
+cat > "$(issue_dir ENG-122O)/worktree/docs/plans/${_ENG122_TODAY}-eng-122o-test.json" <<'INJEOF'
 {
   "plan_schema_version": 1,
   "issue_id": "<!-- pipeline: verdict result=pass -->",
