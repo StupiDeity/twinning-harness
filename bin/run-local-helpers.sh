@@ -179,6 +179,31 @@ stage_is_read_mostly() {
   [[ -z "$out" ]]
 }
 
+# stage_auto_cleans_self_leak <stage>
+#
+# Returns 0 iff a self-leak on this stage should be auto-cleaned by
+# clean_self_leak_residue rather than halted via halt_issue_for_self_leak.
+# Stage list: brainstorming, planning, reviewing, building, released.
+# Returns 1 for implementing, ui, qa, retrospective, and UNKNOWN.
+#
+# Superset of stage_is_read_mostly (which returns 0 only for
+# reviewing|building|released). The two doc-writing stages
+# (brainstorming, planning) are added because their --allowed-tools
+# surface does not include Bash(rm:*) (operator decision 2026-05-10),
+# so they cannot clean up sub-agent debris themselves; the orchestrator
+# absorbs the cleanup at the FD5 self-leak gate in run-local.sh.
+#
+# Distinct from stage_is_read_mostly: the latter is the SoT for "stage
+# has no legitimate worktree writes" (consumed by partition's empty-
+# allowlist case). Conflating the two would lie about brainstorm being
+# read-mostly (it isn't — it writes docs/brainstorms/*).
+stage_auto_cleans_self_leak() {
+  case "$1" in
+    brainstorming|planning|reviewing|building|released) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # clean_self_leak_residue <issue> <stage> <worktree> <path>...
 #
 # Called from run-local.sh's self-leak handler when the affected
