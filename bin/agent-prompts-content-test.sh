@@ -55,7 +55,7 @@ else
   nope "§0 (Common rules) section exists" \
     "section missing — render-prompt.sh::main will die on dispatch (no common block to prepend)"
 fi
-for phrase in 'Secret-handling (ENG-46)' 'Tool allowlist & probing (ENG-53 #11' 'retry with the same sig' 'Do NOT prepend env-var assignments'; do
+for phrase in 'Secret-handling (ENG-46)' 'Tool allowlist & probing (ENG-53 #11' 'retry with the same sig' 'Do NOT prepend env-var assignments' 'Sub-agent debris (ENG-100)'; do
   if printf '%s\n' "$s0" | grep -qF "$phrase"; then
     ok "§0 carries '$phrase' (delivered to every stage by render-prompt.sh)"
   else
@@ -1185,6 +1185,31 @@ else
     "Task 14's fourth bullet (no-carry-forward-state) missing from the rendered body — an agent could read prior-dispatch artifacts and defeat the clear-on-start invariant"
 fi
 unset rendered_stage_body_implementing
+
+# ─── ENG-100: sub-agent debris rule delivered via §0 ─────────────
+# The new §0 rule must reach every rendered stage body, including
+# brainstorm/plan which use it as the structural complement to the
+# orchestrator-side auto-clean. Pin the rule's headline phrase + the
+# operator-recognition word agent-blocked so a §0 deletion surfaces
+# directly. Mirrors the ENG-87 C2 pin shape (rendered_stage_body =
+# §0 + §N).
+for stage_key in '## 1. Brainstorm Agent' '## 2. Plan Agent'; do
+  short="${stage_key%% Agent*}"
+  rsb="$(rendered_stage_body "$stage_key")"
+  if printf '%s' "$rsb" | grep -qF 'Sub-agent debris (ENG-100)'; then
+    ok "rendered stage body ($short): cites 'Sub-agent debris (ENG-100)' (delivered via §0)"
+  else
+    nope "rendered stage body ($short): cites 'Sub-agent debris (ENG-100)'" \
+      "phrase missing from rendered §0 + §N — sub-agents not warned about debris generation"
+  fi
+  if printf '%s' "$rsb" | grep -qF 'verdict halt --reason agent-blocked'; then
+    ok "rendered stage body ($short): names the agent-blocked exit ramp"
+  else
+    nope "rendered stage body ($short): names the agent-blocked exit ramp" \
+      "without the operator-recognition word, the rule reads like advice instead of a hard contract"
+  fi
+done
+unset stage_key short rsb
 
 # ─── ENG-87 review-iter-7 M4: stage-summary mandate hoisted to §0 ──
 # Pre-iter-7 the staleness mandate ("MANDATORY — overwrite on every
