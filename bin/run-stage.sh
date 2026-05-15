@@ -143,6 +143,58 @@ _count_loopback_rejections_for_stage() {
   printf '%s' "$count"
 }
 
+# Resolve the model identifier for a dispatched stage. Precedence (highest →
+# lowest), mirroring _cfg_minutes at bin/dispatch.sh:469-488:
+#   1. .pipeline-config/config.json::dispatch.model[<stage>]
+#   2. Built-in escalation override on implementing/ui when
+#      _count_loopback_rejections_for_stage >= 1.
+#   3. Built-in default table (ENG-103 D-001).
+#   4. Unset → empty stdout → dispatch.sh omits --model.
+# Validation: claude model identifiers match [A-Za-z0-9._\[\]:-]+. Regex-fail
+# at layer 1 logs a warning and falls through to layer 2/3.
+_resolve_dispatch_model() {
+  local stage="$1" ident="$2"
+
+  # Layer 1: operator-pinned config.
+  if [[ -f "$CONFIG" ]]; then
+    local _cfg
+    _cfg="$(jq -r --arg s "$stage" '.dispatch.model[$s] // empty' \
+      "$CONFIG" 2>/dev/null || true)"
+    if [[ -n "$_cfg" ]]; then
+      if [[ "$_cfg" =~ ^[A-Za-z0-9._\[\]:-]+$ ]]; then
+        printf '%s' "$_cfg"; return 0
+      else
+        log "_resolve_dispatch_model: rejecting config value for $stage (failed regex); falling through" >&2
+      fi
+    fi
+  fi
+
+  # Layer 2: escalation override (implementing | ui only).
+  case "$stage" in
+    implementing|ui)
+      local _count
+      _count="$(_count_loopback_rejections_for_stage "$ident" "$stage" 2>/dev/null || printf '0')"
+      if [[ "$_count" =~ ^[0-9]+$ ]] && (( _count >= 1 )); then
+        printf 'claude-opus-4-7'; return 0
+      fi
+      ;;
+  esac
+
+  # Layer 3: built-in default table (ENG-103 D-001).
+  case "$stage" in
+    brainstorming) printf 'claude-opus-4-7' ;;
+    planning)      printf 'claude-opus-4-7' ;;
+    # implementing default: stays Opus until ENG-101 stabilises (D-008);
+    # flip to claude-sonnet-4-6 in follow-up commit when ENG-101 ships.
+    implementing)  printf 'claude-opus-4-7' ;;
+    ui)            printf 'claude-sonnet-4-6' ;;
+    reviewing)     printf 'claude-opus-4-7' ;;
+    qa)            printf 'claude-sonnet-4-6' ;;
+    building)      printf 'claude-haiku-4-5-20251001' ;;
+    *)             printf '' ;;  # released, retrospective → subscription default
+  esac
+}
+
 # Format: leading newline so the caller can append unconditionally.
 # Cache% (D-007): round(100 * cache_read / (cache_read + cache_create)).
 # When read+create == 0, omit the `· cache N%` segment entirely — do NOT
