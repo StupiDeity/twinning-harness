@@ -116,6 +116,10 @@ After applying an override, grep `gtimeout ... <seconds>` in the per-stage
 transcript at `$PROJECT_STATE_DIR/<ident>/logs/<stage>-*.log` to confirm
 it took effect.
 
+<!-- Anchor target: linked from README.md §Configuration and from
+     docs/runbooks/recovery.md §9. Renaming the slug or removing the
+     <a id="..."></a> tag breaks both incoming links — search for
+     `orchestratormax_concurrent_features` before editing. -->
 ### `orchestrator.max_concurrent_features` (ENG-81) <a id="orchestratormax_concurrent_features"></a>
 
 Per-project cap on **simultaneous `claude -p` dispatches per tick**.
@@ -145,7 +149,7 @@ See **Dual role** below for the WIP-cap interaction.
 
 ```bash
 ls $HARNESS_STATE_DIR/.claude-semaphore/slot-*/pid
-bash bin/status.sh   # "Concurrent dispatches active" row
+bash bin/status.sh   # "Concurrent dispatches active right now" row
 ```
 
 Each slot dir carries the owning `dispatch.sh` PID; an empty listing
@@ -387,13 +391,6 @@ wildcards, test enumeration matches disk).
 ```
 
 ### Constrained concurrency (single-slot)
-
-Roll the per-project concurrent-dispatch cap back to 1 (the
-pre-ENG-81 behaviour) for incident response, cost-bounding, or a
-suspected race bug in an ENG-81-adjacent change. For host-wide
-emergency rollback (affects every project on this Mac immediately),
-use `CLAUDE_MAX_CONCURRENT=1` per
-[`runbooks/recovery.md` §9](runbooks/recovery.md#9-emergency-roll-back-concurrent-dispatches-to-k1).
 
 ```json
 {
