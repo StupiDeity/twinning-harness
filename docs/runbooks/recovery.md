@@ -550,7 +550,7 @@ the halt — start/end rows for the d0007 dispatch survive the
 ## 9. Emergency: roll back concurrent dispatches to K=1
 
 Roll the per-host (or per-project) `claude -p` concurrency cap back
-to 1 — the pre-ENG-81 binary-mutex behaviour. Use this when:
+to 1 — the pre-ENG-81 single-slot behaviour. Use this when:
 
 - **Linear API rate-limit symptoms** — sudden cascade of `linear-post-failed`
   halts across multiple projects.
@@ -559,7 +559,8 @@ to 1 — the pre-ENG-81 binary-mutex behaviour. Use this when:
 - **Suspected race or bug in an ENG-81-adjacent change** — slot
   collision, lock-recovery loop, or new `_resolve_K` regression.
 
-No deploy is required for either path.
+Two paths, neither requires a deploy: a host-wide env-var override
+(below) or a per-project `config.json` edit.
 
 ### Host-wide rollback (preferred under acute incident)
 
