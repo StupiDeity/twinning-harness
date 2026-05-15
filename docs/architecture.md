@@ -160,8 +160,8 @@ This separation has two properties worth knowing:
   `$PROJECT_STATE_DIR`, its own `.pipeline-config/`, its own pair of
   launchd jobs. The only shared thing is the host-wide Claude counting
   semaphore at `$HARNESS_STATE_DIR/.claude-semaphore/` (default cap 2
-  since ENG-81; see "Cross-cutting: the Claude counting semaphore"
-  below).
+  since ENG-81; see [§Cross-cutting: the Claude counting
+  semaphore](#cross-cutting-the-claude-counting-semaphore)).
 
 ## Dispatch lifecycle (one tick)
 
