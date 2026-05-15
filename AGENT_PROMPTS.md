@@ -414,7 +414,7 @@ Your task:
 - Additionally produce a sibling structured contract at docs/plans/{date}-{issue_id_lower}-{slug}.json
   containing schema-v1 fields. The file MUST validate against `bin/plan-schema.sh validate`
   (schema source-of-truth: the file's header comment; inline reference below for convenience —
-  drift between this block and the validator is asserted by `bin/plan-schema-test.sh`):
+  `bin/plan-schema-test.sh::T_schema_doc_sync` asserts top-level field-set equality between this block and the validator; per-kind field shapes are defined in `bin/plan-schema.sh`'s header comment):
 
   ```plan-schema-v1
   {
