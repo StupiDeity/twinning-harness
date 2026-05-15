@@ -119,8 +119,7 @@ it took effect.
 ### `orchestrator.max_concurrent_features` (ENG-81) <a id="orchestratormax_concurrent_features"></a>
 
 Per-project cap on **simultaneous `claude -p` dispatches per tick**.
-Also the WIP cap on issues in any `stage:*` label (pre-ENG-81 was the
-only role; ENG-81 added the per-tick dispatch role on top).
+See **Dual role** below for the WIP-cap interaction.
 
 **Default:** `2`.
 
