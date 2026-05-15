@@ -1012,8 +1012,10 @@ Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
     (a) the file path is a boundary (`controllers/`, `handlers/`,
         `routes/`, `api/`, `cli/`, `main.*`, or an entrypoint binary the
         profile's File layout names), OR
-    (b) the commit message body OR the diff's surrounding context cites
-        the concrete reachable-failure mode the defensive code addresses.
+    (b) the commit message body cites the concrete reachable-failure
+        mode the defensive code addresses (one line: `Defensive: <why
+        this is a real-world reachable failure mode>`, matching §3's
+        implementer-side requirement).
   Otherwise flag the occurrence as `[major] <path>:<line> — defensive
   code at internal site; either move the check to the boundary, justify
   the failure mode in commit, or remove`. The system prompt rule the
