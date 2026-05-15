@@ -2642,7 +2642,7 @@ test_clean_scratch_dir_dry_run_skips_mutation
 # hand-crafted path lists. The full production flow is:
 #   tick-start snapshot → dispatch → partition → observed-vs-self-leak
 #   classification (populates self_leak_paths + self_leak_hashes) →
-#   stage_is_read_mostly branch → clean_self_leak_residue invocation
+#   stage_auto_cleans_self_leak branch → clean_self_leak_residue invocation
 # A regression dropping `self_leak_paths+=("$p")` from the classification
 # loop would cause clean_self_leak_residue to be invoked with an empty
 # array → silent no-op. The wire-up greps catch the deletion at source
@@ -2772,13 +2772,17 @@ test_self_leak_callsite_wired() {
     report_fail 'wire-up #2: self_leak_paths push' \
       'self_leak_paths+=("$p") inside the observed-vs-self-leak loop' 'not found'
   fi
-  # Anchor 3: stage_is_read_mostly is the gate inside the self-leak
-  # handler — must appear with $stage as the sole positional argument.
-  if grep -qE 'if[[:space:]]+stage_is_read_mostly[[:space:]]+"\$stage";' "$rl"; then
-    report_ok 'wire-up #3: stage_is_read_mostly "$stage" gate present in run-local.sh'
+  # Anchor 3 (ENG-100): stage_auto_cleans_self_leak is the gate inside
+  # the self-leak handler — must appear with $stage as the sole
+  # positional argument. Pre-ENG-100 this anchor pinned
+  # stage_is_read_mostly; the predicate was renamed to honor the
+  # docs-only-stages auto-clean extension (brainstorm D-004 — brainstorm
+  # and plan agents have no Bash(rm:*) in their allowed-tools surface).
+  if grep -qE 'if[[:space:]]+stage_auto_cleans_self_leak[[:space:]]+"\$stage";' "$rl"; then
+    report_ok 'wire-up #3: stage_auto_cleans_self_leak "$stage" gate present in run-local.sh'
   else
     report_fail 'wire-up #3: predicate gate' \
-      'if stage_is_read_mostly "$stage"; then' 'not found'
+      'if stage_auto_cleans_self_leak "$stage"; then' 'not found'
   fi
   # Anchor 4: clean_self_leak_residue invocation with the exact
   # positional argv (issue, stage, worktree) AND the array splat as
@@ -2856,6 +2860,86 @@ test_auto_cleans_self_leak_predicate() {
   done
 }
 test_auto_cleans_self_leak_predicate
+
+# ─── ENG-100: integration — planning self-leak handler pipeline ──────
+# Clone of test_self_leak_handler_pipeline_e2e (reviewing) for the
+# planning stage. Exercises observed-vs-self-leak split AND the new
+# stage_auto_cleans_self_leak branch end-to-end on a docs-only stage
+# that previously halted. C1 invariant (operator's pre-existing edit
+# is preserved) holds; sub-agent debris is removed; metric is emitted
+# with stage=planning.
+test_planning_self_leak_handler_pipeline_e2e() {
+  local td; td="$(mktemp -d -t twinning-plan-pipeline.XXXXXX)"
+  local wt="$td/wt"
+  _self_leak_make_repo "$wt" "feat/eng-100-plan"
+
+  # Operator's pre-existing edit (would be in tick-start snapshot).
+  echo "operator-edits-doc" > "$wt/docs-arch-wip.md"
+  # Agent's sub-agent debris.
+  echo "awk-test-input" > "$wt/awk-test-input.txt"
+
+  local snapshot_file="$td/snapshot"
+  echo "docs-arch-wip.md" > "$snapshot_file"
+
+  local out_scope_file="$td/out_scope"
+  printf 'docs-arch-wip.md\0awk-test-input.txt\0' > "$out_scope_file"
+
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+
+  local observed_buckets=() self_leak_hashes=() self_leak_paths=()
+  while IFS= read -r -d '' p; do
+    if grep -qxF -- "$p" "$snapshot_file"; then
+      observed_buckets+=("$(bucket_for_path "$p")")
+    else
+      self_leak_hashes+=("$(sha12 "$p")")
+      self_leak_paths+=("$p")
+    fi
+  done < "$out_scope_file"
+
+  assert_eq 'planning-e2e: observed_buckets count' '1' "${#observed_buckets[@]}"
+  assert_eq 'planning-e2e: self_leak_paths count'  '1' "${#self_leak_paths[@]}"
+
+  # The NEW predicate must route planning to the auto-clean branch.
+  if stage_auto_cleans_self_leak planning; then
+    (
+      SCRIPT_DIR="$td/stubs"
+      clean_self_leak_residue ENG-100 planning "$wt" "${self_leak_paths[@]}"
+    ) >/dev/null 2>&1
+  else
+    report_fail 'planning-e2e: stage_auto_cleans_self_leak planning' 'true' 'false'
+  fi
+
+  # C1 invariant: operator pre-existing edit survives.
+  local op_content; op_content="$(cat "$wt/docs-arch-wip.md" 2>/dev/null)"
+  if [[ "$op_content" == "operator-edits-doc" ]]; then
+    report_ok 'planning-e2e: operator pre-existing edit survives (C1 invariant)'
+  else
+    report_fail 'planning-e2e: C1 invariant' 'operator-edits-doc' "${op_content:-MISSING}"
+  fi
+
+  # Debris removed.
+  if [[ ! -f "$wt/awk-test-input.txt" ]]; then
+    report_ok 'planning-e2e: sub-agent debris (awk-test-input.txt) removed'
+  else
+    report_fail 'planning-e2e: residue removal' 'awk-test-input.txt removed' 'still present'
+  fi
+
+  # Metric emitted with planning as the stage label.
+  case "$(cat "$sink")" in
+    *'sweep-readonly-residue-cleaned ENG-100 planning cleaned 0 count=1 branch=feat/eng-100-plan'*)
+      report_ok 'planning-e2e: metric emitted with stage=planning, count=1'
+      ;;
+    *)
+      report_fail 'planning-e2e: metric payload' \
+        'sweep-readonly-residue-cleaned ENG-100 planning cleaned 0 count=1 branch=feat/eng-100-plan ...' \
+        "$(cat "$sink")"
+      ;;
+  esac
+
+  rm -rf "$td"
+}
+test_planning_self_leak_handler_pipeline_e2e
 
 # ─── Scheduler-side in-flight lock wire-up invariants ────────────────
 # Production code (run-local.sh) must:

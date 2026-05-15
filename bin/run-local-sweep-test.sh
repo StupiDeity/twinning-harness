@@ -529,6 +529,21 @@ printf 'OK AC-K2-PARALLEL-WORKERS-FAILURE-RESILIENT (worker A exit 1, worker B c
 unset -f _run_worker release_lock
 unset _claimed_workers
 
+# AC-ENG-100-PLAN-DEBRIS: planning dispatch with sub-agent debris at
+# worktree root. Plan doc is in-scope (D-004 hit on basename);
+# awk-test-input.txt is out-of-scope (new since tick-start; no
+# allowlist match). Pre-ENG-100 this shape halted via
+# halt_issue_for_self_leak — the gate swap routes it through
+# clean_self_leak_residue instead. Partition behavior itself is
+# unchanged (verified here: 1 in / 0 leaked / 1 observed).
+printf '?? docs/plans/2026-05-15-eng-100-foo.md\0?? awk-test-input.txt\0' \
+  | assert_partition plan_with_sub_agent_debris planning ENG-100 1 0 1
+
+# AC-ENG-100-BRAINSTORM-DEBRIS: parallel fixture on brainstorming
+# (the other docs-only stage routed through auto-clean).
+printf '?? docs/brainstorms/2026-05-15-eng-100-foo-design.md\0?? scratch-fixture.txt\0' \
+  | assert_partition brainstorm_with_sub_agent_debris brainstorming ENG-100 1 0 1
+
 # AC-ENG-100-PREDICATE-PLANNING: new predicate routes planning to
 # auto-clean lane. Reason: brainstorm D-002/D-004 — docs-only stages
 # carry no `Bash(rm:*)` so the orchestrator absorbs cleanup at the
