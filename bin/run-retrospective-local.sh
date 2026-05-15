@@ -39,7 +39,7 @@ _compute_retro_period() {
   local end_iso start_iso last_merge_unix
   end_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   last_merge_unix="$(git -C "$TARGET_REPO" log --merges --format='%ct %s' \
-    | grep 'weekly retrospective' | head -1 | awk '{print $1}')"
+    | grep 'weekly retrospective' | head -1 | awk '{print $1}' || true)"
   if [[ -n "$last_merge_unix" && "$last_merge_unix" =~ ^[0-9]+$ ]]; then
     start_iso="$(date -u -r "$last_merge_unix" +%Y-%m-%dT%H:%M:%SZ)"
   else
