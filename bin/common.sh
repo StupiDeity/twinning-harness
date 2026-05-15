@@ -233,6 +233,7 @@ failure_outcome_for_exit() {
     27) printf 'self-leak' ;;
     28) printf 'leaked-in-scope-threshold' ;;
     29) printf 'envelope-violation' ;;
+    30) printf 'noop-implementation' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
