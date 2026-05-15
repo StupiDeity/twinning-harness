@@ -476,11 +476,13 @@ identifier and exports it as `PIPELINE_DISPATCH_MODEL` to
 }
 ```
 
-Validation: identifier regex `^[A-Za-z0-9._\[\]:-]+$` permits bracketed
-forms (`claude-opus-4-7[1m]`) and date-suffixed forms
-(`claude-haiku-4-5-20251001`); rejects shell-meta payloads. Stage keys
-are gerund form (`brainstorming, planning, implementing, ui, reviewing,
-qa, building, released`); unknown key silently falls through.
+Validation: identifier regex `^[A-Za-z0-9._:-]+(\[[A-Za-z0-9._:-]+\])?$`
+permits bracketed-suffix forms (`claude-opus-4-7[1m]`) and date-suffixed
+forms (`claude-haiku-4-5-20251001`); rejects shell-meta payloads. Layer 1
+also filters non-string config types at the jq layer (`strings` filter), so
+`dispatch.model.implementing = 60` silently falls through to the default.
+Stage keys are gerund form (`brainstorming, planning, implementing, ui,
+reviewing, qa, building, released`); unknown key silently falls through.
 
 Spot-check: `bash bin/status.sh` reads `events.jsonl::model` from
 ENG-26 telemetry. Confirm post-ship that implementing rows show
