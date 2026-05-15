@@ -29,6 +29,25 @@ fi
 require_env LINEAR_API_KEY
 require_bin claude gh git jq
 
+# _compute_retro_period — emits two ISO 8601 UTC timestamps on stdout
+# (one per line: start, then end). Period semantics mirror
+# AGENT_PROMPTS.md §9 "Period of analysis":
+#   - Start: timestamp of the last weekly retrospective merge, or
+#     30 days ago if none.
+#   - End: now (UTC).
+_compute_retro_period() {
+  local end_iso start_iso last_merge_unix
+  end_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  last_merge_unix="$(git -C "$TARGET_REPO" log --merges --format='%ct %s' \
+    | grep 'weekly retrospective' | head -1 | awk '{print $1}')"
+  if [[ -n "$last_merge_unix" && "$last_merge_unix" =~ ^[0-9]+$ ]]; then
+    start_iso="$(date -u -r "$last_merge_unix" +%Y-%m-%dT%H:%M:%SZ)"
+  else
+    start_iso="$(date -u -v-30d +%Y-%m-%dT%H:%M:%SZ)"
+  fi
+  printf '%s\n%s\n' "$start_iso" "$end_iso"
+}
+
 main() {
   local today branch log_file prompt_file
   today="$(date -u +%Y-%m-%d)"
@@ -57,6 +76,30 @@ main() {
     git -C "$TARGET_REPO" checkout -b "$branch" origin/main
   fi
 
+  # ENG-129: pre-compute stage-failure-summary as a shape artifact.
+  # The parent retrospective Reads the artifact (via the
+  # {stage_failure_summary_path} token interpolated into the §9 prompt
+  # below) and incorporates §1 verbatim. Shape failures HALT the
+  # retrospective for operator review — partial retrospectives are
+  # worse than re-running next week.
+  local period_lines period_start_iso period_end_iso
+  period_lines="$(_compute_retro_period)"
+  period_start_iso="$(printf '%s' "$period_lines" | sed -n '1p')"
+  period_end_iso="$(printf '%s' "$period_lines"   | sed -n '2p')"
+  local shape_artifact_dir="$PROJECT_STATE_DIR/retrospective-${today}"
+  local stage_failure_summary_path="${shape_artifact_dir}/stage-failure-summary.md"
+  mkdir -p "$shape_artifact_dir"
+  local shape_rc=0
+  bash "$SCRIPT_DIR/retro-shape-stage-failure-summary.sh" \
+    --artifact-path     "$stage_failure_summary_path" \
+    --period-start-iso  "$period_start_iso" \
+    --period-end-iso    "$period_end_iso" \
+    || shape_rc=$?
+  if (( shape_rc != 0 )); then
+    bash "$SCRIPT_DIR/slack.sh" error "Weekly retrospective shape stage-failure-summary failed (rc=$shape_rc)"
+    exit 20
+  fi
+
   # Extract the retrospective block from AGENT_PROMPTS.md.
   prompt_file="$(mktemp -t retrospective-prompt-XXXXXX)"
   awk '
@@ -64,6 +107,14 @@ main() {
     found && /^```/ { fence++; if (fence == 1) next; if (fence == 2) exit }
     found && fence == 1 { print }
   ' "$HARNESS_ROOT/AGENT_PROMPTS.md" > "$prompt_file"
+
+  # ENG-129: inject the shape artifact path into the §9 prompt so the
+  # parent Reads the pre-computed §1 instead of recomputing it.
+  sed -i.bak \
+    -e "s|{stage_failure_summary_path}|${stage_failure_summary_path}|g" \
+    "$prompt_file"
+  rm -f "${prompt_file}.bak"
+
   log "retrospective: rendered prompt ($(wc -l < "$prompt_file") lines)"
 
   # Dispatch the agent. dispatch.sh uses the local `claude` subscription session

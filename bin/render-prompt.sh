@@ -71,7 +71,7 @@ dispatch_id=_resolve_dispatch_id
 # Format: space-separated names with leading + trailing spaces so
 # `[[ "$AGENT_RUNTIME_TOKENS" == *" $name "* ]]` substring tests are
 # unambiguous (no prefix collisions across names like file / file_x).
-AGENT_RUNTIME_TOKENS=' file pr_number '
+AGENT_RUNTIME_TOKENS=' file pr_number stage_failure_summary_path '
 
 lookup_section() {
   local stage="$1"
