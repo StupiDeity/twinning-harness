@@ -1264,6 +1264,45 @@ else
     "render-prompt.sh missing — token-coverage assert cannot run"
 fi
 
+# ─── ENG-101: §3 Self-review + §5 Anti-bias defensive-code restraint ──
+# Without these pins, a future "cleanup" pass that strips the §3
+# bullet or §5 paragraph would pass every existing assertion (no
+# current assertion keys on defensive-code content). The four
+# positive-marker pins mirror the ENG-82 §6 / ENG-77 stage-summary
+# pin shapes — one assertion per token gives a per-token
+# diagnostic on failure.
+s3_eng101="$(section_body "## 3. Implementation Agent (Backend)")"
+if printf '%s\n' "$s3_eng101" | grep -qF '**Defensive-code restraint:**'; then
+  ok "§3 ENG-101: carries '**Defensive-code restraint:**' Self-review bullet header"
+else
+  nope "§3 ENG-101: carries '**Defensive-code restraint:**' Self-review bullet header" \
+       "header missing — implement agent will not self-review for defensive code (ENG-101 D-1)"
+fi
+if printf '%s\n' "$s3_eng101" | grep -qF 'try/except: pass'; then
+  ok "§3 ENG-101: carries 'try/except: pass' AVOID example token"
+else
+  nope "§3 ENG-101: carries 'try/except: pass' AVOID example token" \
+       "example missing — bullet body was gutted while header preserved (ENG-101 D-3 #2)"
+fi
+if printf '%s\n' "$s3_eng101" | grep -qF 'controllers/' \
+   && printf '%s\n' "$s3_eng101" | grep -qF 'internal/'; then
+  ok "§3 ENG-101: carries boundary heuristic tokens 'controllers/' AND 'internal/'"
+else
+  nope "§3 ENG-101: carries boundary heuristic tokens 'controllers/' AND 'internal/'" \
+       "either 'controllers/' OR 'internal/' missing — boundary heuristic incomplete (ENG-101 D-3 #3)"
+fi
+unset s3_eng101
+
+s5_eng101="$(section_body "## 5. Review Agent")"
+if printf '%s\n' "$s5_eng101" | grep -qF '**Defensive-code restraint:**' \
+   && printf '%s\n' "$s5_eng101" | grep -qF '[major]'; then
+  ok "§5 ENG-101: carries '**Defensive-code restraint:**' AND '[major]' severity (Anti-bias check)"
+else
+  nope "§5 ENG-101: carries '**Defensive-code restraint:**' AND '[major]' severity (Anti-bias check)" \
+       "either header OR '[major]' severity token missing — review agent will not flag defensive code at the prescribed severity (ENG-101 D-2 / D-3 #4)"
+fi
+unset s5_eng101
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
