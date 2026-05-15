@@ -241,7 +241,7 @@ else
 
   if [[ -z "$schema_block" ]]; then
     fail_at "T_schema_doc_sync: no plan-schema-v1 block found in AGENT_PROMPTS.md" \
-      "expected a \'\'\'plan-schema-v1 ... \'\'\' block in §2 Plan Agent Output section"
+      "expected a \`\`\`plan-schema-v1 ... \`\`\` block in §2 Plan Agent Output section"
   else
     # Replace {issue_id} template token with ENG-1 and try to parse as JSON.
     schema_json="$(printf '%s' "$schema_block" | sed 's/{issue_id}/ENG-1/g')"

@@ -65,7 +65,11 @@ cmd_validate() {
   local first=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --ident) ident="${2:-}"; shift 2 ;;
+      --ident)
+        if [[ $# -lt 2 ]]; then
+          printf 'plan-schema.sh: --ident requires a value\n' >&2; return 30
+        fi
+        ident="$2"; shift 2 ;;
       --*)     printf 'plan-schema.sh: unknown flag %s\n' "$1" >&2; return 30 ;;
       *)
         if (( first )); then file="$1"; first=0
@@ -289,7 +293,7 @@ main() {
     validate) cmd_validate "$@" ;;
     *)
       printf 'Usage: bash bin/plan-schema.sh validate <file> [--ident <ENG-N>]\n' >&2
-      exit 1
+      exit 30
       ;;
   esac
 }
