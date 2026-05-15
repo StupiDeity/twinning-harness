@@ -70,6 +70,16 @@ issue_dir() {
   [[ -n "$issue" ]] || die "issue_dir: missing issue id"
   printf '%s/%s' "$PROJECT_STATE_DIR" "$issue"
 }
+# ENG-107: per-issue progress notebook path. Append-only contract;
+# never cleared on dispatch. See docs/runbooks/progress-md.md for
+# schema, lifecycle, and ownership boundary. Composed on issue_dir
+# so the resolution rules (PROJECT_STATE_DIR, bootstrap-mode
+# behaviour, die-on-empty-issue) match exactly.
+progress_md_path() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "progress_md_path: missing issue id"
+  printf '%s/progress.md' "$(issue_dir "$issue")"
+}
 # Compute a stable sha256 over the set of files that drive pipeline
 # behavior from the main dev dir. Intentionally excludes metrics/ and
 # learned-rules/ (churn every tick). Emits a single hex digest, no
@@ -386,7 +396,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id assert_no_tool_invocation
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id assert_no_tool_invocation progress_md_path
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
