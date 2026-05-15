@@ -51,6 +51,7 @@ branch_name=_resolve_branch_name
 stage_summary_path=_resolve_stage_summary_path
 learned_rules_dir=_resolve_learned_rules_dir
 dispatch_id=_resolve_dispatch_id
+review_findings=_resolve_review_findings
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -232,6 +233,24 @@ _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
 # auto-injection is no-op when the resolved value is empty).
 _resolve_dispatch_id() { printf '%s' "${_RENDER_DISPATCH_ID-}"; }
 
+# Resolves the contents of the prior reviewing stage's summary file
+# at $(issue_dir)/stage-summary-reviewing.md — the durable record of
+# what the reviewer asked the implementer to change. Inlined into the
+# implementing prompt so the implementer cannot silently NOOP after a
+# review-loopback (ENG-105 failure mode: reviewer rejects → implementer
+# re-emits its prior summary verbatim → branch HEAD unchanged → reviewer
+# rejects again, ad infinitum). When no prior review exists (fresh
+# implement-stage dispatch from planning), resolves to a literal marker
+# the prompt's "Review-loopback handling" block treats as a no-op signal.
+_resolve_review_findings() {
+  local p="${_RENDER_REVIEW_FINDINGS_PATH-}"
+  if [[ -n "$p" && -s "$p" ]]; then
+    cat "$p"
+  else
+    printf '(no prior review for this issue — this dispatch is not a review-loopback)'
+  fi
+}
+
 # Look up the resolver function name for a token (without surrounding braces).
 _lookup_resolver() {
   local token="$1"
@@ -369,6 +388,13 @@ main() {
     || die "render-prompt: branch-name.sh returned empty for $issue_id (Linear-API outage or bug-label resolution failed). Cannot render prompt without a canonical branch name."
   stage_summary_path="$(issue_dir "$issue_id")/stage-summary-${stage}.md"
   learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
+  # ENG-105 follow-up: per-issue prior-reviewing summary. Preserved across
+  # reviewing → implementing transitions by _clear_current_stage_slots
+  # (only the CURRENT stage's summary is cleared). Resolver reads this
+  # path into the {review_findings} token for the implementing prompt;
+  # other stages emit the same token but typically don't reference it.
+  local review_findings_path
+  review_findings_path="$(issue_dir "$issue_id")/stage-summary-reviewing.md"
 
   # Bind to the resolver-side globals before calling resolve_block_tokens.
   # The bash literal-substitution path (${var//pat/repl}) is glob-immune
@@ -386,6 +412,7 @@ main() {
   _RENDER_BRANCH_NAME="$branch_name"
   _RENDER_STAGE_SUMMARY_PATH="$stage_summary_path"
   _RENDER_LEARNED_RULES_DIR="$learned_rules_dir"
+  _RENDER_REVIEW_FINDINGS_PATH="$review_findings_path"
   # ENG-87 review-iter-7 M9: bind _RENDER_DISPATCH_ID like the sibling
   # _RENDER_* globals so resolver test isolation is uniform across the
   # registry. Falls through to empty when PIPELINE_DISPATCH_ID is unset

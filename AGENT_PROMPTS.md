@@ -626,6 +626,19 @@ You do NOT touch: frontend modules per the profile's File layout (UI components,
 
 Branch: `{branch_name}` (base: main). The orchestrator has already created the per-issue worktree on this branch — do NOT run `git checkout -b`, `git checkout -B`, `git branch -m`, or `git switch -c`. See "Branch-name convention" above.
 
+Review → implement loopback handling (MANDATORY when present — ENG-105 follow-up):
+
+The orchestrator inlines the prior reviewing stage's summary below as `{review_findings}`. When it reads `(no prior review for this issue — this dispatch is not a review-loopback)`, this is a fresh dispatch from planning and the rest of this block does not apply. Otherwise:
+
+  1. Treat every `[critical]` and `[major]` finding as a contract you MUST close by code commits on `{branch_name}` before exit. `[minor]` and `[nit]` findings are best-effort — close them when cheap, defer with a one-line rationale in the stage-summary Notes otherwise.
+  2. For each closed finding, the commit message MUST cite the finding's file:line locator from the review (e.g. `fix(ENG-N): address review finding at docs/runbooks/failure-modes.md:531`). The reviewer cross-checks file:line against the commit log on the next iter.
+  3. Do NOT post `verdict pass` if any `[critical]` or `[major]` finding remains uncommitted. Doing so causes a NOOP loopback — the next reviewer dispatch re-emits the same findings against an unchanged branch tip, burning ~$6 of reviewer cost per cycle. The orchestrator now detects zero-new-commits on a review-loopback dispatch and halts with `agent-blocked` (exit 30) before the next reviewer dispatch fires. Your verdict must reflect ACTUAL work done — if you cannot address a finding, exit with `verdict halt --reason agent-blocked` and describe what blocks you.
+  4. The `completion/implementing/{issue_id}` Linear comment carries a dedup-update mechanic — its body shows your PRIOR dispatch's summary text on every read. Do NOT use it as a source of truth for "what work has been done on this branch." The branch's git log is the only authoritative record. Re-emitting the prior body via the overwrite-on-every-dispatch contract without making fresh commits is the ENG-105 failure mode this block exists to prevent.
+
+Reviewing summary (verbatim):
+
+{review_findings}
+
 Build → implement loopback handling (MANDATORY when present):
 
 If the most recent `<!-- pipeline: transition ... -->` on this issue has `from=building to=implementing` AND a `<!-- meta: metric name=merge_conflict -->` comment exists, **this dispatch is a build-stage rejection for P6 (conflicts with main). Your FIRST action MUST be to rebase the branch onto `origin/main` and force-push** — without that, the next build cycle will re-fail P6 on the same conflict and the loop is infinite. Concrete steps:

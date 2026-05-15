@@ -114,6 +114,48 @@ for stage in brainstorming planning implementing ui reviewing qa building; do
   run_render "$stage"
 done
 
+# ─── ENG-105 follow-up: {review_findings} token wiring ─────────────────
+# Two cases:
+#   A. No stage-summary-reviewing.md on disk → resolver emits the
+#      "(no prior review …)" sentinel so the prompt's loopback block
+#      treats this as a fresh dispatch from planning.
+#   B. stage-summary-reviewing.md present → resolver emits its contents
+#      verbatim into the implementing prompt body.
+#
+# Both cases exercise the full main() path through resolve_block_tokens
+# (and the residual-token validator) — a regression that drops the
+# resolver from PROMPT_RESOLVERS would die with "unresolved token after
+# registry pass: {review_findings}".
+
+ISSUE_DIR_A="$sandbox/state/test-slug-rc0/ENG-87R6X-A"
+rm -rf "$ISSUE_DIR_A"; mkdir -p "$ISSUE_DIR_A"
+out_a="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-A 2>/dev/null || true)"
+if grep -q '(no prior review for this issue' <<<"$out_a"; then
+  ok "ENG-105 case A: absent reviewing summary → '(no prior review …)' sentinel"
+else
+  fail "ENG-105 case A: absent reviewing summary → sentinel" \
+       "out tail: $(tail -3 <<<"$out_a" | tr '\n' ' ')"
+fi
+
+ISSUE_DIR_B="$sandbox/state/test-slug-rc0/ENG-87R6X-B"
+rm -rf "$ISSUE_DIR_B"; mkdir -p "$ISSUE_DIR_B"
+REVIEW_SENTINEL='SENTINEL-REVIEW-BODY-LINE-FROM-FIXTURE-B-7821'
+printf '## Review summary\n\n[major] %s\n' "$REVIEW_SENTINEL" \
+  > "$ISSUE_DIR_B/stage-summary-reviewing.md"
+out_b="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-B 2>/dev/null || true)"
+if grep -qF "$REVIEW_SENTINEL" <<<"$out_b"; then
+  ok "ENG-105 case B: present reviewing summary → inlined verbatim in implementing prompt"
+else
+  fail "ENG-105 case B: present reviewing summary inlined" \
+       "out tail: $(tail -5 <<<"$out_b" | tr '\n' ' ')"
+fi
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

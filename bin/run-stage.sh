@@ -103,6 +103,24 @@ _cost_flags_for() {
 # quoted markers don't register (ENG-87 / ENG-61 Bug A precedent). Fail-open:
 # Linear API outage returns 0 (no escalation) — matches the dispatch-side
 # fail-open posture of _entry_conditions_gate's ENG-86 block.
+# ENG-105 follow-up: detects whether an implementing dispatch made any
+# new commits by comparing the worktree's HEAD before and after.
+# Returns 0 (true — new commits) if HEAD advanced or if HEAD-post can't
+# be read (fail-open: a missing worktree means dispatch failed elsewhere
+# and shouldn't be re-classified as a NOOP). Returns 1 (false) only when
+# HEAD-post is non-empty and exactly equals HEAD-pre.
+#
+# Caller is responsible for the gating (stage == implementing,
+# !skip_dispatch, _HEAD_PRE_DISPATCH non-empty) — this helper only
+# implements the comparison so it's straightforward to unit-test.
+_dispatch_made_new_commits() {
+  local worktree="$1" head_pre="$2"
+  local head_post
+  head_post="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || printf '')"
+  [[ -n "$head_post" ]] || return 0
+  [[ "$head_post" != "$head_pre" ]]
+}
+
 _count_loopback_rejections_for_stage() {
   local ident="$1" stage="$2"
   local comments
@@ -1248,6 +1266,19 @@ main() {
     trap '_append_dispatch_end_row $?' EXIT
   fi
 
+  # ENG-105 follow-up: capture worktree HEAD before dispatch so the
+  # post-dispatch noop detector (further below) can recognise a
+  # zero-commit implementing dispatch. Gated on stage=implementing
+  # because ui/brainstorm/plan/review have no commit expectation
+  # (ui is a documented no-op on harness-self; brainstorm/plan/review
+  # write docs/comments but not commits the noop detector would fire on).
+  # Empty value when worktree isn't a git dir is fine — the detector's
+  # `[[ -n "$_HEAD_PRE_DISPATCH" ]]` guard fails open.
+  local _HEAD_PRE_DISPATCH=""
+  if [[ "$stage" == "implementing" ]] && (( ! skip_dispatch )); then
+    _HEAD_PRE_DISPATCH="$(git -C "$(issue_dir "$ident")/worktree" rev-parse HEAD 2>/dev/null || printf '')"
+  fi
+
   # Render the prompt.
   local prompt_file log_file
   if (( ! skip_dispatch )); then
@@ -1470,6 +1501,40 @@ main() {
     # Non-blocking: telemetry only. Retrospective reads both the aggregate git log
     # AND the per-issue counter.
     bash "$SCRIPT_DIR/scan-gotcha-trailers.sh" "$ident" "$branch" || true
+  fi
+
+  # ENG-105 follow-up: noop-implementation halt detector.
+  # After a clean implementing dispatch with passing scope-check, if the
+  # branch HEAD is unchanged from before the dispatch, the agent silently
+  # re-emitted its prior stage summary without committing any code. This
+  # is the ENG-105 failure mode: on a review-loopback, the implementer
+  # reads the dedup-updated `completion/implementing/<issue>` Linear
+  # comment (still showing the PREVIOUS dispatch's body), copies it to
+  # its stage-summary file as-is, posts `verdict pass`, and exits — the
+  # reviewer then runs again against the unchanged branch tip, re-emits
+  # the same findings, and the cycle repeats. ENG-105 burned 7 such
+  # cycles before manual intervention (~$45 of reviewer cost).
+  #
+  # Gating:
+  #   - stage == implementing (ui's no-op on harness-self is legitimate;
+  #     brainstorm/plan/review don't commit at all)
+  #   - !skip_dispatch (scope-approval replay legitimately has zero
+  #     new commits since it doesn't dispatch the agent)
+  #   - _HEAD_PRE_DISPATCH captured (non-git worktree fail-open)
+  #   - HEAD_POST == HEAD_PRE (the actual signal)
+  # Exit 30 routes via failure_outcome_for_exit → 'noop-implementation'
+  # and classify_failure → policy 'skip-until-human-acts' →
+  # halt_reason 'agent-blocked'. Resume via
+  # `bash bin/pipeline.sh decide <issue> --action continue`
+  # after addressing the reviewer's findings on the branch.
+  if [[ "$stage" == "implementing" ]] && (( ! skip_dispatch )) && [[ -n "$_HEAD_PRE_DISPATCH" ]]; then
+    if ! _dispatch_made_new_commits "$(issue_dir "$ident")/worktree" "$_HEAD_PRE_DISPATCH"; then
+      bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "implementing dispatch produced zero new commits (branch HEAD unchanged from $_HEAD_PRE_DISPATCH). On a review-loopback this means the agent re-emitted its prior stage summary without addressing the reviewer's findings — the ENG-105 NOOP failure mode. Inspect the prior review at \`completion/reviewing/$ident\` in Linear, fix the cited findings on the branch by hand, then resume with \`bash bin/pipeline.sh decide $ident --action continue\`." \
+        30
+      exit 30
+    fi
   fi
 
   # ENG-45: wait exit. Build agent posts <!-- pipeline: verdict result=wait reason=... --> on
