@@ -4235,14 +4235,16 @@ JSON
 }
 
 # INT1 (case 122-K): valid .md + sibling .json → rc=0, no halt comment.
+# Use a pure-numeric ident (ENG-12201) so the JSON's issue_id passes
+# the ^ENG-[0-9]+$ pattern check in plan-schema.sh.
 reset_capture
-mkdir -p "$(issue_dir ENG-122K)/worktree/docs/plans"
+mkdir -p "$(issue_dir ENG-12201)/worktree/docs/plans"
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-122K)/worktree/docs/plans/2026-05-15-eng-122k-test.md"
+  > "$(issue_dir ENG-12201)/worktree/docs/plans/2026-05-15-eng-12201-test.md"
 _eng122_write_valid_json \
-  "$(issue_dir ENG-122K)/worktree/docs/plans/2026-05-15-eng-122k-test.json" "ENG-122K"
+  "$(issue_dir ENG-12201)/worktree/docs/plans/2026-05-15-eng-12201-test.json" "ENG-12201"
 _eng122k_rc=0
-_validate_plan_contract ENG-122K 2>/dev/null || _eng122k_rc=$?
+_validate_plan_contract ENG-12201 2>/dev/null || _eng122k_rc=$?
 (( _eng122k_rc == 0 )) \
   && pass_at "ENG-122 INT1 (122-K): valid .md + .json → rc=0" \
   || fail_at "ENG-122 INT1 (122-K): valid .md + .json" "expected rc=0, got rc=$_eng122k_rc"
@@ -4312,13 +4314,16 @@ fi
 printf '\n--- ENG-122 INT4 (122-N): stage gate structural lint ---\n'
 _eng122_rs_src="$HARNESS_DIR/run-stage.sh"
 if grep -qE '[[:space:]]+_validate_plan_contract[[:space:]]' "$_eng122_rs_src" 2>/dev/null; then
+  # Anchor on the caller-block comment "Post-dispatch; planning stage only"
+  # (unique to the call site — the function definition has a different comment).
+  # Extract up to the closing `esac` of the stage-gate block.
   _eng122n_planning_block="$(awk '
-    /planning\)/ { in_block=1 }
+    /Post-dispatch; planning stage only/ { in_block=1 }
     in_block { print }
-    in_block && /;;/ { exit }
+    in_block && /esac/ { exit }
   ' "$_eng122_rs_src")"
-  if printf '%s\n' "$_eng122n_planning_block" \
-     | grep -qE '[[:space:]]+_validate_plan_contract[[:space:]]'; then
+  if printf '%s\n' "$_eng122n_planning_block" | grep -qE 'planning\)' \
+     && printf '%s\n' "$_eng122n_planning_block" | grep -qE '_validate_plan_contract'; then
     pass_at "ENG-122 INT4 (122-N): _validate_plan_contract call is inside a planning) arm"
   else
     fail_at "ENG-122 INT4 (122-N): _validate_plan_contract not in planning) arm" \
