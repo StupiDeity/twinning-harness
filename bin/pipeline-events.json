@@ -16,7 +16,8 @@
     "protocol-violation",
     "dispatch-timeout",
     "pr-opened-too-early",
-    "dispatch-envelope-violation"
+    "dispatch-envelope-violation",
+    "plan-contract-invalid"
   ],
   "wait_reasons": [
     "awaiting-approval",
