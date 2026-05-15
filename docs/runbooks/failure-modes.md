@@ -441,7 +441,7 @@ slot-occupancy rows) before treating the symptom as a misconfiguration.
 By cause:
 
 - **`CLAUDE_MAX_CONCURRENT` unintentionally `1`** → edit the launchd
-  plist's `EnvironmentVariables` block (or `launchctl unsetenv`), then
+  plist's `EnvironmentVariables` block (remove the key), then
   re-run the bootout-then-bootstrap recipe at
   [`recovery.md` §9 "Host-wide rollback"](recovery.md#host-wide-rollback-preferred-under-acute-incident)
   against `~/Library/LaunchAgents/com.twinning.pipeline.${PROJECT_SLUG}.plist`
