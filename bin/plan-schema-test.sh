@@ -19,6 +19,11 @@ pass_at() { PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 fail_at() { FAIL=$((FAIL+1)); printf '  ❌ %s — %s\n' "$1" "$2" >&2; }
 
 FIXTURE_DIR="$(mktemp -d -t plan-schema-test.XXXXXX)"
+# plan-schema.sh sources common.sh which requires TARGET_REPO + PROJECT_SLUG.
+export TARGET_REPO="$FIXTURE_DIR/target"
+mkdir -p "$TARGET_REPO/.pipeline-config"
+printf '{"project":{"slug":"test-slug"}}\n' > "$TARGET_REPO/.pipeline-config/config.json"
+export PROJECT_SLUG=test-slug
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
 
 # ─── Helpers ─────────────────────────────────────────────────────────
