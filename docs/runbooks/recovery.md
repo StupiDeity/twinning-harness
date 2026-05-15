@@ -547,6 +547,91 @@ the halt — start/end rows for the d0007 dispatch survive the
 
 ---
 
+## 9. Emergency: roll back concurrent dispatches to K=1
+
+Roll the per-host (or per-project) `claude -p` concurrency cap back
+to 1 — the pre-ENG-81 binary-mutex behaviour. Use this when:
+
+- **Linear API rate-limit symptoms** — sudden cascade of `linear-post-failed`
+  halts across multiple projects.
+- **Unexpected `claude` subscription quota burns** — 5-hour rolling
+  window saturated faster than budgeted.
+- **Suspected race or bug in an ENG-81-adjacent change** — slot
+  collision, lock-recovery loop, or new `_resolve_K` regression.
+
+No deploy is required for either path.
+
+### Host-wide rollback (preferred under acute incident)
+
+Affects every project on this Mac immediately on next tick (each
+project's plist injects the same env var):
+
+```bash
+# 1. Edit the plist for each project to add CLAUDE_MAX_CONCURRENT
+plist="$HOME/Library/LaunchAgents/com.twinning.pipeline.<slug>.plist"
+
+# Inside <key>EnvironmentVariables</key>'s <dict>, add:
+#   <key>CLAUDE_MAX_CONCURRENT</key>
+#   <string>1</string>
+
+# 2. Reload the launchd job
+launchctl bootstrap "gui/$(id -u)" "$plist"
+```
+
+Repeat per slug if you run multiple projects.
+
+### Per-project rollback (when one project's bug should not affect others)
+
+```bash
+jq '.orchestrator.max_concurrent_features = 1' \
+  "$TARGET_REPO/.pipeline-config/config.json" \
+  > /tmp/c && mv /tmp/c "$TARGET_REPO/.pipeline-config/config.json"
+```
+
+The next tick (≤ 5 min) picks this up automatically.
+
+### Verify
+
+On the next tick, the local log MUST show `scheduler: K=1`:
+
+```bash
+grep 'scheduler: K=' \
+  "$PROJECT_STATE_DIR/logs/local-$(date -u +%Y-%m-%d).log" \
+  | tail -1
+```
+
+Only one `slot-*/pid` directory should exist under
+`$HARNESS_STATE_DIR/.claude-semaphore/` at any moment:
+
+```bash
+ls "$HARNESS_STATE_DIR/.claude-semaphore/"slot-*/pid 2>/dev/null | wc -l
+# → 0 or 1
+```
+
+### Restore (post-incident)
+
+Host-wide: remove the `CLAUDE_MAX_CONCURRENT` entry from each plist
+`EnvironmentVariables` block + `launchctl bootstrap` again.
+Per-project: `jq '.orchestrator.max_concurrent_features = 2' …`
+(or delete the key for the built-in default 2).
+
+### Why this is the right primitive
+
+`bin/common.sh::_resolve_K`'s precedence is `CLAUDE_MAX_CONCURRENT`
+env > `orchestrator.max_concurrent_features` config > built-in 2.
+Setting the env var to 1 wins over every project's config; setting
+one project's config to 1 only affects that project. Both paths
+avoid touching the underlying counting semaphore at
+`$HARNESS_STATE_DIR/.claude-semaphore/`, which continues to work
+correctly at any cap including 1.
+
+See `CLAUDE.md` §"Per-project dispatch concurrency" for the full
+resolution-precedence model + slot-occupancy interaction; see
+[`configuration.md` §`orchestrator.max_concurrent_features`](../configuration.md#orchestratormax_concurrent_features)
+for the canonical config reference.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
