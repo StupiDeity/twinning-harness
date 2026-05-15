@@ -1317,6 +1317,22 @@ else
   nope "§5 ENG-101: '[major]' severity bound to the paragraph's flag clause (downgrade-resistant)" \
        "paragraph-unique 'flag the occurrence as \`[major]' literal missing — severity may have been silently downgraded to [minor]/[nit] (ENG-101 D-2 / D-3 #4)"
 fi
+# Body-token pins parallel to §3's controllers/ + internal/ pins above.
+# Without these, a future edit could preserve the paragraph header and
+# severity prose but gut the boundary body (e.g., delete the (a)/(b)
+# clause list), and the assertions above would still pass.
+if printf '%s\n' "$s5_eng101" | grep -qF 'controllers/'; then
+  ok "§5 ENG-101: carries 'controllers/' boundary path in clause (a)"
+else
+  nope "§5 ENG-101: carries 'controllers/' boundary path in clause (a)" \
+       "'controllers/' missing — clause (a) boundary path list was gutted (ENG-101 D-2)"
+fi
+if printf '%s\n' "$s5_eng101" | grep -qF 'internal site'; then
+  ok "§5 ENG-101: carries 'internal site' descriptor in the flag clause"
+else
+  nope "§5 ENG-101: carries 'internal site' descriptor in the flag clause" \
+       "'internal site' missing — flag-clause body was gutted while header preserved (ENG-101 D-2)"
+fi
 unset s5_eng101
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
