@@ -1001,6 +1001,17 @@ eng107_qa_traversal_passthrough() {
 }
 eng107_qa_traversal_passthrough
 
+# ─── ENG-122: failure_outcome_for_exit — exit codes 30/31/32 ──────────
+# Verifies that plan-contract exit codes 30, 31, 32 are mapped in the
+# failure_outcome_for_exit table.
+printf '\n--- ENG-122: failure_outcome_for_exit codes 30/31/32 ---\n'
+assert_eq "ENG-122 exit-30: plan-contract-malformed" \
+  "plan-contract-malformed" "$(failure_outcome_for_exit 30)"
+assert_eq "ENG-122 exit-31: plan-contract-incomplete" \
+  "plan-contract-incomplete" "$(failure_outcome_for_exit 31)"
+assert_eq "ENG-122 exit-32: plan-contract-missing" \
+  "plan-contract-missing" "$(failure_outcome_for_exit 32)"
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
