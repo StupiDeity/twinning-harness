@@ -2831,6 +2831,32 @@ test_self_leak_callsite_wired() {
 }
 test_self_leak_callsite_wired
 
+# ─── ENG-100: stage_auto_cleans_self_leak predicate ──────────────────
+# New predicate ships the docs-only auto-clean extension. The five
+# truthy stages match brainstorm D-002 / D-004 ({brainstorming,
+# planning, reviewing, building, released}); everything else
+# (implementing, ui, qa, retrospective, UNKNOWN) stays on the halt
+# lane so production-path self-leak still surfaces as an operator
+# signal.
+test_auto_cleans_self_leak_predicate() {
+  local s
+  for s in brainstorming planning reviewing building released; do
+    if stage_auto_cleans_self_leak "$s"; then
+      report_ok "auto_cleans: $s routes to auto-clean lane"
+    else
+      report_fail "auto_cleans: $s" 'true' 'false'
+    fi
+  done
+  for s in implementing ui qa retrospective unknown-stage ''; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans: '$s' should NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans: '$s' correctly stays on halt lane"
+    fi
+  done
+}
+test_auto_cleans_self_leak_predicate
+
 # ─── Scheduler-side in-flight lock wire-up invariants ────────────────
 # Production code (run-local.sh) must:
 #   1. Declare `_SCHEDULER_INFLIGHT_LOCKS=()` array.

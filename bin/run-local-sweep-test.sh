@@ -529,4 +529,63 @@ printf 'OK AC-K2-PARALLEL-WORKERS-FAILURE-RESILIENT (worker A exit 1, worker B c
 unset -f _run_worker release_lock
 unset _claimed_workers
 
+# AC-ENG-100-PREDICATE-PLANNING: new predicate routes planning to
+# auto-clean lane. Reason: brainstorm D-002/D-004 — docs-only stages
+# carry no `Bash(rm:*)` so the orchestrator absorbs cleanup at the
+# self-leak gate rather than halting on sub-agent residue.
+if stage_auto_cleans_self_leak planning; then
+  printf 'OK: stage_auto_cleans_self_leak: planning routes to auto-clean lane\n'
+else
+  printf 'FAIL: stage_auto_cleans_self_leak: planning routes to auto-clean lane\n  reason: expected planning to auto-clean self-leak residue\n' >&2; exit 1
+fi
+
+# AC-ENG-100-PREDICATE-BRAINSTORM: same for brainstorming.
+if stage_auto_cleans_self_leak brainstorming; then
+  printf 'OK: stage_auto_cleans_self_leak: brainstorming routes to auto-clean lane\n'
+else
+  printf 'FAIL: stage_auto_cleans_self_leak: brainstorming routes to auto-clean lane\n  reason: expected brainstorming to auto-clean self-leak residue\n' >&2; exit 1
+fi
+
+# AC-ENG-100-PREDICATE-REVIEWING / BUILDING / RELEASED: superset of
+# stage_is_read_mostly's truthy stages — the new predicate must keep
+# routing them to auto-clean (pre-ENG-100 contract preserved).
+for _s in reviewing building released; do
+  if stage_auto_cleans_self_leak "$_s"; then
+    printf 'OK: stage_auto_cleans_self_leak: %s stays on auto-clean lane\n' "$_s"
+  else
+    printf 'FAIL: stage_auto_cleans_self_leak: %s should stay on auto-clean lane\n' "$_s" >&2; exit 1
+  fi
+done
+unset _s
+
+# AC-ENG-100-PREDICATE-IMPLEMENTING: implementing STAYS on the halt
+# lane — operator decision asymmetry between docs-only and
+# production-path stages must be preserved.
+if stage_auto_cleans_self_leak implementing; then
+  printf 'FAIL: stage_auto_cleans_self_leak: implementing must NOT auto-clean\n  reason: production-path stages still halt on self-leak (operator signal)\n' >&2; exit 1
+else
+  printf 'OK: stage_auto_cleans_self_leak: implementing stays on halt lane\n'
+fi
+
+# AC-ENG-100-PREDICATE-UI: ui STAYS on the halt lane.
+if stage_auto_cleans_self_leak ui; then
+  printf 'FAIL: stage_auto_cleans_self_leak: ui must NOT auto-clean\n' >&2; exit 1
+else
+  printf 'OK: stage_auto_cleans_self_leak: ui stays on halt lane\n'
+fi
+
+# AC-ENG-100-PREDICATE-QA: qa STAYS on the halt lane.
+if stage_auto_cleans_self_leak qa; then
+  printf 'FAIL: stage_auto_cleans_self_leak: qa must NOT auto-clean\n' >&2; exit 1
+else
+  printf 'OK: stage_auto_cleans_self_leak: qa stays on halt lane\n'
+fi
+
+# AC-ENG-100-PREDICATE-UNKNOWN: UNKNOWN stage → halt lane (conservative).
+if stage_auto_cleans_self_leak some-unknown-stage 2>/dev/null; then
+  printf 'FAIL: stage_auto_cleans_self_leak: unknown stage must NOT auto-clean\n' >&2; exit 1
+else
+  printf 'OK: stage_auto_cleans_self_leak: unknown stage stays on halt lane (conservative)\n'
+fi
+
 printf 'All sweep-test cases passed.\n'
