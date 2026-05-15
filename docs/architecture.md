@@ -158,7 +158,7 @@ This separation has two properties worth knowing:
   $TARGET_REPO`, that's the D-003 invariant `die`-ing.
 - **No cross-target state leakage**: each target has its own
   `$PROJECT_STATE_DIR`, its own `.pipeline-config/`, its own pair of
-  launchd jobs. The only shared thing is the global Claude counting
+  launchd jobs. The only shared thing is the host-wide Claude counting
   semaphore at `$HARNESS_STATE_DIR/.claude-semaphore/` (default cap 2
   since ENG-81; see "Cross-cutting: the Claude counting semaphore"
   below).
