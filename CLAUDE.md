@@ -436,6 +436,78 @@ sums per-message `assistant.message.usage.*` and writes a partial usage file
 with `cost_usd: null` and `partial: true` (D-003 — distinguishes SIGTERM runs
 from genuine zero-cost dispatches).
 
+## Per-stage dispatch model (ENG-103)
+
+`bin/run-stage.sh::_resolve_dispatch_model` resolves a Claude model
+identifier and exports it as `PIPELINE_DISPATCH_MODEL` to
+`bin/dispatch.sh::main`, which splices `--model "$VAR"` into the
+`claude -p` argv when set. Resolution precedence (highest first):
+
+1. `.pipeline-config/config.json::dispatch.model[<stage>]` — per-target
+   operator pin.
+2. Escalation override (implementing/ui only) when
+   `_count_loopback_rejections_for_stage >= 1` since the most recent
+   `<!-- pipeline: transition ... to=<stage> -->`. Fires on both
+   rebase loopback (`building → implementing`) and review loopback.
+3. Built-in default table:
+
+| Stage | Default |
+|---|---|
+| `brainstorming` | `claude-opus-4-7` |
+| `planning`      | `claude-opus-4-7` |
+| `implementing`  | `claude-opus-4-7` (D-008: stays Opus until ENG-101 stabilises; flip to `claude-sonnet-4-6` once observed-good) |
+| `ui`            | `claude-sonnet-4-6` |
+| `reviewing`     | `claude-opus-4-7` |
+| `qa`            | `claude-sonnet-4-6` |
+| `building`      | `claude-haiku-4-5-20251001` |
+| `released`      | (unset — subscription default) |
+
+4. Unset (stage absent from default table) → no `--model` flag →
+   subscription default.
+
+```json
+{
+  "dispatch": {
+    "model": {
+      "implementing": "claude-opus-4-7[1m]",
+      "qa": "claude-sonnet-4-6"
+    }
+  }
+}
+```
+
+Validation: identifier regex `^[A-Za-z0-9._:-]+(\[[A-Za-z0-9._:-]+\])?$`
+permits bracketed-suffix forms (`claude-opus-4-7[1m]`) and date-suffixed
+forms (`claude-haiku-4-5-20251001`); rejects shell-meta payloads. Layer 1
+also filters non-string config types at the jq layer (`strings` filter), so
+`dispatch.model.implementing = 60` silently falls through to the default.
+Stage keys are gerund form (`brainstorming, planning, implementing, ui,
+reviewing, qa, building, released`); unknown key silently falls through.
+
+Spot-check: `bash bin/status.sh` reads `events.jsonl::model` from
+ENG-26 telemetry. Confirm post-ship that implementing rows show
+`claude-sonnet-4-6` on first passes (after the D-008 flip),
+`claude-opus-4-7` on retries, and building rows show
+`claude-haiku-4-5-20251001`.
+
+Operator-resolution log: `dispatch model=<resolved> (stage=<stage>)`
+in `$PROJECT_STATE_DIR/<slug>/logs/<ident>-<stage>-*.log`. The
+authoritative per-dispatch model is `usage-<stage>.json::model`
+(what claude actually billed against) — they can diverge if the
+subscription doesn't have access to the requested tier.
+
+Escalation predicate sits next to (does NOT override) `guards.sh::check`'s
+`implement_rejection` halt-threshold (default 2). After two failed
+implement passes, the second one already escalated to Opus, then
+guards trip and halt for human review.
+
+Operator-tunable escalation thresholds (a future `dispatch.model_escalation[<stage>]`
+config key) are deferred to a follow-up (brainstorm OQ-4); today's
+predicate is hard-coded `>= 1`. An operator wanting to skip the cheap
+cycle entirely can pin `dispatch.model[<stage>]` to `claude-opus-4-7`
+directly, which wins over the escalation override per the precedence
+table above.
+
 ## Orchestrator entry-conditions (ENG-86)
 
 `bin/run-stage.sh::_entry_conditions_gate` is a config-driven pre-dispatch

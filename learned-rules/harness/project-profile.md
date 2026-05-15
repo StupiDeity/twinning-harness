@@ -57,6 +57,8 @@ are implicit and not declared here.
   - `Bash(bash bin/run-local-content-test.sh:*)`
   - `Bash(bash bin/run-local-helpers-adversarial-test.sh:*)`
   - `Bash(bash bin/run-local-sweep-test.sh:*)`
+  - `Bash(bash bin/run-stage-model-adversarial-test.sh:*)`
+  - `Bash(bash bin/run-stage-model-test.sh:*)`
   - `Bash(bash bin/run-stage-test.sh:*)`
   - `Bash(bash bin/scope-check-test.sh:*)`
   - `Bash(bash bin/secret-probe-lint-adversarial-test.sh:*)`
@@ -98,6 +100,8 @@ are implicit and not declared here.
   - `Bash(bash bin/run-local-content-test.sh:*)`
   - `Bash(bash bin/run-local-helpers-adversarial-test.sh:*)`
   - `Bash(bash bin/run-local-sweep-test.sh:*)`
+  - `Bash(bash bin/run-stage-model-adversarial-test.sh:*)`
+  - `Bash(bash bin/run-stage-model-test.sh:*)`
   - `Bash(bash bin/run-stage-test.sh:*)`
   - `Bash(bash bin/scope-check-test.sh:*)`
   - `Bash(bash bin/secret-probe-lint-adversarial-test.sh:*)`

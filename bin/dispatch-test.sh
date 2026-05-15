@@ -482,6 +482,39 @@ else
     "log: $(cat "$DRYRUN_OUT_NN")"
 fi
 
+# ─── Group 5 (ENG-103): --model argv splice ─────────────────────────────
+# PIPELINE_DISPATCH_MODEL is the env-var hand-off from run-stage.sh. When
+# non-empty, dispatch.sh splices `--model <value>` into both the claude -p
+# argv (production path) and the DRY_RUN log line (operator audit trail).
+# When empty/unset, the flag is omitted so claude uses the subscription
+# default — preserving today's behavior on hosts that invoke dispatch.sh
+# outside of run-stage.sh (e.g. mutex-test).
+printf '\n--- ENG-103: --model splice in DRY_RUN log ---\n'
+
+DRYRUN_OUT_M="$_TEST_STUB_DIR/dryrun-model.out"
+PIPELINE_DRY_RUN=1 \
+PIPELINE_DISPATCH_MODEL=claude-sonnet-4-6 \
+  bash "$SCRIPT_DIR/dispatch.sh" implementing "$_PROMPT_FILE" 2>"$DRYRUN_OUT_M" >/dev/null || true
+
+if grep -qE -- '--model claude-sonnet-4-6' "$DRYRUN_OUT_M"; then
+  pass_at "ENG-103: PIPELINE_DISPATCH_MODEL=claude-sonnet-4-6 splices --model into DRY_RUN log"
+else
+  fail_at "ENG-103: --model splice missing from DRY_RUN log" \
+    "log: $(cat "$DRYRUN_OUT_M")"
+fi
+
+DRYRUN_OUT_MU="$_TEST_STUB_DIR/dryrun-model-unset.out"
+PIPELINE_DRY_RUN=1 \
+PIPELINE_DISPATCH_MODEL="" \
+  bash "$SCRIPT_DIR/dispatch.sh" implementing "$_PROMPT_FILE" 2>"$DRYRUN_OUT_MU" >/dev/null || true
+
+if ! grep -qE -- '--model ' "$DRYRUN_OUT_MU"; then
+  pass_at "ENG-103: PIPELINE_DISPATCH_MODEL empty omits --model from DRY_RUN log"
+else
+  fail_at "ENG-103: --model leaked into DRY_RUN log when env var empty" \
+    "log: $(cat "$DRYRUN_OUT_MU")"
+fi
+
 # ─── Group 3: stream-json renderer fixtures (ENG-26 Task 5) ──────────────
 # Five fixtures:
 #   A — success path: NDJSON with a final `result` event yields the six-field
