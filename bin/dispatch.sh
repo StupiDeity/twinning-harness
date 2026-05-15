@@ -509,7 +509,16 @@ main() {
   fi
 
   if [[ "$PIPELINE_DRY_RUN" == "1" ]]; then
-    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
+    # ENG-103: inline the --model flag when PIPELINE_DISPATCH_MODEL is set so
+    # the dispatch-test.sh fixture can grep for it. The env-var name does NOT
+    # match secret-probe-lint's regex (no KEY/TOKEN/SECRET/ANTHROPIC/GITHUB/
+    # LINEAR substring), so `${VAR:-}` is ENG-46-clean here (mirrors
+    # _cfg_minutes' presence check at dispatch.sh:481).
+    local _dry_model_seg=""
+    if [[ -n "${PIPELINE_DISPATCH_MODEL:-}" ]]; then
+      _dry_model_seg=" --model $PIPELINE_DISPATCH_MODEL"
+    fi
+    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose${_dry_model_seg} --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
     head -c 500 "$prompt_file" >&2
     printf '\n' >&2
@@ -561,6 +570,17 @@ main() {
   cmd+=(gtimeout --signal=TERM --kill-after=10 "$timeout_seconds"
     claude -p
     --output-format stream-json --verbose
+  )
+  # ENG-103: when PIPELINE_DISPATCH_MODEL is set, splice `--model <value>`
+  # as two distinct argv elements (a single `cmd+=(--model "$VAR")` correctly
+  # appends two array elements; `${VAR:+--model "$VAR"}` would collapse the
+  # value into one element with shell word-splitting). The env-var name does
+  # NOT match secret-probe-lint's regex, so the `${VAR:-}` presence check
+  # is ENG-46-clean (mirrors _cfg_minutes at line 481).
+  if [[ -n "${PIPELINE_DISPATCH_MODEL:-}" ]]; then
+    cmd+=(--model "$PIPELINE_DISPATCH_MODEL")
+  fi
+  cmd+=(
     --setting-sources project,local
     --disable-slash-commands
     --disallowed-tools "$denies"
