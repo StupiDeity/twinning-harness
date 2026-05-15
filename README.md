@@ -27,7 +27,7 @@ runs weekly and proposes updates to the harness's own learned-rule files.
 - Authors who enjoy reading agent transcripts as much as writing code
 
 **Not for:**
-- Team-shared CI / multi-operator setups (a global mutex serializes dispatch)
+- Team-shared CI / multi-operator setups (state dirs are single-host; concurrent dispatches share a per-host cap)
 - Non-Linear / non-GitHub workflows
 - Linux or Windows hosts (macOS / `launchd` only — no portability layer)
 - Projects where you can't comfortably write detailed Linear specs upfront —
@@ -346,8 +346,10 @@ Two locations:
 
 Most operators only edit `config.json` for: per-stage dispatch timeouts (if
 the default 30 min cap fires SIGTERM during legitimate persona-review work),
-the dispatch.tools allowlist (operator-curated extras on top of the profile-derived list), or
-entry-conditions (cost-recovery on build).
+the dispatch.tools allowlist (operator-curated extras on top of the profile-derived list),
+entry-conditions (cost-recovery on build), or `orchestrator.max_concurrent_features`
+(the per-tick concurrent-dispatch cap; default 2; see
+[`docs/configuration.md`](docs/configuration.md#orchestratormax_concurrent_features)).
 
 → See [`docs/configuration.md`](docs/configuration.md) for the full
 `config.json` schema, the wildcard pitfall, the allowlist regen one-liner,
@@ -413,8 +415,11 @@ any of these silently breaks things in confusing ways:
 - **Doc ownership**: `docs/brainstorms/*.md` and `docs/plans/*.md` use YAML
   frontmatter (`linear: ENG-N`) to bind documents to issues. The reconcile
   pass relies on this.
-- **Platform**: macOS, `launchd`, single operator. Cross-tick concurrency is
-  serialized via a global mutex; cross-machine concurrency is not supported.
+- **Platform**: macOS, `launchd`, single operator. Concurrent `claude -p`
+  dispatches are capped per-host by a counting semaphore at
+  `$HARNESS_STATE_DIR/.claude-semaphore/` (default cap 2 via
+  `orchestrator.max_concurrent_features` since ENG-81); cross-machine
+  concurrency is not supported.
 - **Auth**: Claude subscription session on the host — `ANTHROPIC_API_KEY` is
   intentionally never set.
 - **Stack**: Per-stage allowed-tools composition order is
