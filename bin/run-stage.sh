@@ -1257,8 +1257,17 @@ main() {
     # Dispatch. Export PIPELINE_ISSUE_ID so dispatch.sh can resolve the
     # per-stage usage-file path (ENG-26 D-012). Ambient-context env var
     # mirrors the existing PIPELINE_DRY_RUN pattern (common.sh:171).
+    # ENG-103: resolve per-stage model and hand off via PIPELINE_DISPATCH_MODEL.
+    # Empty string propagates unchanged; dispatch.sh's `[[ -n ... ]]` test
+    # elides the --model flag in that case (preserving subscription default).
     local dispatch_rc=0
+    local resolved_model
+    resolved_model="$(_resolve_dispatch_model "$stage" "$ident" 2>/dev/null || printf '')"
+    if [[ -n "$resolved_model" ]]; then
+      log "dispatch model=$resolved_model (stage=$stage)"
+    fi
     PIPELINE_ISSUE_ID="$ident" \
+      PIPELINE_DISPATCH_MODEL="$resolved_model" \
       bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$prompt_file" "$log_file" \
       || dispatch_rc=$?
 
