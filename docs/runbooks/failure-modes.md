@@ -528,13 +528,13 @@ rm -rf "$issue_dir/.in-flight.lock"
 
 ### Root cause
 
-Pre-ENG-81's scheduler/worker split could leak an orphan
-`.in-flight.lock/` if the worker was SIGKILLed / oomkilled /
-host-rebooted between `mkdir` and `release_lock`. ENG-81 added
-self-healing recovery to `try_acquire_lock`: every acquire attempt
-that finds the dir present reads the recorded holder pid and
-reclaims if `kill -0 $pid` fails. The pid-readback after re-mkdir
-handles concurrent reclaim races.
+The scheduler/worker split introduced by ENG-81 can leak an orphan
+`.in-flight.lock/` if the worker is SIGKILLed / oomkilled /
+host-rebooted between `mkdir` and `release_lock`. ENG-81 anticipates
+this by adding self-healing recovery to `try_acquire_lock`: every
+acquire attempt that finds the dir present reads the recorded holder
+pid and reclaims if `kill -0 $pid` fails. The pid-readback after
+re-mkdir handles concurrent reclaim races.
 
 ### Related
 
