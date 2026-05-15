@@ -617,7 +617,12 @@ main() {
       "wall_seconds=${_wall_seconds:-?} max_rss_kb=${_rss_kb:-?} cpu_pct=${_cpu_pct:-?}" \
       || log "[dispatch-resource-sample] metric emit failed (non-blocking)"
   fi
-  [[ -n "$_gtime_out" ]] && rm -f "$_gtime_out"
+  # `if` form (not `[[ ]] && rm`) — when `_gtime_out` is empty the bare
+  # `[[ -n "" ]]` returns rc=1 as the function's last statement, which
+  # `set -euo pipefail` (common.sh) propagates as dispatch.sh exit 1.
+  # run-stage.sh classifies any unrecognized non-zero rc as exit 20 →
+  # retry-immediately, halting after 3 ticks even on a clean agent run.
+  if [[ -n "$_gtime_out" ]]; then rm -f "$_gtime_out"; fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
