@@ -264,5 +264,123 @@ else
   fi
 fi
 
+# ─── T13-T18: kind-specific rc=31 paths (M2 review finding) ─────────────────
+# Plan-schema.sh validates required fields for each kind. These six paths
+# had no tests; the test strategy claimed full coverage but reality was partial.
+
+# ─── T13: smoke — missing command → exit 31 ──────────────────────────
+cat > "$FIXTURE_DIR/t13.json" <<'EOF'
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-1",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "test",
+      "pass_criteria": [{ "kind": "smoke", "expect_exit": 0 }]
+    }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t13.json" >/dev/null 2>&1 || rc=$?
+(( rc == 31 )) \
+  && pass_at "T13: smoke missing command → exit 31" \
+  || fail_at "T13: smoke missing command" "expected rc=31, got rc=$rc"
+
+# ─── T14: smoke — missing expect_exit → exit 31 ──────────────────────
+cat > "$FIXTURE_DIR/t14.json" <<'EOF'
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-1",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "test",
+      "pass_criteria": [{ "kind": "smoke", "command": "echo hi" }]
+    }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t14.json" >/dev/null 2>&1 || rc=$?
+(( rc == 31 )) \
+  && pass_at "T14: smoke missing expect_exit → exit 31" \
+  || fail_at "T14: smoke missing expect_exit" "expected rc=31, got rc=$rc"
+
+# ─── T15: file_exists — missing path → exit 31 ───────────────────────
+cat > "$FIXTURE_DIR/t15.json" <<'EOF'
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-1",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "test",
+      "pass_criteria": [{ "kind": "file_exists" }]
+    }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t15.json" >/dev/null 2>&1 || rc=$?
+(( rc == 31 )) \
+  && pass_at "T15: file_exists missing path → exit 31" \
+  || fail_at "T15: file_exists missing path" "expected rc=31, got rc=$rc"
+
+# ─── T16: grep — missing path → exit 31 ─────────────────────────────
+cat > "$FIXTURE_DIR/t16.json" <<'EOF'
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-1",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "test",
+      "pass_criteria": [{ "kind": "grep", "pattern": "foo", "expect_match": true }]
+    }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t16.json" >/dev/null 2>&1 || rc=$?
+(( rc == 31 )) \
+  && pass_at "T16: grep missing path → exit 31" \
+  || fail_at "T16: grep missing path" "expected rc=31, got rc=$rc"
+
+# ─── T17: grep — missing pattern → exit 31 ───────────────────────────
+cat > "$FIXTURE_DIR/t17.json" <<'EOF'
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-1",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "test",
+      "pass_criteria": [{ "kind": "grep", "path": "bin/plan-schema.sh", "expect_match": true }]
+    }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t17.json" >/dev/null 2>&1 || rc=$?
+(( rc == 31 )) \
+  && pass_at "T17: grep missing pattern → exit 31" \
+  || fail_at "T17: grep missing pattern" "expected rc=31, got rc=$rc"
+
+# ─── T18: grep — expect_match wrong type (string instead of boolean) → exit 31
+cat > "$FIXTURE_DIR/t18.json" <<'EOF'
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-1",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "test",
+      "pass_criteria": [{ "kind": "grep", "path": "x", "pattern": "y", "expect_match": "yes" }]
+    }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t18.json" >/dev/null 2>&1 || rc=$?
+(( rc == 31 )) \
+  && pass_at "T18: grep expect_match wrong type (string) → exit 31" \
+  || fail_at "T18: grep expect_match wrong type" "expected rc=31, got rc=$rc"
+
 printf '\nplan-schema-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
