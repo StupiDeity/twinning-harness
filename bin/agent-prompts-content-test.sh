@@ -1284,22 +1284,38 @@ else
   nope "§3 ENG-101: carries 'try/except: pass' AVOID example token" \
        "example missing — bullet body was gutted while header preserved (ENG-101 D-3 #2)"
 fi
-if printf '%s\n' "$s3_eng101" | grep -qF 'controllers/' \
-   && printf '%s\n' "$s3_eng101" | grep -qF 'internal/'; then
-  ok "§3 ENG-101: carries boundary heuristic tokens 'controllers/' AND 'internal/'"
+if printf '%s\n' "$s3_eng101" | grep -qF 'controllers/'; then
+  ok "§3 ENG-101: carries 'controllers/' boundary heuristic token"
 else
-  nope "§3 ENG-101: carries boundary heuristic tokens 'controllers/' AND 'internal/'" \
-       "either 'controllers/' OR 'internal/' missing — boundary heuristic incomplete (ENG-101 D-3 #3)"
+  nope "§3 ENG-101: carries 'controllers/' boundary heuristic token" \
+       "'controllers/' missing — boundary half of heuristic incomplete (ENG-101 D-3 #3)"
+fi
+if printf '%s\n' "$s3_eng101" | grep -qF 'internal/'; then
+  ok "§3 ENG-101: carries 'internal/' boundary heuristic token"
+else
+  nope "§3 ENG-101: carries 'internal/' boundary heuristic token" \
+       "'internal/' missing — internal-site half of heuristic incomplete (ENG-101 D-3 #3)"
 fi
 unset s3_eng101
 
 s5_eng101="$(section_body "## 5. Review Agent")"
-if printf '%s\n' "$s5_eng101" | grep -qF '**Defensive-code restraint:**' \
-   && printf '%s\n' "$s5_eng101" | grep -qF '[major]'; then
-  ok "§5 ENG-101: carries '**Defensive-code restraint:**' AND '[major]' severity (Anti-bias check)"
+if printf '%s\n' "$s5_eng101" | grep -qF '**Defensive-code restraint:**'; then
+  ok "§5 ENG-101: carries '**Defensive-code restraint:**' paragraph header (Anti-bias check)"
 else
-  nope "§5 ENG-101: carries '**Defensive-code restraint:**' AND '[major]' severity (Anti-bias check)" \
-       "either header OR '[major]' severity token missing — review agent will not flag defensive code at the prescribed severity (ENG-101 D-2 / D-3 #4)"
+  nope "§5 ENG-101: carries '**Defensive-code restraint:**' paragraph header (Anti-bias check)" \
+       "header missing — review agent will not flag defensive code (ENG-101 D-2)"
+fi
+# Paragraph-unique [major] anchor — the bare '[major]' token appears
+# elsewhere in §5 (review-comment rubric example, severity-token legend),
+# so a future downgrade of THIS paragraph's severity would slip past a
+# bare grep -qF '[major]'. Anchor on the distinctive prose at the
+# paragraph's flag line: 'flag the occurrence as `[major]' is unique to
+# the ENG-101 §5 paragraph.
+if printf '%s\n' "$s5_eng101" | grep -qF 'flag the occurrence as `[major]'; then
+  ok "§5 ENG-101: '[major]' severity bound to the paragraph's flag clause (downgrade-resistant)"
+else
+  nope "§5 ENG-101: '[major]' severity bound to the paragraph's flag clause (downgrade-resistant)" \
+       "paragraph-unique 'flag the occurrence as \`[major]' literal missing — severity may have been silently downgraded to [minor]/[nit] (ENG-101 D-2 / D-3 #4)"
 fi
 unset s5_eng101
 
