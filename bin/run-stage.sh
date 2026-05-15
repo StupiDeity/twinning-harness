@@ -94,6 +94,55 @@ _cost_flags_for() {
   ' "$f" 2>/dev/null || true
 }
 
+# ─── Per-stage model resolver (ENG-103) ───────────────────────────────────
+# Count <!-- pipeline: verdict result=fail target=<stage> --> markers newer
+# than the most recent <!-- pipeline: transition ... to=<stage> --> comment.
+# Used by _resolve_dispatch_model's escalation predicate (ENG-103 D-002).
+# Reuses the comment-fetch path from guards.sh::count_marker_since_last_transition
+# but projects each body through parse_pipeline_marker (common.sh) so prose-
+# quoted markers don't register (ENG-87 / ENG-61 Bug A precedent). Fail-open:
+# Linear API outage returns 0 (no escalation) — matches the dispatch-side
+# fail-open posture of _entry_conditions_gate's ENG-86 block.
+_count_loopback_rejections_for_stage() {
+  local ident="$1" stage="$2"
+  local comments
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident" 2>/dev/null)" \
+    || { printf '0'; return 0; }
+  [[ -z "$comments" || "$comments" == "null" ]] && { printf '0'; return 0; }
+
+  # Find most recent transition.to=<stage> createdAt (empty → count all).
+  local last_ts="" body ts ev event_field to_field
+  while IFS=$'\t' read -r ts body; do
+    [[ -z "$ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    event_field="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
+    to_field="$(jq -r '.to // ""' <<<"$ev" 2>/dev/null || printf '')"
+    if [[ "$event_field" == "transition" && "$to_field" == "$stage" ]]; then
+      [[ "$ts" > "$last_ts" ]] && last_ts="$ts"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments" 2>/dev/null)
+
+  # Count verdict.result=fail.target=<stage> newer than last_ts.
+  local count=0 result_field target_field
+  while IFS=$'\t' read -r ts body; do
+    [[ -z "$ts" ]] && continue
+    [[ -n "$last_ts" && ! "$ts" > "$last_ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    event_field="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
+    result_field="$(jq -r '.result // ""' <<<"$ev" 2>/dev/null || printf '')"
+    target_field="$(jq -r '.target // ""' <<<"$ev" 2>/dev/null || printf '')"
+    if [[ "$event_field" == "verdict" \
+       && "$result_field" == "fail" \
+       && "$target_field" == "$stage" ]]; then
+      count=$((count + 1))
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments" 2>/dev/null)
+
+  printf '%s' "$count"
+}
+
 # Format: leading newline so the caller can append unconditionally.
 # Cache% (D-007): round(100 * cache_read / (cache_read + cache_create)).
 # When read+create == 0, omit the `· cache N%` segment entirely — do NOT
