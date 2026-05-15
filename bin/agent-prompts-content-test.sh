@@ -55,7 +55,7 @@ else
   nope "§0 (Common rules) section exists" \
     "section missing — render-prompt.sh::main will die on dispatch (no common block to prepend)"
 fi
-for phrase in 'Secret-handling (ENG-46)' 'Tool allowlist & probing (ENG-53 #11' 'retry with the same sig' 'Do NOT prepend env-var assignments'; do
+for phrase in 'Secret-handling (ENG-46)' 'Tool allowlist & probing (ENG-53 #11' 'retry with the same sig' 'Do NOT prepend env-var assignments' 'Sub-agent debris (ENG-100)'; do
   if printf '%s\n' "$s0" | grep -qF "$phrase"; then
     ok "§0 carries '$phrase' (delivered to every stage by render-prompt.sh)"
   else
@@ -1185,6 +1185,61 @@ else
     "Task 14's fourth bullet (no-carry-forward-state) missing from the rendered body — an agent could read prior-dispatch artifacts and defeat the clear-on-start invariant"
 fi
 unset rendered_stage_body_implementing
+
+# ─── ENG-100: sub-agent debris rule delivered via §0 ─────────────
+# The new §0 rule must reach every rendered stage body, including
+# brainstorm/plan which use it as the structural complement to the
+# orchestrator-side auto-clean. Pin the rule's headline phrase + the
+# operator-recognition word agent-blocked so a §0 deletion surfaces
+# directly. Mirrors the ENG-87 C2 pin shape (rendered_stage_body =
+# §0 + §N).
+for stage_key in '## 1. Brainstorm Agent' '## 2. Plan Agent'; do
+  short="${stage_key%% Agent*}"
+  rsb="$(rendered_stage_body "$stage_key")"
+  if printf '%s' "$rsb" | grep -qF 'Sub-agent debris (ENG-100)'; then
+    ok "rendered stage body ($short): cites 'Sub-agent debris (ENG-100)' (delivered via §0)"
+  else
+    nope "rendered stage body ($short): cites 'Sub-agent debris (ENG-100)'" \
+      "phrase missing from rendered §0 + §N — sub-agents not warned about debris generation"
+  fi
+  if printf '%s' "$rsb" | grep -qF 'verdict halt --reason agent-blocked'; then
+    ok "rendered stage body ($short): names the agent-blocked exit ramp"
+  else
+    nope "rendered stage body ($short): names the agent-blocked exit ramp" \
+      "without the operator-recognition word, the rule reads like advice instead of a hard contract"
+  fi
+done
+unset stage_key short rsb
+
+# ─── ENG-100 QA adversarial: §0 rule must reach EVERY stage body ────
+# The implement-side fixture above pins delivery for §§1-2 only
+# (brainstorm + planning — the two stages the rule was authored for).
+# Because §0 is the canonical cross-stage rule section, the
+# `Sub-agent debris (ENG-100)` paragraph MUST reach every dispatched
+# stage's rendered body. The Agent-tool sub-agent constraint applies
+# regardless of whether the parent agent is brainstorm, plan, or
+# implementing — any stage that dispatches an inner sub-agent could
+# generate debris. Pinning all 9 stages catches the regression where
+# the rule is accidentally promoted into §1 / §2 bodies (instead of
+# §0) and silently strips delivery to §§3-9.
+for stage_key in \
+  '## 3. Implementation Agent (Backend)' \
+  '## 4. UI Agent (Frontend)' \
+  '## 5. Review Agent' \
+  '## 6. QA Agent' \
+  '## 7. Build Agent' \
+  '## 8. Release Agent' \
+  '## 9. Retrospective Agent (Scheduled)'; do
+  short="${stage_key%% Agent*}"
+  rsb="$(rendered_stage_body "$stage_key")"
+  if printf '%s' "$rsb" | grep -qF 'Sub-agent debris (ENG-100)'; then
+    ok "QA-ADV ENG-100: rendered stage body ($short): §0 sub-agent debris rule delivered"
+  else
+    nope "QA-ADV ENG-100: rendered stage body ($short): §0 sub-agent debris rule delivered" \
+      "rule absent from rendered §0+§N for $short — promoting the rule out of §0 (or removing it) silently weakens debris discipline for non-docs stages"
+  fi
+done
+unset stage_key short rsb
 
 # ─── ENG-87 review-iter-7 M4: stage-summary mandate hoisted to §0 ──
 # Pre-iter-7 the staleness mandate ("MANDATORY — overwrite on every

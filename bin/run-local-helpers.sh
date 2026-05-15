@@ -179,11 +179,38 @@ stage_is_read_mostly() {
   [[ -z "$out" ]]
 }
 
+# stage_auto_cleans_self_leak <stage>
+#
+# Returns 0 iff a self-leak on this stage should be auto-cleaned by
+# clean_self_leak_residue rather than halted via halt_issue_for_self_leak.
+# Stage list: brainstorming, planning, reviewing, building, released.
+# Returns 1 for implementing, ui, qa, retrospective, and UNKNOWN.
+#
+# Superset of stage_is_read_mostly (which returns 0 only for
+# reviewing|building|released). The two doc-writing stages
+# (brainstorming, planning) are added because their --allowed-tools
+# surface does not include Bash(rm:*) (operator decision 2026-05-10),
+# so they cannot clean up sub-agent debris themselves; the orchestrator
+# absorbs the cleanup at the FD5 self-leak gate in run-local.sh.
+#
+# Distinct from stage_is_read_mostly: the latter is the SoT for "stage
+# has no legitimate worktree writes" (consumed by partition's empty-
+# allowlist case). Conflating the two would lie about brainstorm being
+# read-mostly (it isn't — it writes docs/brainstorms/*).
+stage_auto_cleans_self_leak() {
+  case "$1" in
+    brainstorming|planning|reviewing|building|released) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # clean_self_leak_residue <issue> <stage> <worktree> <path>...
 #
 # Called from run-local.sh's self-leak handler when the affected
-# stage is read-mostly (per stage_is_read_mostly). Removes paths the
-# partition sweep already identified as bot-introduced self-leak —
+# stage routes self-leak through auto-clean (per
+# stage_auto_cleans_self_leak — brainstorming, planning, reviewing,
+# building, released). Removes paths the partition sweep already
+# identified as bot-introduced self-leak —
 # i.e. NEW since tick-start (the sweep's snapshot comparison at
 # run-local.sh has done the observed-vs-self-leak split). Operator's
 # pre-existing 'observed' edits are NEVER touched because they don't
@@ -232,7 +259,7 @@ clean_self_leak_residue() {
   branch="$(git -C "$worktree" branch --show-current 2>/dev/null || true)"
   case "$branch" in
     main|master|"")
-      log "auto-clean: defensive refuse on branch='${branch:-<empty-or-detached>}' for stage=$stage (read-mostly cleanup must never run on main)"
+      log "auto-clean: defensive refuse on branch='${branch:-<empty-or-detached>}' for stage=$stage (auto-clean must never run on main)"
       return 0
       ;;
   esac
@@ -250,7 +277,7 @@ clean_self_leak_residue() {
     return 0
   fi
 
-  log "auto-clean: stage=$stage is read-mostly; cleaning ${count} self-leak path(s) on $branch; hashes=${hash_csv}"
+  log "auto-clean: stage=$stage residue; cleaning ${count} self-leak path(s) on $branch; hashes=${hash_csv}"
 
   # Per-path classification + cleanup. Failures are non-blocking — but
   # we DO log the per-class rc count so triage has signal.

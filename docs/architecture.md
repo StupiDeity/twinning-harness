@@ -256,6 +256,25 @@ dirty-path diff and partitions changes into three streams via
 Anything writing files outside the per-stage allowlist must update the
 partition rules in `run-local-helpers.sh` or it will trip the breaker.
 
+**Auto-clean lane for docs-only stages (ENG-100).** Pre-ENG-100,
+`bin/run-local.sh`'s self-leak gate routed `brainstorming | planning`
+to `halt_issue_for_self_leak` whenever a sub-agent left a scratch
+file at the worktree root — even on an otherwise clean stage output.
+Since operator decision 2026-05-10 forbids any form of `Bash(rm:*)`
+in agent `--allowed-tools`, the agent could not clean up after
+itself. The gate now routes through `stage_auto_cleans_self_leak`,
+a superset of `stage_is_read_mostly` that adds the two doc-writing
+stages to the auto-clean lane. `clean_self_leak_residue` (per-path:
+`git checkout --` for tracked, `rm -rf` for untracked) removes the
+debris under orchestrator privileges; the legitimate stage output
+auto-commits as if no debris ever existed. `implementing | ui | qa`
+remain on the halt lane — their allowlist admits production-path
+writes, and a self-leak there is the agent-off-piste signal the
+operator wants. Forensic audit is preserved via the existing
+`sweep-readonly-residue-cleaned` metric (its name predates ENG-100
+and is kept verbatim to avoid churning the retrospective filter
+and `bin/status.sh`'s red/yellow predicate).
+
 ## Per-stage dispatch timeouts (ENG-65)
 
 Each `claude -p` invocation is wrapped by `gtimeout`. Cap resolution:

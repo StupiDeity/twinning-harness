@@ -303,10 +303,15 @@ the carve-out does NOT apply (cross-dispatch state-injection vector — D-004
 issue-id constraint). The trailing slash is load-bearing — a top-level file
 named `.scratchpad` is NOT carved out. `.scratch/` is `.gitignore`d.
 
-**Read-mostly stages auto-clean self-leak residue, never halt on it
-(`reviewing | building | released`).** `stage_output_paths` returns empty
-by design. `stage_is_read_mostly` (`bin/run-local-helpers.sh`) gates on
-empty + zero exit; unknown stages fall through to NOT read-mostly.
+**Docs-only + read-mostly stages auto-clean self-leak residue, never halt on it
+(`brainstorming | planning | reviewing | building | released`).**
+`stage_auto_cleans_self_leak` (`bin/run-local-helpers.sh`, ENG-100) is the
+gate predicate at `bin/run-local.sh`'s self-leak branch — superset of the
+legacy `stage_is_read_mostly` (SoT for "stage has no legitimate worktree
+writes" — derived from `stage_output_paths` returning empty) extended with
+the two doc-writing stages because their `--allowed-tools` surface has no
+`Bash(rm:*)` (operator decision 2026-05-10). Unknown stages fall through
+to NOT auto-clean.
 `clean_self_leak_residue` runs *after* `partition_dirty_paths` has already
 classified observed-vs-self-leak — operates only on paths NEW since
 tick-start (C1 invariant — never touches operator's pre-existing 'observed'
@@ -687,7 +692,7 @@ inspect each surface.
 | Symptom | Where to look |
 |---|---|
 | Tick is silent | `$PROJECT_STATE_DIR/logs/local-YYYY-MM-DD.log`, then per-stage transcript |
-| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure) | Linear comments under sig `halt/<stage>/<issue>` (verdict `result=halt reason=agent-blocked`); `pipeline:halted` + `pipeline:skip-until-human-acts` labels; `$(issue_dir <issue>)/.consecutive-failures` carries per-issue count. Other issues keep polling — do NOT touch `orchestrator.paused`. **Recovery:** `bash bin/pipeline.sh decide <ENG-N> --action continue`. Self-leak halts only fire on `implementing | ui | qa`; on `reviewing | building | released`, `clean_self_leak_residue` auto-cleans (check `sweep-readonly-residue-cleaned` metric). |
+| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure) | Linear comments under sig `halt/<stage>/<issue>` (verdict `result=halt reason=agent-blocked`); `pipeline:halted` + `pipeline:skip-until-human-acts` labels; `$(issue_dir <issue>)/.consecutive-failures` carries per-issue count. Other issues keep polling — do NOT touch `orchestrator.paused`. **Recovery:** `bash bin/pipeline.sh decide <ENG-N> --action continue`. Self-leak halts only fire on `implementing | ui | qa`; on `brainstorming | planning | reviewing | building | released`, `clean_self_leak_residue` auto-cleans (check `sweep-readonly-residue-cleaned` metric). |
 | Global breaker (infrastructure outage) | `$PROJECT_STATE_DIR/.consecutive-failures` ≥ 3 from `rc=24` (`linear-post-failed`); `orchestrator.paused=true`. Resolve with `set_orchestrator_paused false` or any `decide --action continue` (clears via `_pipeline_clear_breaker`). |
 | Issue stuck in `stage:X` | Linear comments under sigs `halt/<stage>/<issue>`, `scope-approval/<stage>/<issue>`. Comment `createdAt` reflects FIRST emission only — check `<!-- meta: reapplied at=… -->` footer for latest re-apply (see `docs/runbooks/recovery.md` §4). |
 | Approved/ready ticket at later stage sits idle while earlier-stage/inbox issue dispatches each tick | Pre-ENG-91 the picker walked Pass 4→5→6 sequentially and exited after first dispatch. ENG-91's unified Pass 4U picker (`bin/poll.sh::_picker_build_pool`) sorts by `[-stage_index, -priority_sort_rank, fifo_ts]` and gates wait_recallable inclusion on `should_dispatch == proceed`. Inspect logs for `picker: wait_recallable <ENG-N> skipped (predicate not ready)`. Recovery: add `pipeline:paused` to held issue, let next tick re-pick the wait, then remove. |

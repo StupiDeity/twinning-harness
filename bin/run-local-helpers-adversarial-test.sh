@@ -2642,7 +2642,7 @@ test_clean_scratch_dir_dry_run_skips_mutation
 # hand-crafted path lists. The full production flow is:
 #   tick-start snapshot → dispatch → partition → observed-vs-self-leak
 #   classification (populates self_leak_paths + self_leak_hashes) →
-#   stage_is_read_mostly branch → clean_self_leak_residue invocation
+#   stage_auto_cleans_self_leak branch → clean_self_leak_residue invocation
 # A regression dropping `self_leak_paths+=("$p")` from the classification
 # loop would cause clean_self_leak_residue to be invoked with an empty
 # array → silent no-op. The wire-up greps catch the deletion at source
@@ -2772,13 +2772,17 @@ test_self_leak_callsite_wired() {
     report_fail 'wire-up #2: self_leak_paths push' \
       'self_leak_paths+=("$p") inside the observed-vs-self-leak loop' 'not found'
   fi
-  # Anchor 3: stage_is_read_mostly is the gate inside the self-leak
-  # handler — must appear with $stage as the sole positional argument.
-  if grep -qE 'if[[:space:]]+stage_is_read_mostly[[:space:]]+"\$stage";' "$rl"; then
-    report_ok 'wire-up #3: stage_is_read_mostly "$stage" gate present in run-local.sh'
+  # Anchor 3 (ENG-100): stage_auto_cleans_self_leak is the gate inside
+  # the self-leak handler — must appear with $stage as the sole
+  # positional argument. Pre-ENG-100 this anchor pinned
+  # stage_is_read_mostly; the predicate was renamed to honor the
+  # docs-only-stages auto-clean extension (brainstorm D-004 — brainstorm
+  # and plan agents have no Bash(rm:*) in their allowed-tools surface).
+  if grep -qE 'if[[:space:]]+stage_auto_cleans_self_leak[[:space:]]+"\$stage";' "$rl"; then
+    report_ok 'wire-up #3: stage_auto_cleans_self_leak "$stage" gate present in run-local.sh'
   else
     report_fail 'wire-up #3: predicate gate' \
-      'if stage_is_read_mostly "$stage"; then' 'not found'
+      'if stage_auto_cleans_self_leak "$stage"; then' 'not found'
   fi
   # Anchor 4: clean_self_leak_residue invocation with the exact
   # positional argv (issue, stage, worktree) AND the array splat as
@@ -2830,6 +2834,238 @@ test_self_leak_callsite_wired() {
   fi
 }
 test_self_leak_callsite_wired
+
+# ─── ENG-100: stage_auto_cleans_self_leak predicate ──────────────────
+# New predicate ships the docs-only auto-clean extension. The five
+# truthy stages match brainstorm D-002 / D-004 ({brainstorming,
+# planning, reviewing, building, released}); everything else
+# (implementing, ui, qa, retrospective, UNKNOWN) stays on the halt
+# lane so production-path self-leak still surfaces as an operator
+# signal.
+test_auto_cleans_self_leak_predicate() {
+  local s
+  for s in brainstorming planning reviewing building released; do
+    if stage_auto_cleans_self_leak "$s"; then
+      report_ok "auto_cleans: $s routes to auto-clean lane"
+    else
+      report_fail "auto_cleans: $s" 'true' 'false'
+    fi
+  done
+  for s in implementing ui qa retrospective unknown-stage ''; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans: '$s' should NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans: '$s' correctly stays on halt lane"
+    fi
+  done
+}
+test_auto_cleans_self_leak_predicate
+
+# ─── ENG-100: integration — planning self-leak handler pipeline ──────
+# Clone of test_self_leak_handler_pipeline_e2e (reviewing) for the
+# planning stage. Exercises observed-vs-self-leak split AND the new
+# stage_auto_cleans_self_leak branch end-to-end on a docs-only stage
+# that previously halted. C1 invariant (operator's pre-existing edit
+# is preserved) holds; sub-agent debris is removed; metric is emitted
+# with stage=planning.
+test_planning_self_leak_handler_pipeline_e2e() {
+  local td; td="$(mktemp -d -t twinning-plan-pipeline.XXXXXX)"
+  local wt="$td/wt"
+  _self_leak_make_repo "$wt" "feat/eng-100-plan"
+
+  # Operator's pre-existing edit (would be in tick-start snapshot).
+  echo "operator-edits-doc" > "$wt/docs-arch-wip.md"
+  # Agent's sub-agent debris.
+  echo "awk-test-input" > "$wt/awk-test-input.txt"
+
+  local snapshot_file="$td/snapshot"
+  echo "docs-arch-wip.md" > "$snapshot_file"
+
+  local out_scope_file="$td/out_scope"
+  printf 'docs-arch-wip.md\0awk-test-input.txt\0' > "$out_scope_file"
+
+  local sink="$td/metrics.log"; : > "$sink"
+  _self_leak_stub_metrics "$td/stubs" "$sink"
+
+  local observed_buckets=() self_leak_hashes=() self_leak_paths=()
+  while IFS= read -r -d '' p; do
+    if grep -qxF -- "$p" "$snapshot_file"; then
+      observed_buckets+=("$(bucket_for_path "$p")")
+    else
+      self_leak_hashes+=("$(sha12 "$p")")
+      self_leak_paths+=("$p")
+    fi
+  done < "$out_scope_file"
+
+  assert_eq 'planning-e2e: observed_buckets count' '1' "${#observed_buckets[@]}"
+  assert_eq 'planning-e2e: self_leak_paths count'  '1' "${#self_leak_paths[@]}"
+
+  # The NEW predicate must route planning to the auto-clean branch.
+  if stage_auto_cleans_self_leak planning; then
+    (
+      SCRIPT_DIR="$td/stubs"
+      clean_self_leak_residue ENG-100 planning "$wt" "${self_leak_paths[@]}"
+    ) >/dev/null 2>&1
+  else
+    report_fail 'planning-e2e: stage_auto_cleans_self_leak planning' 'true' 'false'
+  fi
+
+  # C1 invariant: operator pre-existing edit survives.
+  local op_content; op_content="$(cat "$wt/docs-arch-wip.md" 2>/dev/null)"
+  if [[ "$op_content" == "operator-edits-doc" ]]; then
+    report_ok 'planning-e2e: operator pre-existing edit survives (C1 invariant)'
+  else
+    report_fail 'planning-e2e: C1 invariant' 'operator-edits-doc' "${op_content:-MISSING}"
+  fi
+
+  # Debris removed.
+  if [[ ! -f "$wt/awk-test-input.txt" ]]; then
+    report_ok 'planning-e2e: sub-agent debris (awk-test-input.txt) removed'
+  else
+    report_fail 'planning-e2e: residue removal' 'awk-test-input.txt removed' 'still present'
+  fi
+
+  # Metric emitted with planning as the stage label.
+  case "$(cat "$sink")" in
+    *'sweep-readonly-residue-cleaned ENG-100 planning cleaned 0 count=1 branch=feat/eng-100-plan'*)
+      report_ok 'planning-e2e: metric emitted with stage=planning, count=1'
+      ;;
+    *)
+      report_fail 'planning-e2e: metric payload' \
+        'sweep-readonly-residue-cleaned ENG-100 planning cleaned 0 count=1 branch=feat/eng-100-plan ...' \
+        "$(cat "$sink")"
+      ;;
+  esac
+
+  rm -rf "$td"
+}
+test_planning_self_leak_handler_pipeline_e2e
+
+# ─── ENG-100 QA adversarial: stage_auto_cleans_self_leak hardening ───
+# The implement-side test_auto_cleans_self_leak_predicate covers the
+# canonical positive + negative stage names. These additional cases
+# pin behavior under common drift surfaces a future refactor could
+# introduce silently: case folding, whitespace contamination from
+# upstream string handling, gerund/non-gerund divergence, and pattern
+# metacharacters that bash case-statements might (or might not) treat
+# as globs. Each variant MUST land on the halt lane — auto-clean is
+# the privileged path and any drift in the predicate's input space
+# must default to halt (the conservative, operator-visible choice).
+test_auto_cleans_self_leak_adversarial_inputs() {
+  local s
+
+  # Case folding — predicate is intentionally case-sensitive. A
+  # callsite refactor adding `,,` lowercase normalization would
+  # change semantics; pinning here forces that refactor to update
+  # this fixture deliberately.
+  for s in Planning PLANNING Brainstorming BRAINSTORMING Reviewing Building Released; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: case-sensitivity '$s' must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: case-sensitive — '$s' stays on halt lane"
+    fi
+  done
+
+  # Whitespace contamination — stage strings that arrive with leading,
+  # trailing, or embedded whitespace (CRLF state file, $(get_stage) with
+  # trailing newline, accidental quoting) must NOT silently route to
+  # auto-clean. The case-statement's literal match makes this true
+  # today; pinning keeps it true.
+  for s in 'planning ' ' planning' $'planning\n' $'planning\t' $'brainstorming ' ' brainstorming'; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: whitespace-padded must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: whitespace-padded — variant stays on halt lane"
+    fi
+  done
+
+  # Gerund/non-gerund divergence — the contract is gerund-only
+  # (matches STAGE_TO_SECTION keys in render-prompt.sh). A caller
+  # passing the base form silently routes a docs-only halt — a real
+  # halt-loop bug. Pin the base forms as halt-lane to surface the
+  # refactor.
+  for s in brainstorm plan review build release; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: non-gerund '$s' must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: non-gerund '$s' stays on halt lane (gerund contract)"
+    fi
+  done
+
+  # Glob/metachar in stage argument — bash case-statement treats the
+  # LEFT-side (subject) as a literal string and the RIGHT-side
+  # (patterns) as globs. So an attacker-controlled stage like '*' or
+  # 'br*' must NOT pattern-match any truthy stage. Pin to prevent a
+  # future refactor that quotes patterns differently or routes the
+  # check through `case "$normalized" in $(known_stages)) ...`.
+  for s in '*' '?' 'br*' 'plan*' '[bp]*'; do
+    if stage_auto_cleans_self_leak "$s" 2>/dev/null; then
+      report_fail "auto_cleans-adv: glob-in-subject '$s' must NOT auto-clean" 'false' 'true'
+    else
+      report_ok "auto_cleans-adv: glob-in-subject '$s' stays on halt lane"
+    fi
+  done
+
+  # Unset argument — calling with zero args (rather than '') should
+  # not crash under set -u and should stay on the halt lane. The
+  # function uses `case "$1" in` which under set -u would normally
+  # die, but the function is invoked from `if stage_auto_cleans_self_leak`
+  # which forks a subshell error if $1 is unbound. Confirm graceful
+  # halt-lane fallback.
+  if ( set -u; stage_auto_cleans_self_leak 2>/dev/null ); then
+    report_fail "auto_cleans-adv: zero-arg call must NOT auto-clean" 'false (or die)' 'true'
+  else
+    report_ok "auto_cleans-adv: zero-arg call stays on halt lane (no auto-clean privilege escalation)"
+  fi
+}
+test_auto_cleans_self_leak_adversarial_inputs
+
+# ─── ENG-100 QA adversarial: collision between operator-observed and ─
+# self-leak path. The C1 invariant (operator's pre-existing edit
+# survives) is pinned by test_planning_self_leak_handler_pipeline_e2e
+# for distinct paths. This fixture exercises the harder case: the
+# agent writes to the SAME path the operator was already editing.
+# Because the partition's observed-vs-self-leak split keys on
+# membership in the tick-start snapshot (path-literal `grep -qxF`),
+# a path present in the snapshot routes to observed_buckets — the
+# self-leak handler NEVER receives it. clean_self_leak_residue does
+# not touch the operator's edit even when the agent's write would
+# have collided with it. Pin the routing so a future partition
+# refactor that switches to symlink-resolved or canonicalized
+# membership testing cannot accidentally hand the path to cleanup.
+test_observed_path_never_reaches_cleanup() {
+  local td; td="$(mktemp -d -t twinning-collision.XXXXXX)"
+  local snapshot_file="$td/snapshot"
+  echo "shared-doc.md" > "$snapshot_file"
+
+  local out_scope_file="$td/out_scope"
+  printf 'shared-doc.md\0agent-debris.txt\0' > "$out_scope_file"
+
+  local -a observed_buckets=() self_leak_hashes=() self_leak_paths=()
+  local p
+  while IFS= read -r -d '' p; do
+    if grep -qxF -- "$p" "$snapshot_file"; then
+      observed_buckets+=("$(bucket_for_path "$p")")
+    else
+      self_leak_hashes+=("$(sha12 "$p")")
+      self_leak_paths+=("$p")
+    fi
+  done < "$out_scope_file"
+
+  if (( ${#observed_buckets[@]} == 1 )); then
+    report_ok 'collision: shared-doc.md routed to observed_buckets (operator edit protected)'
+  else
+    report_fail 'collision: observed_buckets count' '1' "${#observed_buckets[@]}"
+  fi
+  if (( ${#self_leak_paths[@]} == 1 )) && [[ "${self_leak_paths[0]}" == "agent-debris.txt" ]]; then
+    report_ok 'collision: only agent-debris.txt reaches self_leak_paths (cleanup will not see shared-doc.md)'
+  else
+    report_fail 'collision: self_leak_paths shape' '[agent-debris.txt]' "[${self_leak_paths[*]}]"
+  fi
+
+  rm -rf "$td"
+}
+test_observed_path_never_reaches_cleanup
 
 # ─── Scheduler-side in-flight lock wire-up invariants ────────────────
 # Production code (run-local.sh) must:
