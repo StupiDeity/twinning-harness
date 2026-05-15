@@ -691,6 +691,39 @@ Self-review before exit (MANDATORY — drive P0 findings to zero):
   - **Test-map match:** count rows in the Failure Mode → Test Map on the Backend side;
     each row must have a named test present in the diff. Missing row → P0.
   - **Gate commands:** every gate listed in the profile's "Build & test gates" section passes.
+  - **Defensive-code restraint:** scan your own diff for added code
+    that validates internal invariants or guards against scenarios
+    that cannot occur given the rest of the change. The system prompt's
+    rule applies: "Don't add error handling, fallbacks, or validation
+    for scenarios that can't happen. Trust internal code and framework
+    guarantees. Only validate at system boundaries."
+      AVOID — internal-invariant defensiveness:
+        - `try/except: pass` (or `catch (...) {}`) around code you
+          control end-to-end on the call path.
+        - `if x is None: return None` / `unless x.nil?` /
+          `if (!x) return` on values your own code just produced.
+        - `assert x is not None` followed by a fallback when the
+          producer already guarantees non-nil.
+      Boundary heuristic — path-based (the heuristic the §5 reviewer
+      uses; legitimate validation lives at these paths):
+        - Boundary: `controllers/`, `handlers/`, `routes/`, `api/`,
+          `cli/`, `main.*` and the entrypoint binaries the profile's
+          File layout names. Defensive validation here is correct.
+        - Internal: `lib/`, `internal/`, `services/`, `domain/`, and
+          the implementation-detail directories the profile names.
+          Defensive validation here is a self-review failure.
+      Test code (paths under `tests/`, `__tests__/`, `*-test.sh`,
+        `*_test.go`, `*.spec.*`) is exempt — test assertions ARE the
+        validation, not defensive guards.
+      Idiomatic language error handling (Go `if err != nil { return err }`,
+        Rust `?`, Ruby `raise`) is NOT in scope — those propagate, they
+        do not swallow.
+      If you add defensive code at an internal site, cite the
+      boundary justification in the commit message body (one line:
+      `Defensive: <why this is a real-world reachable failure mode>`)
+      OR remove the code before exit. A bullet in the self-review
+      that says "added try/except for safety" without a concrete
+      reachable-failure citation is a P0.
   - Iterate until zero P0. If you cannot, STOP, comment `<!-- meta: metric name=impl_escalate -->`
     with what is failing, and exit without advancing.
 
@@ -966,6 +999,30 @@ Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
 **Simplicity check:** Could this PR be 30 % smaller and still achieve the goal? Any
   abstraction used only once? Any increase in crate / module / indirection count
   unjustified by the plan?
+
+**Defensive-code restraint:** scan added / changed code for try-blocks,
+  nil-guards, and internal-invariant validation. For each occurrence,
+  require ONE of:
+    (a) the file path is a boundary (`controllers/`, `handlers/`,
+        `routes/`, `api/`, `cli/`, `main.*`, or an entrypoint binary the
+        profile's File layout names), OR
+    (b) the commit message body cites the concrete reachable-failure
+        mode the defensive code addresses (one line: `Defensive: <why
+        this is a real-world reachable failure mode>`, matching §3's
+        implementer-side requirement).
+  Otherwise flag the occurrence as `[major] <path>:<line> — defensive
+  code at internal site; either move the check to the boundary, justify
+  the failure mode in commit, or remove`. The system prompt rule the
+  implementer should have followed is: "Don't add error handling,
+  fallbacks, or validation for scenarios that can't happen. Trust internal
+  code and framework guarantees. Only validate at system boundaries."
+  Apply the same boundary heuristic the implement agent uses (path-based;
+  defer to the profile's File layout for non-web stacks). Idiomatic
+  language error handling (Go `if err != nil { return err }`, Rust `?`,
+  Ruby `raise`) is NOT in scope — those propagate, they do not swallow.
+  Test code (paths under `tests/`, `__tests__/`, `*-test.sh`, `*_test.go`,
+  `*.spec.*`) is exempt — test assertions ARE the validation, not
+  defensive guards.
 
 **Scope enforcement (HARD REJECT, with safety valve):**
   - `scope-check.sh` already ran on the branch; re-diff PR files against the plan's

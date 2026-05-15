@@ -1264,6 +1264,173 @@ else
     "render-prompt.sh missing — token-coverage assert cannot run"
 fi
 
+# ─── ENG-101: §3 Self-review + §5 Anti-bias defensive-code restraint ──
+# Without these pins, a future "cleanup" pass that strips the §3
+# bullet or §5 paragraph would pass every existing assertion (no
+# current assertion keys on defensive-code content). The four
+# positive-marker pins mirror the ENG-82 §6 / ENG-77 stage-summary
+# pin shapes — one assertion per token gives a per-token
+# diagnostic on failure.
+s3_eng101="$(section_body "## 3. Implementation Agent (Backend)")"
+if printf '%s\n' "$s3_eng101" | grep -qF '**Defensive-code restraint:**'; then
+  ok "§3 ENG-101: carries '**Defensive-code restraint:**' Self-review bullet header"
+else
+  nope "§3 ENG-101: carries '**Defensive-code restraint:**' Self-review bullet header" \
+       "header missing — implement agent will not self-review for defensive code (ENG-101 D-1)"
+fi
+if printf '%s\n' "$s3_eng101" | grep -qF 'try/except: pass'; then
+  ok "§3 ENG-101: carries 'try/except: pass' AVOID example token"
+else
+  nope "§3 ENG-101: carries 'try/except: pass' AVOID example token" \
+       "example missing — bullet body was gutted while header preserved (ENG-101 D-3 #2)"
+fi
+if printf '%s\n' "$s3_eng101" | grep -qF 'controllers/'; then
+  ok "§3 ENG-101: carries 'controllers/' boundary heuristic token"
+else
+  nope "§3 ENG-101: carries 'controllers/' boundary heuristic token" \
+       "'controllers/' missing — boundary half of heuristic incomplete (ENG-101 D-3 #3)"
+fi
+if printf '%s\n' "$s3_eng101" | grep -qF 'internal/'; then
+  ok "§3 ENG-101: carries 'internal/' boundary heuristic token"
+else
+  nope "§3 ENG-101: carries 'internal/' boundary heuristic token" \
+       "'internal/' missing — internal-site half of heuristic incomplete (ENG-101 D-3 #3)"
+fi
+unset s3_eng101
+
+s5_eng101="$(section_body "## 5. Review Agent")"
+if printf '%s\n' "$s5_eng101" | grep -qF '**Defensive-code restraint:**'; then
+  ok "§5 ENG-101: carries '**Defensive-code restraint:**' paragraph header (Anti-bias check)"
+else
+  nope "§5 ENG-101: carries '**Defensive-code restraint:**' paragraph header (Anti-bias check)" \
+       "header missing — review agent will not flag defensive code (ENG-101 D-2)"
+fi
+# Paragraph-unique [major] anchor — the bare '[major]' token appears
+# elsewhere in §5 (review-comment rubric example, severity-token legend),
+# so a future downgrade of THIS paragraph's severity would slip past a
+# bare grep -qF '[major]'. Anchor on the distinctive prose at the
+# paragraph's flag line: 'flag the occurrence as `[major]' is unique to
+# the ENG-101 §5 paragraph.
+if printf '%s\n' "$s5_eng101" | grep -qF 'flag the occurrence as `[major]'; then
+  ok "§5 ENG-101: '[major]' severity bound to the paragraph's flag clause (downgrade-resistant)"
+else
+  nope "§5 ENG-101: '[major]' severity bound to the paragraph's flag clause (downgrade-resistant)" \
+       "paragraph-unique 'flag the occurrence as \`[major]' literal missing — severity may have been silently downgraded to [minor]/[nit] (ENG-101 D-2 / D-3 #4)"
+fi
+# Body-token pins parallel to §3's controllers/ + internal/ pins above.
+# Without these, a future edit could preserve the paragraph header and
+# severity prose but gut the boundary body (e.g., delete the (a)/(b)
+# clause list), and the assertions above would still pass.
+if printf '%s\n' "$s5_eng101" | grep -qF 'controllers/'; then
+  ok "§5 ENG-101: carries 'controllers/' boundary path in clause (a)"
+else
+  nope "§5 ENG-101: carries 'controllers/' boundary path in clause (a)" \
+       "'controllers/' missing — clause (a) boundary path list was gutted (ENG-101 D-2)"
+fi
+if printf '%s\n' "$s5_eng101" | grep -qF 'internal site'; then
+  ok "§5 ENG-101: carries 'internal site' descriptor in the flag clause"
+else
+  nope "§5 ENG-101: carries 'internal site' descriptor in the flag clause" \
+       "'internal site' missing — flag-clause body was gutted while header preserved (ENG-101 D-2)"
+fi
+unset s5_eng101
+
+# ─── ENG-101 QA-adversarial: drift modes NOT in plan's Failure Mode → Test Map ──
+# These pins guard against drift the implement-side test-map missed. Each
+# anchors on a load-bearing literal that the §3 implementer-rule + §5
+# reviewer-rule require to remain in lockstep; cosmetic drift would
+# silently weaken or contradict the rule.
+s3_eng101_qa="$(section_body "## 3. Implementation Agent (Backend)")"
+s5_eng101_qa="$(section_body "## 5. Review Agent")"
+
+# Carve-out drift (test code): without this, the implementer flags
+# the harness's own *-test.sh assertions as defensive code and removes
+# them; the reviewer flags them at [major].
+if printf '%s\n' "$s3_eng101_qa" | grep -qF '*-test.sh'; then
+  ok "§3 ENG-101 QA: test-code carve-out anchor '*-test.sh' present"
+else
+  nope "§3 ENG-101 QA: test-code carve-out anchor '*-test.sh' present" \
+       "*-test.sh missing — implement agent will flag test assertions as defensive code (ENG-101 QA-1)"
+fi
+if printf '%s\n' "$s5_eng101_qa" | grep -qF '*-test.sh'; then
+  ok "§5 ENG-101 QA: test-code carve-out anchor '*-test.sh' present"
+else
+  nope "§5 ENG-101 QA: test-code carve-out anchor '*-test.sh' present" \
+       "*-test.sh missing — review agent will flag test assertions as [major] (ENG-101 QA-1)"
+fi
+
+# Carve-out drift (idiomatic-propagation): without this, every Go
+# `if err != nil { return err }` fires as defensive code, producing
+# massive false-positive [major] noise on Go projects.
+if printf '%s\n' "$s3_eng101_qa" | grep -qF 'if err != nil { return err }'; then
+  ok "§3 ENG-101 QA: idiomatic-propagation carve-out anchor 'if err != nil { return err }' present"
+else
+  nope "§3 ENG-101 QA: idiomatic-propagation carve-out anchor 'if err != nil { return err }' present" \
+       "Go idiom anchor missing — implement agent will treat every Go err-propagate as defensive code (ENG-101 QA-2)"
+fi
+if printf '%s\n' "$s5_eng101_qa" | grep -qF 'if err != nil { return err }'; then
+  ok "§5 ENG-101 QA: idiomatic-propagation carve-out anchor 'if err != nil { return err }' present"
+else
+  nope "§5 ENG-101 QA: idiomatic-propagation carve-out anchor 'if err != nil { return err }' present" \
+       "Go idiom anchor missing — review agent will flag every Go err-propagate at [major] (ENG-101 QA-2)"
+fi
+
+# Escape-valve drift: §5 clause (b) cites the literal `Defensive:`
+# commit-trailer §3 prescribes. If the trailer literal drifts on either
+# side (renamed to Reason:/Justification:/etc.), implementer-reviewer
+# alignment breaks silently — every internal-site defensive code fires
+# as [major] despite the implementer following §3's escape valve.
+if printf '%s\n' "$s3_eng101_qa" | grep -qF 'Defensive: <why this is a real-world reachable failure mode>'; then
+  ok "§3 ENG-101 QA: escape-valve commit-trailer 'Defensive: <why ...>' present (§3 implementer side)"
+else
+  nope "§3 ENG-101 QA: escape-valve commit-trailer 'Defensive: <why ...>' present (§3 implementer side)" \
+       "trailer literal drifted — §3's escape valve is unreachable (ENG-101 QA-3)"
+fi
+# §5 wraps the trailer literal across two lines (line ~1010-1011 of
+# AGENT_PROMPTS.md). grep -qF is line-oriented, so pin on the 3-token
+# prefix `Defensive: <why` which fits on one line and is still
+# distinctive — drift to a different trailer key (Reason:/Justification:)
+# or removing the trailer mention from §5 would break this pin.
+if printf '%s\n' "$s5_eng101_qa" | grep -qF 'Defensive: <why'; then
+  ok "§5 ENG-101 QA: escape-valve commit-trailer prefix 'Defensive: <why' present (§5 reviewer side, clause (b))"
+else
+  nope "§5 ENG-101 QA: escape-valve commit-trailer prefix 'Defensive: <why' present (§5 reviewer side, clause (b))" \
+       "trailer prefix drifted on §5 side — implementer-reviewer alignment broken; every escape fires as [major] (ENG-101 QA-3)"
+fi
+
+# System-prompt rule citation drift: both sides quote the rule verbatim.
+# Drift to a paraphrase ("Don't write paranoid checks") silently weakens
+# the rule's semantic anchor. Pinning the verbatim closing sentence
+# guards against paraphrase drift on either side.
+if printf '%s\n' "$s3_eng101_qa" | grep -qF 'Only validate at system boundaries.'; then
+  ok "§3 ENG-101 QA: system-prompt rule citation verbatim — 'Only validate at system boundaries.' present"
+else
+  nope "§3 ENG-101 QA: system-prompt rule citation verbatim — 'Only validate at system boundaries.' present" \
+       "verbatim rule citation drifted on §3 — semantic anchor weakened (ENG-101 QA-4)"
+fi
+if printf '%s\n' "$s5_eng101_qa" | grep -qF 'Only validate at system boundaries.'; then
+  ok "§5 ENG-101 QA: system-prompt rule citation verbatim — 'Only validate at system boundaries.' present"
+else
+  nope "§5 ENG-101 QA: system-prompt rule citation verbatim — 'Only validate at system boundaries.' present" \
+       "verbatim rule citation drifted on §5 — semantic anchor weakened (ENG-101 QA-4)"
+fi
+
+# §5 verdict-comment greppable signal-string: the reviewer is instructed
+# to emit `[major] ... — defensive code at internal site; ...` in PR
+# comments so retrospective analysis can grep across reviews. The literal
+# wraps across lines in AGENT_PROMPTS.md (`defensive\n  code at internal
+# site`); pin on `code at internal site` which fits on one line and is
+# still unique to this paragraph — drift in the operational hook breaks
+# this pin.
+if printf '%s\n' "$s5_eng101_qa" | grep -qF 'code at internal site'; then
+  ok "§5 ENG-101 QA: verdict-comment signal-string suffix 'code at internal site' present"
+else
+  nope "§5 ENG-101 QA: verdict-comment signal-string suffix 'code at internal site' present" \
+       "signal-string drifted — retrospective grep across reviews loses the operational hook (ENG-101 QA-5)"
+fi
+
+unset s3_eng101_qa s5_eng101_qa
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
