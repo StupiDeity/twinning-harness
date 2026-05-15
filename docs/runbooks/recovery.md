@@ -574,8 +574,13 @@ plist="$HOME/Library/LaunchAgents/com.twinning.pipeline.<slug>.plist"
 #   <key>CLAUDE_MAX_CONCURRENT</key>
 #   <string>1</string>
 
-# 2. Reload the launchd job
-launchctl bootstrap "gui/$(id -u)" "$plist"
+# 2. Reload the launchd job (bootout first; bootstrap fails on already-loaded service)
+domain="gui/$(id -u)"
+label="$(basename "$plist" .plist)"
+if launchctl print "$domain/$label" >/dev/null 2>&1; then
+  launchctl bootout "$domain/$label" || true
+fi
+launchctl bootstrap "$domain" "$plist"
 ```
 
 Repeat per slug if you run multiple projects.
@@ -611,7 +616,9 @@ ls "$HARNESS_STATE_DIR/.claude-semaphore/"slot-*/pid 2>/dev/null | wc -l
 ### Restore (post-incident)
 
 Host-wide: remove the `CLAUDE_MAX_CONCURRENT` entry from each plist
-`EnvironmentVariables` block + `launchctl bootstrap` again.
+`EnvironmentVariables` block, then re-run the bootout-then-bootstrap
+pattern above (bare `launchctl bootstrap` fails on an already-loaded
+service).
 Per-project: `jq '.orchestrator.max_concurrent_features = 2' …`
 (or delete the key for the built-in default 2).
 

@@ -441,8 +441,11 @@ slot-occupancy rows) before treating the symptom as a misconfiguration.
 By cause:
 
 - **`CLAUDE_MAX_CONCURRENT` unintentionally `1`** → edit the launchd
-  plist's `EnvironmentVariables` block (or `launchctl unsetenv`),
-  then `launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.twinning.pipeline.<slug>.plist`.
+  plist's `EnvironmentVariables` block (or `launchctl unsetenv`), then
+  re-run the bootout-then-bootstrap recipe at
+  [`recovery.md` §9 "Host-wide rollback"](recovery.md#host-wide-rollback-preferred-under-acute-incident)
+  against `~/Library/LaunchAgents/com.twinning.pipeline.${PROJECT_SLUG}.plist`
+  (bare `launchctl bootstrap` fails on an already-loaded service).
 - **Config explicitly `1`** → `jq '.orchestrator.max_concurrent_features = 2' "$TARGET_REPO/.pipeline-config/config.json" > /tmp/c && mv /tmp/c "$TARGET_REPO/.pipeline-config/config.json"`.
 - **Non-integer / `<1` resolved value silently fell through** → fix
   the offending value at whichever tier emitted the
