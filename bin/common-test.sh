@@ -923,6 +923,41 @@ kill "$_live_pid" 2>/dev/null || true
 wait "$_live_pid" 2>/dev/null || true
 rm -rf "$_TAL_DIR/lock-live"
 
+# ─── ENG-107: progress_md_path helper ───────────────────────────────
+# Three assertions (brainstorm D-005):
+#   (a) path shape — returns $PROJECT_STATE_DIR/<ident>/progress.md
+#   (b) idempotence — two calls with the same id return identical strings
+#   (c) die-on-empty — empty id exits non-zero with the documented stderr
+eng107_path_shape() {
+  local got expected
+  got="$(progress_md_path ENG-1)"
+  expected="$PROJECT_STATE_DIR/ENG-1/progress.md"
+  assert_eq "eng107_progress_md_path_shape" "$expected" "$got"
+}
+eng107_path_shape
+
+eng107_idempotence() {
+  local first second
+  first="$(progress_md_path ENG-1)"
+  second="$(progress_md_path ENG-1)"
+  assert_eq "eng107_progress_md_path_idempotent" "$first" "$second"
+}
+eng107_idempotence
+
+eng107_die_on_empty() {
+  local rc=0 stderr
+  # Capture stderr; subshell so `die`'s exit does not abort the test.
+  stderr="$( ( progress_md_path "" ) 2>&1 1>/dev/null )" || rc=$?
+  if (( rc != 0 )) && [[ "$stderr" == *"progress_md_path: missing issue id"* ]]; then
+    report_ok "eng107_progress_md_path_die_on_empty"
+  else
+    report_fail "eng107_progress_md_path_die_on_empty" \
+      "rc!=0 AND stderr containing 'progress_md_path: missing issue id'" \
+      "rc=$rc stderr=${stderr}"
+  fi
+}
+eng107_die_on_empty
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
