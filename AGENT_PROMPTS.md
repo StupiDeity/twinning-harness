@@ -704,14 +704,8 @@ Self-review before exit (MANDATORY — drive P0 findings to zero):
           `if (!x) return` on values your own code just produced.
         - `assert x is not None` followed by a fallback when the
           producer already guarantees non-nil.
-      LEGITIMATE — boundary validation:
-        - Parsing CLI args / env vars (user input crossing the
-          process boundary).
-        - Validating the shape of an HTTP request body or external
-          API response.
-        - Decoding bytes from a file or socket the caller does not
-          own.
-      Boundary heuristic — path-based:
+      Boundary heuristic — path-based (the heuristic the §5 reviewer
+      uses; legitimate validation lives at these paths):
         - Boundary: `controllers/`, `handlers/`, `routes/`, `api/`,
           `cli/`, `main.*` and the entrypoint binaries the profile's
           File layout names. Defensive validation here is correct.
