@@ -394,6 +394,150 @@ ENG-65 (per-stage timeouts + iteration cap).
 
 ---
 
+## Concurrent dispatches not running (expected K=2, observed K=1)
+
+### Symptom
+
+`bash bin/status.sh` shows fewer concurrent dispatches than the cap
+you configured — e.g. only 1 `slot-*/pid` directory under
+`$HARNESS_STATE_DIR/.claude-semaphore/` despite
+`orchestrator.max_concurrent_features=2`. Per-tick dispatch volume
+is half what you'd expect.
+
+### Diagnose
+
+```bash
+# 1. What did _resolve_K resolve to on the most recent tick?
+grep 'scheduler: K=' \
+  "$PROJECT_STATE_DIR/$(jq -r .project.slug "$TARGET_REPO/.pipeline-config/config.json")/logs/local-$(date -u +%Y-%m-%d).log" \
+  | tail -3
+
+# 2. Is CLAUDE_MAX_CONCURRENT set in the launchd plist? (env wins over config)
+launchctl print "gui/$(id -u)/com.twinning.pipeline.<slug>" \
+  | grep -i CLAUDE_MAX_CONCURRENT
+
+# 3. What does config say?
+jq '.orchestrator.max_concurrent_features' \
+  "$TARGET_REPO/.pipeline-config/config.json"
+
+# 4. Are there live slots right now?
+ls "$HARNESS_STATE_DIR/.claude-semaphore/"slot-*/pid 2>/dev/null
+```
+
+Cross-check `bin/common.sh::_resolve_K`'s precedence (env >
+config > built-in 2) against what you read above; a
+`_resolve_K: invalid …` line in the same log file flags any
+non-integer or `<1` value that fell through.
+
+### Recover
+
+By cause:
+
+- **`CLAUDE_MAX_CONCURRENT` unintentionally `1`** → edit the launchd
+  plist's `EnvironmentVariables` block (or `launchctl unsetenv`),
+  then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.twinning.pipeline.<slug>.plist`.
+- **Config explicitly `1`** → `jq '.orchestrator.max_concurrent_features = 2' "$TARGET_REPO/.pipeline-config/config.json" > /tmp/c && mv /tmp/c "$TARGET_REPO/.pipeline-config/config.json"`.
+- **Non-integer / `<1` resolved value silently fell through** → fix
+  the offending value at whichever tier emitted the
+  `_resolve_K: invalid …` warning (env or config).
+- **Eligible-issue pool smaller than the cap** → not a bug. The
+  scheduler only dispatches issues whose `slot:hold, advanceable:true`
+  classification fires; when fewer issues are advanceable than the
+  cap allows, observed concurrency is the smaller of the two.
+
+### Root cause
+
+`bin/common.sh::_resolve_K` resolves the cap with env > config >
+built-in precedence and is fail-soft on invalid values (logs a
+warning and falls through). Operators upgrading from pre-ENG-81 may
+leave a stale `CLAUDE_MAX_CONCURRENT=1` in the plist from a prior
+rollback; non-integer values get silently dropped.
+
+### Related
+
+ENG-81 (per-project parallel dispatch + counting semaphore),
+ENG-90 (slot-occupancy contract). See `CLAUDE.md` §"Per-project
+dispatch concurrency" for the full resolution-precedence model.
+
+---
+
+## Issue stuck at one stage; `.in-flight.lock` present
+
+### Symptom
+
+An issue with a `stage:*` label hasn't advanced for one or more
+ticks. `bin/status.sh` shows it as held but no dispatch fires. A
+directory `$(bash bin/pipeline.sh issue-dir ENG-N)/.in-flight.lock/`
+exists with `pid` and `timestamp` files inside.
+
+### Diagnose
+
+```bash
+issue_dir="$(bash bin/pipeline.sh issue-dir ENG-N)"
+
+# 1. Confirm the lock dir is present
+ls "$issue_dir/.in-flight.lock"
+
+# 2. Inspect the holder pid + timestamp
+cat "$issue_dir/.in-flight.lock/pid"          # pid that claimed it
+cat "$issue_dir/.in-flight.lock/timestamp"    # ISO-8601 UTC
+
+# 3. Is the holder pid actually alive?
+holder=$(cat "$issue_dir/.in-flight.lock/pid")
+if kill -0 "$holder" 2>/dev/null; then echo "alive"; else echo "DEAD"; fi
+```
+
+### Recover
+
+**Common case (holder pid is dead).** No operator action is
+required. `bin/common.sh::try_acquire_lock` self-heals on the next
+acquire attempt: it reads `$dir/pid`, sees `kill -0 $pid` fails,
+and reclaims via `rm -rf $dir` + re-mkdir + post-mkdir
+pid-readback. The next tick (≤ 5 min) picks the issue up
+automatically. Inspect the local log on the next tick for a
+`try_acquire_lock: reclaiming stale lock at …` line — confirms
+the self-heal fired.
+
+**Rare case (holder pid IS alive but issue still appears stuck).**
+Implies the holder is hung rather than orphaned. Inspect:
+
+```bash
+ps -fp "$holder"   # what is the holder doing?
+cat "$issue_dir/.in-flight.lock/timestamp"   # how long has it held?
+```
+
+If the holder is a runaway `dispatch.sh` or `gtimeout claude -p`
+that has exceeded its per-stage cap, `kill $holder` first; the
+next tick reclaims via `try_acquire_lock`.
+
+**Override of last resort.** Only if both the holder is dead AND
+something has broken `try_acquire_lock`'s self-heal (rare;
+typically an interrupted pid-readback that left the dir in a weird
+state):
+
+```bash
+rm -rf "$issue_dir/.in-flight.lock"
+```
+
+### Root cause
+
+Pre-ENG-81's scheduler/worker split could leak an orphan
+`.in-flight.lock/` if the worker was SIGKILLed / oomkilled /
+host-rebooted between `mkdir` and `release_lock`. ENG-81 added
+self-healing recovery to `try_acquire_lock`: every acquire attempt
+that finds the dir present reads the recorded holder pid and
+reclaims if `kill -0 $pid` fails. The pid-readback after re-mkdir
+handles concurrent reclaim races.
+
+### Related
+
+ENG-81 (per-issue lock contract + self-heal recovery),
+`bin/common.sh::try_acquire_lock` (the helper). See `CLAUDE.md`
+§"Failure-mode quick reference" row "Issue stuck at one stage;
+`.in-flight.lock` present".
+
+---
+
 ## scope-check halts on upstream merge files
 
 ### Symptom
