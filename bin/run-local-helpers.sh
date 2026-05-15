@@ -207,8 +207,10 @@ stage_auto_cleans_self_leak() {
 # clean_self_leak_residue <issue> <stage> <worktree> <path>...
 #
 # Called from run-local.sh's self-leak handler when the affected
-# stage is read-mostly (per stage_is_read_mostly). Removes paths the
-# partition sweep already identified as bot-introduced self-leak —
+# stage routes self-leak through auto-clean (per
+# stage_auto_cleans_self_leak — brainstorming, planning, reviewing,
+# building, released). Removes paths the partition sweep already
+# identified as bot-introduced self-leak —
 # i.e. NEW since tick-start (the sweep's snapshot comparison at
 # run-local.sh has done the observed-vs-self-leak split). Operator's
 # pre-existing 'observed' edits are NEVER touched because they don't
@@ -257,7 +259,7 @@ clean_self_leak_residue() {
   branch="$(git -C "$worktree" branch --show-current 2>/dev/null || true)"
   case "$branch" in
     main|master|"")
-      log "auto-clean: defensive refuse on branch='${branch:-<empty-or-detached>}' for stage=$stage (read-mostly cleanup must never run on main)"
+      log "auto-clean: defensive refuse on branch='${branch:-<empty-or-detached>}' for stage=$stage (auto-clean must never run on main)"
       return 0
       ;;
   esac
@@ -275,7 +277,7 @@ clean_self_leak_residue() {
     return 0
   fi
 
-  log "auto-clean: stage=$stage is read-mostly; cleaning ${count} self-leak path(s) on $branch; hashes=${hash_csv}"
+  log "auto-clean: stage=$stage residue; cleaning ${count} self-leak path(s) on $branch; hashes=${hash_csv}"
 
   # Per-path classification + cleanup. Failures are non-blocking — but
   # we DO log the per-class rc count so triage has signal.

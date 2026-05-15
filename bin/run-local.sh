@@ -260,7 +260,7 @@ _run_worker() {
   # Precedence: self-leak (hard-fail) > leaked-in-scope > in-scope
   # commit > observed bucketed.
   if (( ${#self_leak_hashes[@]} > 0 )); then
-    if stage_is_read_mostly "$stage"; then
+    if stage_auto_cleans_self_leak "$stage"; then
       clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}"
     else
       halt_issue_for_self_leak "$issue_id" "$stage" "${self_leak_hashes[@]}"
