@@ -615,18 +615,10 @@ Host-wide: remove the `CLAUDE_MAX_CONCURRENT` entry from each plist
 Per-project: `jq '.orchestrator.max_concurrent_features = 2' …`
 (or delete the key for the built-in default 2).
 
-### Why this is the right primitive
+### See also
 
-`bin/common.sh::_resolve_K`'s precedence is `CLAUDE_MAX_CONCURRENT`
-env > `orchestrator.max_concurrent_features` config > built-in 2.
-Setting the env var to 1 wins over every project's config; setting
-one project's config to 1 only affects that project. Both paths
-avoid touching the underlying counting semaphore at
-`$HARNESS_STATE_DIR/.claude-semaphore/`, which continues to work
-correctly at any cap including 1.
-
-See `CLAUDE.md` §"Per-project dispatch concurrency" for the full
-resolution-precedence model + slot-occupancy interaction; see
+`CLAUDE.md` §"Per-project dispatch concurrency" for the full
+resolution-precedence model + slot-occupancy interaction;
 [`configuration.md` §`orchestrator.max_concurrent_features`](../configuration.md#orchestratormax_concurrent_features)
 for the canonical config reference.
 
