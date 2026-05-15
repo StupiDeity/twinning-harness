@@ -305,13 +305,23 @@ $HARNESS_STATE_DIR/
     └── ENG-N/
         ├── worktree/
         ├── issue-state.json
-        └── stage-summary-<stage>.md
+        ├── stage-summary-<stage>.md
+        └── progress.md         # append-only per-issue notebook (see docs/runbooks/progress-md.md)
 ```
 
 `issue-state.json` is durable state for skip-label dance + retry tracking.
 `poll.sh` reads it every tick and includes/excludes based on `policy` plus
 a recomputed `pipeline_content_hash` (sha256 over `bin/**`, `config.json`,
 `AGENT_PROMPTS.md`) and branch-head SHA.
+
+`progress.md` is an append-only per-issue notebook with the OPPOSITE
+lifecycle from `stage-summary-<stage>.md`: it accumulates across the
+issue's entire lifetime, is never cleared on dispatch start, and
+survives `--action continue` resume. Stage agents write entries; the
+orchestrator never reads or writes the file. Schema and the
+canonical heading shape (`## <dispatch-id> - <stage> -
+<ISO-8601-UTC>`) live in `docs/runbooks/progress-md.md`. Path
+resolves through `bin/common.sh::progress_md_path <ident>`.
 
 The orchestrator NEVER dispatches into `$TARGET_REPO` — every dispatch resolves
 a per-issue worktree first (ENG-67). If you see the canonical operator-recognition

@@ -923,6 +923,84 @@ kill "$_live_pid" 2>/dev/null || true
 wait "$_live_pid" 2>/dev/null || true
 rm -rf "$_TAL_DIR/lock-live"
 
+# ─── ENG-107: progress_md_path helper ───────────────────────────────
+# Three assertions (brainstorm D-005):
+#   (a) path shape — returns $PROJECT_STATE_DIR/<ident>/progress.md
+#   (b) idempotence — two calls with the same id return identical strings
+#   (c) die-on-empty — empty id exits non-zero with the documented stderr
+eng107_path_shape() {
+  local got expected
+  got="$(progress_md_path ENG-1)"
+  expected="$PROJECT_STATE_DIR/ENG-1/progress.md"
+  assert_eq "eng107_progress_md_path_shape" "$expected" "$got"
+}
+eng107_path_shape
+
+eng107_idempotence() {
+  local first second
+  first="$(progress_md_path ENG-1)"
+  second="$(progress_md_path ENG-1)"
+  assert_eq "eng107_progress_md_path_idempotent" "$first" "$second"
+}
+eng107_idempotence
+
+eng107_die_on_empty() {
+  local rc=0 stderr
+  # Capture stderr; subshell so `die`'s exit does not abort the test.
+  stderr="$( ( progress_md_path "" ) 2>&1 1>/dev/null )" || rc=$?
+  if (( rc != 0 )) && [[ "$stderr" == *"progress_md_path: missing issue id"* ]]; then
+    report_ok "eng107_progress_md_path_die_on_empty"
+  else
+    report_fail "eng107_progress_md_path_die_on_empty" \
+      "rc!=0 AND stderr containing 'progress_md_path: missing issue id'" \
+      "rc=$rc stderr=${stderr}"
+  fi
+}
+eng107_die_on_empty
+
+# ─── ENG-107 QA adversarial: progress_md_path edge inputs ───────────────
+# These tests are NOT in the plan's Failure Mode → Test Map.
+# They document pass-through behaviour at the function's guard boundary.
+
+eng107_qa_whitespace_id() {
+  # Whitespace-only ID is non-empty for [[ -n ]]; the guard does NOT fire.
+  # The caller gets a path with a space segment — they must quote the result.
+  local rc=0 got
+  got="$(progress_md_path " ")" || rc=$?
+  if (( rc == 0 )) && [[ "$got" == *"/ /progress.md" ]]; then
+    report_ok "eng107_qa_whitespace_id: whitespace passes guard; path contains space segment"
+  else
+    report_fail "eng107_qa_whitespace_id" \
+      "rc=0 and path ending in '/ /progress.md'" \
+      "rc=$rc got=${got}"
+  fi
+}
+eng107_qa_whitespace_id
+
+eng107_qa_no_arg() {
+  # 0-arg call: $1 is unset under set -u or empty (bash version dependent);
+  # either way the call must exit non-zero (unbound-var or die).
+  local rc=0
+  ( progress_md_path ) 2>/dev/null || rc=$?
+  if (( rc != 0 )); then
+    report_ok "eng107_qa_no_arg: 0-arg call exits non-zero"
+  else
+    report_fail "eng107_qa_no_arg" "rc!=0" "rc=$rc (succeeded unexpectedly)"
+  fi
+}
+eng107_qa_no_arg
+
+eng107_qa_traversal_passthrough() {
+  # Path-traversal chars are passed through unmodified (no sanitisation).
+  # Callers always receive ENG-N identifiers from Linear; this test
+  # documents that arbitrary strings are NOT safe as input.
+  local got expected
+  got="$(progress_md_path "ENG-1/../ENG-2")"
+  expected="$PROJECT_STATE_DIR/ENG-1/../ENG-2/progress.md"
+  assert_eq "eng107_qa_traversal_passthrough" "$expected" "$got"
+}
+eng107_qa_traversal_passthrough
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
