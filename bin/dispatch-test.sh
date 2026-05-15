@@ -2917,6 +2917,7 @@ jq -n '{
 jq -n '{labels:{},states:{}}' > "$G8B_TARGET/.pipeline-config/schemas/linear-ids.json"
 
 G8B_OUT="$_TEST_STUB_DIR/g8b-dispatch.out"
+G8B_RC=0
 PIPELINE_DRY_RUN=0 \
 _PIPELINE_GTIME_DISABLED=1 \
 PATH="$_TEST_STUB_DIR:$PATH" \
@@ -2926,7 +2927,21 @@ HARNESS_STATE_DIR="$G8_STATE_ROOT" \
 PROJECT_STATE_DIR="$G8B_PROJECT_STATE" \
 PIPELINE_ISSUE_ID=ENG-G8B \
 LINEAR_API_KEY="$LINEAR_API_KEY" \
-  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$G8B_OUT" >/dev/null || true
+  bash "$SCRIPT_DIR/dispatch.sh" brainstorming "$_PROMPT_FILE" 2>"$G8B_OUT" >/dev/null || G8B_RC=$?
+
+# Regression: dispatch.sh::main must exit 0 in the gtime-absent path.
+# The trailing cleanup at dispatch.sh:625 used to be `[[ -n "$_gtime_out" ]]
+# && rm -f "$_gtime_out"`; with `_gtime_out=""` the bare `[[ -n "" ]]`
+# returns rc=1 as the function's last statement, which `set -euo pipefail`
+# (common.sh) propagates as dispatch.sh exit 1. run-stage.sh then
+# classifies as generic exit 20 → retry-immediately → 3 retries → halt
+# (observed on ENG-100 and ENG-101 on 2026-05-15 after the ENG-81 merge).
+if (( G8B_RC == 0 )); then
+  pass_at "G8.B: dispatch.sh exits 0 when gtime is absent (regression: trailing [[ -n ]] && rm under set -euo pipefail)"
+else
+  fail_at "G8.B: dispatch.sh exited non-zero on gtime-absent path" \
+    "rc=$G8B_RC stderr=$(cat "$G8B_OUT")"
+fi
 
 # Warning log line emitted (the [dispatch-resource-sample] gtime not on PATH ...).
 if grep -q 'dispatch-resource-sample.*gtime' "$G8B_OUT"; then

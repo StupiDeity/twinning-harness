@@ -47,6 +47,13 @@ Harness tools (`gtimeout`, `gh`, `claude`, `jq`, `awk`, `sed`, `git`,
 (MacPorts, Nix) and additional user-global bin dirs (`~/.cargo/bin`,
 `~/go/bin`) need a manual plist edit + `launchctl bootstrap`.
 
+`gtime` (Homebrew `gnu-time` package — distinct from `coreutils`, which
+ships `gtimeout`) is required for the ENG-81 `dispatch-resource-sample`
+metric. `bin/dispatch.sh` discovers it best-effort (`command -v gtime`);
+absence logs a warning and skips the metric — no behavior change to the
+dispatch itself, but the K-tuning baseline goes empty until installed.
+Install with `brew install gnu-time`.
+
 ## Runtime topology
 
 ```

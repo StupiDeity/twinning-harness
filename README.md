@@ -208,6 +208,7 @@ Full annotated transcript: [`docs/demos/eng-83-thread.md`](docs/demos/eng-83-thr
 | `claude` CLI, logged in to a Claude subscription | All agent dispatch goes through `claude -p` against the subscription session. **`ANTHROPIC_API_KEY` must NOT be set** — the harness deliberately uses subscription compute. |
 | `gh` CLI, authenticated | Used by build/release agents and by the operator. |
 | `jq`, `gtimeout` (`brew install coreutils`) | Required by every script; `gtimeout` enforces per-stage dispatch caps. |
+| `gtime` (`brew install gnu-time`) | Recommended. Wraps each `claude -p` so dispatch.sh can emit the `dispatch-resource-sample` metric (wall/RSS/CPU) per ENG-81 — feeds the K-tuning baseline surfaced by `bash bin/status.sh`. Discovery is best-effort: absence logs a warning and skips the metric only; the dispatch itself proceeds. Distinct package from `coreutils`, which ships `gtimeout`. |
 | Linear workspace + personal API key | Source of truth; harness reads/writes via GraphQL. |
 | GitHub repo with bot user | The harness commits and opens PRs under a separate GitHub identity. |
 | Disk: ~5 GB headroom | Per-issue worktrees, transcripts, and logs accumulate. |
