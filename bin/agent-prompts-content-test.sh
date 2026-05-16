@@ -1652,19 +1652,20 @@ else
     "header still says 'before step 5' — plan agents may skip the mandatory stage-summary (step 6) and verdict (step 7) steps"
 fi
 
-# ─── ENG-106 QA adversarial: {progress_md_path} token isolation to §2 ───────
-# The detective (D-005) and prompt step (D-002) are planning-stage-only.
-# If {progress_md_path} bleeds into another stage's prompt body, that stage's
-# render would inject an absolute filesystem path into the agent without a
-# corresponding detective. Pin that the token appears in exactly one section
-# (§2) and nowhere else in AGENT_PROMPTS.md.
-_progress_token_count="$(grep -c '{progress_md_path}' "$PROMPTS" || true)"
+# ─── ENG-106 QA adversarial: {progress_md_path} writer-presence in §2 ──────
+# Originally written as a single-section isolation test (planning-stage only).
+# ENG-108 widened the surface by adding the token to §3 at position 1 so the
+# implement agent reads the file; §§4-9 absence is now pinned by the ENG-108
+# QA loop above. This assertion narrows to its still-load-bearing half:
+# §2 (the writer) must continue to reference {progress_md_path} — without it,
+# the planning agent has no anchor to write progress entries against and the
+# rc=31 detective fires on every plan dispatch.
 _progress_in_s2="$(printf '%s\n' "$s2" | grep -c '{progress_md_path}' || true)"
-if [[ "$_progress_token_count" == "1" && "$_progress_in_s2" == "1" ]]; then
-  ok "ENG-106 QA: {progress_md_path} appears exactly once in AGENT_PROMPTS.md, confined to §2"
+if [[ "$_progress_in_s2" == "1" ]]; then
+  ok "ENG-106 QA: §2 (planning) references {progress_md_path} exactly once (writer anchor)"
 else
-  nope "ENG-106 QA: {progress_md_path} token isolation to §2" \
-    "total=$_progress_token_count (expected 1), in-§2=$_progress_in_s2 (expected 1)"
+  nope "ENG-106 QA: §2 references {progress_md_path} exactly once" \
+    "expected 1 occurrence in §2 (the planning writer), got $_progress_in_s2 — without this anchor, the rc=31 detective fires every dispatch"
 fi
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
