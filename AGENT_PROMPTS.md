@@ -1550,10 +1550,23 @@ precondition has passed and the only failure is P2 or P5.
       `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`,
       and exit.
 
-  P7. **Conventional-commit title:** PR title matches
-        ^(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)(\([a-z0-9-]+\))?(!)?: .+$
-      Semantic-release parses this for version bumps; a malformed title breaks the
-      release stage. Rename the PR in place if needed (`gh pr edit <N> --title`).
+  P7. **Conventional-commit title** (ENG-139 — execute the check, do NOT
+      diagnose by reading the title). Run jq's `test` and act on the
+      literal output:
+
+        gh pr view <N> --json title --jq \
+          '.title | test("^(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)(\\([a-z0-9-]+\\))?(!)?: .+$")'
+
+      `true` ⇒ P7 passes. `false` ⇒ title is malformed: rename via
+      `gh pr edit <N> --title <new>` and re-run from P0, or per the
+      precondition-ordering clause emit `verdict halt --reason agent-blocked`.
+      The lowercase `[a-z0-9-]+` constraint applies to the parenthesised
+      SCOPE group ONLY — the post-colon description (`.+`) may contain
+      capitals, dots, mixed case. Do NOT halt on a visual diagnosis of
+      "uppercase scope" or similar — `jq test` is the only judge (a prior
+      dispatch on PR #112 hallucinated this halt on a title that matched
+      cleanly). Semantic-release parses this title for version bumps; a
+      malformed title breaks the release stage.
 
 Configuration audit (READ-ONLY — no edits in this stage):
   Use the Project profile addendum's File layout as the inventory of code-bearing

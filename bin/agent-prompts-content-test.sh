@@ -1579,6 +1579,65 @@ else
        "'<<<PLAN_JSON_BEGIN>>>' or '<<<PLAN_JSON_END>>>' missing from §3 — these bounded-data-block cues are the prompt-injection defense declared in brainstorm §11 FM→TM row #535; dropping them leaves injection defense relying on prose alone"
 fi
 
+# ─── ENG-139: §7 P7 conventional-commit check is an executable command ──
+# A prior dispatch on PR #112 hallucinated a "P7 uppercase scope" halt on
+# the title `feat(eng-106): Progress.md: plan stage writes progress entries`
+# (which matches the regex cleanly — the capital P is in the post-colon
+# description, not the scope group). When that hallucinated P7 fail
+# co-fired with a real P6, the precondition-ordering clause routed to
+# `agent-blocked` halt instead of P6's `fail --target implementing`
+# loopback, converting a recoverable conflict into a human-intervention
+# halt. The fix is to make P7 a literal `jq test()` command on `gh pr
+# view --jq` output, so the agent acts on the literal `true`/`false`
+# instead of "reading" the title. Pin the executable shape AND the
+# absence of the prose diagnosis that the agent was inventing.
+
+# Positive: §7 P7 names the canonical jq-test invocation form.
+if printf '%s\n' "$s7" | grep -qE 'gh pr view <N> --json title --jq'; then
+  ok "§7 ENG-139: P7 uses 'gh pr view <N> --json title --jq' invocation"
+else
+  nope "§7 ENG-139: P7 uses 'gh pr view <N> --json title --jq' invocation" \
+       "P7 must run the regex as a command, not describe it — agent's visual reading hallucinated 'uppercase scope' on titles that matched cleanly (PR #112)"
+fi
+
+# Positive: §7 P7 names the .title | test( filter shape.
+if printf '%s\n' "$s7" | grep -qF '.title | test('; then
+  ok "§7 ENG-139: P7 uses '.title | test(' jq filter (executable judge)"
+else
+  nope "§7 ENG-139: P7 uses '.title | test(' jq filter" \
+       "P7 must invoke jq's test() as the judge — without it, an edit could revert to prose-only matching that the agent re-interprets"
+fi
+
+# Positive: §7 P7 carries the full conventional-commits alternation.
+if printf '%s\n' "$s7" | grep -qF '(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)'; then
+  ok "§7 ENG-139: P7 carries the full conventional-commit type alternation"
+else
+  nope "§7 ENG-139: P7 carries the full conventional-commit type alternation" \
+       "alternation list must match the regex used by semantic-release; an edit that drops a type silently breaks releases"
+fi
+
+# Positive: §7 P7 says "jq test is the only judge" (or equivalent — pin
+# the load-bearing phrase that disambiguates from prose inspection).
+if printf '%s\n' "$s7" | grep -qF '`jq test` is the only judge'; then
+  ok "§7 ENG-139: P7 names 'jq test is the only judge' (no visual diagnosis)"
+else
+  nope "§7 ENG-139: P7 names 'jq test is the only judge'" \
+       "the agent needs an explicit 'do not diagnose by reading' clause — this phrase pins the anti-hallucination directive"
+fi
+
+# Negative: §7 P7 must NOT instruct or repeat the hallucinated prose
+# diagnosis. If a future edit re-introduces "has an uppercase scope" or
+# similar instruction-shaped prose, the agent will infer the visual
+# diagnosis is sanctioned again. The phrase "uppercase scope" only
+# appears in the regression-naming clause inside scare quotes — the
+# negative assert below pins on the bare unquoted instruction shape.
+if printf '%s\n' "$s7" | grep -qE 'has an uppercase scope|requires lowercase scope'; then
+  nope "§7 ENG-139: P7 lacks regenerated hallucination prose" \
+       "phrase 'has an uppercase scope' or 'requires lowercase scope' present — these were the literal hallucinations the agent emitted on PR #112; their re-introduction signals a regression"
+else
+  ok "§7 ENG-139: P7 lacks regenerated hallucination prose"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
