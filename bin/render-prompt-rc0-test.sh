@@ -220,6 +220,55 @@ else
 fi
 rm -f "$err_d"
 
+# ─── ENG-108 QA adversarial: stage-scoping + zero-byte edge cases ───
+# E. Non-implementing stage (qa) with absent progress.md → info-log must
+#    NOT fire. The condition is `stage == "implementing"` — any other stage
+#    render should produce zero `progress-md missing` lines even when the
+#    file is absent.
+# F. Zero-byte progress.md on implementing stage → info-log must NOT fire.
+#    The predicate is `! -e` (file-exists test), not `! -s` (non-empty test).
+#    A zero-byte file is `-e`-true; a future refactor to `! -s` would silently
+#    change semantics and break this case.
+
+ISSUE_DIR_E="$sandbox/state/test-slug-rc0/ENG-87R6X-E"
+rm -rf "$ISSUE_DIR_E"
+err_e="$(mktemp)"
+PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-E >/dev/null 2>"$err_e" || true
+if grep -qF 'progress-md missing' "$err_e"; then
+  fail "ENG-108 case E: qa stage + absent progress.md → NO 'progress-md missing' info-log" \
+       "stderr unexpectedly contained 'progress-md missing': $(tail -3 "$err_e" | tr '\n' ' ')"
+else
+  ok "ENG-108 case E: qa stage + absent progress.md → no 'progress-md missing' info-log (stage-scoping)"
+fi
+rm -f "$err_e"
+
+ISSUE_DIR_F="$sandbox/state/test-slug-rc0/ENG-87R6X-F"
+rm -rf "$ISSUE_DIR_F"; mkdir -p "$ISSUE_DIR_F"
+: > "$ISSUE_DIR_F/progress.md"  # zero-byte file
+err_f="$(mktemp)"
+out_f="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-F 2>"$err_f" || true)"
+if grep -qF "$ISSUE_DIR_F/progress.md" <<<"$out_f"; then
+  ok "ENG-108 case F: zero-byte progress.md → resolved absolute path appears in implementing prompt"
+else
+  fail "ENG-108 case F: zero-byte progress.md → resolved absolute path in prompt body" \
+       "stdout tail: $(tail -3 <<<"$out_f" | tr '\n' ' ')"
+fi
+if grep -qF 'progress-md missing' "$err_f"; then
+  fail "ENG-108 case F: zero-byte progress.md → NO 'progress-md missing' info-log (! -e, not ! -s)" \
+       "stderr unexpectedly contained 'progress-md missing': $(tail -3 "$err_f" | tr '\n' ' ')"
+else
+  ok "ENG-108 case F: zero-byte progress.md → no 'progress-md missing' info-log (! -e predicate)"
+fi
+rm -f "$err_f"
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
