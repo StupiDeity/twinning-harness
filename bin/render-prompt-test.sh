@@ -855,6 +855,58 @@ else
 fi
 rm -f "$sandbox/target/docs/plans/2026-05-15-eng-123-dangling-fixture.json"
 
+# ─── QA-ADV-R10 (ENG-123): whitespace-only plan.json → embedded verbatim, no metric ─
+printf '\n--- QA-ADV-R10 (ENG-123): whitespace-only plan.json → embedded verbatim, no fallback metric ---\n'
+# QA-authored adversarial test. Sub-agent finding: [[ -s ]] is true for whitespace-only
+# files (non-zero byte count); the resolver takes the "present" branch and embeds via
+# cat without emitting any plan_json_missing metric. The agent receives blank content
+# between the delimiters, NOT the fallback marker. Pins D-003 schema-agnostic behavior:
+# the resolver does not inspect semantic content; ensuring well-formed output is the
+# plan-emits sibling's responsibility.
+printf '   \n\n  \n' > "$sandbox/target/docs/plans/2026-05-15-eng-123-whitespace.json"
+: > "$ENG123_METRICS_LOG"
+out_ws="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs123"'"
+  _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-whitespace.md"
+  _RENDER_ISSUE_ID="ENG-123QA-R10"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+if [[ "$out_ws" != '(no plan.json — falling back to prose plan)' ]] \
+   && [[ "$(wc -c < "$ENG123_METRICS_LOG")" -eq 0 ]]; then
+  pass_at 'QA-ADV-R10 (ENG-123): whitespace-only plan.json → embedded verbatim (no fallback marker, no metric — D-003 schema-agnostic)'
+else
+  fail_at 'QA-ADV-R10 (ENG-123): whitespace-only plan.json behavior' \
+    "out='$out_ws' log=$(cat "$ENG123_METRICS_LOG" 2>/dev/null || echo MISSING)"
+fi
+rm -f "$sandbox/target/docs/plans/2026-05-15-eng-123-whitespace.json"
+
+# ─── QA-ADV-R11 (ENG-123): metrics.sh absent → resolve_block_tokens → empty string ─
+printf '\n--- QA-ADV-R11 (ENG-123): metrics.sh absent (rc!=0) → resolve_block_tokens produces empty string ---\n'
+# QA-authored adversarial test. Sub-agent finding #8: distinct from ADV-R5, which
+# tests _resolve_plan_json exit-code propagation directly. This test exercises the
+# full resolve_block_tokens wrapper (line 335: `value="$("$resolver" 2>/dev/null ||
+# printf '')"`) when $SCRIPT_DIR/metrics.sh does not exist. bash returns rc!=0 for a
+# missing file; || return $? propagates; the wrapper catches non-zero and substitutes
+# empty string for {plan_json} rather than the fallback marker. Pins the brainstorm §5
+# "metrics.sh invocation fails" contract: metrics-write failure prevents crash but the
+# substitution silently becomes empty (not fallback), which the agent sees as blank
+# content between the delimiters.
+mkdir -p "$sandbox/stubs-no-metrics"
+# Deliberately omit metrics.sh in stubs-no-metrics to simulate missing file (rc!=0)
+rm -f "$sandbox/target/docs/plans/2026-05-15-eng-123-fixture.json"  # absent → fallback branch
+out_no_m="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs-no-metrics"'"
+  _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-fixture.md"
+  _RENDER_ISSUE_ID="ENG-123QA-R11"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+if [[ "$out_no_m" == '' ]]; then
+  pass_at 'QA-ADV-R11 (ENG-123): metrics.sh absent → resolve_block_tokens returns empty string (not fallback marker, no crash — §5 wrapper contract)'
+else
+  fail_at 'QA-ADV-R11 (ENG-123): metrics.sh absent → empty substitution contract' \
+    "out='$out_no_m' (expected empty string; fallback marker indicates wrong branch; non-empty indicates wrapper violation)"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
