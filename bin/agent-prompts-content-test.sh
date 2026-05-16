@@ -121,19 +121,44 @@ else
   ok "§9 ENG-109: '{progress_md_path}' token absent from §9 (retrospective excluded per D-001)"
 fi
 
-# ─── ENG-109: per-stage write-clause presence ─────────────────────────
+# ─── ENG-109: per-stage write-clause presence + gerund-pin ───────────
 # Every stage (except §9 retrospective) appends a `progress.md` entry on
-# clean exit per Linear AC-1. Pin the literal phrase in each stage so a
-# future edit that drops the bullet trips here.
+# clean exit per Linear AC-1. Pin both (a) the literal phrase and (b) the
+# per-stage gerund in the heading template so a copy-paste error that
+# swaps gerunds across sections (e.g. 'brainstorming' into §4's template)
+# is caught before the cross-dispatch log shape is silently corrupted.
+_sec_gerund_for() {
+  case "$1" in
+    1) printf 'brainstorming' ;;
+    4) printf 'ui'            ;;
+    5) printf 'reviewing'     ;;
+    6) printf 'qa'            ;;
+    7) printf 'building'      ;;
+    8) printf 'released'      ;;
+  esac
+}
 for _sec_num in 1 4 5 6 7 8; do
   _sec_var="s${_sec_num}"
+  _gerund="$(_sec_gerund_for "$_sec_num")"
   if printf '%s\n' "${!_sec_var}" | grep -qF 'Append a `progress.md` entry'; then
     ok "§${_sec_num} ENG-109: write-clause 'Append a \`progress.md\` entry' present"
   else
     nope "§${_sec_num} ENG-109: write-clause 'Append a \`progress.md\` entry' present" \
       "phrase 'Append a \`progress.md\` entry' missing — has the per-stage write rule been removed?"
   fi
+  if printf '%s\n' "${!_sec_var}" | grep -qF "{dispatch_id} - ${_gerund} -"; then
+    ok "§${_sec_num} ENG-109: write-clause heading contains correct gerund '${_gerund}'"
+  else
+    nope "§${_sec_num} ENG-109: write-clause heading contains correct gerund '${_gerund}'" \
+      "heading template '{dispatch_id} - ${_gerund} -' missing from §${_sec_num} — wrong gerund in heading or write-clause removed"
+  fi
 done
+if printf '%s\n' "$s9" | grep -qF 'Append a `progress.md` entry'; then
+  nope "§9 ENG-109: write-clause absent from §9 (retrospective excluded per D-001)" \
+    "phrase 'Append a \`progress.md\` entry' present in §9 — retrospective must not write to progress.md; D-001 contract violation"
+else
+  ok "§9 ENG-109: write-clause absent from §9 (retrospective excluded per D-001)"
+fi
 
 if printf '%s\n' "$s4" | grep -qE 'gh pr create'; then
   nope "§4 lacks 'gh pr create'" "string 'gh pr create' present"
