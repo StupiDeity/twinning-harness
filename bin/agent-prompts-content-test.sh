@@ -121,12 +121,15 @@ else
   ok "§9 ENG-109: '{progress_md_path}' token absent from §9 (retrospective excluded per D-001)"
 fi
 
-# ─── ENG-109: per-stage write-clause presence + gerund-pin ───────────
-# Every stage (except §9 retrospective) appends a `progress.md` entry on
-# clean exit per Linear AC-1. Pin both (a) the literal phrase and (b) the
-# per-stage gerund in the heading template so a copy-paste error that
-# swaps gerunds across sections (e.g. 'brainstorming' into §4's template)
-# is caught before the cross-dispatch log shape is silently corrupted.
+# ─── ENG-109: per-stage write-clause presence + gerund-pin + gating phrase ──
+# Stages §§1,4,5,6,7 append a `progress.md` entry on clean exit per AC-1.
+# §8 (released) is excluded: released's sed substitution pipeline does not
+# resolve {progress_md_path} (cross-issue stage; no per-issue identity).
+# §9 (retrospective) is excluded per D-001.
+# Three pins per covered stage:
+#   (a) write-clause phrase present
+#   (b) per-stage gerund in heading template (rejects copy-paste gerund swap)
+#   (c) conditional gating phrase present (rejects dropped/reworded exit conditions)
 _sec_gerund_for() {
   case "$1" in
     1) printf 'brainstorming' ;;
@@ -134,12 +137,24 @@ _sec_gerund_for() {
     5) printf 'reviewing'     ;;
     6) printf 'qa'            ;;
     7) printf 'building'      ;;
-    8) printf 'released'      ;;
   esac
 }
-for _sec_num in 1 4 5 6 7 8; do
+# Per-stage conditional gating phrase pinned in the write clause.
+# Empty string for §4 (ui): pass-through exits before the write clause and
+# no conditional text is needed — the clause is always executed on non-pass-through.
+_sec_gating_for() {
+  case "$1" in
+    1) printf 'clean-exit only'                                               ;;
+    5) printf 'Decision-path C (clean) ONLY'                                  ;;
+    6) printf 'Decision-path C/D'                                              ;;
+    7) printf 'Decision-path B (merged) only; wait-shape exits (P2/P5) skip' ;;
+    *) printf ''                                                               ;;
+  esac
+}
+for _sec_num in 1 4 5 6 7; do
   _sec_var="s${_sec_num}"
   _gerund="$(_sec_gerund_for "$_sec_num")"
+  _gating="$(_sec_gating_for "$_sec_num")"
   if printf '%s\n' "${!_sec_var}" | grep -qF 'Append a `progress.md` entry'; then
     ok "§${_sec_num} ENG-109: write-clause 'Append a \`progress.md\` entry' present"
   else
@@ -152,7 +167,23 @@ for _sec_num in 1 4 5 6 7 8; do
     nope "§${_sec_num} ENG-109: write-clause heading contains correct gerund '${_gerund}'" \
       "heading template '{dispatch_id} - ${_gerund} -' missing from §${_sec_num} — wrong gerund in heading or write-clause removed"
   fi
+  if [[ -n "$_gating" ]]; then
+    if printf '%s\n' "${!_sec_var}" | grep -qF "$_gating"; then
+      ok "§${_sec_num} ENG-109: conditional gating phrase present ('${_gating}')"
+    else
+      nope "§${_sec_num} ENG-109: conditional gating phrase present ('${_gating}')" \
+        "phrase '${_gating}' missing from §${_sec_num} — has the per-stage exit condition been removed or reworded?"
+    fi
+  fi
 done
+# §8 (released) must NOT have a write clause: {progress_md_path} is unresolvable
+# on the released sed pass (cross-issue; no PIPELINE_ISSUE_ID per-issue context).
+if printf '%s\n' "$s8" | grep -qF 'Append a `progress.md` entry'; then
+  nope "§8 ENG-109: write-clause absent from §8 (released cross-issue; {progress_md_path} unresolvable)" \
+    "phrase 'Append a \`progress.md\` entry' present in §8 — released uses sed-only substitution that does not resolve {progress_md_path}; drop the write clause"
+else
+  ok "§8 ENG-109: write-clause absent from §8 (released cross-issue; {progress_md_path} unresolvable)"
+fi
 if printf '%s\n' "$s9" | grep -qF 'Append a `progress.md` entry'; then
   nope "§9 ENG-109: write-clause absent from §9 (retrospective excluded per D-001)" \
     "phrase 'Append a \`progress.md\` entry' present in §9 — retrospective must not write to progress.md; D-001 contract violation"
