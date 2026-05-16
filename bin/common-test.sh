@@ -1044,6 +1044,17 @@ esac
 
 unset _strip_tilde_basic _strip_tilde_with_marker _strip_tilde_mixed
 
+# ─── ENG-106: failure_outcome_for_exit rc=31 arm ──────────────────────────
+# Pins the progress-md-entry-missing taxonomy entry so a refactor that
+# renumbers or removes the rc=31 arm routes the outcome to unknown-exit-31
+# instead, breaking retrospective §1 classification and events.jsonl.
+eng106_rc31_taxonomy() {
+  local got
+  got="$(failure_outcome_for_exit 31 '')"
+  assert_eq "eng106_failure_outcome_for_exit_31" "progress-md-entry-missing" "$got"
+}
+eng106_rc31_taxonomy
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

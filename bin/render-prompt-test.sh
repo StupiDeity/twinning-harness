@@ -217,6 +217,21 @@ else
   fail_at "ENG-87 R1: every token resolves" "expected='$expected' got='$out'"
 fi
 
+# Case ENG-106: {progress_md_path} token resolves from _RENDER_PROGRESS_MD_PATH.
+# Pins the resolver so a refactor that drops _RENDER_PROGRESS_MD_PATH or renames
+# the token breaks here rather than silently shipping a literal {progress_md_path}
+# to the plan agent.
+out_pmd="$(run_resolver_body '
+  _RENDER_PROGRESS_MD_PATH="/tmp/test-state/ENG-106/progress.md"
+  resolve_block_tokens "{progress_md_path}"
+' 2>&1)"
+if [[ "$out_pmd" == "/tmp/test-state/ENG-106/progress.md" ]]; then
+  pass_at "ENG-106: {progress_md_path} resolves from _RENDER_PROGRESS_MD_PATH"
+else
+  fail_at "ENG-106: {progress_md_path} token resolves" \
+    "expected='/tmp/test-state/ENG-106/progress.md' got='$out_pmd'"
+fi
+
 # Case 87-R2: unknown {token} dies with token name in message.
 err="$(run_resolver_body '
   resolve_block_tokens "Hello {nonexistent_token_xyz} world" 2>&1
