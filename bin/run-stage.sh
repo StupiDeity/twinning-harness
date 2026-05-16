@@ -890,6 +890,23 @@ _clear_current_stage_slots() {
   return 0
 }
 
+# ENG-109 C2: ensure progress.md exists before dispatch so the agent's
+# Edit tool (append-via-anchor path) can find the file on first dispatch
+# on a fresh issue and on stages that lack Write in their allowed-tools
+# (building, released). touch is idempotent; safe to call unconditionally.
+_ensure_progress_md() {
+  local ident="$1"
+  local pmd
+  pmd="$(progress_md_path "$ident")"
+  [[ -f "$pmd" ]] && return 0
+  if (( DRY_RUN )); then
+    log "_ensure_progress_md: dry-run — would touch $pmd"
+    return 0
+  fi
+  touch "$pmd"
+  log "_ensure_progress_md: created $pmd"
+}
+
 # ENG-87: post-dispatch envelope validator. Detective-only — halts only
 # on egregious bypass:
 #   (a) Transcript invoked mcp__plugin_linear* (Linear MCP fork outside
@@ -1183,6 +1200,9 @@ main() {
   # Guarantee the per-issue state dir exists before dispatch so an agent's first
   # Write of stage-summary-<stage>.md cannot fail on missing parents.
   mkdir -p "$(issue_dir "$ident")"
+  # ENG-109 C2: ensure progress.md exists before dispatch so the agent's Edit
+  # tool (append-via-anchor path) succeeds on first dispatch on a fresh issue.
+  _ensure_progress_md "$ident"
 
   # ENG-87: allocate dispatch_id (per-issue monotonic counter) and clear
   # current-stage local files. Skip on scope-approval replay (the prior
@@ -1409,6 +1429,12 @@ main() {
       _viol_cmd_29="$(cat "$_viol_file_29" 2>/dev/null || printf '<path-unavailable>')"
       classify_failure "$ident" "$stage" "skip-until-human-acts" \
         "dispatch-stage transcript invoked forbidden Write on progress.md: $_viol_cmd_29" 29
+      # rm -f here diverges from _validate_dispatch_envelope's C3 preservation
+      # (envelope validator preserves its sidecar for post-halt inspection).
+      # This arm's sidecar contains only the matched file_path (single line,
+      # no multi-path context); the classify_failure message above already
+      # surfaces the path in the Linear halt comment, making the sidecar
+      # redundant for operator triage.
       rm -f "$_viol_file_29" "$prompt_file"
       exit 29
     elif (( dispatch_rc != 0 )); then
