@@ -100,12 +100,15 @@ else
     "literal '1. {progress_md_path}' line missing from §3 — has the position-1 placement been demoted, or the token removed entirely?"
 fi
 
-# ─── ENG-109: {progress_md_path} now present in §§1, 3, 4, 5, 6, 7, 8;
-# absent from §9 (retrospective excluded per brainstorm D-001 — no per-
-# issue PIPELINE_ISSUE_ID, no per-issue scratch dir). The §3 pin lives
-# at the ENG-108 line above; ENG-109 mirrors that shape for the other
-# five stages and converts §§4-8's absence pins into presence pins.
-for _sec_num in 1 4 5 6 7 8; do
+# ─── ENG-109: {progress_md_path} now present in §§1, 3, 4, 5, 6, 7;
+# absent from §8 (released uses the legacy sed pass which substitutes
+# only {version}/{tag}/{prev_tag}/{issue_id} — {progress_md_path} would
+# ship as a literal token) and §9 (retrospective excluded per brainstorm
+# D-001 — no per-issue PIPELINE_ISSUE_ID, no per-issue scratch dir).
+# The §3 pin lives at the ENG-108 line above; ENG-109 mirrors that shape
+# for the other four stages and converts §§4-7's absence pins into
+# presence pins.
+for _sec_num in 1 4 5 6 7; do
   _sec_var="s${_sec_num}"
   if printf '%s\n' "${!_sec_var}" | grep -qF '1. {progress_md_path}'; then
     ok "§${_sec_num} ENG-109: read-first list has '{progress_md_path}' at position 1"
@@ -114,6 +117,12 @@ for _sec_num in 1 4 5 6 7 8; do
       "literal '1. {progress_md_path}' line missing from §${_sec_num} — has the position-1 placement been demoted, or the token removed entirely?"
   fi
 done
+if printf '%s\n' "$s8" | grep -qF '{progress_md_path}'; then
+  nope "§8 ENG-109: '{progress_md_path}' token absent from §8 (released cross-issue; sed pass cannot resolve)" \
+    "token '{progress_md_path}' present in §8 — released renders via render-prompt.sh's legacy sed pass that only substitutes {version}/{tag}/{prev_tag}/{issue_id}; {progress_md_path} ships as a literal token to the agent"
+else
+  ok "§8 ENG-109: '{progress_md_path}' token absent from §8 (released cross-issue; sed pass cannot resolve)"
+fi
 if printf '%s\n' "$s9" | grep -qF '{progress_md_path}'; then
   nope "§9 ENG-109: '{progress_md_path}' token absent from §9 (retrospective excluded per D-001)" \
     "token '{progress_md_path}' present in §9 — retrospective has no PIPELINE_ISSUE_ID and no per-issue scratch dir; this is a contract violation"
