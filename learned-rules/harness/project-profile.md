@@ -14,7 +14,7 @@ Bash 3.2+ orchestration scripts (macOS-compatible). The repo contains no applica
 ## Build & test gates
 
 - Build: `(n/a) — interpreted bash; no compile step`
-- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh && bash bin/plan-schema-test.sh && bash bin/plan-schema-adversarial-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner)*
+- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner)*
 - Lint/check: `bash -n bin/*.sh` *(syntax check only; no shellcheck in CI today)*
 - Integration/E2E: `PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/dry-run.sh`
 
