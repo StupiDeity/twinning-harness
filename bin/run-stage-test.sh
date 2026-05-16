@@ -1520,16 +1520,17 @@ fi
 CONFIG="$ENG_45_CASE_O_CFG_SAVED"
 rm -f "$ENG_45_CASE_O_CFG"
 
-# ─── Case 15: guards.sh check reset-on-transition for implement_rejection ──
+# ─── Case 15: guards.sh check reset-on-operator-resume for implement_rejection ──
 # Exercises the REAL guards.sh against a fake-repo overlay so common.sh's
 # REPO_ROOT computation (`dirname "${BASH_SOURCE[0]}"/../..`) resolves to a
 # layout that symlinks to the real config.json and schemas/linear-ids.json,
 # while linear.sh is a Case-15-specific stub returning `implement_rejection`
 # markers via get-comments. Asserts guards.sh check exits 10 with
 # `implement_rejection(2>=2)` when two markers exist with no newer
-# pipeline-transition, and exits 0 when a forward pipeline-transition
-# marker is injected after them (counter-reset semantic — ENG-18 §Counter
-# unification).
+# operator-resume waypoint, and exits 0 when a `reason=operator-resume`
+# transition is injected after them. Post-ENG-123 counter-reset semantic:
+# auto-transitions (forward stage advance, build/review loopbacks) do NOT
+# reset; only operator-resume does.
 reset_capture
 FAKE_REPO="$STUB_DIR/fake-repo"
 mkdir -p "$FAKE_REPO/.pipeline/bin" "$FAKE_REPO/.pipeline/schemas"
@@ -1565,7 +1566,9 @@ trip_output="$(bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1)"
 trip_rc=$?
 set -e
 
-# Stub for reset path: same two markers plus a newer pipeline-transition.
+# Stub for reset path: same two markers plus a newer operator-resume waypoint.
+# Post-ENG-123: a plain `from=implementing to=ui` transition no longer clears
+# the counter — only `reason=operator-resume` does.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -1574,7 +1577,7 @@ case "${1:-}" in
 [
   {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
   {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"},
-  {"body":"<!-- pipeline: transition from=implementing to=ui -->","createdAt":"2026-04-23T10:00:00.000Z"}
+  {"body":"<!-- pipeline: transition from=implementing to=implementing reason=operator-resume -->","createdAt":"2026-04-23T10:00:00.000Z"}
 ]
 JSON
     ;;
@@ -1592,12 +1595,43 @@ clear_output="$(bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15 2>&1)"
 clear_rc=$?
 set -e
 
+# Stub for ENG-123 regression: 2 markers plus an AUTO-transition (no
+# reason=operator-resume). The pre-ENG-123 semantic would have reset here
+# and false-passed; the new semantic must still trip.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-04-23T09:30:00.000Z"},
+  {"body":"<!-- pipeline: transition from=implementing to=ui -->","createdAt":"2026-04-23T10:00:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issues":{"nodes":[{"id":"id-T15A","comments":{"nodes":[]}}]}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+auto_trans_output="$(bash "$FAKE_REPO/.pipeline/bin/guards.sh" check ENG-T15A 2>&1)"
+auto_trans_rc=$?
+set -e
+
 if [[ "$trip_rc" == "10" ]] \
    && grep -q 'implement_rejection(2>=2)' <<<"$trip_output" \
-   && [[ "$clear_rc" == "0" ]]; then
-  pass_at "case-15 guards.sh check trips on implement_rejection count=2; resets after forward pipeline-transition"
+   && [[ "$clear_rc" == "0" ]] \
+   && [[ "$auto_trans_rc" == "10" ]] \
+   && grep -q 'implement_rejection(2>=2)' <<<"$auto_trans_output"; then
+  pass_at "case-15 guards.sh check trips on implement_rejection count=2; resets after operator-resume; still trips after auto-transition"
 else
-  fail_at "case-15 reset-on-transition" "trip_rc=$trip_rc trip_output=$trip_output clear_rc=$clear_rc clear_output=$clear_output"
+  fail_at "case-15 reset-on-operator-resume" "trip_rc=$trip_rc trip_output=$trip_output clear_rc=$clear_rc clear_output=$clear_output auto_trans_rc=$auto_trans_rc auto_trans_output=$auto_trans_output"
 fi
 
 # ─── Case 16 (QA adversarial): bump's marker text matches count_marker's grep ──
