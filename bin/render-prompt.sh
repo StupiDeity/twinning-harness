@@ -245,8 +245,29 @@ _resolve_dispatch_id() { printf '%s' "${_RENDER_DISPATCH_ID-}"; }
 # rejects again, ad infinitum). When no prior review exists (fresh
 # implement-stage dispatch from planning), resolves to a literal marker
 # the prompt's "Review-loopback handling" block treats as a no-op signal.
+# PIPELINE_LOOPBACK_SOURCE — set by run-stage.sh on every implementing
+# dispatch (ENG-139 follow-up) to declare the most-recent transition's
+# `from=` field. Values: planning | reviewing | qa | building |
+# implementing (operator-resume). When the value is anything OTHER than
+# `reviewing`, this is not a review-loopback and we MUST emit the
+# sentinel — stage-summary-reviewing.md persists across non-current-stage
+# clears (by design, so loopback reads of other stages work), and without
+# this gating every dispatch after the first reviewing run would see
+# stale review findings, including build → implementing rebase loopbacks
+# (the ENG-106 / ENG-139 failure mode where the implementer rebased AND
+# opportunistically addressed unrelated review minors) and qa →
+# implementing fail loopbacks.
+#
+# Unset → back-compat: behaves as pre-ENG-139 (file content if non-empty).
+# Preserves debug renders, dry-run.sh, and any caller outside
+# bin/run-stage.sh that hasn't been updated.
 _resolve_review_findings() {
   local p="${_RENDER_REVIEW_FINDINGS_PATH-}"
+  local source="${PIPELINE_LOOPBACK_SOURCE-}"
+  if [[ -n "$source" && "$source" != "reviewing" ]]; then
+    printf '(no prior review for this issue — this dispatch is not a review-loopback)'
+    return 0
+  fi
   if [[ -n "$p" && -s "$p" ]]; then
     cat "$p"
   else

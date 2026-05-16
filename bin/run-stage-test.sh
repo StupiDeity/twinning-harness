@@ -5127,6 +5127,86 @@ fi
 unset _eng87_m1_t0
 trap - EXIT
 
+# ─── ENG-139-follow-up: _resolve_loopback_source ───────────────────────
+# Drives PIPELINE_LOOPBACK_SOURCE; resolves the source-stage of the
+# most-recent transition `to=implementing` from the Linear comment
+# stream, excluding operator-resume self-loops. See bin/run-stage.sh
+# _resolve_loopback_source for the load-bearing fail-open / skip rules.
+
+# Case 139-1: single review→implement transition → returns "reviewing".
+MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-05-16T10:00:00Z","body":"<!-- pipeline: transition from=reviewing to=implementing -->"}
+]'
+export MOCK_COMMENTS_JSON
+_eng139_out="$(_resolve_loopback_source ENG-T139-1 implementing 2>/dev/null || printf '')"
+if [[ "$_eng139_out" == "reviewing" ]]; then
+  pass_at "ENG-139 case-139-1: single reviewing→implementing transition → returns 'reviewing'"
+else
+  fail_at "ENG-139 case-139-1: single reviewing→implementing → 'reviewing'" \
+    "expected 'reviewing', got '$_eng139_out'"
+fi
+
+# Case 139-2: most-recent wins (building > reviewing > planning).
+MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-05-16T08:00:00Z","body":"<!-- pipeline: transition from=planning to=implementing -->"},
+  {"createdAt":"2026-05-16T09:00:00Z","body":"<!-- pipeline: transition from=reviewing to=implementing -->"},
+  {"createdAt":"2026-05-16T10:00:00Z","body":"<!-- pipeline: transition from=building to=implementing -->"}
+]'
+export MOCK_COMMENTS_JSON
+_eng139_out="$(_resolve_loopback_source ENG-T139-2 implementing 2>/dev/null || printf '')"
+if [[ "$_eng139_out" == "building" ]]; then
+  pass_at "ENG-139 case-139-2: most-recent to=implementing wins (building > reviewing > planning)"
+else
+  fail_at "ENG-139 case-139-2: most-recent wins" \
+    "expected 'building', got '$_eng139_out'"
+fi
+
+# Case 139-3: operator-resume self-loop is SKIPPED; reach back to the
+# underlying loopback transition (`from=building to=implementing`).
+# Without this filter, an operator-resume on a halted rebase loopback
+# would return 'implementing' and the caller would misclassify the
+# dispatch as not-a-loopback.
+MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-05-16T09:00:00Z","body":"<!-- pipeline: transition from=building to=implementing -->"},
+  {"createdAt":"2026-05-16T10:00:00Z","body":"<!-- pipeline: transition from=implementing to=implementing reason=operator-resume -->"}
+]'
+export MOCK_COMMENTS_JSON
+_eng139_out="$(_resolve_loopback_source ENG-T139-3 implementing 2>/dev/null || printf '')"
+if [[ "$_eng139_out" == "building" ]]; then
+  pass_at "ENG-139 case-139-3: operator-resume self-loop skipped → reaches underlying 'building' transition"
+else
+  fail_at "ENG-139 case-139-3: operator-resume self-loop skipped" \
+    "expected 'building' (reaching through operator-resume to the underlying transition), got '$_eng139_out'"
+fi
+
+# Case 139-4: empty comment stream → empty stdout (fail-open).
+MOCK_COMMENTS_JSON='[]'
+export MOCK_COMMENTS_JSON
+_eng139_out="$(_resolve_loopback_source ENG-T139-4 implementing 2>/dev/null || printf '')"
+if [[ -z "$_eng139_out" ]]; then
+  pass_at "ENG-139 case-139-4: empty comment stream → empty stdout (fail-open)"
+else
+  fail_at "ENG-139 case-139-4: empty comment stream → empty stdout" \
+    "expected empty, got '$_eng139_out'"
+fi
+
+# Case 139-5: transitions to OTHER stages must be ignored.
+# Only to=<stage> argument matches; a `from=reviewing to=qa` comment is
+# not a transition to implementing.
+MOCK_COMMENTS_JSON='[
+  {"createdAt":"2026-05-16T10:00:00Z","body":"<!-- pipeline: transition from=reviewing to=qa -->"}
+]'
+export MOCK_COMMENTS_JSON
+_eng139_out="$(_resolve_loopback_source ENG-T139-5 implementing 2>/dev/null || printf '')"
+if [[ -z "$_eng139_out" ]]; then
+  pass_at "ENG-139 case-139-5: to=qa transition not counted as a to=implementing match"
+else
+  fail_at "ENG-139 case-139-5: to=qa ignored when querying to=implementing" \
+    "expected empty, got '$_eng139_out'"
+fi
+
+unset MOCK_COMMENTS_JSON
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
