@@ -3493,6 +3493,59 @@ else
   fi
 fi
 
+# ─── ENG-109: rc=29 arm structural shape ────────────────────────────
+# Mirror of case-66-1 (rc=23) for the rc=29 arm added by ENG-109.
+# The rc=29 arm fires when dispatch.sh's Write-on-progress.md detective
+# catches an agent truncating the append-only progress notebook. Structural
+# pin guards the same load-bearing tokens as rc=22/23/26/13: policy,
+# sidecar read, operator-facing message, and cleanup. Without these pins a
+# future refactor that swaps policy → "retry-immediately" or drops the
+# sidecar read would silently neutralise the detective's catch-net.
+printf '\n--- ENG-109: rc=29 arm structural shape ---\n'
+RC29_ARM_BLOCK="$(awk '/elif \(\( dispatch_rc == 29 \)\); then/,/exit 29/' "$HARNESS_DIR/run-stage.sh")"
+if [[ -z "$RC29_ARM_BLOCK" ]]; then
+  fail_at "case-109-1 rc=29 arm absent in run-stage.sh::main" \
+    "expected an 'elif (( dispatch_rc == 29 )); then ... exit 29' arm; ENG-109 D-001 progress.md detective routing missing"
+else
+  rc29_arm_failures=0
+  if ! printf '%s\n' "$RC29_ARM_BLOCK" | grep -qF 'classify_failure'; then
+    rc29_arm_failures=$((rc29_arm_failures+1))
+    fail_at "case-109-1a rc=29 arm missing classify_failure call" "block did not contain classify_failure"
+  fi
+  if ! printf '%s\n' "$RC29_ARM_BLOCK" | grep -qF 'skip-until-human-acts'; then
+    rc29_arm_failures=$((rc29_arm_failures+1))
+    fail_at "case-109-1b rc=29 arm missing skip-until-human-acts policy" "block did not contain skip-until-human-acts (must NOT be retry-immediately)"
+  fi
+  if ! printf '%s\n' "$RC29_ARM_BLOCK" | grep -qF 'transcript-violation-'; then
+    rc29_arm_failures=$((rc29_arm_failures+1))
+    fail_at "case-109-1c rc=29 arm missing sidecar read" "block did not reference .transcript-violation-<stage>"
+  fi
+  if ! printf '%s\n' "$RC29_ARM_BLOCK" | grep -qF 'Write on progress.md'; then
+    rc29_arm_failures=$((rc29_arm_failures+1))
+    fail_at "case-109-1d rc=29 arm missing operator-facing message" "block did not contain 'Write on progress.md'"
+  fi
+  if ! printf '%s\n' "$RC29_ARM_BLOCK" | grep -qE 'rm -f.*_viol_file_29.*prompt_file|rm -f.*prompt_file.*_viol_file_29'; then
+    rc29_arm_failures=$((rc29_arm_failures+1))
+    fail_at "case-109-1e rc=29 arm missing sidecar+prompt_file cleanup" "block did not 'rm -f \"\$_viol_file_29\" \"\$prompt_file\"'"
+  fi
+  if (( rc29_arm_failures == 0 )); then
+    pass_at "case-109-1 rc=29 arm present in run-stage.sh::main with skip-until-human-acts policy, sidecar read, operator-facing message, and cleanup"
+  fi
+fi
+
+# ─── ENG-109: _ensure_progress_md helper present in run-stage.sh ────
+# Critical finding #2: the function must exist and be called before dispatch
+# so agents can always Edit (not Write) the progress notebook even on first
+# dispatch on a fresh issue. Structural pin only — touch is idempotent and
+# safe to call unconditionally.
+printf '\n--- ENG-109: _ensure_progress_md structural pin ---\n'
+if grep -q '_ensure_progress_md' "$HARNESS_DIR/run-stage.sh"; then
+  pass_at "case-109-2 _ensure_progress_md present in run-stage.sh"
+else
+  fail_at "case-109-2 _ensure_progress_md absent from run-stage.sh" \
+    "function must exist and be called before dispatch so Edit on progress.md works on first dispatch"
+fi
+
 # ─── ENG-66 QA adversarial: rc=23 arm sits BETWEEN rc=22 and rc=26 ───
 # Plan A-N4: "inserted between the rc=22 arm and the rc=26 arm".
 # Source ordering matters because each arm is `elif`; if rc=23 sits
