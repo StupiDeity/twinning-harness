@@ -110,7 +110,7 @@ cmd_validate() {
     _emit_incomplete "plan_schema_version must be an integer, got: $ver"
     return 31
   fi
-  if [[ "$ver" != "1" ]]; then
+  if ! jq -e '.plan_schema_version == 1' "$file" >/dev/null 2>&1; then
     _emit_incomplete "plan_schema_version must be 1, got: $ver (this validator only handles schema v1)"
     return 31
   fi

@@ -179,7 +179,7 @@ rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv8a.json" "$FIXTURE_DIR/adv8a.j
   || fail_at "T_adv_8: two positional args" "expected rc=30, got rc=$rc"
 
 # ─── T_adv_9: plan_schema_version: 1.0 (float 1) → documents behavior ────────
-# jq -r prints 1.0 as "1" (round-trip normalization), so `[[ "$ver" != "1" ]]` passes.
+# jq numeric equality (.plan_schema_version == 1) treats 1.0 == 1 as true in JSON.
 # This is intentionally permissive: 1.0 == 1 in JSON semantics.
 cat > "$FIXTURE_DIR/adv9.json" <<'EOF'
 {
@@ -196,7 +196,7 @@ cat > "$FIXTURE_DIR/adv9.json" <<'EOF'
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv9.json" >/dev/null 2>&1 || rc=$?
 (( rc == 0 )) \
-  && pass_at "T_adv_9: plan_schema_version=1.0 (float) → rc=0 (jq normalizes 1.0→'1'; intentional)" \
+  && pass_at "T_adv_9: plan_schema_version=1.0 (float) → rc=0 (jq numeric equality: 1.0==1; intentional)" \
   || fail_at "T_adv_9: plan_schema_version=1.0 behavior change" "expected rc=0, got rc=$rc"
 
 # ─── T_adv_10: multiple valid features with all three kinds → exit 0 ─────────
