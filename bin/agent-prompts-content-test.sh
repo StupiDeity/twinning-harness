@@ -69,6 +69,12 @@ s3="$(section_body "## 3. Implementation Agent (Backend)")"
 s4="$(section_body "## 4. UI Agent (Frontend)")"
 s7="$(section_body "## 7. Build Agent")"
 s8="$(section_body "## 8. Release Agent")"
+# ENG-109: new section bodies for the §§1, 5, 6, 9 presence/absence
+# assertions added in this iteration (§4, §7, §8 already defined above).
+s1="$(section_body "## 1. Brainstorm Agent")"
+s5="$(section_body "## 5. Review Agent")"
+s6="$(section_body "## 6. QA Agent")"
+s9="$(section_body "## 9. Retrospective Agent (Scheduled)")"
 
 # §3 — implement does not own PR creation.
 if printf '%s\n' "$s3" | grep -q 'Do NOT create a PR'; then
@@ -94,18 +100,38 @@ else
     "literal '1. {progress_md_path}' line missing from §3 — has the position-1 placement been demoted, or the token removed entirely?"
 fi
 
-# ─── ENG-108 QA adversarial: {progress_md_path} token scoped to §3 only ───
-# The token is intentionally absent from §§4-9. A future edit that copies
-# the position-1 read-first item into another stage's prompt block without
-# thinking about the stage-conditional log would silently break the
-# stage-gating invariant. Pin the absence here.
-for _sec_num in 4 5 6 7 8 9; do
+# ─── ENG-109: {progress_md_path} now present in §§1, 3, 4, 5, 6, 7, 8;
+# absent from §9 (retrospective excluded per brainstorm D-001 — no per-
+# issue PIPELINE_ISSUE_ID, no per-issue scratch dir). The §3 pin lives
+# at the ENG-108 line above; ENG-109 mirrors that shape for the other
+# five stages and converts §§4-8's absence pins into presence pins.
+for _sec_num in 1 4 5 6 7 8; do
   _sec_var="s${_sec_num}"
-  if printf '%s\n' "${!_sec_var}" | grep -qF '{progress_md_path}'; then
-    nope "§${_sec_num} ENG-108 QA: '{progress_md_path}' token absent from §${_sec_num} (scoped to §3 only)" \
-      "token '{progress_md_path}' present in §${_sec_num} — implementing-only feature, do not propagate without updating the stage-conditional log condition"
+  if printf '%s\n' "${!_sec_var}" | grep -qF '1. {progress_md_path}'; then
+    ok "§${_sec_num} ENG-109: read-first list has '{progress_md_path}' at position 1"
   else
-    ok "§${_sec_num} ENG-108 QA: '{progress_md_path}' token absent from §${_sec_num} (scoped to §3 only)"
+    nope "§${_sec_num} ENG-109: read-first list has '{progress_md_path}' at position 1" \
+      "literal '1. {progress_md_path}' line missing from §${_sec_num} — has the position-1 placement been demoted, or the token removed entirely?"
+  fi
+done
+if printf '%s\n' "$s9" | grep -qF '{progress_md_path}'; then
+  nope "§9 ENG-109: '{progress_md_path}' token absent from §9 (retrospective excluded per D-001)" \
+    "token '{progress_md_path}' present in §9 — retrospective has no PIPELINE_ISSUE_ID and no per-issue scratch dir; this is a contract violation"
+else
+  ok "§9 ENG-109: '{progress_md_path}' token absent from §9 (retrospective excluded per D-001)"
+fi
+
+# ─── ENG-109: per-stage write-clause presence ─────────────────────────
+# Every stage (except §9 retrospective) appends a `progress.md` entry on
+# clean exit per Linear AC-1. Pin the literal phrase in each stage so a
+# future edit that drops the bullet trips here.
+for _sec_num in 1 4 5 6 7 8; do
+  _sec_var="s${_sec_num}"
+  if printf '%s\n' "${!_sec_var}" | grep -qF 'Append a `progress.md` entry'; then
+    ok "§${_sec_num} ENG-109: write-clause 'Append a \`progress.md\` entry' present"
+  else
+    nope "§${_sec_num} ENG-109: write-clause 'Append a \`progress.md\` entry' present" \
+      "phrase 'Append a \`progress.md\` entry' missing — has the per-stage write rule been removed?"
   fi
 done
 

@@ -1001,6 +1001,55 @@ eng107_qa_traversal_passthrough() {
 }
 eng107_qa_traversal_passthrough
 
+# ─── ENG-109: assert_no_write_to_path helper ────────────────────────
+# Three assertions (brainstorm D-005 #xiii):
+#   (a) empty transcript → rc 0
+#   (b) Write tool_use with file_path ending in /progress.md → rc 1 + matched path
+#   (c) Write tool_use with file_path ending in /stage-summary-implementing.md → rc 0
+eng109_empty_transcript() {
+  local empty rc=0 out
+  empty="$_TEST_ROOT/empty-tx.ndjson"
+  : > "$empty"
+  out="$(assert_no_write_to_path "$empty" "/progress.md")" || rc=$?
+  if (( rc == 0 )) && [[ -z "$out" ]]; then
+    report_ok "eng109_assert_no_write_to_path_empty_transcript"
+  else
+    report_fail "eng109_assert_no_write_to_path_empty_transcript" \
+      "rc=0 AND out empty" "rc=$rc out=${out}"
+  fi
+}
+eng109_empty_transcript
+
+eng109_write_on_progress() {
+  local tx="$_TEST_ROOT/write-on-progress.ndjson" rc=0 out
+  cat > "$tx" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+  out="$(assert_no_write_to_path "$tx" "/progress.md")" || rc=$?
+  if (( rc == 1 )) && [[ "$out" == *"progress.md" ]]; then
+    report_ok "eng109_assert_no_write_to_path_write_on_progress"
+  else
+    report_fail "eng109_assert_no_write_to_path_write_on_progress" \
+      "rc=1 AND out ends with progress.md" "rc=$rc out=${out}"
+  fi
+}
+eng109_write_on_progress
+
+eng109_write_on_other() {
+  local tx="$_TEST_ROOT/write-on-other.ndjson" rc=0 out
+  cat > "$tx" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/stage-summary-implementing.md"}}]}}
+NDJSON
+  out="$(assert_no_write_to_path "$tx" "/progress.md")" || rc=$?
+  if (( rc == 0 )) && [[ -z "$out" ]]; then
+    report_ok "eng109_assert_no_write_to_path_write_on_other"
+  else
+    report_fail "eng109_assert_no_write_to_path_write_on_other" \
+      "rc=0 AND out empty (stage-summary path does not match /progress.md)" "rc=$rc out=${out}"
+  fi
+}
+eng109_write_on_other
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
