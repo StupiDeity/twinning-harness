@@ -124,6 +124,51 @@ _dispatch_made_new_commits() {
   [[ "$head_post" != "$head_pre" ]]
 }
 
+# ENG-139 follow-up: extract the source stage of the most-recent
+# transition `to=<stage>` from Linear comments, excluding operator-resume
+# self-loops (`from=<stage> to=<stage> reason=operator-resume`). Without
+# the operator-resume filter, a resume from a halted review-loopback
+# would return `<stage>` instead of `reviewing` and the caller would
+# wrongly conclude "not a review-loopback" — losing the very signal the
+# resume was meant to continue.
+#
+# Used by main() to set PIPELINE_LOOPBACK_SOURCE before invoking
+# render-prompt.sh, which gates _resolve_review_findings so build →
+# implementing rebase loopbacks (ENG-106 / ENG-139) and qa →
+# implementing fail loopbacks don't inherit stale review findings.
+#
+# Fail-open: Linear API outage / empty comments / parse failure → empty
+# stdout. render-prompt.sh's resolver treats unset env as back-compat
+# (file content if non-empty), so an outage replicates pre-ENG-139
+# behavior rather than surprising the agent.
+_resolve_loopback_source() {
+  local ident="$1" stage="$2"
+  local comments
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident" 2>/dev/null)" \
+    || { printf ''; return 0; }
+  [[ -z "$comments" || "$comments" == "null" ]] && { printf ''; return 0; }
+
+  local latest_ts="" latest_from="" body ts ev
+  local event_field to_field from_field reason_field
+  while IFS=$'\t' read -r ts body; do
+    [[ -z "$ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    event_field="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
+    to_field="$(jq -r '.to // ""' <<<"$ev" 2>/dev/null || printf '')"
+    from_field="$(jq -r '.from // ""' <<<"$ev" 2>/dev/null || printf '')"
+    reason_field="$(jq -r '.reason // ""' <<<"$ev" 2>/dev/null || printf '')"
+    [[ "$event_field" == "transition" && "$to_field" == "$stage" ]] || continue
+    [[ "$reason_field" == "operator-resume" ]] && continue
+    if [[ "$ts" > "$latest_ts" ]]; then
+      latest_ts="$ts"
+      latest_from="$from_field"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments" 2>/dev/null)
+
+  printf '%s' "$latest_from"
+}
+
 _count_loopback_rejections_for_stage() {
   local ident="$1" stage="$2"
   local comments
@@ -1342,7 +1387,19 @@ main() {
     prompt_file="$(mktemp -t pipeline-prompt-XXXXXX)"
     log_file="$PROJECT_STATE_DIR/logs/${ident}-${stage}-$(date -u +%Y%m%dT%H%M%SZ).log"
     mkdir -p "$(dirname "$log_file")"
-    bash "$SCRIPT_DIR/render-prompt.sh" "$stage" "$ident" > "$prompt_file"
+    # ENG-139 follow-up: resolve the loopback shape (which from-stage
+    # routed us here) and hand off via PIPELINE_LOOPBACK_SOURCE so
+    # render-prompt.sh's _resolve_review_findings can gate stale
+    # review findings out of build → implementing rebase loopbacks and
+    # qa → implementing fail loopbacks. Only meaningful for the
+    # implementing stage today; other stages don't read review_findings.
+    local loopback_source=""
+    if [[ "$stage" == "implementing" ]]; then
+      loopback_source="$(_resolve_loopback_source "$ident" "$stage" 2>/dev/null || printf '')"
+      [[ -n "$loopback_source" ]] && log "loopback source=$loopback_source (stage=$stage)"
+    fi
+    PIPELINE_LOOPBACK_SOURCE="$loopback_source" \
+      bash "$SCRIPT_DIR/render-prompt.sh" "$stage" "$ident" > "$prompt_file"
     log "rendered prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
 
     bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "dispatching" 0

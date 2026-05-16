@@ -781,6 +781,32 @@ else
        'ENG-65 cycle was caused by agent treating loopback as "add adversarial coverage"; carve-out must be pinned'
 fi
 
+# ─── ENG-139 follow-up: §3 review-loopback off-switch names build/qa ────
+# Today's review-loopback block off-switches on the sentinel value of
+# `{review_findings}`. PIPELINE_LOOPBACK_SOURCE (set by run-stage.sh)
+# now gates the resolver: when the most-recent transition `to=implementing`
+# is anything other than `from=reviewing`, the resolver emits the sentinel
+# so the block deactivates. The prose must name the three non-review
+# paths the sentinel branch covers (planning forward, build-loopback,
+# qa-loopback) so the agent knows it's not in "address findings" mode on
+# any of them. ENG-106 cycle (May 2026) saw the implementer fix unrelated
+# review minors during build → implement rebase loopbacks because the §3
+# block was the only loopback prose the prompt had — pin the broadened
+# wording so a cleanup pass can't drop a path.
+if printf '%s\n' "$s3" | grep -qE 'from=reviewing to=implementing'; then
+  ok '§3 names the review-loopback transition shape (from=reviewing to=implementing)'
+else
+  nope '§3 names the review-loopback transition shape' \
+       'ENG-139 widened the off-switch prose so the agent knows the sentinel branch covers build/qa loopbacks too — the from=reviewing to=implementing literal must appear'
+fi
+if printf '%s\n' "$s3" | grep -qF 'build → implementing rebase loopback' \
+   && printf '%s\n' "$s3" | grep -qF 'qa → implementing fail loopback'; then
+  ok '§3 sentinel branch enumerates build + qa loopback paths'
+else
+  nope '§3 sentinel branch enumerates build + qa loopback paths' \
+       'without naming both, the agent may still treat a build-loopback or qa-loopback as a review-loopback — the very failure ENG-139 closes'
+fi
+
 # ─── ENG-71: §7 build agent must not check out main / pull / reset ────
 # Pin the MANDATORY worktree-HEAD rule paragraph in §7 (D-001) and the
 # symmetric pattern enumeration in `bin/dispatch.sh::_render_and_capture_stream`'s

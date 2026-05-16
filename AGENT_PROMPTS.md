@@ -689,7 +689,13 @@ Branch: `{branch_name}` (base: main). The orchestrator has already created the p
 
 Review → implement loopback handling (MANDATORY when present — ENG-105 follow-up):
 
-The orchestrator inlines the prior reviewing stage's summary below as `{review_findings}`. When it reads `(no prior review for this issue — this dispatch is not a review-loopback)`, this is a fresh dispatch from planning and the rest of this block does not apply. Otherwise:
+The orchestrator inlines the prior reviewing stage's summary below as `{review_findings}` ONLY when the most-recent transition into this dispatch was `from=reviewing to=implementing` (ENG-139 follow-up). When the value reads `(no prior review for this issue — this dispatch is not a review-loopback)`, this is one of:
+
+  - a fresh dispatch forward from planning, OR
+  - a build → implementing rebase loopback (see the Build-loopback block below), OR
+  - a qa → implementing fail loopback (treat as a bug-fix dispatch; QA's summary in `completion/qa/{issue_id}` is your input — do NOT treat the prior reviewer's findings as in scope here),
+
+and the rest of THIS block does not apply. Otherwise:
 
   1. Treat every `[critical]` and `[major]` finding as a contract you MUST close by code commits on `{branch_name}` before exit. `[minor]` and `[nit]` findings are best-effort — close them when cheap, defer with a one-line rationale in the stage-summary Notes otherwise.
   2. For each closed finding, the commit message MUST cite the finding's file:line locator from the review (e.g. `fix(ENG-N): address review finding at docs/runbooks/failure-modes.md:531`). The reviewer cross-checks file:line against the commit log on the next iter.
