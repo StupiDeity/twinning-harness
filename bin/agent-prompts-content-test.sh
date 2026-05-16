@@ -205,19 +205,21 @@ else
     "§2 body extracted as empty — has the '## 2. Plan Agent' heading been renamed? Every §2-scoped negative-grep is now trivially passing."
 fi
 
-# ─── ENG-97 QA-adversarial: §2 has exactly 2 indented api-contract fences ─
+# ─── ENG-97 QA-adversarial: §2 has exactly 4 indented fences ───────────────
 # The existing §2 column-0 fence-count pin (further below) covers the
 # OUTER per-stage fence pair. If a future edit deletes the indented
-# (column-4) api-contract fence — at AGENT_PROMPTS.md:460,494 — so the
-# example bodies float as plain prose, the column-0 count stays at 2 and
-# the existing test still passes, but downstream agents lose the fenced
-# extraction target. Pin the indented fence count separately.
+# (column-4) api-contract fence — so the example bodies float as plain prose
+# — the column-0 count stays at 2 and the existing test still passes, but
+# downstream agents lose the fenced extraction target. Pin the indented fence
+# count separately. ENG-122 added a second indented pair (plan-schema-v1
+# block), so the expected count is now 4: api-contract open+close (2) +
+# plan-schema-v1 open+close (2).
 indented_fence_count_s2="$(printf '%s\n' "$s2" | grep -cE '^[[:space:]]+```' || true)"
-if [[ "$indented_fence_count_s2" == "2" ]]; then
-  ok "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)"
+if [[ "$indented_fence_count_s2" == "4" ]]; then
+  ok "ENG-97 QA: §2 indented (column-4) fence count is exactly 4 (api-contract + plan-schema-v1 block bounds)"
 else
-  nope "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)" \
-    "got $indented_fence_count_s2 indented fences in §2 — the api-contract block bounds drifted; plan agents lose the fenced extraction target"
+  nope "ENG-97 QA: §2 indented (column-4) fence count is exactly 4 (api-contract + plan-schema-v1 block bounds)" \
+    "got $indented_fence_count_s2 indented fences in §2 — expected 4 (api-contract pair + plan-schema-v1 pair); block bounds drifted"
 fi
 
 # ─── ENG-97 QA-adversarial: §2 carries both Example heading markers ───────

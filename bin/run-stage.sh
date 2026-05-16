@@ -15,6 +15,9 @@
 #             28=leaked-in-scope-threshold (≥3 consecutive in-scope leaks; ENG-14),
 #             29=envelope-violation (dispatch envelope validator detected agent bypass
 #             of bin/linear.sh — ENG-87),
+#             33=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
+#             34=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
+#             35=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
@@ -964,6 +967,60 @@ _validate_dispatch_envelope() {
   return 0
 }
 
+# ENG-122: plan-contract validator. Runs after dispatch for stage=planning only.
+# Locates the sibling .json alongside the prose .md in docs/plans/, then shells
+# out to bin/plan-schema.sh validate. Returns 0 = valid, 33 = malformed,
+# 34 = incomplete, 35 = missing-file. Caller must gate to stage=planning.
+_validate_plan_contract() {
+  local ident="$1"
+  local wt
+  wt="$(issue_dir "$ident")/worktree"
+  # Fail-open if worktree is absent: caller's earlier preconditions handle it.
+  [[ -d "$wt" ]] || { log "plan-contract: no worktree dir for $ident; fail-open"; return 0; }
+  local ident_lower
+  ident_lower="$(printf '%s' "$ident" | tr '[:upper:]' '[:lower:]')"
+  local today
+  today="$(date +%Y-%m-%d)"
+  local plan_md plan_json schema_out schema_rc=0
+
+  # Trailing hyphen after ident_lower prevents eng-12 from matching eng-122
+  # or eng-1234. The pattern is bound to `today` so a cross-midnight
+  # re-dispatch on a plan written the day before will fail-open (correct:
+  # the plan is the prior day's; no false halt, just a benign skip).
+  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}-*.md" 2>/dev/null | sort | head -1)"
+  # Fail-open if no plan .md for today: the exit-25 agent-contract validator
+  # handles the absent-md case upstream; double-halting here would be noise.
+  if [[ -z "$plan_md" ]]; then
+    log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}-*.md; fail-open"
+    return 0
+  fi
+
+  plan_json="${plan_md%.md}.json"
+
+  schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
+    --ident "$ident")" || schema_rc=$?
+  case "$schema_rc" in
+    0)  return 0 ;;
+    33) _post_plan_contract_halt "$ident" "plan-contract-malformed"  "$schema_out" ; return 33 ;;
+    34) _post_plan_contract_halt "$ident" "plan-contract-incomplete" "$schema_out" ; return 34 ;;
+    35) _post_plan_contract_halt "$ident" "plan-contract-missing"    "$schema_out" ; return 35 ;;
+    *)  _post_plan_contract_halt "$ident" "unexpected-rc" \
+          "validator returned unexpected rc=$schema_rc; stdout: $schema_out" ; return 33 ;;
+  esac
+}
+
+# Posts a halt comment for a plan-contract violation. Mirrors _validate_dispatch_envelope's
+# sanitisation pattern (D-004): replace `<!--` with `<\!--` in agent-controlled text
+# before embedding in the Linear comment body to prevent marker hijacking.
+_post_plan_contract_halt() {
+  local ident="$1" defect="$2" raw="$3"
+  local safe="${raw//<!--/<\\!--}"
+  local body
+  body="$(printf '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->\n\nPlan-contract validation failed on dispatch_id=%s stage=planning:\n\n- Defect: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/plan-schema.sh`.\n\n**Resume:** fix the JSON (or the plan prompt'\''s emission step), commit on the feature branch, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+    "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$safe" "$ident")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+}
+
 # ENG-87 review M1+M2: dispatch_history.jsonl end-row trap. Plan §13.1.2
 # + §A-026 mandate two rows per dispatch (start + end). Pre-fix the end
 # row was only emitted on the success path (1 of 15 exit sites) and was
@@ -1640,6 +1697,24 @@ main() {
           exit 29
         fi
         rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
+        ;;
+    esac
+  fi
+
+  # ENG-122: plan-contract validator. Post-dispatch; planning stage only.
+  # Halts with plan-contract-invalid if docs/plans/<basename>.json is absent,
+  # malformed, or fails schema-v1 validation. Exit codes 30/31/32 map to the
+  # failure_outcome_for_exit taxonomy entries added in Task 1.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      planning)
+        local _plan_rc=0
+        _validate_plan_contract "$ident" || _plan_rc=$?
+        if (( _plan_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "plan-contract-invalid: $(failure_outcome_for_exit "$_plan_rc")" "$_plan_rc"
+          exit "$_plan_rc"
+        fi
         ;;
     esac
   fi

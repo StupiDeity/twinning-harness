@@ -411,6 +411,35 @@ Assumption Inventory):
 
 Your task:
 - Produce a plan at docs/plans/{date}-{issue_id_lower}-{slug}.md
+- Additionally produce a sibling structured contract at docs/plans/{date}-{issue_id_lower}-{slug}.json
+  containing schema-v1 fields. The file MUST validate against `bin/plan-schema.sh validate`
+  (schema source-of-truth: the file's header comment; inline reference below for convenience —
+  `bin/plan-schema-test.sh::T_schema_doc_sync` asserts top-level field-set equality between this block and the validator; per-kind field shapes are defined in `bin/plan-schema.sh`'s header comment):
+
+  ```plan-schema-v1
+  {
+    "plan_schema_version": 1,
+    "issue_id": "{issue_id}",
+    "features": [
+      {
+        "id": "F-1",
+        "summary": "<one-sentence outcome matching the Goal section>",
+        "pass_criteria": [
+          { "kind": "smoke",       "command": "<shell command>", "expect_exit": 0, "expect_stdout_match": null },
+          { "kind": "file_exists", "path": "<relative path from repo root>" },
+          { "kind": "grep",        "path": "<relative path>", "pattern": "<regex>", "expect_match": true }
+        ]
+      }
+    ]
+  }
+  ```
+
+  Required: `plan_schema_version` (integer 1), `issue_id` (matches `^ENG-[0-9]+$`), `features[]`
+  (len≥1). Per-feature: `id`, `summary`, `pass_criteria[]` (len≥1). Per-criterion: `kind` in
+  `{smoke, file_exists, grep}` plus kind-specific fields. Unknown fields: permitted (warning only).
+  Missing or malformed JSON halts the dispatch with `plan-contract-invalid` (detected in
+  `bin/run-stage.sh::_validate_plan_contract`); recovery: `bash bin/pipeline.sh decide
+  {issue_id} --action continue`.
 - Follow the format of existing plans (see docs/plans/ for examples)
 - Required sections, in this order:
   1. Goal — one sentence, a verifiable outcome
@@ -561,11 +590,13 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    Iterate at most 3 times. If any P0 remains after iteration 3, set status = `escalate`
    and proceed to step 5 with an escalation comment — do NOT commit an unresolved plan,
    but do NOT silently exit either.
-4. **Commit artifacts** (success path only): plan doc on the feature branch with message
-   `chore(pipeline): plan for {issue_id}`. Plans and brainstorms stay on the feature branch
-   and reach main via the normal merge flow; do not attempt direct-to-main pushes. Only
-   knowledge-file changes go through PRs with CODEOWNERS. Do NOT change the Linear stage
-   label — the orchestrator swaps it on successful exit.
+4. **Commit artifacts** (success path only): plan doc AND sibling JSON contract on the feature
+   branch with message `chore(pipeline): plan for {issue_id}`. The staged set MUST include both
+   `docs/plans/{date}-{issue_id_lower}-{slug}.md` AND `docs/plans/{date}-{issue_id_lower}-{slug}.json`;
+   committing only the `.md` causes the post-dispatch validator to halt with `plan-contract-invalid`.
+   Plans and brainstorms stay on the feature branch and reach main via the normal merge flow;
+   do not attempt direct-to-main pushes. Only knowledge-file changes go through PRs with
+   CODEOWNERS. Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
    Overwrite-on-every-dispatch contract per §0; orchestrator posts it to Linear as
    `completion/plan/{issue_id}`.
