@@ -233,6 +233,24 @@ _render_and_capture_stream() {
       return 13
     fi
   done
+  # ENG-109: forbid Write-tool truncation of progress.md across
+  # ALL stages. The append-only contract of progress.md
+  # (docs/runbooks/progress-md.md §3) is a CONVENTION, not a
+  # filesystem ACL; this detective is the catch-net for an agent
+  # that uses Write where Edit-with-append (or
+  # `cat >> {progress_md_path} <<'EOF'`) was the correct shape.
+  # Reuses rc=29 (dispatch-envelope-violation) per the brainstorm
+  # D-004 reading "the envelope is the agent's tool-use contract
+  # surface" — operators inspecting $violation_file see the
+  # matched file_path string for triage.
+  local _matched_write
+  if _matched_write="$(assert_no_write_to_path "$raw_capture" "/progress.md")"; then
+    :   # rc 0: no match, fall through
+  else
+    printf '%s\n' "$_matched_write" > "$violation_file"
+    log "[assert] stage=$stage transcript invoked forbidden Write on progress.md: ${_matched_write}"
+    return 29
+  fi
   # ENG-106: filesystem detective — confirm the plan agent appended
   # one well-formed progress.md H2 entry stamped with the current
   # PIPELINE_DISPATCH_ID. Stage-gated to "planning" only (other stages

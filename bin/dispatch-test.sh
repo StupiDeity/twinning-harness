@@ -3034,6 +3034,45 @@ else
   fi
 fi
 
+# ─── ENG-109: assert_no_write_to_path fixtures (EW1-EW2) ─────────────
+# Mirrors the AS1-AS6 (ENG-43) / AS7-AS12 (ENG-71) shape: a synthetic
+# transcript NDJSON written under $_TEST_STUB_DIR, direct helper
+# invocation, (rc, stdout) tuple assertion. Helper imported via the
+# same source pattern these groups use; see preconditions at the top
+# of the AS1 block (~line 1182).
+printf '\n--- assert_no_write_to_path fixtures (EW1-EW2, ENG-109) ---\n'
+
+if ! declare -f assert_no_write_to_path >/dev/null 2>&1; then
+  fail_at "precondition: assert_no_write_to_path defined" \
+          "function not found after sourcing — Task 4.1 implementation missing"
+  printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
+# EW1 — Write tool_use with file_path ending in /progress.md → rc=1 + matched path
+TX_EW1="$_TEST_STUB_DIR/tx-ew1.ndjson"
+cat > "$TX_EW1" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+out_ew1="$(assert_no_write_to_path "$TX_EW1" "/progress.md")" && rc_ew1=0 || rc_ew1=$?
+if [[ "$rc_ew1" == "1" && "$out_ew1" == *"progress.md" ]]; then
+  pass_at "EW1: Write on /progress.md returns rc=1 + matched path on stdout"
+else
+  fail_at "EW1" "rc=$rc_ew1 out=$out_ew1"
+fi
+
+# EW2 — Write tool_use with file_path ending in /stage-summary-implementing.md → rc=0
+TX_EW2="$_TEST_STUB_DIR/tx-ew2.ndjson"
+cat > "$TX_EW2" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/stage-summary-implementing.md"}}]}}
+NDJSON
+out_ew2="$(assert_no_write_to_path "$TX_EW2" "/progress.md")" && rc_ew2=0 || rc_ew2=$?
+if [[ "$rc_ew2" == "0" && -z "$out_ew2" ]]; then
+  pass_at "EW2: Write on stage-summary path returns rc=0 + empty stdout"
+else
+  fail_at "EW2" "rc=$rc_ew2 out=$out_ew2"
+fi
+
 # ─── ENG-106 PG1–PG6: progress.md detective fixtures ─────────────────────────
 # Per brainstorm D-007 — synthesised post-stream filesystem state.
 # Each fixture invokes _assert_progress_md_entry directly (AS1-AS6

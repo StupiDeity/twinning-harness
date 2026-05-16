@@ -238,12 +238,19 @@ You are brainstorming a solution for the project described in the **Project prof
 
 
 Read these files first (in order, where present):
-1. CLAUDE.md — coding standards and project structure
-2. docs/VISION.md — product vision, principles, non-goals (skip if not present)
-3. Architecture / system docs as listed in the Project profile addendum's File layout (skip if not present)
-4. docs/knowledge/decisions.md — prior architectural decisions (skip if not present)
-5. docs/knowledge/gotchas.md — known pitfalls to avoid (skip if not present)
-6. {learned_rules_dir}/brainstorm.md — learned rules from past retrospectives (follow ALL rules listed)
+1. {progress_md_path} — per-issue progress notebook (cross-dispatch
+   context from prior agents on this issue; see
+   docs/runbooks/progress-md.md). Read this BEFORE the other
+   files: the prior dispatch may have flagged that a plan task
+   is blocked, that a chosen approach failed, or that a
+   dead-end was already explored. Skip if not present —
+   first-dispatch-on-issue is normal.
+2. CLAUDE.md — coding standards and project structure
+3. docs/VISION.md — product vision, principles, non-goals (skip if not present)
+4. Architecture / system docs as listed in the Project profile addendum's File layout (skip if not present)
+5. docs/knowledge/decisions.md — prior architectural decisions (skip if not present)
+6. docs/knowledge/gotchas.md — known pitfalls to avoid (skip if not present)
+7. {learned_rules_dir}/brainstorm.md — learned rules from past retrospectives (follow ALL rules listed)
 
 Linear Issue:
 {issue_title}
@@ -317,6 +324,17 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
      (N is the count that returned PASS).
    - Notes (only on non-clean paths): concise paragraph per non-passing persona or
      unresolved P0. No 6-row table.
+
+- **Append a `progress.md` entry** at `{progress_md_path}` BEFORE
+  posting the verdict marker. Use `Edit` with append-via-anchor
+  (or `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`).
+  **NEVER use `Write`** (truncates — the dispatch.sh detective
+  halts with rc=29 if you do). Heading: `## {dispatch_id} - brainstorming - <UTC-now>`
+  where `<UTC-now>` is `date -u +"%Y-%m-%dT%H:%M:%SZ"`. Body: open
+  questions from the persona review that remain unresolved. A
+  heading-only entry is acceptable when there's nothing concrete
+  to add. Conditional: clean-exit only; do NOT append on the
+  iteration-exhausted halt path.
 
    Internally you still MUST run all 6 personas and record their verdicts in the
    brainstorm doc itself (under an "## Persona review" section) — that's the durable
@@ -895,13 +913,20 @@ If the project has no frontend (the profile's Stack section says so, or the plan
 
 
 Read these files first (in order, where present):
-1. CLAUDE.md — coding standards and project structure
-2. docs/UX_PRINCIPLES.md — UX constraint document (skip if not present)
-3. docs/knowledge/gotchas.md — filter by tags relevant to the frontend modules per the profile (skip if not present)
-4. docs/knowledge/conventions.md — filter by frontend tags (skip if not present)
-5. {learned_rules_dir}/ui.md — learned rules from past retrospectives (follow ALL)
-6. docs/brainstorms/{brainstorm_file}
-7. docs/plans/{plan_file} — focus on "Frontend Tasks" + the `api-contract` block
+1. {progress_md_path} — per-issue progress notebook (cross-dispatch
+   context from prior agents on this issue; see
+   docs/runbooks/progress-md.md). Read this BEFORE the other
+   files: the prior dispatch may have flagged that a plan task
+   is blocked, that a chosen approach failed, or that a
+   dead-end was already explored. Skip if not present —
+   first-dispatch-on-issue is normal.
+2. CLAUDE.md — coding standards and project structure
+3. docs/UX_PRINCIPLES.md — UX constraint document (skip if not present)
+4. docs/knowledge/gotchas.md — filter by tags relevant to the frontend modules per the profile (skip if not present)
+5. docs/knowledge/conventions.md — filter by frontend tags (skip if not present)
+6. {learned_rules_dir}/ui.md — learned rules from past retrospectives (follow ALL)
+7. docs/brainstorms/{brainstorm_file}
+8. docs/plans/{plan_file} — focus on "Frontend Tasks" + the `api-contract` block
 
 Your scope: frontend modules per the profile's File layout (UI components, routes, state stores, styling, frontend types).
 You do NOT touch: backend modules per the profile's File layout.
@@ -1003,6 +1028,15 @@ Output:
   the PR body from these stage summaries.)
 - Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" …` yourself.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
+- **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting
+  the verdict marker. Use `Edit` with append-via-anchor (or
+  `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`).
+  **NEVER use `Write`** (truncates — the dispatch.sh detective halts with
+  rc=29 if you do). Heading: `## {dispatch_id} - ui - <UTC-now>` where
+  `<UTC-now>` is `date -u +"%Y-%m-%dT%H:%M:%SZ"`. Body: components touched
+  and any cross-component concerns the next stage should know. A heading-only
+  entry is acceptable when there's nothing concrete to add. Skip on
+  pass-through (§4's pass-through exits before reaching this section anyway).
 
 Verdict marker (MANDATORY at exit):
 Post exactly ONE additional append-only comment with your verdict:
@@ -1034,12 +1068,19 @@ You are reviewing a pull request for the project described in the **Project prof
 
 
 Read these files first (in order, where present):
-1. docs/brainstorms/{brainstorm_file} — original requirements
-2. docs/plans/{plan_file} — approved plan (including the `api-contract` block)
-3. docs/knowledge/gotchas.md — filter by tags relevant to the PR's modules (skip if not present)
-4. docs/knowledge/decisions.md — verify against accepted ADRs (skip if not present)
-5. docs/knowledge/conventions.md — verify against established conventions (skip if not present)
-6. {learned_rules_dir}/review.md — learned rules (follow ALL)
+1. {progress_md_path} — per-issue progress notebook (cross-dispatch
+   context from prior agents on this issue; see
+   docs/runbooks/progress-md.md). Read this BEFORE the other
+   files: the prior dispatch may have flagged that a plan task
+   is blocked, that a chosen approach failed, or that a
+   dead-end was already explored. Skip if not present —
+   first-dispatch-on-issue is normal.
+2. docs/brainstorms/{brainstorm_file} — original requirements
+3. docs/plans/{plan_file} — approved plan (including the `api-contract` block)
+4. docs/knowledge/gotchas.md — filter by tags relevant to the PR's modules (skip if not present)
+5. docs/knowledge/decisions.md — verify against accepted ADRs (skip if not present)
+6. docs/knowledge/conventions.md — verify against established conventions (skip if not present)
+7. {learned_rules_dir}/review.md — learned rules (follow ALL)
 
 **No human-approval gate at this stage (ENG-54).** The orchestrator's
 `review-poll.sh::review_should_dispatch` only invokes you when the PR HEAD
@@ -1242,6 +1283,15 @@ Output:
 - Do NOT submit a GitHub PR review in the APPROVED state or in the
   CHANGES_REQUESTED state. The agent does not approve or request changes
   via GitHub's review API; humans do (once, at build's P2).
+- **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting
+  the verdict marker. On Decision-path C (clean) ONLY; Decision-paths A and
+  B skip this step (loopback comment + stage-summary already carry the
+  loopback signal; a duplicate here risks stale context poisoning the next
+  dispatch per ENG-77). Use `Edit` with append-via-anchor (or
+  `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`). **NEVER use `Write`**
+  (truncates — rc=29). Heading: `## {dispatch_id} - reviewing - <UTC-now>`
+  where `<UTC-now>` is `date -u +"%Y-%m-%dT%H:%M:%SZ"`. Body: premise check
+  verdict and any cross-cutting concerns the next stage should know.
 
 Verdict marker (MANDATORY at exit):
 Post exactly ONE additional append-only comment with your verdict:
@@ -1276,12 +1326,19 @@ You are the QA agent for the project described in the **Project profile** addend
 
 
 Read these files first (in order, where present):
-1. The Linear issue {issue_id} — acceptance criteria
-2. docs/brainstorms/{brainstorm_file} — edge cases, error handling
-3. docs/plans/{plan_file} — Test Strategy + Failure Mode → Test Map (authoritative)
-4. docs/knowledge/qa-patterns.md — known flaky tests and recurring failure patterns (skip if not present)
-5. docs/knowledge/conventions.md — testing conventions section (skip if not present)
-6. {learned_rules_dir}/qa.md — learned rules (follow ALL)
+1. {progress_md_path} — per-issue progress notebook (cross-dispatch
+   context from prior agents on this issue; see
+   docs/runbooks/progress-md.md). Read this BEFORE the other
+   files: the prior dispatch may have flagged that a plan task
+   is blocked, that a chosen approach failed, or that a
+   dead-end was already explored. Skip if not present —
+   first-dispatch-on-issue is normal.
+2. The Linear issue {issue_id} — acceptance criteria
+3. docs/brainstorms/{brainstorm_file} — edge cases, error handling
+4. docs/plans/{plan_file} — Test Strategy + Failure Mode → Test Map (authoritative)
+5. docs/knowledge/qa-patterns.md — known flaky tests and recurring failure patterns (skip if not present)
+6. docs/knowledge/conventions.md — testing conventions section (skip if not present)
+7. {learned_rules_dir}/qa.md — learned rules (follow ALL)
 
 Branch: `{branch_name}` (already carries backend + frontend commits and the open PR
 from the review stage). Check it out; you may commit additional test files here.
@@ -1426,6 +1483,13 @@ Output:
 - Linear summary comment on {issue_id}.
 - Any new test commits pushed to `{branch_name}`.
 - No edits to qa-patterns.md (use the candidate marker comment).
+- **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting
+  the verdict marker. On Decision-path C/D (all-green or back-fill confirmed)
+  ONLY. Use `Edit` with append-via-anchor (or
+  `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`). **NEVER use `Write`**
+  (truncates — rc=29). Heading: `## {dispatch_id} - qa - <UTC-now>`
+  where `<UTC-now>` is `date -u +"%Y-%m-%dT%H:%M:%SZ"`. Body: adversarial
+  findings or back-fill confirmation; what the next dispatch should know.
 
 Verdict marker (MANDATORY at exit):
 Post exactly ONE additional append-only comment with your verdict:
@@ -1459,8 +1523,9 @@ You are the build agent for the project described in the **Project profile** add
 **MANDATORY worktree-HEAD rule (ENG-71):** Never run `git checkout`, `git switch`, `git pull`, or `git reset` inside the worktree. The orchestrator already checked out `{branch_name}` for you; the post-merge `gh pr merge --auto --delete-branch` you fire is server-side and updates main on origin, not on disk. If you want to verify the merge SHA after a successful merge, query `gh pr view <N> --json mergeCommit --jq '.mergeCommit.oid'` (read-only, no checkout needed; `gh pr view` is in the building tool allowlist — `gh api` is not). The post-merge CI watch (`gh run watch <run-id>`) operates on the merge run identified by SHA — no checkout required. **The prohibition includes chained commands:** `git fetch origin main && git checkout main` is forbidden whether or not the matcher would have denied it standalone. **If you accidentally end up on a branch other than `{branch_name}`, do NOT "fix" it by switching back — emit `verdict halt --reason agent-blocked` and exit; the orchestrator's post-dispatch detector (`bin/run-stage.sh`, ENG-71 D-003) will detach the HEAD to unlock main globally.**
 
 Read these files first (where present):
-1. {learned_rules_dir}/build.md — learned rules (follow ALL)
-2. docs/knowledge/decisions.md — check for any ADR that constrains merging (e.g., release cadence decisions, version-pinning rules)
+1. {progress_md_path} — per-issue cross-dispatch notebook; read silently for context before acting
+2. {learned_rules_dir}/build.md — learned rules (follow ALL)
+3. docs/knowledge/decisions.md — check for any ADR that constrains merging (e.g., release cadence decisions, version-pinning rules)
 
 Branch: `{branch_name}` — the feature PR opened by UI, reviewed by Review, verified by QA.
 
@@ -1698,6 +1763,8 @@ Output:
 - PR merged (SHA recorded in Linear comment).
 - Post-merge CI outcome recorded.
 - Slack notification sent.
+
+- **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting the verdict marker. **Decision-path B (merged) only; wait-shape exits (P2/P5) skip this step.** Use `Edit` with append-via-anchor (or `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`). **NEVER use `Write`** (truncates — dispatch.sh detective halts with rc=29). Heading: `## {dispatch_id} - building - <UTC-now>` where `<UTC-now>` is `date -u +"%Y-%m-%dT%H:%M:%SZ"`. Body: merge SHA + one-line of post-merge CI outcome.
 
 Verdict marker (MANDATORY at exit, except wait-shape exits — see P2/P5 above):
 **Do NOT emit `verdict pass --stage building` until you have verified the PR's

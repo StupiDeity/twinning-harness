@@ -69,6 +69,12 @@ s3="$(section_body "## 3. Implementation Agent (Backend)")"
 s4="$(section_body "## 4. UI Agent (Frontend)")"
 s7="$(section_body "## 7. Build Agent")"
 s8="$(section_body "## 8. Release Agent")"
+# ENG-109: new section bodies for the §§1, 5, 6, 9 presence/absence
+# assertions added in this iteration (§4, §7, §8 already defined above).
+s1="$(section_body "## 1. Brainstorm Agent")"
+s5="$(section_body "## 5. Review Agent")"
+s6="$(section_body "## 6. QA Agent")"
+s9="$(section_body "## 9. Retrospective Agent (Scheduled)")"
 
 # §3 — implement does not own PR creation.
 if printf '%s\n' "$s3" | grep -q 'Do NOT create a PR'; then
@@ -94,20 +100,105 @@ else
     "literal '1. {progress_md_path}' line missing from §3 — has the position-1 placement been demoted, or the token removed entirely?"
 fi
 
-# ─── ENG-108 QA adversarial: {progress_md_path} token scoped to §3 only ───
-# The token is intentionally absent from §§4-9. A future edit that copies
-# the position-1 read-first item into another stage's prompt block without
-# thinking about the stage-conditional log would silently break the
-# stage-gating invariant. Pin the absence here.
-for _sec_num in 4 5 6 7 8 9; do
+# ─── ENG-109: {progress_md_path} now present in §§1, 3, 4, 5, 6, 7;
+# absent from §8 (released uses the legacy sed pass which substitutes
+# only {version}/{tag}/{prev_tag}/{issue_id} — {progress_md_path} would
+# ship as a literal token) and §9 (retrospective excluded per brainstorm
+# D-001 — no per-issue PIPELINE_ISSUE_ID, no per-issue scratch dir).
+# The §3 pin lives at the ENG-108 line above; ENG-109 mirrors that shape
+# for the other four stages and converts §§4-7's absence pins into
+# presence pins.
+for _sec_num in 1 4 5 6 7; do
   _sec_var="s${_sec_num}"
-  if printf '%s\n' "${!_sec_var}" | grep -qF '{progress_md_path}'; then
-    nope "§${_sec_num} ENG-108 QA: '{progress_md_path}' token absent from §${_sec_num} (scoped to §3 only)" \
-      "token '{progress_md_path}' present in §${_sec_num} — implementing-only feature, do not propagate without updating the stage-conditional log condition"
+  if printf '%s\n' "${!_sec_var}" | grep -qF '1. {progress_md_path}'; then
+    ok "§${_sec_num} ENG-109: read-first list has '{progress_md_path}' at position 1"
   else
-    ok "§${_sec_num} ENG-108 QA: '{progress_md_path}' token absent from §${_sec_num} (scoped to §3 only)"
+    nope "§${_sec_num} ENG-109: read-first list has '{progress_md_path}' at position 1" \
+      "literal '1. {progress_md_path}' line missing from §${_sec_num} — has the position-1 placement been demoted, or the token removed entirely?"
   fi
 done
+if printf '%s\n' "$s8" | grep -qF '{progress_md_path}'; then
+  nope "§8 ENG-109: '{progress_md_path}' token absent from §8 (released cross-issue; sed pass cannot resolve)" \
+    "token '{progress_md_path}' present in §8 — released renders via render-prompt.sh's legacy sed pass that only substitutes {version}/{tag}/{prev_tag}/{issue_id}; {progress_md_path} ships as a literal token to the agent"
+else
+  ok "§8 ENG-109: '{progress_md_path}' token absent from §8 (released cross-issue; sed pass cannot resolve)"
+fi
+if printf '%s\n' "$s9" | grep -qF '{progress_md_path}'; then
+  nope "§9 ENG-109: '{progress_md_path}' token absent from §9 (retrospective excluded per D-001)" \
+    "token '{progress_md_path}' present in §9 — retrospective has no PIPELINE_ISSUE_ID and no per-issue scratch dir; this is a contract violation"
+else
+  ok "§9 ENG-109: '{progress_md_path}' token absent from §9 (retrospective excluded per D-001)"
+fi
+
+# ─── ENG-109: per-stage write-clause presence + gerund-pin + gating phrase ──
+# Stages §§1,4,5,6,7 append a `progress.md` entry on clean exit per AC-1.
+# §8 (released) is excluded: released's sed substitution pipeline does not
+# resolve {progress_md_path} (cross-issue stage; no per-issue identity).
+# §9 (retrospective) is excluded per D-001.
+# Three pins per covered stage:
+#   (a) write-clause phrase present
+#   (b) per-stage gerund in heading template (rejects copy-paste gerund swap)
+#   (c) conditional gating phrase present (rejects dropped/reworded exit conditions)
+_sec_gerund_for() {
+  case "$1" in
+    1) printf 'brainstorming' ;;
+    4) printf 'ui'            ;;
+    5) printf 'reviewing'     ;;
+    6) printf 'qa'            ;;
+    7) printf 'building'      ;;
+  esac
+}
+# Per-stage conditional gating phrase pinned in the write clause.
+# Empty string for §4 (ui): pass-through exits before the write clause and
+# no conditional text is needed — the clause is always executed on non-pass-through.
+_sec_gating_for() {
+  case "$1" in
+    1) printf 'clean-exit only'                                               ;;
+    5) printf 'Decision-path C (clean) ONLY'                                  ;;
+    6) printf 'Decision-path C/D'                                              ;;
+    7) printf 'Decision-path B (merged) only; wait-shape exits (P2/P5) skip' ;;
+    *) printf ''                                                               ;;
+  esac
+}
+for _sec_num in 1 4 5 6 7; do
+  _sec_var="s${_sec_num}"
+  _gerund="$(_sec_gerund_for "$_sec_num")"
+  _gating="$(_sec_gating_for "$_sec_num")"
+  if printf '%s\n' "${!_sec_var}" | grep -qF 'Append a `progress.md` entry'; then
+    ok "§${_sec_num} ENG-109: write-clause 'Append a \`progress.md\` entry' present"
+  else
+    nope "§${_sec_num} ENG-109: write-clause 'Append a \`progress.md\` entry' present" \
+      "phrase 'Append a \`progress.md\` entry' missing — has the per-stage write rule been removed?"
+  fi
+  if printf '%s\n' "${!_sec_var}" | grep -qF "{dispatch_id} - ${_gerund} -"; then
+    ok "§${_sec_num} ENG-109: write-clause heading contains correct gerund '${_gerund}'"
+  else
+    nope "§${_sec_num} ENG-109: write-clause heading contains correct gerund '${_gerund}'" \
+      "heading template '{dispatch_id} - ${_gerund} -' missing from §${_sec_num} — wrong gerund in heading or write-clause removed"
+  fi
+  if [[ -n "$_gating" ]]; then
+    if printf '%s\n' "${!_sec_var}" | grep -qF "$_gating"; then
+      ok "§${_sec_num} ENG-109: conditional gating phrase present ('${_gating}')"
+    else
+      nope "§${_sec_num} ENG-109: conditional gating phrase present ('${_gating}')" \
+        "phrase '${_gating}' missing from §${_sec_num} — has the per-stage exit condition been removed or reworded?"
+    fi
+  fi
+done
+# §8 (released) must NOT have a write clause: {progress_md_path} is unresolvable
+# on the released sed pass (cross-issue; no PIPELINE_ISSUE_ID per-issue context).
+if printf '%s\n' "$s8" | grep -qF 'Append a `progress.md` entry'; then
+  nope "§8 ENG-109: write-clause absent from §8 (released cross-issue; {progress_md_path} unresolvable)" \
+    "phrase 'Append a \`progress.md\` entry' present in §8 — released uses sed-only substitution that does not resolve {progress_md_path}; drop the write clause"
+else
+  ok "§8 ENG-109: write-clause absent from §8 (released cross-issue; {progress_md_path} unresolvable)"
+fi
+if printf '%s\n' "$s9" | grep -qF 'Append a `progress.md` entry'; then
+  nope "§9 ENG-109: write-clause absent from §9 (retrospective excluded per D-001)" \
+    "phrase 'Append a \`progress.md\` entry' present in §9 — retrospective must not write to progress.md; D-001 contract violation"
+else
+  ok "§9 ENG-109: write-clause absent from §9 (retrospective excluded per D-001)"
+fi
 
 if printf '%s\n' "$s4" | grep -qE 'gh pr create'; then
   nope "§4 lacks 'gh pr create'" "string 'gh pr create' present"
