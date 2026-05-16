@@ -53,6 +53,7 @@ learned_rules_dir=_resolve_learned_rules_dir
 dispatch_id=_resolve_dispatch_id
 review_findings=_resolve_review_findings
 progress_md_path=_resolve_progress_md_path
+plan_json=_resolve_plan_json
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -251,6 +252,48 @@ _resolve_review_findings() {
   else
     printf '(no prior review for this issue — this dispatch is not a review-loopback)'
   fi
+}
+
+# Without a structured plan.json sibling, the implement agent re-interprets
+# prose pass-criteria on every dispatch, which drifts across rebases and
+# BE↔FE re-readings (ENG-123). Inlining the JSON makes structured fields
+# authoritative at dispatch time; `plan_json_missing` in events.jsonl lets
+# the retrospective measure how often the fallback path fires.
+# Note: explicit `|| return $?` on every metrics.sh call propagates errors
+# reliably regardless of set -e scope; resolve_block_tokens wraps resolvers
+# with `2>/dev/null || printf ''`, so the practical effect is an empty
+# {plan_json} substitution rather than a render-prompt.sh crash.
+_resolve_plan_json() {
+  local plan_md_rel="$_RENDER_PLAN_FILE"
+  local plan_json_rel plan_json_abs
+  if [[ -n "$plan_md_rel" ]]; then
+    plan_json_rel="${plan_md_rel%.md}.json"
+    plan_json_abs="$TARGET_REPO/$plan_json_rel"
+    if [[ -L "$plan_json_abs" ]]; then
+      log "render-prompt: plan.json is a symlink — refusing to follow ($plan_json_rel)"
+      bash "$SCRIPT_DIR/metrics.sh" plan_json_missing "$_RENDER_ISSUE_ID" "implementing" symlink_rejected 0 || return $?
+      printf '%s' "(no plan.json — falling back to prose plan)"
+      return 0
+    fi
+    if [[ -s "$plan_json_abs" ]]; then
+      if grep -qFe '<<<PLAN_JSON_END>>>' -e '<<<PLAN_JSON_BEGIN>>>' "$plan_json_abs"; then
+        log "render-prompt: plan.json contains literal delimiter — falling back"
+        bash "$SCRIPT_DIR/metrics.sh" plan_json_missing "$_RENDER_ISSUE_ID" "implementing" delimiter_collision 0 || return $?
+        printf '%s' "(no plan.json — falling back to prose plan)"
+        return 0
+      fi
+      cat "$plan_json_abs"
+      return 0
+    fi
+  fi
+  if [[ -n "$plan_md_rel" ]]; then
+    log "render-prompt: no plan.json sibling for $_RENDER_ISSUE_ID ($plan_json_rel); falling back to prose plan"
+  else
+    log "render-prompt: no markdown plan resolved for $_RENDER_ISSUE_ID; falling back to prose plan"
+  fi
+  # Stage label hardcoded per brainstorm §5 (iter-1 scope tightening); QA-sibling decides whether to lift to _RENDER_STAGE.
+  bash "$SCRIPT_DIR/metrics.sh" plan_json_missing "$_RENDER_ISSUE_ID" "implementing" fallback 0 || return $?
+  printf '%s' "(no plan.json — falling back to prose plan)"
 }
 
 # Look up the resolver function name for a token (without surrounding braces).
