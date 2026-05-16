@@ -131,6 +131,7 @@ ISSUE_DIR_A="$sandbox/state/test-slug-rc0/ENG-87R6X-A"
 rm -rf "$ISSUE_DIR_A"; mkdir -p "$ISSUE_DIR_A"
 out_a="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-A 2>/dev/null || true)"
 if grep -q '(no prior review for this issue' <<<"$out_a"; then
@@ -147,6 +148,7 @@ printf '## Review summary\n\n[major] %s\n' "$REVIEW_SENTINEL" \
   > "$ISSUE_DIR_B/stage-summary-reviewing.md"
 out_b="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-B 2>/dev/null || true)"
 if grep -qF "$REVIEW_SENTINEL" <<<"$out_b"; then
@@ -176,6 +178,7 @@ rm -rf "$ISSUE_DIR_C"
 err_c="$(mktemp)"
 out_c="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-C 2>"$err_c" || true)"
 if grep -qF "$ISSUE_DIR_C/progress.md" <<<"$out_c"; then
@@ -200,6 +203,7 @@ printf '## ENG-87R6X-D-d0001 - planning - 2026-05-16T12:34:56Z\n\n%s\n' "$PROGRE
 err_d="$(mktemp)"
 out_d="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-D 2>"$err_d" || true)"
 if grep -qF "$ISSUE_DIR_D/progress.md" <<<"$out_d"; then
