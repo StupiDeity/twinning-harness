@@ -3189,6 +3189,109 @@ MD
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
 fi
 
+# ─── ENG-106 QA adversarial: progress.md detective edge cases ────────────────
+# Written by QA agent to cover sub-agent-identified breakages not in PG1-PG7.
+# Each fixture exercises _assert_progress_md_entry directly.
+printf '\n--- ENG-106 QA adversarial: progress.md detective edge cases ---\n'
+
+if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
+  # QA-ADV-PG-A: zero-byte progress.md (touch creates empty file, ! -s → true)
+  # The detective should return rc=31 with "missing entirely" (same branch as absent).
+  # This pins that a zero-byte file is treated the same as absent.
+  QA_A_DIR="$_TEST_STUB_DIR/QA-A"; mkdir -p "$QA_A_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-A-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-A"
+  touch "$QA_A_DIR/progress.md"            # exists but zero bytes
+  rm -f "$QA_A_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_A_DIR" "$QA_A_DIR/.transcript-violation-planning" \
+    && rc_qa_a=0 || rc_qa_a=$?
+  if [[ "$rc_qa_a" == "31" ]] && grep -q "missing entirely" "$QA_A_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-PGA: zero-byte progress.md → rc=31 + 'missing entirely' (same as absent)"
+  else
+    fail_at "QA-ADV-PGA" "rc=$rc_qa_a violation=$(cat "$QA_A_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # QA-ADV-PG-B: indented H2 (leading spaces) — column-0 anchor must reject
+  # An agent that writes '  ## ENG-T-d0001 - planning - ...' (indented) should
+  # NOT satisfy the detective (^## requires column 0).
+  QA_B_DIR="$_TEST_STUB_DIR/QA-B"; mkdir -p "$QA_B_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-B-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-B"
+  printf '  ## ENG-T-QA-B-d0001 - planning - 2026-05-16T12:00:00Z\n\n- indented heading (should be rejected)\n' \
+    > "$QA_B_DIR/progress.md"
+  rm -f "$QA_B_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_B_DIR" "$QA_B_DIR/.transcript-violation-planning" \
+    && rc_qa_b=0 || rc_qa_b=$?
+  if [[ "$rc_qa_b" == "31" ]] && grep -q "found 0" "$QA_B_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-PGB: indented H2 (leading spaces) → rc=31 + 'found 0' (column-0 anchor)"
+  else
+    fail_at "QA-ADV-PGB" "rc=$rc_qa_b violation=$(cat "$QA_B_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # QA-ADV-PG-C: H1 heading instead of H2
+  # '# ENG-T-d0001 - planning - ...' (single hash) should be rejected.
+  QA_C_DIR="$_TEST_STUB_DIR/QA-C"; mkdir -p "$QA_C_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-C-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-C"
+  printf '# ENG-T-QA-C-d0001 - planning - 2026-05-16T12:00:00Z\n\n- H1 not H2 (should be rejected)\n' \
+    > "$QA_C_DIR/progress.md"
+  rm -f "$QA_C_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_C_DIR" "$QA_C_DIR/.transcript-violation-planning" \
+    && rc_qa_c=0 || rc_qa_c=$?
+  if [[ "$rc_qa_c" == "31" ]] && grep -q "found 0" "$QA_C_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-PGC: H1 heading (single hash) → rc=31 + 'found 0' (brainstorm §6 edge case)"
+  else
+    fail_at "QA-ADV-PGC" "rc=$rc_qa_c violation=$(cat "$QA_C_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # QA-ADV-PG-D: PIPELINE_DISPATCH_ID unset (not just empty — `unset` then check)
+  # When PIPELINE_DISPATCH_ID is unset, ${PIPELINE_DISPATCH_ID-} expands to "".
+  # The grep pattern becomes '^##  - ' (space-space-hyphen-space). No real H2
+  # matches this form, so entry_count=0 → rc=31. Diagnostic must show '<empty>'
+  # (the ${VAR-<empty>} substitution in the diagnostic printf).
+  QA_D_DIR="$_TEST_STUB_DIR/QA-D"; mkdir -p "$QA_D_DIR"
+  _saved_dispatch_id="${PIPELINE_DISPATCH_ID-__unset__}"
+  unset PIPELINE_DISPATCH_ID
+  export PIPELINE_ISSUE_ID="ENG-T-QA-D"
+  printf '## ENG-T-QA-D-d0001 - planning - 2026-05-16T12:00:00Z\n\n- real entry (should not match empty dispatch_id)\n' \
+    > "$QA_D_DIR/progress.md"
+  rm -f "$QA_D_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_D_DIR" "$QA_D_DIR/.transcript-violation-planning" \
+    && rc_qa_d=0 || rc_qa_d=$?
+  if [[ "$rc_qa_d" == "31" ]]; then
+    pass_at "QA-ADV-PGD: unset PIPELINE_DISPATCH_ID → rc=31 (empty grep pattern, no match)"
+  else
+    fail_at "QA-ADV-PGD" "rc=$rc_qa_d — unset dispatch_id should not match any real H2"
+  fi
+  # Restore
+  if [[ "$_saved_dispatch_id" != "__unset__" ]]; then
+    export PIPELINE_DISPATCH_ID="$_saved_dispatch_id"
+  else
+    unset PIPELINE_DISPATCH_ID
+  fi
+
+  # QA-ADV-PG-E: em-dash separator instead of ASCII hyphen (brainstorm §6 edge case)
+  # Agent uses '—' (U+2014 em-dash) instead of ' - ' (space-hyphen-space).
+  # The detective regex '^## ENG-T-QA-E-d0001 - ' requires ASCII hyphen.
+  # Em-dash entry must NOT match → rc=31.
+  QA_E_DIR="$_TEST_STUB_DIR/QA-E"; mkdir -p "$QA_E_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-E-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-E"
+  # Write with em-dash separator (U+2014)
+  printf '## ENG-T-QA-E-d0001 \xe2\x80\x94 planning \xe2\x80\x94 2026-05-16T12:00:00Z\n\n- em-dash (should be rejected)\n' \
+    > "$QA_E_DIR/progress.md"
+  rm -f "$QA_E_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_E_DIR" "$QA_E_DIR/.transcript-violation-planning" \
+    && rc_qa_e=0 || rc_qa_e=$?
+  if [[ "$rc_qa_e" == "31" ]] && grep -q "found 0" "$QA_E_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-PGE: em-dash separator → rc=31 + 'found 0' (brainstorm §6 — ASCII-only)"
+  else
+    fail_at "QA-ADV-PGE" "rc=$rc_qa_e violation=$(cat "$QA_E_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
