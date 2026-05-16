@@ -7,6 +7,12 @@
 # Sub-agent (general-purpose, 2026-05-16) surfaced 10 untested breakage scenarios;
 # this file covers the 9 most impactful (plus one regression guard).
 #
+# Permissive-type behavior (T_adv_6, T_adv_9): JSON has no integer type; jq
+# `.plan_schema_version == 1` accepts 1.0 and `type == "number"` accepts float
+# `expect_exit` values. These are intentional — downstream consumers (smoke
+# runners) validate integer bounds; the schema validator only checks presence
+# and type family.
+#
 # Pattern: direct CLI invocation (same as production path in _validate_plan_contract).
 
 set -uo pipefail

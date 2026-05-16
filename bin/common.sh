@@ -274,7 +274,11 @@ _strip_code_blocks_and_spans() {
   fi
   # Collapse newlines to spaces so the steps below scan in a single pass.
   body="${body//$'\n'/ }"
-  # Steps 2/3: strip triple-backtick fences then single-backtick spans.
+  # Steps 2/3/4: strip tilde fences, triple-backtick fences, single-backtick spans.
+  # Tilde fences (~~~...~~~) are stripped first: _post_plan_contract_halt wraps
+  # agent-controlled output in ~~~ to render as a code block in Linear; without
+  # stripping, a plan body containing `<!-- pipeline: ... -->` inside ~~~ would
+  # survive to the parse_pipeline_marker grep (ENG-122 review Minor 1).
   # sed-based substitution (brainstorm A15/A16). The earlier
   # ${var//pat/repl} form treated BASH_REMATCH[0] as a glob, not a
   # literal substring; when the matched span contained glob metachars
@@ -282,7 +286,7 @@ _strip_code_blocks_and_spans() {
   # match held → infinite loop on any body with backticked code spans
   # quoting paths/globs (P17). sed regex is glob-immune and anchors
   # to literal positions.
-  body="$(printf '%s' "$body" | sed -E 's/`{3}[^`]*`{3}/ /g; s/`[^`]*`/ /g')"
+  body="$(printf '%s' "$body" | sed -E 's/~{3}[^~]*~{3}/ /g; s/`{3}[^`]*`{3}/ /g; s/`[^`]*`/ /g')"
   printf '%s' "$body"
 }
 

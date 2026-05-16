@@ -983,23 +983,27 @@ _validate_plan_contract() {
   today="$(date +%Y-%m-%d)"
   local plan_md plan_json schema_out schema_rc=0
 
-  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}*.md" 2>/dev/null | sort | head -1)"
+  # Trailing hyphen after ident_lower prevents eng-12 from matching eng-122
+  # or eng-1234. The pattern is bound to `today` so a cross-midnight
+  # re-dispatch on a plan written the day before will fail-open (correct:
+  # the plan is the prior day's; no false halt, just a benign skip).
+  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}-*.md" 2>/dev/null | sort | head -1)"
   # Fail-open if no plan .md for today: the exit-25 agent-contract validator
   # handles the absent-md case upstream; double-halting here would be noise.
   if [[ -z "$plan_md" ]]; then
-    log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}*.md; fail-open"
+    log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}-*.md; fail-open"
     return 0
   fi
 
   plan_json="${plan_md%.md}.json"
 
   schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
-    --ident "$ident" 2>/dev/null)" || schema_rc=$?
+    --ident "$ident")" || schema_rc=$?
   case "$schema_rc" in
     0)  return 0 ;;
-    33) _post_plan_contract_halt "$ident" "malformed"  "$schema_out" ; return 33 ;;
-    34) _post_plan_contract_halt "$ident" "incomplete" "$schema_out" ; return 34 ;;
-    35) _post_plan_contract_halt "$ident" "missing-file" "$schema_out" ; return 35 ;;
+    33) _post_plan_contract_halt "$ident" "plan-contract-malformed"  "$schema_out" ; return 33 ;;
+    34) _post_plan_contract_halt "$ident" "plan-contract-incomplete" "$schema_out" ; return 34 ;;
+    35) _post_plan_contract_halt "$ident" "plan-contract-missing"    "$schema_out" ; return 35 ;;
     *)  _post_plan_contract_halt "$ident" "unexpected-rc" \
           "validator returned unexpected rc=$schema_rc; stdout: $schema_out" ; return 33 ;;
   esac

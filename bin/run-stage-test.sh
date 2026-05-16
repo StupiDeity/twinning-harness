@@ -4260,7 +4260,7 @@ else
 fi
 
 # INT2 (case 122-L): .md present, no sibling .json → rc=35, halt comment
-# carries plan-contract-invalid marker and Defect: missing-file.
+# carries plan-contract-invalid marker and Defect: plan-contract-missing.
 reset_capture
 mkdir -p "$(issue_dir ENG-122L)/worktree/docs/plans"
 printf 'stub plan\n' \
@@ -4277,15 +4277,15 @@ else
   fail_at "ENG-122 INT2 (122-L): plan-contract-invalid marker absent" \
     "capture=$(cat "$CAPTURE_FILE")"
 fi
-if grep -qF 'Defect: missing-file' "$CAPTURE_FILE"; then
-  pass_at "ENG-122 INT2 (122-L): halt comment carries Defect: missing-file"
+if grep -qF 'Defect: plan-contract-missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-122 INT2 (122-L): halt comment carries Defect: plan-contract-missing"
 else
-  fail_at "ENG-122 INT2 (122-L): Defect: missing-file absent" \
+  fail_at "ENG-122 INT2 (122-L): Defect: plan-contract-missing absent" \
     "capture=$(cat "$CAPTURE_FILE")"
 fi
 
 # INT3 (case 122-M): .md present, sibling .json malformed (stray comma) →
-# rc=33, halt comment carries plan-contract-invalid + Defect: malformed.
+# rc=33, halt comment carries plan-contract-invalid + Defect: plan-contract-malformed.
 reset_capture
 mkdir -p "$(issue_dir ENG-122M)/worktree/docs/plans"
 printf 'stub plan\n' \
@@ -4304,10 +4304,10 @@ else
   fail_at "ENG-122 INT3 (122-M): plan-contract-invalid marker absent" \
     "capture=$(cat "$CAPTURE_FILE")"
 fi
-if grep -qF 'Defect: malformed' "$CAPTURE_FILE"; then
-  pass_at "ENG-122 INT3 (122-M): halt comment carries Defect: malformed"
+if grep -qF 'Defect: plan-contract-malformed' "$CAPTURE_FILE"; then
+  pass_at "ENG-122 INT3 (122-M): halt comment carries Defect: plan-contract-malformed"
 else
-  fail_at "ENG-122 INT3 (122-M): Defect: malformed absent" \
+  fail_at "ENG-122 INT3 (122-M): Defect: plan-contract-malformed absent" \
     "capture=$(cat "$CAPTURE_FILE")"
 fi
 

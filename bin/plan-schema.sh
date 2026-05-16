@@ -53,7 +53,7 @@ _emit_malformed() {
 
 # _warn_unknown <level> <field> — emit warning to stderr (exit 0 path).
 _warn_unknown() {
-  printf '[plan-schema] warning: unknown %s field: %s\n' "$1" "$2" >&2
+  log "[plan-schema] warning: unknown $1 field: $2"
 }
 
 # cmd_validate <file> [--ident <ENG-N>]
@@ -94,8 +94,6 @@ cmd_validate() {
     _emit_malformed "top-level JSON is not an object (got: $jq_type_out)"
     return 33
   fi
-
-  local _rc=0
 
   # ── Required top-level fields ──────────────────────────────────────
 
