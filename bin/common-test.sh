@@ -1012,6 +1012,36 @@ assert_eq "ENG-122 exit-34: plan-contract-incomplete" \
 assert_eq "ENG-122 exit-35: plan-contract-missing" \
   "plan-contract-missing" "$(failure_outcome_for_exit 35)"
 
+# ─── ENG-122 review Minor 1: _strip_code_blocks_and_spans tilde fences ──
+# _post_plan_contract_halt wraps agent-controlled output in ~~~ fences
+# (Linear renders tilde fences as code blocks). Without this guard a
+# ~~~ fence containing a literal `<!-- pipeline: ... -->` marker would
+# survive the strip and be parsed as a real state-driving event.
+printf '\n--- ENG-122 review Minor 1: _strip_code_blocks_and_spans tilde fences ---\n'
+
+_strip_tilde_basic="$(_strip_code_blocks_and_spans '~~~content~~~')"
+assert_eq "strip_tilde_basic: ~~~content~~~ → stripped to space" " " "$_strip_tilde_basic"
+
+_strip_tilde_with_marker="$(_strip_code_blocks_and_spans '~~~ <!-- pipeline: verdict result=pass --> ~~~')"
+case "$_strip_tilde_with_marker" in
+  *"<!-- pipeline:"*)
+    report_fail "strip_tilde_with_marker: tilde-fenced marker must be stripped" \
+      "no '<!-- pipeline:' in output" "got: $_strip_tilde_with_marker" ;;
+  *)
+    report_ok "strip_tilde_with_marker: tilde-fenced pipeline marker stripped" ;;
+esac
+
+_strip_tilde_mixed="$(_strip_code_blocks_and_spans 'before ~~~ code ~~~ after')"
+case "$_strip_tilde_mixed" in
+  *"~~~"*)
+    report_fail "strip_tilde_mixed: tilde fence delimiters removed" \
+      "no '~~~' in output" "got: $_strip_tilde_mixed" ;;
+  *)
+    report_ok "strip_tilde_mixed: tilde fence delimiters removed from body" ;;
+esac
+
+unset _strip_tilde_basic _strip_tilde_with_marker _strip_tilde_mixed
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

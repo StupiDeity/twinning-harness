@@ -382,5 +382,27 @@ rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t18.json" >/dev/null 2>&1 || rc=$
   && pass_at "T18: grep expect_match wrong type (string) → exit 34" \
   || fail_at "T18: grep expect_match wrong type" "expected rc=34, got rc=$rc"
 
+# ─── T_unicode: UTF-8 field values parse correctly (Nit 7) ───────────────
+# Locks current jq behavior: jq parses and outputs UTF-8 summary/id strings
+# without mangling. Regression guard against a future jq version change or
+# locale shift that would corrupt non-ASCII content.
+cat > "$FIXTURE_DIR/t_unicode.json" <<'EOF'
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-1",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Ünïcödé feature: résumé / 日本語 / emoji 🚀",
+      "pass_criteria": [{ "kind": "file_exists", "path": "README.md" }]
+    }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t_unicode.json" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_unicode: UTF-8 summary with non-ASCII chars → exit 0 (jq handles Unicode)" \
+  || fail_at "T_unicode: UTF-8 summary" "expected rc=0, got rc=$rc"
+
 printf '\nplan-schema-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
