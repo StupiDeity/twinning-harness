@@ -5207,6 +5207,38 @@ fi
 
 unset MOCK_COMMENTS_JSON
 
+# ─── ENG-106 QA adversarial: rc=31 arm structural pin ───────────────────────
+# Mirror of case-66-1 (rc=23 structural pin). The rc=31 arm introduced by
+# ENG-106 (D-006) must route to skip-until-human-acts + classify_failure,
+# read the sidecar diagnostic, and clean up. A refactor that swaps the
+# policy or omits the cleanup is otherwise silent.
+RC31_ARM_BLOCK="$(awk '/elif \(\( dispatch_rc == 31 \)\); then/,/exit 31/' "$HARNESS_DIR/run-stage.sh")"
+if [[ -z "$RC31_ARM_BLOCK" ]]; then
+  fail_at "case-eng106-qa-1 rc=31 arm absent in run-stage.sh::main" \
+    "expected 'elif (( dispatch_rc == 31 )); then ... exit 31' arm (ENG-106 D-006)"
+else
+  rc31_arm_failures=0
+  if ! printf '%s\n' "$RC31_ARM_BLOCK" | grep -qF 'classify_failure'; then
+    rc31_arm_failures=$((rc31_arm_failures+1))
+    fail_at "case-eng106-qa-1a rc=31 arm missing classify_failure call" "block did not contain classify_failure"
+  fi
+  if ! printf '%s\n' "$RC31_ARM_BLOCK" | grep -qF 'skip-until-human-acts'; then
+    rc31_arm_failures=$((rc31_arm_failures+1))
+    fail_at "case-eng106-qa-1b rc=31 arm missing skip-until-human-acts policy" "block must use skip-until-human-acts (not retry-immediately)"
+  fi
+  if ! printf '%s\n' "$RC31_ARM_BLOCK" | grep -qF '_viol_file_31'; then
+    rc31_arm_failures=$((rc31_arm_failures+1))
+    fail_at "case-eng106-qa-1c rc=31 arm missing sidecar read via _viol_file_31" "block did not reference _viol_file_31"
+  fi
+  if ! printf '%s\n' "$RC31_ARM_BLOCK" | grep -qF 'progress.md'; then
+    rc31_arm_failures=$((rc31_arm_failures+1))
+    fail_at "case-eng106-qa-1d rc=31 arm missing 'progress.md' in operator-facing message" "classify_failure message must mention progress.md"
+  fi
+  if (( rc31_arm_failures == 0 )); then
+    pass_at "case-eng106-qa-1 rc=31 arm in run-stage.sh::main: skip-until-human-acts, sidecar read, progress.md mention"
+  fi
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

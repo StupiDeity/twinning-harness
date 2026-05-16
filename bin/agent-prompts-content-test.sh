@@ -1652,6 +1652,21 @@ else
     "header still says 'before step 5' — plan agents may skip the mandatory stage-summary (step 6) and verdict (step 7) steps"
 fi
 
+# ─── ENG-106 QA adversarial: {progress_md_path} token isolation to §2 ───────
+# The detective (D-005) and prompt step (D-002) are planning-stage-only.
+# If {progress_md_path} bleeds into another stage's prompt body, that stage's
+# render would inject an absolute filesystem path into the agent without a
+# corresponding detective. Pin that the token appears in exactly one section
+# (§2) and nowhere else in AGENT_PROMPTS.md.
+_progress_token_count="$(grep -c '{progress_md_path}' "$PROMPTS" || true)"
+_progress_in_s2="$(printf '%s\n' "$s2" | grep -c '{progress_md_path}' || true)"
+if [[ "$_progress_token_count" == "1" && "$_progress_in_s2" == "1" ]]; then
+  ok "ENG-106 QA: {progress_md_path} appears exactly once in AGENT_PROMPTS.md, confined to §2"
+else
+  nope "ENG-106 QA: {progress_md_path} token isolation to §2" \
+    "total=$_progress_token_count (expected 1), in-§2=$_progress_in_s2 (expected 1)"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
