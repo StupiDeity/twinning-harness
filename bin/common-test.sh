@@ -1050,6 +1050,23 @@ NDJSON
 }
 eng109_write_on_other
 
+# Edit-tool boundary: assert_no_write_to_path filters name == "Write" only;
+# an Edit tool_use on progress.md must NOT be flagged (rc=0, out empty).
+eng109_edit_on_progress_is_allowed() {
+  local tx="$_TEST_ROOT/edit-on-progress.ndjson" rc=0 out
+  cat > "$tx" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+  out="$(assert_no_write_to_path "$tx" "/progress.md")" || rc=$?
+  if (( rc == 0 )) && [[ -z "$out" ]]; then
+    report_ok "eng109_edit_on_progress_is_allowed"
+  else
+    report_fail "eng109_edit_on_progress_is_allowed" \
+      "rc=0 AND out empty (Edit tool must not be flagged — only Write is forbidden)" "rc=$rc out=${out}"
+  fi
+}
+eng109_edit_on_progress_is_allowed
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
