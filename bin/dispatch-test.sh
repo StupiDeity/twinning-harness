@@ -3289,6 +3289,25 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
     fail_at "QA-ADV-PGE" "rc=$rc_qa_e violation=$(cat "$QA_E_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
   fi
 
+  # QA-ADV-PG-F: entry has correct dispatch_id but a different stage token (e.g. "qa")
+  # The detective validates id+separator ONLY — it does NOT validate the stage label.
+  # Expected: rc=0 (by design; brainstorm D-005 scope boundary documented in §6).
+  QA_F_DIR="$_TEST_STUB_DIR/QA-ADV-PGF"; mkdir -p "$QA_F_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-F-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-F"
+  cat > "$QA_F_DIR/progress.md" <<'MD'
+## ENG-T-QA-F-d0001 - qa - 2026-05-16T12:00:00Z
+
+- bullet one (wrong stage label, but dispatch_id matches)
+MD
+  rm -f "$QA_F_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_F_DIR" "$QA_F_DIR/.transcript-violation-planning" && rc_qa_f=0 || rc_qa_f=$?
+  if [[ "$rc_qa_f" == "0" ]]; then
+    pass_at "QA-ADV-PGF: wrong stage token in heading → rc=0 (detective validates id+separator only)"
+  else
+    fail_at "QA-ADV-PGF" "rc=$rc_qa_f — stage-label mismatch should not cause rejection"
+  fi
+
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
 fi
 
