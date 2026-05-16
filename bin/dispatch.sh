@@ -240,7 +240,15 @@ _render_and_capture_stream() {
   # transcript-scan detectives above, this is a FILESYSTEM check
   # (brainstorm D-005). Helper defined directly below this function;
   # writes its diagnostic to $violation_file and returns 0 / 31.
-  if [[ "$stage" == "planning" ]]; then
+  #
+  # M2 guard: only fire when the agent emitted a clean result event
+  # (last_result non-empty). If gtimeout killed the agent before a
+  # result event was written, last_result="" and we skip — preserving
+  # gtimeout's rc=124 propagation via pipefail (lines 588-590 invariant).
+  # Without this guard, a missing progress.md causes the renderer to
+  # return rc=31, which pipefail treats as the rightmost non-zero,
+  # masking rc=124 and misclassifying the outcome in events.jsonl.
+  if [[ "$stage" == "planning" && -n "$last_result" ]]; then
     if ! _assert_progress_md_entry "$issue_dir" "$violation_file"; then
       return 31
     fi
