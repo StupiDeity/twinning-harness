@@ -3024,6 +3024,131 @@ else
   fi
 fi
 
+# ─── ENG-106 PG1–PG6: progress.md detective fixtures ─────────────────────────
+# Per brainstorm D-007 — synthesised post-stream filesystem state.
+# Each fixture invokes _assert_progress_md_entry directly (AS1-AS6
+# pattern at line 1189-1268). No claude -p invocation; no
+# _render_and_capture_stream end-to-end (DRY_RUN bypass per A-016).
+printf '\n--- ENG-106 PG1-PG6: progress.md detective fixtures ---\n'
+
+_PG_HELPER_PRESENT=1
+if ! declare -f _assert_progress_md_entry >/dev/null 2>&1; then
+  fail_at "precondition: _assert_progress_md_entry defined in dispatch.sh" \
+          "function not found after sourcing — Task 9 implementation missing"
+  _PG_HELPER_PRESENT=0
+fi
+
+if [[ "$_PG_HELPER_PRESENT" == "1" ]]; then
+  # PG1 — well-formed single entry → rc=0, no violation
+  PG1_DIR="$_TEST_STUB_DIR/PG1"; mkdir -p "$PG1_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-PG1-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-PG1"
+  cat > "$PG1_DIR/progress.md" <<'MD'
+## ENG-T-PG1-d0001 - planning - 2026-05-16T12:00:00Z
+
+- decision bullet
+- trade-off bullet
+- breadcrumb bullet
+MD
+  rm -f "$PG1_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$PG1_DIR" "$PG1_DIR/.transcript-violation-planning" && rc_pg1=0 || rc_pg1=$?
+  if [[ "$rc_pg1" == "0" && ! -s "$PG1_DIR/.transcript-violation-planning" ]]; then
+    pass_at "PG1: well-formed single entry → rc=0, no violation"
+  else
+    fail_at "PG1" "rc=$rc_pg1 violation=$(cat "$PG1_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # PG2 — file missing entirely → rc=31, "missing entirely" diagnostic
+  PG2_DIR="$_TEST_STUB_DIR/PG2"; mkdir -p "$PG2_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-PG2-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-PG2"
+  rm -f "$PG2_DIR/progress.md" "$PG2_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$PG2_DIR" "$PG2_DIR/.transcript-violation-planning" && rc_pg2=0 || rc_pg2=$?
+  if [[ "$rc_pg2" == "31" ]] && grep -q "missing entirely" "$PG2_DIR/.transcript-violation-planning"; then
+    pass_at "PG2: file missing → rc=31 + 'missing entirely' diagnostic"
+  else
+    fail_at "PG2" "rc=$rc_pg2 violation=$(cat "$PG2_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # PG3 — two prior entries + one current → rc=0 (append succeeded)
+  PG3_DIR="$_TEST_STUB_DIR/PG3"; mkdir -p "$PG3_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-PG3-d0003"
+  export PIPELINE_ISSUE_ID="ENG-T-PG3"
+  cat > "$PG3_DIR/progress.md" <<'MD'
+## ENG-T-PG3-d0001 - planning - 2026-05-14T12:00:00Z
+
+- prior-1
+
+## ENG-T-PG3-d0002 - planning - 2026-05-15T12:00:00Z
+
+- prior-2
+
+## ENG-T-PG3-d0003 - planning - 2026-05-16T12:00:00Z
+
+- current
+MD
+  rm -f "$PG3_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$PG3_DIR" "$PG3_DIR/.transcript-violation-planning" && rc_pg3=0 || rc_pg3=$?
+  if [[ "$rc_pg3" == "0" && ! -s "$PG3_DIR/.transcript-violation-planning" ]]; then
+    pass_at "PG3: prior entries preserved + new entry → rc=0"
+  else
+    fail_at "PG3" "rc=$rc_pg3 violation=$(cat "$PG3_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # PG4 — file exists, zero entries for current id → rc=31, "found 0"
+  PG4_DIR="$_TEST_STUB_DIR/PG4"; mkdir -p "$PG4_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-PG4-d0002"
+  export PIPELINE_ISSUE_ID="ENG-T-PG4"
+  cat > "$PG4_DIR/progress.md" <<'MD'
+## ENG-T-PG4-d0001 - planning - 2026-05-14T12:00:00Z
+
+- prior-1
+MD
+  rm -f "$PG4_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$PG4_DIR" "$PG4_DIR/.transcript-violation-planning" && rc_pg4=0 || rc_pg4=$?
+  if [[ "$rc_pg4" == "31" ]] && grep -q "found 0" "$PG4_DIR/.transcript-violation-planning"; then
+    pass_at "PG4: zero matches for current id → rc=31 + 'found 0'"
+  else
+    fail_at "PG4" "rc=$rc_pg4 violation=$(cat "$PG4_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # PG5 — two entries for current id (agent double-wrote) → rc=31, "found 2"
+  PG5_DIR="$_TEST_STUB_DIR/PG5"; mkdir -p "$PG5_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-PG5-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-PG5"
+  cat > "$PG5_DIR/progress.md" <<'MD'
+## ENG-T-PG5-d0001 - planning - 2026-05-16T12:00:00Z
+
+- first
+
+## ENG-T-PG5-d0001 - planning - 2026-05-16T12:01:00Z
+
+- duplicate
+MD
+  rm -f "$PG5_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$PG5_DIR" "$PG5_DIR/.transcript-violation-planning" && rc_pg5=0 || rc_pg5=$?
+  if [[ "$rc_pg5" == "31" ]] && grep -q "found 2" "$PG5_DIR/.transcript-violation-planning"; then
+    pass_at "PG5: two entries for current id → rc=31 + 'found 2'"
+  else
+    fail_at "PG5" "rc=$rc_pg5 violation=$(cat "$PG5_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # PG6 — stage-gate is enforced at the CALLER (_render_and_capture_stream).
+  # The helper itself is stage-agnostic. Pin the CALLER's stage-gate via
+  # a static grep of bin/dispatch.sh confirming the call sits inside
+  # `if [[ "$stage" == "planning" ]]` immediately before the closing brace.
+  if grep -q 'if \[\[ "$stage" == "planning" \]\]; then' "$SCRIPT_DIR/dispatch.sh" \
+     && grep -q '_assert_progress_md_entry' "$SCRIPT_DIR/dispatch.sh"; then
+    pass_at "PG6: dispatch.sh stage-gates _assert_progress_md_entry on planning"
+  else
+    fail_at "PG6" "dispatch.sh missing planning-stage gate around _assert_progress_md_entry"
+  fi
+
+  # Cleanup PIPELINE_DISPATCH_ID/PIPELINE_ISSUE_ID exports so later tests
+  # don't see them.
+  unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
