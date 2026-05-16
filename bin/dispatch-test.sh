@@ -3144,14 +3144,44 @@ MD
   fi
 
   # PG6 — stage-gate is enforced at the CALLER (_render_and_capture_stream).
-  # The helper itself is stage-agnostic. Pin the CALLER's stage-gate via
-  # a static grep of bin/dispatch.sh confirming the call sits inside
-  # `if [[ "$stage" == "planning" ]]` immediately before the closing brace.
-  if grep -q 'if \[\[ "$stage" == "planning" \]\]; then' "$SCRIPT_DIR/dispatch.sh" \
+  # The helper itself is stage-agnostic. Pin the CALLER's stage-gate via a
+  # grep that also asserts the M2 guard: the condition must include BOTH the
+  # "planning" stage check AND the -n "$last_result" guard (prevents
+  # rc=124→rc=31 masking via pipefail — dispatch.sh:588-590 invariant).
+  # The grep checks that both tokens appear in the same condition by matching
+  # the combined pattern; a refactor that removes either token will fail here.
+  if grep -q '"planning".*last_result\|last_result.*"planning"' "$SCRIPT_DIR/dispatch.sh" \
      && grep -q '_assert_progress_md_entry' "$SCRIPT_DIR/dispatch.sh"; then
-    pass_at "PG6: dispatch.sh stage-gates _assert_progress_md_entry on planning"
+    pass_at "PG6: dispatch.sh stage-gates _assert_progress_md_entry on planning + last_result (M2 guard)"
   else
-    fail_at "PG6" "dispatch.sh missing planning-stage gate around _assert_progress_md_entry"
+    fail_at "PG6" "dispatch.sh missing planning-stage gate with last_result guard around _assert_progress_md_entry (see M2 fix)"
+  fi
+
+  # PG7 — M2 behavioral guard: _render_and_capture_stream with no result
+  # event (simulating gtimeout kill) must NOT invoke the detective. Even
+  # with progress.md missing, the renderer must return rc=0 so that the
+  # upstream gtimeout's rc=124 propagates via pipefail (dispatch.sh:588-590).
+  if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+    PG7_DIR="$_TEST_STUB_DIR/PG7"; mkdir -p "$PG7_DIR"
+    export PIPELINE_DISPATCH_ID="ENG-T-PG7-d0001"
+    export PIPELINE_ISSUE_ID="ENG-T-PG7"
+    rm -f "$PG7_DIR/progress.md" "$PG7_DIR/.transcript-violation-planning"
+    _pg7_usage="$PG7_DIR/usage-planning.json"
+    rc_pg7=0
+    # Feed a stream with a system event only — no result event (timeout-path).
+    # Detective must be skipped despite missing progress.md (last_result="").
+    printf '{"type":"system","subtype":"init","session_id":"testsess","model":"claude-test"}\n' \
+      | _render_and_capture_stream "$_pg7_usage" "$PG7_DIR" "planning" \
+      >/dev/null 2>&1 || rc_pg7=$?
+    if [[ "$rc_pg7" == "0" && ! -f "$PG7_DIR/.transcript-violation-planning" ]]; then
+      pass_at "PG7: no result event (timeout-path) → detective skipped, rc=0 (M2 guard)"
+    else
+      fail_at "PG7" "rc=$rc_pg7 violation=$(cat "$PG7_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+    fi
+    unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+  else
+    fail_at "PG7 precondition: _render_and_capture_stream defined" \
+      "function not found after sourcing dispatch.sh"
   fi
 
   # Cleanup PIPELINE_DISPATCH_ID/PIPELINE_ISSUE_ID exports so later tests
