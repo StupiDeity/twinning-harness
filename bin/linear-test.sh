@@ -980,6 +980,62 @@ fi
 rm -f "$_eng87_l4i_log"
 unset _eng87_l4i_log _eng87_l4i_orig_log _eng87_l4i_line _eng87_l4i_disp_at _eng87_l4i_dedup_at _eng87_l4i_src _eng87_l4i_block _eng87_l4i_inject_line _eng87_l4i_dedup_line
 
+# ─── ENG-110: agent-lane auto-injection ───────────────────────────────
+# Pin the contract that PIPELINE_WRITER=agent does not short-circuit
+# _inject_dispatch_marker. The lane fence runs BEFORE the inject
+# (bin/linear.sh:505 _check_lane vs line 514 _inject_dispatch_marker
+# in add_comment). A regression that swapped the order or gated
+# injection on lane would silently false-pass the orchestrator-lane
+# tests (Cases 87-L1 / 87-L5) but break agent-lane writes.
+printf '\n--- ENG-110: agent-lane auto-injection ---\n'
+_eng110_al_log="$_TEST_STUB_DIR/eng110-agent-lane.log"
+: > "$_eng110_al_log"
+_eng110_al_orig_log="$(declare -f log 2>/dev/null || printf '')"
+log() { printf '%s\n' "$*" >> "$_eng110_al_log"; }
+_eng110_al_orig_resolve="$(declare -f _resolve_issue_uuid 2>/dev/null || printf '')"
+_resolve_issue_uuid() { printf 'mock-uuid-eng110-al'; }
+export PIPELINE_DRY_RUN=1
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID="ENG-110A-d0001" \
+PIPELINE_STAGE="implementing" \
+add_comment ENG-110A "agent body line 1" >/dev/null 2>&1 || true
+unset -f log
+[[ -n "$_eng110_al_orig_log" ]] && eval "$_eng110_al_orig_log"
+unset -f _resolve_issue_uuid
+[[ -n "$_eng110_al_orig_resolve" ]] && eval "$_eng110_al_orig_resolve"
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE PIPELINE_DRY_RUN
+if grep -qF '<!-- meta: dispatch id=ENG-110A-d0001 stage=implementing -->' "$_eng110_al_log"; then
+  pass_at "ENG-110 agent-lane: PIPELINE_WRITER=agent does not short-circuit auto-injection"
+else
+  fail_at "ENG-110 agent-lane: agent-lane marker presence" \
+    "expected marker in dry-run log, got: $(cat "$_eng110_al_log")"
+fi
+rm -f "$_eng110_al_log"
+unset _eng110_al_log _eng110_al_orig_log _eng110_al_orig_resolve
+
+# ─── ENG-110: add_comment source-pin parity (mirror L4-int) ───────────
+# Case 87-L4-int pinned inject-before-dedup ordering in
+# add_or_update_comment via source-text grep (lines 967-979). The
+# symmetric refactor risk in add_comment is inject-before-
+# PIPELINE_DRY_RUN-short-circuit: a future change that moves
+# _inject_dispatch_marker AFTER the `if [[ "${PIPELINE_DRY_RUN:-0}"
+# == "1" ]]` branch would silently false-pass under
+# PIPELINE_DRY_RUN=1 (the function returns 0 before the inject runs).
+# Source-pin closes that gap.
+printf '\n--- ENG-110: add_comment source-pin parity ---\n'
+_eng110_sp_src="$SCRIPT_DIR_REAL/linear.sh"
+_eng110_sp_block="$(awk '/^add_comment\(\)/,/^}/' "$_eng110_sp_src")"
+_eng110_sp_inject_line="$(grep -n 'body="$(_inject_dispatch_marker' <<<"$_eng110_sp_block" | head -1 | cut -d: -f1)"
+_eng110_sp_dryrun_line="$(grep -n 'PIPELINE_DRY_RUN:-0' <<<"$_eng110_sp_block" | head -1 | cut -d: -f1)"
+if [[ -n "$_eng110_sp_inject_line" ]] && [[ -n "$_eng110_sp_dryrun_line" ]] \
+   && (( _eng110_sp_inject_line < _eng110_sp_dryrun_line )); then
+  pass_at "ENG-110 source-pin: add_comment invokes _inject_dispatch_marker BEFORE PIPELINE_DRY_RUN short-circuit"
+else
+  fail_at "ENG-110 source-pin: add_comment inject ordering" \
+    "inject_line=$_eng110_sp_inject_line dryrun_line=$_eng110_sp_dryrun_line"
+fi
+unset _eng110_sp_src _eng110_sp_block _eng110_sp_inject_line _eng110_sp_dryrun_line
+
 # ─── ENG-87 QA-adversarial: _inject_dispatch_marker edge cases ────────
 # Defensive: relax `set -e` so a single failing `if` predicate (e.g.
 # grep returning 1) cannot abort the whole test file early.
