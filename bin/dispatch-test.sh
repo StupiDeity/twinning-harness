@@ -3308,6 +3308,57 @@ MD
     fail_at "QA-ADV-PGF" "rc=$rc_qa_f — stage-label mismatch should not cause rejection"
   fi
 
+  # QA-ADV-PG-G: progress.md contains only newlines (non-zero size, no H2 headings)
+  # → rc=31 via "found 0" path (non-empty file is not automatically valid)
+  QA_G_DIR="$_TEST_STUB_DIR/QA-ADV-PGG"; mkdir -p "$QA_G_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-G-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-G"
+  printf '\n\n\n' > "$QA_G_DIR/progress.md"
+  rm -f "$QA_G_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_G_DIR" "$QA_G_DIR/.transcript-violation-planning" && rc_qa_g=0 || rc_qa_g=$?
+  # grep-c exits rc=1 on no-match (D-005 brainstorm notes this), so '|| printf 0' appends
+  # a second "0" making entry_count="0\n0". The detective still fires rc=31 correctly.
+  # Assert rc=31 + any "found" diagnostic (the exact count string is "0\n0" — cosmetic).
+  if [[ "$rc_qa_g" == "31" ]] && grep -q "found" "$QA_G_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-PGG: newline-only file → rc=31 + 'found' diagnostic (non-empty but no heading)"
+  else
+    fail_at "QA-ADV-PGG" "rc=$rc_qa_g violation=$(cat "$QA_G_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # QA-ADV-PG-H: issue_dir does not exist — violation_file parent is also absent.
+  # Detective still returns 31 (progress.md doesn't exist → ! -s path fires), but the
+  # redirect to violation_file will silently fail. run-stage.sh falls back to
+  # '<violation-detail-unavailable>' via `cat 2>/dev/null || printf`. Pins rc=31.
+  QA_H_DIR="$_TEST_STUB_DIR/QA-ADV-PGH-nonexistent"  # intentionally NOT created
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-H-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-H"
+  _assert_progress_md_entry "$QA_H_DIR" "$QA_H_DIR/.transcript-violation-planning" && rc_qa_h=0 || rc_qa_h=$?
+  if [[ "$rc_qa_h" == "31" ]]; then
+    pass_at "QA-ADV-PGH: non-existent issue_dir → rc=31 (violation_file may be unwritten; run-stage fallback path)"
+  else
+    fail_at "QA-ADV-PGH" "rc=$rc_qa_h (expected 31 when issue_dir absent)"
+  fi
+
+  # QA-ADV-PG-I: progress.md is non-empty but mode 0000 (unreadable by current process).
+  # grep exits rc=2; the `|| printf 0` arm converts to entry_count=0 → "found 0" → rc=31.
+  # This pins the grep-error fallback path and verifies -s passes (file has content)
+  # but grep still can't read it.
+  QA_I_DIR="$_TEST_STUB_DIR/QA-ADV-PGI"; mkdir -p "$QA_I_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-I-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-QA-I"
+  printf '## ENG-T-QA-I-d0001 - planning - 2026-05-16T12:00:00Z\n- bullet\n' \
+    > "$QA_I_DIR/progress.md"
+  chmod 000 "$QA_I_DIR/progress.md"
+  rm -f "$QA_I_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$QA_I_DIR" "$QA_I_DIR/.transcript-violation-planning" \
+    && rc_qa_i=0 || rc_qa_i=$?
+  chmod 644 "$QA_I_DIR/progress.md"  # restore before tmpdir cleanup
+  if [[ "$rc_qa_i" == "31" ]]; then
+    pass_at "QA-ADV-PGI: unreadable progress.md (mode 0000) → rc=31 via grep-error fallback"
+  else
+    fail_at "QA-ADV-PGI" "rc=$rc_qa_i (expected 31 when progress.md unreadable)"
+  fi
+
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
 fi
 
