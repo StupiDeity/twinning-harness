@@ -52,6 +52,7 @@ stage_summary_path=_resolve_stage_summary_path
 learned_rules_dir=_resolve_learned_rules_dir
 dispatch_id=_resolve_dispatch_id
 review_findings=_resolve_review_findings
+progress_md_path=_resolve_progress_md_path
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -224,6 +225,7 @@ _resolve_brainstorm_file() { printf '%s' "$_RENDER_BRAINSTORM_FILE"; }
 _resolve_plan_file() { printf '%s' "$_RENDER_PLAN_FILE"; }
 _resolve_branch_name() { printf '%s' "$_RENDER_BRANCH_NAME"; }
 _resolve_stage_summary_path() { printf '%s' "$_RENDER_STAGE_SUMMARY_PATH"; }
+_resolve_progress_md_path() { printf '%s' "$_RENDER_PROGRESS_MD_PATH"; }
 _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
 # ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
 # resolvers (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
@@ -413,6 +415,15 @@ main() {
   _RENDER_STAGE_SUMMARY_PATH="$stage_summary_path"
   _RENDER_LEARNED_RULES_DIR="$learned_rules_dir"
   _RENDER_REVIEW_FINDINGS_PATH="$review_findings_path"
+  # ENG-108: per-issue progress notebook path. Composes on
+  # bin/common.sh::progress_md_path (exported per common.sh:400). The
+  # resolver is path-shaped (D-001); the agent reads via Read at
+  # dispatch time. Stage-conditional info-log below fires when the
+  # file is absent on an implementing dispatch (D-003).
+  _RENDER_PROGRESS_MD_PATH="$(progress_md_path "$issue_id")"
+  if [[ "$stage" == "implementing" && ! -e "$_RENDER_PROGRESS_MD_PATH" ]]; then
+    log "render-prompt: progress-md missing for $issue_id at $_RENDER_PROGRESS_MD_PATH (informational; agent's Read will note absence)"
+  fi
   # ENG-87 review-iter-7 M9: bind _RENDER_DISPATCH_ID like the sibling
   # _RENDER_* globals so resolver test isolation is uniform across the
   # registry. Falls through to empty when PIPELINE_DISPATCH_ID is unset
