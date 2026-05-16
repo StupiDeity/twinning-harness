@@ -133,6 +133,7 @@ out_a="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  PROJECT_STATE_DIR="" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-A 2>/dev/null || true)"
 if grep -q '(no prior review for this issue' <<<"$out_a"; then
   ok "ENG-105 case A: absent reviewing summary → '(no prior review …)' sentinel"
@@ -150,6 +151,7 @@ out_b="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  PROJECT_STATE_DIR="" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-B 2>/dev/null || true)"
 if grep -qF "$REVIEW_SENTINEL" <<<"$out_b"; then
   ok "ENG-105 case B: present reviewing summary → inlined verbatim in implementing prompt"

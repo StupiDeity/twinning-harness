@@ -457,6 +457,7 @@ main() {
   [[ -n "$branch_name" ]] \
     || die "render-prompt: branch-name.sh returned empty for $issue_id (Linear-API outage or bug-label resolution failed). Cannot render prompt without a canonical branch name."
   stage_summary_path="$(issue_dir "$issue_id")/stage-summary-${stage}.md"
+  progress_md_path="$(progress_md_path "$issue_id")"
   learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
   # ENG-105 follow-up: per-issue prior-reviewing summary. Preserved across
   # reviewing → implementing transitions by _clear_current_stage_slots
@@ -481,6 +482,7 @@ main() {
   _RENDER_PLAN_FILE="$plan_file"
   _RENDER_BRANCH_NAME="$branch_name"
   _RENDER_STAGE_SUMMARY_PATH="$stage_summary_path"
+  _RENDER_PROGRESS_MD_PATH="$progress_md_path"
   _RENDER_LEARNED_RULES_DIR="$learned_rules_dir"
   _RENDER_REVIEW_FINDINGS_PATH="$review_findings_path"
   # ENG-108: per-issue progress notebook path. Composes on

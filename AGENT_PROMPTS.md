@@ -597,7 +597,28 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    Plans and brainstorms stay on the feature branch and reach main via the normal merge flow;
    do not attempt direct-to-main pushes. Only knowledge-file changes go through PRs with
    CODEOWNERS. Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
-5. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+5. **Append a progress.md entry** at `{progress_md_path}`. ONE H2 entry per
+   dispatch; this is the ONLY mutation you make to the file. Schema (per
+   `docs/runbooks/progress-md.md`):
+
+       ## {dispatch_id} - planning - <ISO-8601-UTC-now>
+
+       - <one decision or call this plan locks in>
+       - <one load-bearing trade-off the plan accepts>
+       - <one next-dispatch breadcrumb for the implement agent>
+       [3–5 bullets total — under 80 chars each, no prose paragraphs]
+
+   **Append, do NOT rewrite.** If the file exists, `Read` it FIRST, then `Write`
+   back the prior content followed by ONE blank line followed by your new H2
+   entry. Do NOT use `Write` with only the new entry — that truncates and
+   discards prior dispatches' entries. Do NOT edit any prior entry. If the
+   file does not exist yet, `Write` it with just your single H2 entry.
+
+   The orchestrator's post-dispatch detective scans this file. A missing
+   entry, more than one entry stamped with your `{dispatch_id}`, or a prior
+   entry that's been removed → halt with `progress-md-entry-missing`
+   (rc=31, see `docs/runbooks/recovery.md`).
+6. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
    Overwrite-on-every-dispatch contract per §0; orchestrator posts it to Linear as
    `completion/plan/{issue_id}`.
    Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
@@ -613,7 +634,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    Full persona verdicts and finding lists stay in the plan doc itself. Do NOT call
    `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …`
    yourself — that path is orchestrator-owned.
-6. **Post the verdict marker** (MANDATORY). Post exactly ONE additional
+7. **Post the verdict marker** (MANDATORY). Post exactly ONE additional
    append-only comment carrying the verdict for your outcome:
 
    On clean exit, run:

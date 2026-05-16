@@ -1716,6 +1716,15 @@ USAGE_AT2="$ISSUE_DIR/usage-planning-AT2.json"
 VIOLATION_AT2_IMPL="$ISSUE_DIR/.transcript-violation-implementing"
 VIOLATION_AT2_PLAN="$ISSUE_DIR/.transcript-violation-planning"
 rm -f "$USAGE_AT2" "$ISSUE_DIR/.raw-stream.ndjson.tmp" "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN"
+# ENG-106: AT2 runs with stage=planning, so the progress.md detective fires.
+# Provide a valid progress.md to satisfy the detective (the cross-stage gating
+# being tested is the implement-stage gh-pr-create gate, not the progress.md gate).
+export PIPELINE_DISPATCH_ID="ENG-T-COST-d0001-AT2"
+cat > "$ISSUE_DIR/progress.md" <<'MD'
+## ENG-T-COST-d0001-AT2 - planning - 2026-05-16T05:00:00Z
+
+- AT2 test entry satisfying the progress.md detective
+MD
 
 at2_rc=0
 _render_and_capture_stream "$USAGE_AT2" "$ISSUE_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || at2_rc=$?
@@ -1731,7 +1740,8 @@ if [[ "$at2_rc" == "0" ]] \
 else
   fail_at "AT2 cross-stage gating" "rc=$at2_rc viol_impl=$([[ -f $VIOLATION_AT2_IMPL ]] && echo y || echo n) viol_plan=$([[ -f $VIOLATION_AT2_PLAN ]] && echo y || echo n)"
 fi
-rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN"
+rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN" "$ISSUE_DIR/progress.md"
+unset PIPELINE_DISPATCH_ID
 
 # ─── AT3: renderer pre-cleans stale sidecar from prior crashed dispatch ───
 # Plan §4 row "Sidecar present from a prior crashed dispatch" is marked

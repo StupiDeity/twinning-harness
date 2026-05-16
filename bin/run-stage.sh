@@ -1505,6 +1505,18 @@ main() {
         "stage transcript invoked forbidden core.bare git form: $_viol_cmd_13" 13
       rm -f "$_viol_file_13" "$prompt_file"
       exit 13
+    elif (( dispatch_rc == 31 )); then
+      # ENG-106: plan-stage progress.md detective halt. Read the diagnostic
+      # message from $(issue_dir "$ident")/.transcript-violation-${stage}
+      # (the sidecar written by _assert_progress_md_entry in dispatch.sh)
+      # and surface a skip-until-human-acts halt. Recovery: docs/runbooks/recovery.md.
+      local _viol_file_31 _viol_msg_31
+      _viol_file_31="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_msg_31="$(cat "$_viol_file_31" 2>/dev/null || printf '<violation-detail-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "plan-stage progress.md entry missing or malformed: $_viol_msg_31" 31
+      rm -f "$_viol_file_31" "$prompt_file"
+      exit 31
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20

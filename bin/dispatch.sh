@@ -233,6 +233,46 @@ _render_and_capture_stream() {
       return 13
     fi
   done
+  # ENG-106: filesystem detective — confirm the plan agent appended
+  # one well-formed progress.md H2 entry stamped with the current
+  # PIPELINE_DISPATCH_ID. Stage-gated to "planning" only (other stages
+  # have no contractual writer yet — see brainstorm OQ-3). Unlike the
+  # transcript-scan detectives above, this is a FILESYSTEM check
+  # (brainstorm D-005). Helper defined directly below this function;
+  # writes its diagnostic to $violation_file and returns 0 / 31.
+  if [[ "$stage" == "planning" ]]; then
+    if ! _assert_progress_md_entry "$issue_dir" "$violation_file"; then
+      return 31
+    fi
+  fi
+}
+
+# ENG-106: filesystem detective for the plan-stage progress.md writer.
+# Stage-gated caller at the end of _render_and_capture_stream invokes
+# this helper only when $stage == "planning". Reads PIPELINE_DISPATCH_ID
+# from env (single-dash idiom — ENG-46 secret-probe-lint clean; the
+# var name is not on the secret regex). Returns 0 if the file contains
+# exactly one H2 entry stamped with the current dispatch_id; returns
+# 31 with a diagnostic written to $violation_file otherwise. Direct
+# caller, no Linear or git surface — pure filesystem check.
+_assert_progress_md_entry() {
+  local issue_dir="$1" violation_file="$2"
+  local progress_path entry_count
+  progress_path="${issue_dir}/progress.md"
+  if [[ ! -s "$progress_path" ]]; then
+    printf 'progress.md missing entirely (expected one H2 stamped %s)\n' \
+      "${PIPELINE_DISPATCH_ID-<empty>}" > "$violation_file"
+    log "[assert] plan-stage progress.md missing for dispatch_id=${PIPELINE_DISPATCH_ID-<empty>}"
+    return 31
+  fi
+  entry_count="$(grep -c "^## ${PIPELINE_DISPATCH_ID-} - " "$progress_path" 2>/dev/null || printf 0)"
+  if [[ "$entry_count" != "1" ]]; then
+    printf 'progress.md: expected exactly 1 entry for dispatch_id=%s, found %s\n' \
+      "${PIPELINE_DISPATCH_ID-<empty>}" "$entry_count" > "$violation_file"
+    log "[assert] plan-stage progress.md entry count for ${PIPELINE_DISPATCH_ID-<empty>}: $entry_count (expected 1)"
+    return 31
+  fi
+  return 0
 }
 
 # ENG-48 isolation: platform tools whose call from a headless dispatch
