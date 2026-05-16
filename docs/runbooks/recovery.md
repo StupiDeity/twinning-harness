@@ -632,6 +632,59 @@ for the canonical config reference.
 
 ---
 
+## 10. rc=31 — `progress-md-entry-missing` (plan-stage progress.md detective halt)
+
+**Symptom.** Plan dispatch returned 31; issue carries `pipeline:halted`
++ `pipeline:skip-until-human-acts`. The Linear halt comment body
+reads `plan-stage progress.md entry missing or malformed:
+progress.md missing entirely (expected one H2 stamped <id>)` OR
+`progress.md: expected exactly 1 entry for dispatch_id=<id>, found
+<n>`.
+
+**Cause.** ENG-106 ships a filesystem detective at the end of
+`bin/dispatch.sh::_render_and_capture_stream` (stage-gated to
+`planning`). After every plan dispatch it greps the per-issue
+`progress.md` (at `$(issue_dir <ident>)/progress.md`) for exactly
+one H2 entry stamped with the current `PIPELINE_DISPATCH_ID`. A
+missing file, zero matches, or ≥2 matches halts with rc=31.
+
+**Recovery.**
+
+1. Inspect the per-stage log: `$PROJECT_STATE_DIR/<slug>/logs/<ident>-planning-*.log` for the
+   `[assert] plan-stage progress.md ...` line and the
+   `$(issue_dir <ident>)/.transcript-violation-planning` sidecar
+   for the diagnostic message.
+2. Inspect `$(issue_dir <ident>)/progress.md` (use
+   `bash bin/common.sh; progress_md_path <ident>` to resolve the exact path) and
+   confirm the on-disk state matches the diagnostic.
+3. Decide based on cause:
+   - **Agent skipped step 5 of AGENT_PROMPTS.md §2 Completion
+     checklist** (most common): run
+     `bash bin/pipeline.sh decide <ident> --action continue`.
+     The orchestrator clears the halt labels and re-dispatches;
+     a fresh `PIPELINE_DISPATCH_ID` is allocated and the next
+     plan agent must satisfy the detective.
+   - **Prompt bug** (the AGENT_PROMPTS.md §2 step 5 instruction
+     is ambiguous or has a typo): edit AGENT_PROMPTS.md, commit
+     on `main`, then `bash bin/pipeline.sh decide <ident> --action
+     continue`. The `pipeline_content_hash` change in
+     `bin/poll.sh` may un-skip the issue without a manual decide;
+     the explicit decide is idempotent and the recommended path.
+   - **Detective false positive** (rare — the file IS present
+     and well-formed by manual inspection but the detective
+     halted): file a follow-up ticket. Until fix, unhalt manually
+     via the decide path; the detective will re-fire on the next
+     dispatch.
+
+**Forensic note.** ENG-87's `dispatch_history.jsonl` (at
+`$(issue_dir <ident>)/dispatch_history.jsonl`) captures the
+rc=31 start/end rows; the prior dispatch's halt comment is
+visible in Linear with its `<!-- meta: dispatch id=... -->`
+marker (filtered out by `find_fresh_verdict` after resume per
+ENG-87 D-005 strict id-match).
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
