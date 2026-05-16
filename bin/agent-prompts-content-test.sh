@@ -1638,6 +1638,20 @@ else
   ok "§7 ENG-139: P7 lacks regenerated hallucination prose"
 fi
 
+# ─── ENG-106 M1: §2 completion checklist header step count ─────────────────
+# After ENG-106 inserted a new step 5 ("Append a progress.md entry") before
+# "Write the stage summary file", the "do NOT exit before step N" reference
+# in the header must point to step 6 (the stage-summary write) — not step 5.
+# Step 5 is now the progress.md write; step 6 is the mandatory stage-summary
+# write; step 7 is the verdict marker. The header hint must align so plan
+# agents don't skip the load-bearing stage-summary and verdict steps.
+if printf '%s\n' "$s2" | grep -qF 'do NOT exit before step 6'; then
+  ok "ENG-106 M1: §2 completion checklist header references 'before step 6' (step count updated)"
+else
+  nope "ENG-106 M1: §2 completion checklist header references 'before step 6' (step count updated)" \
+    "header still says 'before step 5' — plan agents may skip the mandatory stage-summary (step 6) and verdict (step 7) steps"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
