@@ -1805,7 +1805,6 @@ Output:
 - Slack summary posted.
 - events.jsonl entry written (via `.pipeline/bin/metrics.sh` → `~/.twinning-pipeline/metrics/events.jsonl`).
 - No edits to any source files. You are a read-only observer plus Linear/Slack writer.
-- **Append a `progress.md` entry** at `{progress_md_path}` after per-issue Linear enrichment completes. Use `Edit` with append-via-anchor (or `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`). **NEVER use `Write`** (truncates — dispatch.sh detective halts with rc=29). Heading: `## {dispatch_id} - released - <UTC-now>` where `<UTC-now>` is `date -u +"%Y-%m-%dT%H:%M:%SZ"`. Body: `version={version} category=<cat>` (one-line acceptable; observer stage).
 ```
 
 ## 9. Retrospective Agent (Scheduled)
