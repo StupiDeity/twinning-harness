@@ -612,14 +612,21 @@ You are implementing the BACKEND portion of a feature for the project described 
 
 
 Read these files first (in order, where present):
-1. CLAUDE.md — coding standards and project structure
-2. Architecture / system docs as listed in the Project profile addendum's File layout (skip if not present)
-3. docs/knowledge/gotchas.md — filter by tags relevant to the modules you're modifying (skip if not present)
-4. docs/knowledge/decisions.md — follow all accepted ADRs (skip if not present)
-5. docs/knowledge/conventions.md — filter by tags relevant to the modules you're modifying (skip if not present)
-6. {learned_rules_dir}/implementation.md — learned rules from past retrospectives (follow ALL)
-7. docs/brainstorms/{brainstorm_file}
-8. docs/plans/{plan_file} — focus on "Backend Tasks" and the `api-contract` block
+1. {progress_md_path} — per-issue progress notebook (cross-dispatch
+   context from prior agents on this issue; see
+   docs/runbooks/progress-md.md). Read this BEFORE the other
+   files: the prior dispatch may have flagged that a plan task
+   is blocked, that a chosen approach failed, or that a
+   dead-end was already explored. Skip if not present —
+   first-dispatch-on-issue is normal.
+2. CLAUDE.md — coding standards and project structure
+3. Architecture / system docs as listed in the Project profile addendum's File layout (skip if not present)
+4. docs/knowledge/gotchas.md — filter by tags relevant to the modules you're modifying (skip if not present)
+5. docs/knowledge/decisions.md — follow all accepted ADRs (skip if not present)
+6. docs/knowledge/conventions.md — filter by tags relevant to the modules you're modifying (skip if not present)
+7. {learned_rules_dir}/implementation.md — learned rules from past retrospectives (follow ALL)
+8. docs/brainstorms/{brainstorm_file}
+9. docs/plans/{plan_file} — focus on "Backend Tasks" and the `api-contract` block
 
 Your scope: backend modules per the profile's File layout (e.g. server/handler code, storage/migrations, business logic crates, unit + integration tests).
 You do NOT touch: frontend modules per the profile's File layout (UI components, frontend routes, CSS, frontend state stores).

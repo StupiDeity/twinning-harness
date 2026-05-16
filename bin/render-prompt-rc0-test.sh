@@ -131,6 +131,7 @@ ISSUE_DIR_A="$sandbox/state/test-slug-rc0/ENG-87R6X-A"
 rm -rf "$ISSUE_DIR_A"; mkdir -p "$ISSUE_DIR_A"
 out_a="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-A 2>/dev/null || true)"
 if grep -q '(no prior review for this issue' <<<"$out_a"; then
@@ -147,6 +148,7 @@ printf '## Review summary\n\n[major] %s\n' "$REVIEW_SENTINEL" \
   > "$ISSUE_DIR_B/stage-summary-reviewing.md"
 out_b="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-B 2>/dev/null || true)"
 if grep -qF "$REVIEW_SENTINEL" <<<"$out_b"; then
@@ -155,6 +157,117 @@ else
   fail "ENG-105 case B: present reviewing summary inlined" \
        "out tail: $(tail -5 <<<"$out_b" | tr '\n' ' ')"
 fi
+
+# ─── ENG-108: {progress_md_path} token wiring (implement reader pilot) ───
+# Two cases (mirror of the ENG-105 pair above):
+#   C. No progress.md exists in the per-issue state dir → render-prompt's
+#      stage-conditional log fires with `progress-md missing` to stderr;
+#      stdout still carries the resolved absolute path (the agent will
+#      Read-fail at runtime per D-003).
+#   D. progress.md present with a sentinel entry → no `progress-md
+#      missing` log fires; stdout still carries the resolved absolute
+#      path (the agent will Read it at runtime).
+# Both cases exercise the full main() path through the new
+# _RENDER_PROGRESS_MD_PATH binding, the new info-log condition, and the
+# resolve_block_tokens registry pass. A regression that drops
+# progress_md_path from PROMPT_RESOLVERS would die at the registry
+# validator with "unresolved token after registry pass: {progress_md_path}".
+
+ISSUE_DIR_C="$sandbox/state/test-slug-rc0/ENG-87R6X-C"
+rm -rf "$ISSUE_DIR_C"
+err_c="$(mktemp)"
+out_c="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-C 2>"$err_c" || true)"
+if grep -qF "$ISSUE_DIR_C/progress.md" <<<"$out_c"; then
+  ok "ENG-108 case C: absent progress.md → resolved absolute path appears in implementing prompt body"
+else
+  fail "ENG-108 case C: absent progress.md → resolved absolute path in prompt body" \
+       "stdout tail: $(tail -3 <<<"$out_c" | tr '\n' ' ')"
+fi
+if grep -qF 'progress-md missing' "$err_c"; then
+  ok "ENG-108 case C: absent progress.md → stderr carries 'progress-md missing' info-log"
+else
+  fail "ENG-108 case C: absent progress.md → 'progress-md missing' info-log on stderr" \
+       "stderr tail: $(tail -3 "$err_c" | tr '\n' ' ')"
+fi
+rm -f "$err_c"
+
+ISSUE_DIR_D="$sandbox/state/test-slug-rc0/ENG-87R6X-D"
+rm -rf "$ISSUE_DIR_D"; mkdir -p "$ISSUE_DIR_D"
+PROGRESS_SENTINEL='SENTINEL-PROGRESS-MD-ENTRY-FROM-FIXTURE-D-9143'
+printf '## ENG-87R6X-D-d0001 - planning - 2026-05-16T12:34:56Z\n\n%s\n' "$PROGRESS_SENTINEL" \
+  > "$ISSUE_DIR_D/progress.md"
+err_d="$(mktemp)"
+out_d="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-D 2>"$err_d" || true)"
+if grep -qF "$ISSUE_DIR_D/progress.md" <<<"$out_d"; then
+  ok "ENG-108 case D: present progress.md → resolved absolute path appears in implementing prompt body"
+else
+  fail "ENG-108 case D: present progress.md → resolved absolute path in prompt body" \
+       "stdout tail: $(tail -3 <<<"$out_d" | tr '\n' ' ')"
+fi
+if grep -qF 'progress-md missing' "$err_d"; then
+  fail "ENG-108 case D: present progress.md → NO 'progress-md missing' info-log" \
+       "stderr unexpectedly contained 'progress-md missing': $(tail -3 "$err_d" | tr '\n' ' ')"
+else
+  ok "ENG-108 case D: present progress.md → no 'progress-md missing' info-log on stderr"
+fi
+rm -f "$err_d"
+
+# ─── ENG-108 QA adversarial: stage-scoping + zero-byte edge cases ───
+# E. Non-implementing stage (qa) with absent progress.md → info-log must
+#    NOT fire. The condition is `stage == "implementing"` — any other stage
+#    render should produce zero `progress-md missing` lines even when the
+#    file is absent.
+# F. Zero-byte progress.md on implementing stage → info-log must NOT fire.
+#    The predicate is `! -e` (file-exists test), not `! -s` (non-empty test).
+#    A zero-byte file is `-e`-true; a future refactor to `! -s` would silently
+#    change semantics and break this case.
+
+ISSUE_DIR_E="$sandbox/state/test-slug-rc0/ENG-87R6X-E"
+rm -rf "$ISSUE_DIR_E"
+err_e="$(mktemp)"
+PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-E >/dev/null 2>"$err_e" || true
+if grep -qF 'progress-md missing' "$err_e"; then
+  fail "ENG-108 case E: qa stage + absent progress.md → NO 'progress-md missing' info-log" \
+       "stderr unexpectedly contained 'progress-md missing': $(tail -3 "$err_e" | tr '\n' ' ')"
+else
+  ok "ENG-108 case E: qa stage + absent progress.md → no 'progress-md missing' info-log (stage-scoping)"
+fi
+rm -f "$err_e"
+
+ISSUE_DIR_F="$sandbox/state/test-slug-rc0/ENG-87R6X-F"
+rm -rf "$ISSUE_DIR_F"; mkdir -p "$ISSUE_DIR_F"
+: > "$ISSUE_DIR_F/progress.md"  # zero-byte file
+err_f="$(mktemp)"
+out_f="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-F 2>"$err_f" || true)"
+if grep -qF "$ISSUE_DIR_F/progress.md" <<<"$out_f"; then
+  ok "ENG-108 case F: zero-byte progress.md → resolved absolute path appears in implementing prompt"
+else
+  fail "ENG-108 case F: zero-byte progress.md → resolved absolute path in prompt body" \
+       "stdout tail: $(tail -3 <<<"$out_f" | tr '\n' ' ')"
+fi
+if grep -qF 'progress-md missing' "$err_f"; then
+  fail "ENG-108 case F: zero-byte progress.md → NO 'progress-md missing' info-log (! -e, not ! -s)" \
+       "stderr unexpectedly contained 'progress-md missing': $(tail -3 "$err_f" | tr '\n' ' ')"
+else
+  ok "ENG-108 case F: zero-byte progress.md → no 'progress-md missing' info-log (! -e predicate)"
+fi
+rm -f "$err_f"
 
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

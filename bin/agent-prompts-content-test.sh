@@ -82,6 +82,33 @@ else
   ok "§3 lacks 'gh pr create'"
 fi
 
+# ─── ENG-108: §3 read-first list has {progress_md_path} at position 1 ───
+# The implementing prompt MUST instruct the agent to read the per-issue
+# progress notebook before any other onboarding artifact (Linear AC-1).
+# Pin the literal `1. {progress_md_path}` line in §3's body so a future
+# edit that demotes the token (or removes it entirely) trips here.
+if printf '%s\n' "$s3" | grep -qF '1. {progress_md_path}'; then
+  ok "§3 ENG-108: read-first list has '{progress_md_path}' at position 1"
+else
+  nope "§3 ENG-108: read-first list has '{progress_md_path}' at position 1" \
+    "literal '1. {progress_md_path}' line missing from §3 — has the position-1 placement been demoted, or the token removed entirely?"
+fi
+
+# ─── ENG-108 QA adversarial: {progress_md_path} token scoped to §3 only ───
+# The token is intentionally absent from §§4-9. A future edit that copies
+# the position-1 read-first item into another stage's prompt block without
+# thinking about the stage-conditional log would silently break the
+# stage-gating invariant. Pin the absence here.
+for _sec_num in 4 5 6 7 8 9; do
+  _sec_var="s${_sec_num}"
+  if printf '%s\n' "${!_sec_var}" | grep -qF '{progress_md_path}'; then
+    nope "§${_sec_num} ENG-108 QA: '{progress_md_path}' token absent from §${_sec_num} (scoped to §3 only)" \
+      "token '{progress_md_path}' present in §${_sec_num} — implementing-only feature, do not propagate without updating the stage-conditional log condition"
+  else
+    ok "§${_sec_num} ENG-108 QA: '{progress_md_path}' token absent from §${_sec_num} (scoped to §3 only)"
+  fi
+done
+
 if printf '%s\n' "$s4" | grep -qE 'gh pr create'; then
   nope "§4 lacks 'gh pr create'" "string 'gh pr create' present"
 else
