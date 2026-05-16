@@ -148,7 +148,11 @@ set -e
   && pass_at "A9 has-scope-approval returns non-zero when no scope-deviation halt exists" \
   || fail_at "A9 has-scope-approval no halt" "rc=$rc"
 
-# ─── A10: guards.sh count_marker_since_last_transition exercises real helper ─
+# ─── A10: count_marker_since_last_operator_resume accumulates across auto-transitions ─
+# ENG-123 regression: auto-transitions (forward stage advance, build/review
+# loopbacks) must NOT reset the counter — only an operator-resume waypoint does.
+# Fixture has 3 qa_rejection markers split by a qa→building auto-transition;
+# under the new semantic all 3 count.
 # Stub SCRIPT_DIR inside guards.sh to point at STUB_DIR so its calls to
 # "$SCRIPT_DIR/linear.sh" hit the stub and read VH_FIXTURE_COMMENTS.
 VH_FIXTURE_COMMENTS="$(mk_fixture \
@@ -162,19 +166,32 @@ set +u
 # shellcheck source=guards.sh
 source "$STUB_DIR/guards.sh"
 set -u
-got="$(count_marker_since_last_transition ENG-810 qa_rejection)"
-[[ "$got" == "1" ]] \
-  && pass_at "A10 guards.sh count_marker_since_last_transition returns 1 after transition (not 3)" \
-  || fail_at "A10 count_marker_since_last_transition" "got $got (expected 1)"
+got="$(count_marker_since_last_operator_resume ENG-810 qa_rejection)"
+[[ "$got" == "3" ]] \
+  && pass_at "A10 helper accumulates across auto-transitions (returns 3, not 1)" \
+  || fail_at "A10 count_marker_since_last_operator_resume auto-transition" "got $got (expected 3)"
 
-# ─── A11: guards.sh helper counts ALL markers when no transition ever ─
+# ─── A10B: operator-resume waypoint DOES reset the counter ────────
+# Same fixture shape but the transition carries `reason=operator-resume`,
+# matching the waypoint posted by `bin/pipeline.sh decide --action continue`.
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:00:00.000Z" \
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:30:00.000Z" \
+  "<!-- pipeline: transition from=qa to=qa reason=operator-resume -->|2026-04-23T10:00:00.000Z" \
+  "<!-- meta: metric name=qa_rejection -->|2026-04-23T11:00:00.000Z")"
+got="$(count_marker_since_last_operator_resume ENG-810B qa_rejection)"
+[[ "$got" == "1" ]] \
+  && pass_at "A10B operator-resume waypoint resets the counter (returns 1, not 3)" \
+  || fail_at "A10B count_marker_since_last_operator_resume reset" "got $got (expected 1)"
+
+# ─── A11: guards.sh helper counts ALL markers when no operator-resume ever ─
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:00:00.000Z" \
   "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:30:00.000Z")"
-got="$(count_marker_since_last_transition ENG-811 qa_rejection)"
+got="$(count_marker_since_last_operator_resume ENG-811 qa_rejection)"
 [[ "$got" == "2" ]] \
-  && pass_at "A11 guards.sh helper falls back to full count when no transition exists" \
-  || fail_at "A11 count_marker no-transition fallback" "got $got (expected 2)"
+  && pass_at "A11 guards.sh helper falls back to full count when no operator-resume exists" \
+  || fail_at "A11 count_marker no-operator-resume fallback" "got $got (expected 2)"
 
 # ─── A12: classify-failure applies pipeline:halted + halt marker body ─
 # This is the canonical case-10 from the plan's Failure Mode → Test Map,

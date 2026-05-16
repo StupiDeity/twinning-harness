@@ -101,7 +101,7 @@ _cost_flags_for() {
 # Count <!-- pipeline: verdict result=fail target=<stage> --> markers newer
 # than the most recent <!-- pipeline: transition ... to=<stage> --> comment.
 # Used by _resolve_dispatch_model's escalation predicate (ENG-103 D-002).
-# Reuses the comment-fetch path from guards.sh::count_marker_since_last_transition
+# Reuses the comment-fetch path from guards.sh::count_marker_since_last_operator_resume
 # but projects each body through parse_pipeline_marker (common.sh) so prose-
 # quoted markers don't register (ENG-87 / ENG-61 Bug A precedent). Fail-open:
 # Linear API outage returns 0 (no escalation) — matches the dispatch-side

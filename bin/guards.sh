@@ -7,10 +7,17 @@
 #   <!-- meta: metric name=gotcha_triggered -->
 #   <!-- meta: metric name=learned_rule_renewal -->
 # Each occurrence = 1 tick. The rejection counters (review_rejection,
-# qa_rejection, implement_rejection) reset on every forward
-# `<!-- pipeline: transition ... -->` marker so that distinct loopback
-# cycles don't accumulate into a false circuit-breaker trip (brainstorm
-# §Counter unification). gotcha_triggered and learned_rule_renewal count
+# qa_rejection, implement_rejection) accumulate across loopback cycles
+# and are cleared ONLY by an operator-resume waypoint
+# `<!-- pipeline: transition ... reason=operator-resume -->` (posted by
+# `bin/pipeline.sh decide --action continue`). Auto-transitions
+# (forward stage advance and build/review loopbacks) do NOT reset the
+# counter. ENG-123 demonstrated the prior "reset on any transition"
+# semantic let review/implement loops churn indefinitely: every
+# `reviewing → implementing` auto-transition zeroed the counter, so the
+# threshold could never trip from review_rejection alone, and the
+# `building → implementing` merge-conflict loopback handed each rebase
+# round a fresh budget. gotcha_triggered and learned_rule_renewal count
 # across the whole issue lifetime by design, cleared only by their explicit
 # ack labels:
 #   pipeline:knowledge-reviewed -> clears gotcha_triggered threshold
@@ -44,16 +51,22 @@ count_marker() {
 }
 
 # Count comment bodies containing $marker whose createdAt is newer than
-# the most recent transition comment. Used by the rejection-counter
-# gates so that distinct loopback cycles don't accumulate into a false
-# circuit-breaker trip. Recognizes both new (`<!-- pipeline: transition`)
-# and legacy (`<!-- pipeline-transition:`) transition shapes.
-count_marker_since_last_transition() {
+# the most recent operator-resume waypoint
+# (`<!-- pipeline: transition ... reason=operator-resume -->`). Used by the
+# rejection-counter gates so loopback cycles accumulate across the issue
+# lifetime, cleared only by operator action (`bin/pipeline.sh decide
+# --action continue`). Pre-ENG-123 the helper reset on any transition,
+# which let auto-transitions silently zero the counter every loopback.
+# When no operator-resume waypoint exists, falls back to counting all
+# markers across the issue's lifetime — back-compat for in-flight issues
+# that pre-date the cutover, and for any issue that has never been
+# operator-resumed.
+count_marker_since_last_operator_resume() {
   local ident="$1" marker="$2"
   local comments last_ts
   comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident")"
   last_ts="$(jq -r '
-    [.[] | select(.body | contains("<!-- pipeline: transition") or contains("<!-- pipeline-transition:"))]
+    [.[] | select(.body | test("<!-- pipeline: transition[^>]*reason=operator-resume"))]
     | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
   if [[ -z "$last_ts" ]]; then
     jq -r \
@@ -86,11 +99,11 @@ check() {
   [[ "$impl_threshold"   == "null" || -z "$impl_threshold"   ]] && impl_threshold=2
 
   local rev got rule qa impl
-  rev="$(count_marker_since_last_transition "$ident" review_rejection)"
+  rev="$(count_marker_since_last_operator_resume "$ident" review_rejection)"
   got="$(count_marker "$ident" gotcha_triggered)"
   rule="$(count_marker "$ident" learned_rule_renewal)"
-  qa="$(count_marker_since_last_transition "$ident" qa_rejection)"
-  impl="$(count_marker_since_last_transition "$ident" implement_rejection)"
+  qa="$(count_marker_since_last_operator_resume "$ident" qa_rejection)"
+  impl="$(count_marker_since_last_operator_resume "$ident" implement_rejection)"
 
   local tripped=""
   if (( rev >= review_threshold )); then

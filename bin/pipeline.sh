@@ -250,9 +250,9 @@ _pipeline_drain_issue_state() {
 # waypoint comment. This is the ENG-60 new-shape equivalent of ENG-58's
 # old-shape <!-- pipeline-transition: X → X (operator-resume) --> marker.
 # find_fresh_verdict reads via parse_pipeline_marker (new shape only);
-# count_marker_since_last_transition (guards.sh) accepts both shapes for
-# in-flight back-compat. We emit the new shape here; tests assert on it
-# explicitly.
+# count_marker_since_last_operator_resume (guards.sh) reads this shape to
+# clear the rejection counters. We emit the new shape here; tests assert
+# on it explicitly.
 _pipeline_post_operator_transition() {
   local issue="$1" stage="$2"
   # Sanitize stage name per D-014: only lowercase alpha passes; anything else
@@ -333,7 +333,7 @@ cmd_decide() {
   # ENG-58 atomic reset (ported from halt.sh::resolve, ENG-60 merge).
   # On `continue` only: drain wait files, skip-until labels, issue-state
   # (conditionally), then post an operator-attributed transition waypoint so
-  # count_marker_since_last_transition resets the rejection counters and
+  # count_marker_since_last_operator_resume resets the rejection counters and
   # find_fresh_verdict freshness. Order follows D-008: cleanup BEFORE
   # posting the decision comment. The decision comment follows below.
   if [[ "$action" == "continue" ]]; then
