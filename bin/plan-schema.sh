@@ -6,9 +6,9 @@
 #
 # Exit codes:
 #   0  — valid schema-v1 document
-#   30 — malformed: JSON parse error or top-level not an object
-#   31 — incomplete: required field missing, wrong type, or unknown kind
-#   32 — missing-file: the JSON file does not exist at the given path
+#   33 — malformed: JSON parse error or top-level not an object
+#   34 — incomplete: required field missing, wrong type, or unknown kind
+#   35 — missing-file: the JSON file does not exist at the given path
 #
 # Canonical schema-v1 shape (single source of truth):
 #
@@ -65,34 +65,34 @@ cmd_validate() {
     case "$1" in
       --ident)
         if [[ $# -lt 2 ]]; then
-          printf 'plan-schema.sh: --ident requires a value\n' >&2; return 30
+          printf 'plan-schema.sh: --ident requires a value\n' >&2; return 33
         fi
         ident="$2"; shift 2 ;;
-      --*)     printf 'plan-schema.sh: unknown flag %s\n' "$1" >&2; return 30 ;;
+      --*)     printf 'plan-schema.sh: unknown flag %s\n' "$1" >&2; return 33 ;;
       *)
         if (( first )); then file="$1"; first=0
-        else printf 'plan-schema.sh: unexpected argument %s\n' "$1" >&2; return 30
+        else printf 'plan-schema.sh: unexpected argument %s\n' "$1" >&2; return 33
         fi
         shift
         ;;
     esac
   done
 
-  [[ -n "$file" ]] || { printf 'plan-schema.sh: validate: file argument required\n' >&2; return 30; }
+  [[ -n "$file" ]] || { printf 'plan-schema.sh: validate: file argument required\n' >&2; return 33; }
 
-  # rc=32: missing file.
-  [[ -f "$file" ]] || { printf 'plan-contract-missing: file not found: %s\n' "$file"; return 32; }
+  # rc=35: missing file.
+  [[ -f "$file" ]] || { printf 'plan-contract-missing: file not found: %s\n' "$file"; return 35; }
 
-  # rc=30: JSON parse error or top-level not an object.
+  # rc=33: JSON parse error or top-level not an object.
   local jq_type_out jq_rc=0
   jq_type_out="$(jq -r 'type' "$file" 2>&1)" || jq_rc=$?
   if (( jq_rc != 0 )); then
     _emit_malformed "JSON parse error: $jq_type_out"
-    return 30
+    return 33
   fi
   if [[ "$jq_type_out" != "object" ]]; then
     _emit_malformed "top-level JSON is not an object (got: $jq_type_out)"
-    return 30
+    return 33
   fi
 
   local _rc=0
@@ -104,15 +104,15 @@ cmd_validate() {
   ver="$(jq -r '.plan_schema_version // "MISSING"' "$file")"
   if [[ "$ver" == "MISSING" ]]; then
     _emit_incomplete "missing required field: plan_schema_version"
-    return 31
+    return 34
   fi
   if ! jq -e '.plan_schema_version | type == "number"' "$file" >/dev/null 2>&1; then
     _emit_incomplete "plan_schema_version must be an integer, got: $ver"
-    return 31
+    return 34
   fi
   if ! jq -e '.plan_schema_version == 1' "$file" >/dev/null 2>&1; then
     _emit_incomplete "plan_schema_version must be 1, got: $ver (this validator only handles schema v1)"
-    return 31
+    return 34
   fi
 
   # issue_id must be a string matching ^ENG-[0-9]+$.
@@ -121,17 +121,17 @@ cmd_validate() {
   issue_id_val="$(jq -r '.issue_id // "MISSING"' "$file")"
   if [[ "$issue_id_val" == "MISSING" || "$issue_id_type" != "string" ]]; then
     _emit_incomplete "issue_id must be a non-empty string (e.g. ENG-1), got type=$issue_id_type"
-    return 31
+    return 34
   fi
   if ! [[ "$issue_id_val" =~ ^ENG-[0-9]+$ ]]; then
     _emit_incomplete "issue_id must match ^ENG-[0-9]+\$, got: $issue_id_val"
-    return 31
+    return 34
   fi
 
   # If --ident was supplied, verify it matches.
   if [[ -n "$ident" && "$issue_id_val" != "$ident" ]]; then
     _emit_incomplete "issue_id mismatch: JSON has '$issue_id_val' but --ident '$ident' was passed (stale template?)"
-    return 31
+    return 34
   fi
 
   # features must be an array with len >= 1.
@@ -140,11 +140,11 @@ cmd_validate() {
   features_len="$(jq -r '.features | length' "$file" 2>/dev/null || printf '0')"
   if [[ "$features_type" != "array" ]]; then
     _emit_incomplete "features must be an array, got type=$features_type"
-    return 31
+    return 34
   fi
   if (( features_len == 0 )); then
     _emit_incomplete "features must contain at least 1 entry"
-    return 31
+    return 34
   fi
 
   # ── Per-feature validation ─────────────────────────────────────────
@@ -157,25 +157,25 @@ cmd_validate() {
     feat_id="$(jq -r --argjson i "$fi" '.features[$i].id // "MISSING"' "$file")"
     if [[ "$feat_id" == "MISSING" || "$feat_id_type" != "string" || -z "$feat_id" ]]; then
       _emit_incomplete "features[$fi].id must be a non-empty string"
-      return 31
+      return 34
     fi
 
     feat_summary_type="$(jq -r --argjson i "$fi" '.features[$i].summary | type' "$file")"
     feat_summary="$(jq -r --argjson i "$fi" '.features[$i].summary // "MISSING"' "$file")"
     if [[ "$feat_summary" == "MISSING" || "$feat_summary_type" != "string" || -z "$feat_summary" ]]; then
       _emit_incomplete "features[$fi].summary must be a non-empty string"
-      return 31
+      return 34
     fi
 
     pc_type="$(jq -r --argjson i "$fi" '.features[$i].pass_criteria | type' "$file")"
     pc_len="$(jq -r --argjson i "$fi" '.features[$i].pass_criteria | length' "$file" 2>/dev/null || printf '0')"
     if [[ "$pc_type" != "array" ]]; then
       _emit_incomplete "features[$fi].pass_criteria must be an array"
-      return 31
+      return 34
     fi
     if (( pc_len == 0 )); then
       _emit_incomplete "features[$fi].pass_criteria must contain at least 1 entry"
-      return 31
+      return 34
     fi
 
     # ── Per-criterion validation ───────────────────────────────────
@@ -185,7 +185,7 @@ cmd_validate() {
       kind="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].kind // "MISSING"' "$file")"
       if [[ "$kind" == "MISSING" ]]; then
         _emit_incomplete "features[$fi].pass_criteria[$ci].kind is required"
-        return 31
+        return 34
       fi
 
       case "$kind" in
@@ -195,12 +195,12 @@ cmd_validate() {
           cmd_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].command // "MISSING"' "$file")"
           if [[ "$cmd_val" == "MISSING" || "$cmd_type" != "string" || -z "$cmd_val" ]]; then
             _emit_incomplete "features[$fi].pass_criteria[$ci] (smoke): command must be a non-empty string"
-            return 31
+            return 34
           fi
           exit_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].expect_exit | type' "$file")"
           if [[ "$exit_type" != "number" ]]; then
             _emit_incomplete "features[$fi].pass_criteria[$ci] (smoke): expect_exit must be an integer, got type=$exit_type"
-            return 31
+            return 34
           fi
           # Unknown fields for smoke criterion.
           local smoke_unknown
@@ -217,7 +217,7 @@ cmd_validate() {
           path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].path // "MISSING"' "$file")"
           if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
             _emit_incomplete "features[$fi].pass_criteria[$ci] (file_exists): path must be a non-empty string"
-            return 31
+            return 34
           fi
           local fe_unknown
           fe_unknown="$(jq -r --argjson i "$fi" --argjson j "$ci" \
@@ -233,18 +233,18 @@ cmd_validate() {
           path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].path // "MISSING"' "$file")"
           if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
             _emit_incomplete "features[$fi].pass_criteria[$ci] (grep): path must be a non-empty string"
-            return 31
+            return 34
           fi
           pattern_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].pattern | type' "$file")"
           pattern_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].pattern // "MISSING"' "$file")"
           if [[ "$pattern_val" == "MISSING" || "$pattern_type" != "string" || -z "$pattern_val" ]]; then
             _emit_incomplete "features[$fi].pass_criteria[$ci] (grep): pattern must be a non-empty string"
-            return 31
+            return 34
           fi
           em_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].expect_match | type' "$file")"
           if [[ "$em_type" != "boolean" ]]; then
             _emit_incomplete "features[$fi].pass_criteria[$ci] (grep): expect_match must be a boolean, got type=$em_type"
-            return 31
+            return 34
           fi
           local grep_unknown
           grep_unknown="$(jq -r --argjson i "$fi" --argjson j "$ci" \
@@ -256,7 +256,7 @@ cmd_validate() {
           ;;
         *)
           _emit_incomplete "features[$fi].pass_criteria[$ci]: unknown kind \"$kind\" (allowed: smoke, file_exists, grep)"
-          return 31
+          return 34
           ;;
       esac
     done
@@ -291,7 +291,7 @@ main() {
     validate) cmd_validate "$@" ;;
     *)
       printf 'Usage: bash bin/plan-schema.sh validate <file> [--ident <ENG-N>]\n' >&2
-      exit 30
+      exit 33
       ;;
   esac
 }

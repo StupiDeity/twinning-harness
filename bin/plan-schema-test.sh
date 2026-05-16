@@ -62,27 +62,27 @@ rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-1 >/dev/null 2>&1 || rc=$?
   && pass_at "T1: well-formed JSON → exit 0" \
   || fail_at "T1: well-formed JSON" "expected rc=0, got rc=$rc"
 
-# ─── T2: missing file → exit 32 ──────────────────────────────────────
+# ─── T2: missing file → exit 35 ──────────────────────────────────────
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/nonexistent.json" >/dev/null 2>&1 || rc=$?
-(( rc == 32 )) \
-  && pass_at "T2: missing file → exit 32" \
-  || fail_at "T2: missing file" "expected rc=32, got rc=$rc"
+(( rc == 35 )) \
+  && pass_at "T2: missing file → exit 35" \
+  || fail_at "T2: missing file" "expected rc=35, got rc=$rc"
 
-# ─── T3: malformed JSON syntax (stray comma) → exit 30 ───────────────
+# ─── T3: malformed JSON syntax (stray comma) → exit 33 ───────────────
 printf '{,}\n' > "$FIXTURE_DIR/t3.json"
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t3.json" >/dev/null 2>&1 || rc=$?
-(( rc == 30 )) \
-  && pass_at "T3: malformed JSON syntax → exit 30" \
-  || fail_at "T3: malformed JSON syntax" "expected rc=30, got rc=$rc"
+(( rc == 33 )) \
+  && pass_at "T3: malformed JSON syntax → exit 33" \
+  || fail_at "T3: malformed JSON syntax" "expected rc=33, got rc=$rc"
 
-# ─── T4: malformed (top-level array, not object) → exit 30 ───────────
+# ─── T4: malformed (top-level array, not object) → exit 33 ───────────
 printf '[1, 2, 3]\n' > "$FIXTURE_DIR/t4.json"
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t4.json" >/dev/null 2>&1 || rc=$?
-(( rc == 30 )) \
-  && pass_at "T4: top-level array → exit 30" \
-  || fail_at "T4: top-level array" "expected rc=30, got rc=$rc"
+(( rc == 33 )) \
+  && pass_at "T4: top-level array → exit 33" \
+  || fail_at "T4: top-level array" "expected rc=33, got rc=$rc"
 
-# ─── T5: incomplete — missing plan_schema_version → exit 31 ──────────
+# ─── T5: incomplete — missing plan_schema_version → exit 34 ──────────
 cat > "$FIXTURE_DIR/t5.json" <<'EOF'
 {
   "issue_id": "ENG-1",
@@ -96,11 +96,11 @@ cat > "$FIXTURE_DIR/t5.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t5.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T5: missing plan_schema_version → exit 31" \
-  || fail_at "T5: missing plan_schema_version" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T5: missing plan_schema_version → exit 34" \
+  || fail_at "T5: missing plan_schema_version" "expected rc=34, got rc=$rc"
 
-# ─── T6: incomplete — issue_id is integer, not string → exit 31 ──────
+# ─── T6: incomplete — issue_id is integer, not string → exit 34 ──────
 cat > "$FIXTURE_DIR/t6.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -115,11 +115,11 @@ cat > "$FIXTURE_DIR/t6.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t6.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T6: issue_id is integer → exit 31" \
-  || fail_at "T6: issue_id integer" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T6: issue_id is integer → exit 34" \
+  || fail_at "T6: issue_id integer" "expected rc=34, got rc=$rc"
 
-# ─── T7: incomplete — features: [] (empty) → exit 31 ─────────────────
+# ─── T7: incomplete — features: [] (empty) → exit 34 ─────────────────
 cat > "$FIXTURE_DIR/t7.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -128,11 +128,11 @@ cat > "$FIXTURE_DIR/t7.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t7.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T7: features=[] → exit 31" \
-  || fail_at "T7: features empty" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T7: features=[] → exit 34" \
+  || fail_at "T7: features empty" "expected rc=34, got rc=$rc"
 
-# ─── T8: incomplete — pass_criteria: [] on first feature → exit 31 ───
+# ─── T8: incomplete — pass_criteria: [] on first feature → exit 34 ───
 cat > "$FIXTURE_DIR/t8.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -147,11 +147,11 @@ cat > "$FIXTURE_DIR/t8.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t8.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T8: pass_criteria=[] → exit 31" \
-  || fail_at "T8: pass_criteria empty" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T8: pass_criteria=[] → exit 34" \
+  || fail_at "T8: pass_criteria empty" "expected rc=34, got rc=$rc"
 
-# ─── T9: incomplete — unknown kind "bogus" → exit 31 ─────────────────
+# ─── T9: incomplete — unknown kind "bogus" → exit 34 ─────────────────
 cat > "$FIXTURE_DIR/t9.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -166,9 +166,9 @@ cat > "$FIXTURE_DIR/t9.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t9.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T9: unknown kind bogus → exit 31" \
-  || fail_at "T9: unknown kind" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T9: unknown kind bogus → exit 34" \
+  || fail_at "T9: unknown kind" "expected rc=34, got rc=$rc"
 
 # ─── T10: well-formed + unknown top-level field → exit 0 + stderr warns
 cat > "$FIXTURE_DIR/t10.json" <<'EOF'
@@ -197,14 +197,14 @@ else
   fail_at "T10: unknown field warning" "stderr should contain 'warning' and 'roadmap', got: $stderr_out"
 fi
 
-# ─── T11: issue_id mismatch → exit 31 ────────────────────────────────
+# ─── T11: issue_id mismatch → exit 34 ────────────────────────────────
 f="$(write_valid_fixture t11.json ENG-999)"
 rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-1 >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T11: issue_id mismatch → exit 31" \
-  || fail_at "T11: issue_id mismatch" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T11: issue_id mismatch → exit 34" \
+  || fail_at "T11: issue_id mismatch" "expected rc=34, got rc=$rc"
 
-# ─── T12: plan_schema_version: 2 → exit 31 ───────────────────────────
+# ─── T12: plan_schema_version: 2 → exit 34 ───────────────────────────
 cat > "$FIXTURE_DIR/t12.json" <<'EOF'
 {
   "plan_schema_version": 2,
@@ -219,9 +219,9 @@ cat > "$FIXTURE_DIR/t12.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t12.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T12: plan_schema_version=2 → exit 31" \
-  || fail_at "T12: schema version 2" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T12: plan_schema_version=2 → exit 34" \
+  || fail_at "T12: schema version 2" "expected rc=34, got rc=$rc"
 
 # ─── T_schema_doc_sync: AGENT_PROMPTS.md schema block parses as valid JSON
 # and has the same top-level field set as the canonical schema in plan-schema.sh.
@@ -264,11 +264,11 @@ else
   fi
 fi
 
-# ─── T13-T18: kind-specific rc=31 paths (M2 review finding) ─────────────────
+# ─── T13-T18: kind-specific rc=34 paths (M2 review finding) ─────────────────
 # Plan-schema.sh validates required fields for each kind. These six paths
 # had no tests; the test strategy claimed full coverage but reality was partial.
 
-# ─── T13: smoke — missing command → exit 31 ──────────────────────────
+# ─── T13: smoke — missing command → exit 34 ──────────────────────────
 cat > "$FIXTURE_DIR/t13.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -283,11 +283,11 @@ cat > "$FIXTURE_DIR/t13.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t13.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T13: smoke missing command → exit 31" \
-  || fail_at "T13: smoke missing command" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T13: smoke missing command → exit 34" \
+  || fail_at "T13: smoke missing command" "expected rc=34, got rc=$rc"
 
-# ─── T14: smoke — missing expect_exit → exit 31 ──────────────────────
+# ─── T14: smoke — missing expect_exit → exit 34 ──────────────────────
 cat > "$FIXTURE_DIR/t14.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -302,11 +302,11 @@ cat > "$FIXTURE_DIR/t14.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t14.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T14: smoke missing expect_exit → exit 31" \
-  || fail_at "T14: smoke missing expect_exit" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T14: smoke missing expect_exit → exit 34" \
+  || fail_at "T14: smoke missing expect_exit" "expected rc=34, got rc=$rc"
 
-# ─── T15: file_exists — missing path → exit 31 ───────────────────────
+# ─── T15: file_exists — missing path → exit 34 ───────────────────────
 cat > "$FIXTURE_DIR/t15.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -321,11 +321,11 @@ cat > "$FIXTURE_DIR/t15.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t15.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T15: file_exists missing path → exit 31" \
-  || fail_at "T15: file_exists missing path" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T15: file_exists missing path → exit 34" \
+  || fail_at "T15: file_exists missing path" "expected rc=34, got rc=$rc"
 
-# ─── T16: grep — missing path → exit 31 ─────────────────────────────
+# ─── T16: grep — missing path → exit 34 ─────────────────────────────
 cat > "$FIXTURE_DIR/t16.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -340,11 +340,11 @@ cat > "$FIXTURE_DIR/t16.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t16.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T16: grep missing path → exit 31" \
-  || fail_at "T16: grep missing path" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T16: grep missing path → exit 34" \
+  || fail_at "T16: grep missing path" "expected rc=34, got rc=$rc"
 
-# ─── T17: grep — missing pattern → exit 31 ───────────────────────────
+# ─── T17: grep — missing pattern → exit 34 ───────────────────────────
 cat > "$FIXTURE_DIR/t17.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -359,11 +359,11 @@ cat > "$FIXTURE_DIR/t17.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t17.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T17: grep missing pattern → exit 31" \
-  || fail_at "T17: grep missing pattern" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T17: grep missing pattern → exit 34" \
+  || fail_at "T17: grep missing pattern" "expected rc=34, got rc=$rc"
 
-# ─── T18: grep — expect_match wrong type (string instead of boolean) → exit 31
+# ─── T18: grep — expect_match wrong type (string instead of boolean) → exit 34
 cat > "$FIXTURE_DIR/t18.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -378,9 +378,9 @@ cat > "$FIXTURE_DIR/t18.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t18.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T18: grep expect_match wrong type (string) → exit 31" \
-  || fail_at "T18: grep expect_match wrong type" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T18: grep expect_match wrong type (string) → exit 34" \
+  || fail_at "T18: grep expect_match wrong type" "expected rc=34, got rc=$rc"
 
 printf '\nplan-schema-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

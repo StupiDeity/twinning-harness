@@ -22,11 +22,11 @@
     },
     {
       "id": "F-3",
-      "summary": "Exit-code taxonomy includes 30/31/32 and halt_reasons registry includes plan-contract-invalid",
+      "summary": "Exit-code taxonomy includes 33/34/35 and halt_reasons registry includes plan-contract-invalid",
       "pass_criteria": [
-        { "kind": "grep", "path": "bin/common.sh", "pattern": "30\\) printf 'plan-contract-malformed'", "expect_match": true },
-        { "kind": "grep", "path": "bin/common.sh", "pattern": "31\\) printf 'plan-contract-incomplete'", "expect_match": true },
-        { "kind": "grep", "path": "bin/common.sh", "pattern": "32\\) printf 'plan-contract-missing'", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "33\\) printf 'plan-contract-malformed'", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "34\\) printf 'plan-contract-incomplete'", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "35\\) printf 'plan-contract-missing'", "expect_match": true },
         { "kind": "grep", "path": "bin/pipeline-events.json", "pattern": "plan-contract-invalid", "expect_match": true }
       ]
     },

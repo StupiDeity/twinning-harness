@@ -4259,7 +4259,7 @@ else
     "capture=$(cat "$CAPTURE_FILE")"
 fi
 
-# INT2 (case 122-L): .md present, no sibling .json → rc=32, halt comment
+# INT2 (case 122-L): .md present, no sibling .json → rc=35, halt comment
 # carries plan-contract-invalid marker and Defect: missing-file.
 reset_capture
 mkdir -p "$(issue_dir ENG-122L)/worktree/docs/plans"
@@ -4267,9 +4267,9 @@ printf 'stub plan\n' \
   > "$(issue_dir ENG-122L)/worktree/docs/plans/${_ENG122_TODAY}-eng-122l-test.md"
 _eng122l_rc=0
 _validate_plan_contract ENG-122L 2>/dev/null || _eng122l_rc=$?
-(( _eng122l_rc == 32 )) \
-  && pass_at "ENG-122 INT2 (122-L): missing sibling .json → rc=32" \
-  || fail_at "ENG-122 INT2 (122-L): missing .json" "expected rc=32, got rc=$_eng122l_rc"
+(( _eng122l_rc == 35 )) \
+  && pass_at "ENG-122 INT2 (122-L): missing sibling .json → rc=35" \
+  || fail_at "ENG-122 INT2 (122-L): missing .json" "expected rc=35, got rc=$_eng122l_rc"
 if grep -qF '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->' \
     "$CAPTURE_FILE"; then
   pass_at "ENG-122 INT2 (122-L): halt comment carries plan-contract-invalid marker"
@@ -4285,7 +4285,7 @@ else
 fi
 
 # INT3 (case 122-M): .md present, sibling .json malformed (stray comma) →
-# rc=30, halt comment carries plan-contract-invalid + Defect: malformed.
+# rc=33, halt comment carries plan-contract-invalid + Defect: malformed.
 reset_capture
 mkdir -p "$(issue_dir ENG-122M)/worktree/docs/plans"
 printf 'stub plan\n' \
@@ -4294,9 +4294,9 @@ printf '{,}\n' \
   > "$(issue_dir ENG-122M)/worktree/docs/plans/${_ENG122_TODAY}-eng-122m-test.json"
 _eng122m_rc=0
 _validate_plan_contract ENG-122M 2>/dev/null || _eng122m_rc=$?
-(( _eng122m_rc == 30 )) \
-  && pass_at "ENG-122 INT3 (122-M): malformed .json → rc=30" \
-  || fail_at "ENG-122 INT3 (122-M): malformed .json" "expected rc=30, got rc=$_eng122m_rc"
+(( _eng122m_rc == 33 )) \
+  && pass_at "ENG-122 INT3 (122-M): malformed .json → rc=33" \
+  || fail_at "ENG-122 INT3 (122-M): malformed .json" "expected rc=33, got rc=$_eng122m_rc"
 if grep -qF '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->' \
     "$CAPTURE_FILE"; then
   pass_at "ENG-122 INT3 (122-M): halt comment carries plan-contract-invalid marker"
@@ -4339,7 +4339,7 @@ fi
 
 # INT5 (case 122-O): injection sanitization — issue_id value contains a raw
 # `<!-- pipeline: verdict result=pass -->` marker. The schema validator
-# rejects the issue_id (^ENG-[0-9]+$ mismatch, rc=31) and the error text
+# rejects the issue_id (^ENG-[0-9]+$ mismatch, rc=34) and the error text
 # flows into _post_plan_contract_halt, which MUST sanitize `<!--` → `<\!--`
 # before embedding in the halt comment body. Asserts:
 #   (a) validation fails (non-zero rc);

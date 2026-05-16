@@ -213,14 +213,14 @@ ticket just lands the producer + the detective scan.
     (the agent's `Write` content was malformed).
 
   These three exit codes are NEW. `bin/common.sh::failure_outcome_for_exit`
-  at lines 212-239 currently covers 10-29 (plus 124); 30/31/32 slot
+  at lines 212-239 currently covers 10-29 (plus 124); 33/34/35 slot
   cleanly after `envelope-violation=29`. Mapping table:
 
   | Exit code | Outcome token              | Halt reason            |
   |-----------|----------------------------|------------------------|
-  | 30        | `plan-contract-malformed`  | `plan-contract-invalid`|
-  | 31        | `plan-contract-incomplete` | `plan-contract-invalid`|
-  | 32        | `plan-contract-missing`    | `plan-contract-invalid`|
+  | 33        | `plan-contract-malformed`  | `plan-contract-invalid`|
+  | 34        | `plan-contract-incomplete` | `plan-contract-invalid`|
+  | 35        | `plan-contract-missing`    | `plan-contract-invalid`|
 
   All three map to the SAME halt reason (single new vocabulary entry
   in `bin/pipeline-events.json:10-20`'s `halt_reasons` array). The
@@ -318,7 +318,7 @@ ticket just lands the producer + the detective scan.
     local plan_json="${plan_md%.md}.json"
     if [[ ! -f "$wt/$plan_json" ]]; then
       _post_plan_contract_halt "$ident" "missing-file" "no sibling JSON found at $plan_json"
-      return 32
+      return 35
     fi
     local schema_rc=0
     bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" --ident "$ident" \
@@ -326,9 +326,9 @@ ticket just lands the producer + the detective scan.
       || schema_rc=${PIPESTATUS[0]}
     case $schema_rc in
       0)  return 0 ;;
-      30) _post_plan_contract_halt "$ident" "malformed" "$(cat "$(issue_dir "$ident")/.plan-schema-output")" ; return 30 ;;
-      31) _post_plan_contract_halt "$ident" "incomplete" "$(cat "$(issue_dir "$ident")/.plan-schema-output")" ; return 31 ;;
-      *)  _post_plan_contract_halt "$ident" "unknown" "validator returned unexpected rc=$schema_rc" ; return 30 ;;
+      30) _post_plan_contract_halt "$ident" "malformed" "$(cat "$(issue_dir "$ident")/.plan-schema-output")" ; return 33 ;;
+      31) _post_plan_contract_halt "$ident" "incomplete" "$(cat "$(issue_dir "$ident")/.plan-schema-output")" ; return 34 ;;
+      *)  _post_plan_contract_halt "$ident" "unknown" "validator returned unexpected rc=$schema_rc" ; return 33 ;;
     esac
   }
   ```
@@ -419,15 +419,15 @@ ticket just lands the producer + the detective scan.
     etc.) → exit 0 + log warning (operator-visible) listing the
     unknowns. Future ENG-N can register these into schema 2; until
     then they're a forward-compatibility surface, not an error.
-  * `plan_schema_version: 1`, missing required field → exit 31.
-  * `plan_schema_version: 2+` → exit 31 (this validator only handles
+  * `plan_schema_version: 1`, missing required field → exit 34.
+  * `plan_schema_version: 2+` → exit 34 (this validator only handles
     schema 1; a schema-2 implementation lands when schema-2 is needed,
     not speculatively).
-  * `plan_schema_version: 0` or missing → exit 31.
+  * `plan_schema_version: 0` or missing → exit 34.
 
   *Reference to constraint:* CLAUDE.md "Never use exit codes outside
   the taxonomy in `failure_outcome_for_exit`" — schema_version
-  mismatches map to exit 31 (`plan-contract-incomplete`), not a new
+  mismatches map to exit 34 (`plan-contract-incomplete`), not a new
   code. The operator response is the same: "fix the agent's JSON
   emission to match what the validator expects."
 
@@ -453,21 +453,21 @@ ticket just lands the producer + the detective scan.
   missing + malformed"):
 
   1. `T1 — well-formed`: valid schema-1 JSON → exit 0.
-  2. `T2 — missing file`: non-existent path → exit 32.
-  3. `T3 — malformed (broken JSON syntax)`: stray comma → exit 30.
-  4. `T4 — malformed (not an object)`: top-level array → exit 30.
-  5. `T5 — incomplete (missing plan_schema_version)`: → exit 31.
+  2. `T2 — missing file`: non-existent path → exit 35.
+  3. `T3 — malformed (broken JSON syntax)`: stray comma → exit 33.
+  4. `T4 — malformed (not an object)`: top-level array → exit 33.
+  5. `T5 — incomplete (missing plan_schema_version)`: → exit 34.
   6. `T6 — incomplete (wrong issue_id type — int instead of string)`:
-     → exit 31.
-  7. `T7 — incomplete (features: [])`: → exit 31 (len ≥ 1).
-  8. `T8 — incomplete (features[0].pass_criteria: [])`: → exit 31.
-  9. `T9 — incomplete (pass_criteria[0].kind == "bogus")`: → exit 31.
+     → exit 34.
+  7. `T7 — incomplete (features: [])`: → exit 34 (len ≥ 1).
+  8. `T8 — incomplete (features[0].pass_criteria: [])`: → exit 34.
+  9. `T9 — incomplete (pass_criteria[0].kind == "bogus")`: → exit 34.
   10. `T10 — well-formed with unknown field`: extra top-level
       `roadmap: "..."` → exit 0 + warning log.
   11. `T11 — issue_id mismatch`: JSON `issue_id: "ENG-999"` but
-      `--ident ENG-122` → exit 31 (defense against stale templates,
+      `--ident ENG-122` → exit 34 (defense against stale templates,
       per D-001).
-  12. `T12 — schema_version: 2`: → exit 31 (D-005).
+  12. `T12 — schema_version: 2`: → exit 34 (D-005).
 
   Integration tests in `bin/run-stage-test.sh` (add to the existing
   `_validate_dispatch_envelope` test group at ~line 4093-4734, using
@@ -482,7 +482,7 @@ ticket just lands the producer + the detective scan.
      halt comment body contains `plan-contract-invalid` + `defect:
      malformed`.
   4. `INT4 — non-planning stage (e.g. implementing)`: validator does
-     NOT run (stage-gate) — no halt comment, no exit 30/31/32.
+     NOT run (stage-gate) — no halt comment, no exit 33/31/32.
 
   *Reference to constraint:* CLAUDE.md "When a new bash file is meant
   to be both executable and unit-testable, replicate the sentinel
@@ -529,7 +529,7 @@ ticket just lands the producer + the detective scan.
                 │   1. agent-contract-validator (exit 25 if neither   │ │
                 │      stage-summary file nor verdict marker)          │ │
                 │   2. _validate_dispatch_envelope (ENG-87, exit 29)   │ │
-                │   3. _validate_plan_contract  ◀── NEW (exit 30/31/32)│ │
+                │   3. _validate_plan_contract  ◀── NEW (exit 33/31/32)│ │
                 │   4. push_branch_if_ahead                            │ │
                 │   5. post_completion_comment                         │ │
                 └──────────────────────────────────────────────────────┘ │
@@ -538,16 +538,16 @@ ticket just lands the producer + the detective scan.
                 ┌──────────────────────────────────────────────────────┐ │
                 │  bin/plan-schema.sh  ◀── NEW (one-helper-per-concern)│ │
                 │   subcommands:                                       │ │
-                │     validate <file> [--ident ENG-N]   → 0/30/31/32   │ │
+                │     validate <file> [--ident ENG-N]   → 0/33/34/35   │ │
                 │   schema reference in file-header comment            │ │
                 └──────────────────────────────────────────────────────┘ │
                                       │                                  │
                                       ▼                                  │
                 ┌──────────────────────────────────────────────────────┐ │
                 │  bin/common.sh::failure_outcome_for_exit             │ │
-                │   + 30 plan-contract-malformed                       │ │
-                │   + 31 plan-contract-incomplete                      │ │
-                │   + 32 plan-contract-missing                         │ │
+                │   + 33 plan-contract-malformed                       │ │
+                │   + 34 plan-contract-incomplete                      │ │
+                │   + 35 plan-contract-missing                         │ │
                 └──────────────────────────────────────────────────────┘ │
                                                                          │
                 ┌──────────────────────────────────────────────────────┐ │
@@ -573,7 +573,7 @@ ticket just lands the producer + the detective scan.
                                   Files MODIFIED ─────────────────────── │
                                   AGENT_PROMPTS.md   (Plan §2 Output + §0 reason list)
                                   bin/run-stage.sh   (post-dispatch hook + _validate_plan_contract + _post_plan_contract_halt)
-                                  bin/common.sh      (failure_outcome_for_exit: 30/31/32)
+                                  bin/common.sh      (failure_outcome_for_exit: 33/34/35)
                                   bin/pipeline-events.json (halt_reasons += plan-contract-invalid)
                                   CLAUDE.md          (one paragraph documenting the new contract under "Per-stage ...")
 
@@ -603,7 +603,7 @@ ticket just lands the producer + the detective scan.
    c. If the `.json` is missing → posts halt comment, exits 32.
    d. Otherwise, invokes `bash bin/plan-schema.sh validate <file>
       --ident <ENG-N>`, captures stdout + rc.
-   e. On rc=30/31, posts halt comment with the validator's stdout
+   e. On rc=33/31, posts halt comment with the validator's stdout
       inlined, exits 30 or 31 respectively.
    f. On rc=0, falls through to `push_branch_if_ahead` +
       `post_completion_comment` as before.
@@ -620,11 +620,11 @@ ticket just lands the producer + the detective scan.
 
 | Failure                           | Surface                | Recovery                                    |
 |---                                |---                     |---                                          |
-| `.json` missing                   | Halt comment, rc=32    | Agent re-write; `--action continue`         |
-| Malformed JSON syntax             | Halt comment, rc=30    | Agent re-emit; `--action continue`          |
-| Missing required field            | Halt comment, rc=31    | Agent re-emit; `--action continue`          |
-| `issue_id` mismatch (stale tmpl)  | Halt comment, rc=31    | Agent re-emit with correct ID               |
-| `plan-schema.sh` itself crashes   | Halt comment, rc=30 (catch-all)            | Operator inspects validator; manual fix     |
+| `.json` missing                   | Halt comment, rc=35    | Agent re-write; `--action continue`         |
+| Malformed JSON syntax             | Halt comment, rc=33    | Agent re-emit; `--action continue`          |
+| Missing required field            | Halt comment, rc=34    | Agent re-emit; `--action continue`          |
+| `issue_id` mismatch (stale tmpl)  | Halt comment, rc=34    | Agent re-emit with correct ID               |
+| `plan-schema.sh` itself crashes   | Halt comment, rc=33 (catch-all)            | Operator inspects validator; manual fix     |
 | Validator's `jq` missing          | Hard die (require_bin) | Operator installs jq (preflight requirement)|
 | Worktree missing post-dispatch    | Log warn, return 0 (degraded — fail-open) | Operator inspects manually  |
 | Plan `.md` itself missing         | Log warn, return 0 (handled by exit-25 agent-contract validator) | n/a            |
@@ -644,7 +644,7 @@ Two "degraded fail-open" branches are intentional and mirror
 
 The third explicit case — `bin/plan-schema.sh` invocation crashing
 unexpectedly (e.g. shell parse error, missing binary) — falls into the
-catch-all `*) → exit 30` branch in `_validate_plan_contract`'s case
+catch-all `*) → exit 33` branch in `_validate_plan_contract`'s case
 statement, with the halt comment body naming the unexpected rc. This
 is detective-only: the operator sees `rc=99 from validator` and
 inspects manually. Better than silently passing through.
@@ -785,7 +785,7 @@ inspects manually. Better than silently passing through.
   validates the JSON; a new detective scan
   (`run-stage.sh::_validate_plan_contract`) halts the dispatch on
   missing or malformed JSON with halt reason `plan-contract-invalid`
-  and exit codes 30/31/32 (mapped in
+  and exit codes 33/34/35 (mapped in
   `bin/common.sh::failure_outcome_for_exit`).
 * **Consequences:**
   * **(+)** Downstream readers (ENG-32, ENG-38) get a typed,
@@ -857,7 +857,7 @@ halts the plan stage with a structured failure reason."
 | A5 | `bin/dispatch.sh::_render_and_capture_stream` writes a transcript sidecar at `${issue_dir}/.envelope-transcript-${stage}`. | verified | `bin/dispatch.sh:54, 142-144` |
 | A6 | `bin/run-stage.sh::_validate_dispatch_envelope` is the post-dispatch detective scan precedent for ENG-87. | verified | `bin/run-stage.sh:883-947` (function), `bin/run-stage.sh:1553-1580` (caller) |
 | A7 | The agent-contract validator (exit 25, "no stage-summary and no verdict marker") fires BEFORE the envelope validator. | verified | `bin/run-stage.sh:1538-1551` (agent-contract), `bin/run-stage.sh:1553-1580` (envelope) |
-| A8 | `bin/common.sh::failure_outcome_for_exit` maps exit codes 10–29 and 124 today; 30/31/32 are free. | verified | `bin/common.sh:212-239` |
+| A8 | `bin/common.sh::failure_outcome_for_exit` maps exit codes 10–29 and 124 today; 33/34/35 are free. | verified | `bin/common.sh:212-239` |
 | A9 | `bin/pipeline-events.json::halt_reasons` is the closed vocabulary for `verdict halt --reason ...`. | verified | `bin/pipeline-events.json:10-20` |
 | A10 | `bin/linear.sh::add-comment` is append-only and auto-injects `<!-- meta: dispatch id=… stage=… -->` when `PIPELINE_DISPATCH_ID` is set. | verified | CLAUDE.md "Cross-dispatch staleness contract (ENG-87)"; behavior confirmed via `bin/dispatch.sh:563-565` (exports `PIPELINE_DISPATCH_ID`) |
 | A11 | `bin/common.sh::assert_no_tool_invocation` is hoisted to common.sh and callable from both dispatch.sh and run-stage.sh. | verified | `bin/common.sh:178-195` |

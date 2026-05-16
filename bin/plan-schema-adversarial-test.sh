@@ -29,9 +29,9 @@ VALIDATOR="$SCRIPT_DIR/plan-schema.sh"
 
 printf '\n--- plan-schema-adversarial-test: QA adversarial cases (ENG-122) ---\n'
 
-# ─── T_adv_1: features[0].id = "" (explicit empty string) → exit 31 ─────────
+# ─── T_adv_1: features[0].id = "" (explicit empty string) → exit 34 ─────────
 # The plan-schema.sh code checks `[[ -z "$feat_id" ]]` so an empty string
-# should trip rc=31. No plan test covers explicit "" vs absent.
+# should trip rc=34. No plan test covers explicit "" vs absent.
 cat > "$FIXTURE_DIR/adv1.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -46,11 +46,11 @@ cat > "$FIXTURE_DIR/adv1.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv1.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T_adv_1: features[0].id='' (empty string) → exit 31" \
-  || fail_at "T_adv_1: features[0].id empty string" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T_adv_1: features[0].id='' (empty string) → exit 34" \
+  || fail_at "T_adv_1: features[0].id empty string" "expected rc=34, got rc=$rc"
 
-# ─── T_adv_2: features[0].summary = "" (explicit empty string) → exit 31 ────
+# ─── T_adv_2: features[0].summary = "" (explicit empty string) → exit 34 ────
 cat > "$FIXTURE_DIR/adv2.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -65,13 +65,13 @@ cat > "$FIXTURE_DIR/adv2.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv2.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T_adv_2: features[0].summary='' (empty string) → exit 31" \
-  || fail_at "T_adv_2: features[0].summary empty string" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T_adv_2: features[0].summary='' (empty string) → exit 34" \
+  || fail_at "T_adv_2: features[0].summary empty string" "expected rc=34, got rc=$rc"
 
-# ─── T_adv_3: features: null (not absent, not array) → exit 31 ───────────────
+# ─── T_adv_3: features: null (not absent, not array) → exit 34 ───────────────
 # JSON can represent null distinctly from a missing field.
-# jq's `type` returns "null" for null, which != "array" → rc=31.
+# jq's `type` returns "null" for null, which != "array" → rc=34.
 cat > "$FIXTURE_DIR/adv3.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -80,12 +80,12 @@ cat > "$FIXTURE_DIR/adv3.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv3.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T_adv_3: features=null (not array) → exit 31" \
-  || fail_at "T_adv_3: features null" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T_adv_3: features=null (not array) → exit 34" \
+  || fail_at "T_adv_3: features null" "expected rc=34, got rc=$rc"
 
-# ─── T_adv_4: pass_criteria[0].kind = null → exit 31 ────────────────────────
-# jq's `// "MISSING"` fallback fires for null (falsy), so kind="MISSING" → rc=31.
+# ─── T_adv_4: pass_criteria[0].kind = null → exit 34 ────────────────────────
+# jq's `// "MISSING"` fallback fires for null (falsy), so kind="MISSING" → rc=34.
 cat > "$FIXTURE_DIR/adv4.json" <<'EOF'
 {
   "plan_schema_version": 1,
@@ -100,11 +100,11 @@ cat > "$FIXTURE_DIR/adv4.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv4.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T_adv_4: pass_criteria[0].kind=null → exit 31" \
-  || fail_at "T_adv_4: kind null" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T_adv_4: pass_criteria[0].kind=null → exit 34" \
+  || fail_at "T_adv_4: kind null" "expected rc=34, got rc=$rc"
 
-# ─── T_adv_5: plan_schema_version: "1" (string, not number) → exit 31 ────────
+# ─── T_adv_5: plan_schema_version: "1" (string, not number) → exit 34 ────────
 # Type check requires number; string "1" fails the jq `type == "number"` guard.
 cat > "$FIXTURE_DIR/adv5.json" <<'EOF'
 {
@@ -120,9 +120,9 @@ cat > "$FIXTURE_DIR/adv5.json" <<'EOF'
 }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv5.json" >/dev/null 2>&1 || rc=$?
-(( rc == 31 )) \
-  && pass_at "T_adv_5: plan_schema_version='1' (string, not number) → exit 31" \
-  || fail_at "T_adv_5: plan_schema_version string" "expected rc=31, got rc=$rc"
+(( rc == 34 )) \
+  && pass_at "T_adv_5: plan_schema_version='1' (string, not number) → exit 34" \
+  || fail_at "T_adv_5: plan_schema_version string" "expected rc=34, got rc=$rc"
 
 # ─── T_adv_6: smoke expect_exit = 0.5 (float, not integer) → documents behavior
 # JSON has no integer type; jq's type returns "number" for both 0 and 0.5.
@@ -168,15 +168,15 @@ rc=0; bash "$VALIDATOR" validate --ident ENG-1 "$FIXTURE_DIR/adv7.json" >/dev/nu
   && pass_at "T_adv_7: --ident before file argument → exit 0 (flag ordering commutes)" \
   || fail_at "T_adv_7: --ident before file" "expected rc=0, got rc=$rc"
 
-# ─── T_adv_8: two positional file arguments → exit 30 (usage error) ──────────
-# Second positional arg triggers "unexpected argument" → return 30.
+# ─── T_adv_8: two positional file arguments → exit 33 (usage error) ──────────
+# Second positional arg triggers "unexpected argument" → return 33.
 cat > "$FIXTURE_DIR/adv8a.json" <<'EOF'
 { "plan_schema_version": 1, "issue_id": "ENG-1", "features": [{ "id": "F-1", "summary": "t", "pass_criteria": [{ "kind": "file_exists", "path": "x" }] }] }
 EOF
 rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv8a.json" "$FIXTURE_DIR/adv8a.json" >/dev/null 2>&1 || rc=$?
-(( rc == 30 )) \
-  && pass_at "T_adv_8: two positional file arguments → exit 30 (usage error)" \
-  || fail_at "T_adv_8: two positional args" "expected rc=30, got rc=$rc"
+(( rc == 33 )) \
+  && pass_at "T_adv_8: two positional file arguments → exit 33 (usage error)" \
+  || fail_at "T_adv_8: two positional args" "expected rc=33, got rc=$rc"
 
 # ─── T_adv_9: plan_schema_version: 1.0 (float 1) → documents behavior ────────
 # jq numeric equality (.plan_schema_version == 1) treats 1.0 == 1 as true in JSON.

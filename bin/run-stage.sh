@@ -15,9 +15,9 @@
 #             28=leaked-in-scope-threshold (≥3 consecutive in-scope leaks; ENG-14),
 #             29=envelope-violation (dispatch envelope validator detected agent bypass
 #             of bin/linear.sh — ENG-87),
-#             30=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
-#             31=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
-#             32=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
+#             33=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
+#             34=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
+#             35=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
@@ -969,8 +969,8 @@ _validate_dispatch_envelope() {
 
 # ENG-122: plan-contract validator. Runs after dispatch for stage=planning only.
 # Locates the sibling .json alongside the prose .md in docs/plans/, then shells
-# out to bin/plan-schema.sh validate. Returns 0 = valid, 30 = malformed,
-# 31 = incomplete, 32 = missing-file. Caller must gate to stage=planning.
+# out to bin/plan-schema.sh validate. Returns 0 = valid, 33 = malformed,
+# 34 = incomplete, 35 = missing-file. Caller must gate to stage=planning.
 _validate_plan_contract() {
   local ident="$1"
   local wt
@@ -997,11 +997,11 @@ _validate_plan_contract() {
     --ident "$ident" 2>/dev/null)" || schema_rc=$?
   case "$schema_rc" in
     0)  return 0 ;;
-    30) _post_plan_contract_halt "$ident" "malformed"  "$schema_out" ; return 30 ;;
-    31) _post_plan_contract_halt "$ident" "incomplete" "$schema_out" ; return 31 ;;
-    32) _post_plan_contract_halt "$ident" "missing-file" "$schema_out" ; return 32 ;;
+    33) _post_plan_contract_halt "$ident" "malformed"  "$schema_out" ; return 33 ;;
+    34) _post_plan_contract_halt "$ident" "incomplete" "$schema_out" ; return 34 ;;
+    35) _post_plan_contract_halt "$ident" "missing-file" "$schema_out" ; return 35 ;;
     *)  _post_plan_contract_halt "$ident" "unexpected-rc" \
-          "validator returned unexpected rc=$schema_rc; stdout: $schema_out" ; return 30 ;;
+          "validator returned unexpected rc=$schema_rc; stdout: $schema_out" ; return 33 ;;
   esac
 }
 
