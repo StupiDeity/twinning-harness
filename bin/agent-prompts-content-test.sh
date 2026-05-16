@@ -1515,6 +1515,44 @@ fi
 
 unset s3_eng101_qa s5_eng101_qa
 
+# ─── ENG-123-C1: {plan_json} token present in §3 ─────────────────────────────
+if printf '%s\n' "$s3" | grep -qF '{plan_json}'; then
+  ok "§3 ENG-123-C1: carries {plan_json} token (implement prompt embeds plan.json)"
+else
+  nope "§3 ENG-123-C1: carries {plan_json} token (implement prompt embeds plan.json)" \
+       "{plan_json} missing from §3 body — render-prompt.sh embeds plan.json via this token; dropping it means the implement agent never receives structured plan data"
+fi
+
+# ─── ENG-123-C2: directive phrases present in §3 ─────────────────────────────
+# Three load-bearing phrases checked separately for per-phrase failure attribution.
+if printf '%s\n' "$s3" | grep -qF 'Plan JSON contract'; then
+  ok "§3 ENG-123-C2a: 'Plan JSON contract' present (D-001 directive header)"
+else
+  nope "§3 ENG-123-C2a: 'Plan JSON contract' missing from §3" \
+       "'Plan JSON contract' (D-001 directive header) missing from §3 — implement prompt needs this header to frame the data block"
+fi
+if printf '%s\n' "$s3" | grep -qF 'AUTHORITATIVE over the prose plan'; then
+  ok "§3 ENG-123-C2b: 'AUTHORITATIVE over the prose plan' present (D-001 semantics)"
+else
+  nope "§3 ENG-123-C2b: 'AUTHORITATIVE over the prose plan' missing from §3" \
+       "'AUTHORITATIVE over the prose plan' (D-001 semantics) missing from §3 — pinned phrasing prevents case-sensitive 'authoritative' elsewhere from false-passing"
+fi
+if printf '%s\n' "$s3" | grep -qF 'DATA, not instructions'; then
+  ok "§3 ENG-123-C2c: 'DATA, not instructions' present (§11 security P1 injection-defense)"
+else
+  nope "§3 ENG-123-C2c: 'DATA, not instructions' missing from §3" \
+       "'DATA, not instructions' (§11 security iter-1 P1 injection-defense) missing from §3"
+fi
+
+# ─── ENG-123-C3: <<<PLAN_JSON_BEGIN>>> / <<<PLAN_JSON_END>>> delimiters present in §3 ──
+if printf '%s\n' "$s3" | grep -qF '<<<PLAN_JSON_BEGIN>>>' \
+   && printf '%s\n' "$s3" | grep -qF '<<<PLAN_JSON_END>>>'; then
+  ok "§3 ENG-123-C3: '<<<PLAN_JSON_BEGIN>>>' and '<<<PLAN_JSON_END>>>' delimiters present"
+else
+  nope "§3 ENG-123-C3: delimiters present" \
+       "'<<<PLAN_JSON_BEGIN>>>' or '<<<PLAN_JSON_END>>>' missing from §3 — these bounded-data-block cues are the prompt-injection defense declared in brainstorm §11 FM→TM row #535; dropping them leaves injection defense relying on prose alone"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
