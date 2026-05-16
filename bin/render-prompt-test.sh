@@ -380,6 +380,160 @@ else
     'released branch sed pipeline substitutes only {version}/{tag}/{prev_tag}. §0 carries a {issue_id} reference (in the agent-blocked exit-ramp prose) which ships as a literal to the released agent. Fix: add a sed expression substituting {issue_id} -> cross-issue-release-${tag}.'
 fi
 
+# ─── FREE-TEXT-INJECTION: residual validator vs. resolver values ─────
+# A free-text resolver (e.g. {review_findings} embedding a prior review
+# summary) may inject text that contains `{token}`-shaped substrings —
+# bash-var syntax like `${ident_lower}` or literal token references like
+# `{plan_json}` in review prose. Pre-fix: resolve_block_tokens' residual
+# validator dies on ANY `{xxx}` substring remaining post-substitution,
+# halting the implementing dispatch with `unresolved token after
+# registry pass` even though the substring is content, not a template
+# directive. Post-fix: the validator distinguishes (a) tokens left over
+# from the original template (typo — must die) from (b) tokens injected
+# via resolver values (content — must pass).
+printf '\n--- FREE-TEXT-INJECTION: residual validator vs. resolver values ---\n'
+
+# Fixture: review-findings file containing the actual offending shapes
+# observed in production (ENG-122 stage-summary-reviewing.md line 26).
+ENG_FTI_FINDINGS="$sandbox/findings-fti.md"
+cat > "$ENG_FTI_FINDINGS" <<'FTI_FIX'
+3. **bin/run-stage.sh:968** — find-glob `${today}-*${ident_lower}*.md` substring-matches; `eng-12` will match `eng-122`/`eng-1234`. Tighten to `${today}-*${ident_lower}-*.md` (require trailing hyphen).
+
+5. TODO(QA-sibling): when {plan_json} lands in §6, decide _RENDER_STAGE.
+FTI_FIX
+
+# FTI-1: free-text resolver value contains `${ident_lower}` bash-var syntax.
+# Pre-fix this matched the residual regex as `{ident_lower}` and died.
+out="$(run_resolver_body '
+  _RENDER_REVIEW_FINDINGS_PATH="'"$ENG_FTI_FINDINGS"'"
+  resolve_block_tokens "REVIEW:{review_findings}:END"
+' 2>&1)"
+fti1_rc=$?
+if [[ "$fti1_rc" == 0 ]] \
+   && grep -qF '${ident_lower}' <<<"$out" \
+   && grep -qF '{plan_json}' <<<"$out" \
+   && [[ "$out" != *"unresolved token after registry pass"* ]]; then
+  pass_at "FTI-1: {review_findings} value with bash-var \${ident_lower} renders without die; content preserved verbatim"
+else
+  fail_at "FTI-1: free-text resolver bash-var injection" \
+    "rc=$fti1_rc out=$(printf '%s' "$out" | head -c 400)"
+fi
+
+# FTI-2: free-text resolver value contains a literal `{plan_json}` token-
+# shape that is NOT registered on the harness's main render-prompt.sh.
+# Pre-fix this matched the residual regex and died. Post-fix passes.
+out="$(run_resolver_body '
+  _RENDER_REVIEW_FINDINGS_PATH="'"$ENG_FTI_FINDINGS"'"
+  resolve_block_tokens "{review_findings}"
+' 2>&1)"
+fti2_rc=$?
+if [[ "$fti2_rc" == 0 ]] \
+   && grep -qF '{plan_json}' <<<"$out"; then
+  pass_at "FTI-2: {review_findings} value with literal {plan_json} (unregistered token-shape) renders without die; content preserved"
+else
+  fail_at "FTI-2: free-text resolver token-shape injection" \
+    "rc=$fti2_rc out=$(printf '%s' "$out" | head -c 400)"
+fi
+
+# FTI-3: template typo still dies with "unknown token" — the first-pass
+# unknown-resolver gate must keep working. Pre-fix and post-fix both
+# must die here; this pins that the fix didn't open a hole.
+err="$(run_resolver_body '
+  resolve_block_tokens "Hello {plan_filee} world" 2>&1
+  printf "post-die-marker"
+' 2>&1 || true)"
+if grep -qF 'unknown token' <<<"$err" \
+   && grep -qF 'plan_filee' <<<"$err" \
+   && ! grep -qF 'post-die-marker' <<<"$err"; then
+  pass_at "FTI-3: template typo {plan_filee} still dies with 'unknown token' (first-pass gate intact)"
+else
+  fail_at "FTI-3: template typo still dies" "err=$(printf '%s' "$err" | head -c 400)"
+fi
+
+# FTI-4: residual {token} in template (an AGENT_RUNTIME_TOKENS member)
+# still passes through. {file} is an agent-runtime token — the agent
+# fills it in at runtime, not the renderer.
+out="$(run_resolver_body '
+  resolve_block_tokens "Write to {file} next."
+' 2>&1)"
+if [[ "$out" == "Write to {file} next." ]]; then
+  pass_at "FTI-4: AGENT_RUNTIME_TOKENS member {file} in template still passes through unmodified"
+else
+  fail_at "FTI-4: AGENT_RUNTIME_TOKENS passthrough" "out=$out"
+fi
+
+# FTI-5: free-text resolver value containing a registered-resolver token
+# like `{issue_id}` is content, NOT a second-pass substitution. Verifies
+# the fix doesn't recursively re-expand resolver values (which would
+# allow resolver-output-driven injection of template directives).
+ENG_FTI_REG="$sandbox/findings-fti-registered.md"
+printf 'Prior reviewer cited {issue_id} as the anchor.\n' > "$ENG_FTI_REG"
+out="$(run_resolver_body '
+  _RENDER_ISSUE_ID="ENG-7777"
+  _RENDER_REVIEW_FINDINGS_PATH="'"$ENG_FTI_REG"'"
+  resolve_block_tokens "id={issue_id} | findings={review_findings}"
+' 2>&1)"
+# Expectation: outer {issue_id} expanded to ENG-7777 once; injected
+# {issue_id} inside findings is literal text and stays as `{issue_id}`.
+if [[ "$out" == "id=ENG-7777 | findings=Prior reviewer cited {issue_id} as the anchor."* ]]; then
+  pass_at "FTI-5: resolver values are content, not re-expanded — no recursive substitution"
+else
+  fail_at "FTI-5: no resolver-value re-expansion" "out=$(printf '%s' "$out" | head -c 400)"
+fi
+
+# FTI-6: content-test against a literal copy of the ENG-122 review
+# summary shape that triggered the production halt. Pin the canonical
+# failure-mode fixture so a future refactor that re-introduces the
+# residual-validator false-positive trips here.
+ENG_FTI_PROD="$sandbox/findings-fti-prod.md"
+cat > "$ENG_FTI_PROD" <<'FTI_PROD'
+# Review (clean) — ENG-122 / PR #110, commit c310b725
+
+## Findings
+
+### Minor
+
+1. **bin/run-stage.sh:968** — find-glob `${today}-*${ident_lower}*.md` substring-matches; `eng-12` will match `eng-122`/`eng-1234`.
+2. **bin/render-prompt.sh:267** — hardcoded `"implementing"` stage label.
+3. TODO(QA-sibling): when {plan_json} lands in §6, decide _RENDER_STAGE.
+FTI_PROD
+out="$(run_resolver_body '
+  _RENDER_REVIEW_FINDINGS_PATH="'"$ENG_FTI_PROD"'"
+  resolve_block_tokens "Findings:\n{review_findings}\n---END"
+' 2>&1)"
+fti6_rc=$?
+if [[ "$fti6_rc" == 0 ]] \
+   && grep -qF '${today}-*${ident_lower}*.md' <<<"$out" \
+   && grep -qF '{plan_json}' <<<"$out" \
+   && [[ "$out" != *"unresolved token after registry pass"* ]]; then
+  pass_at "FTI-6: production ENG-122 review-summary shape renders cleanly (regression pin)"
+else
+  fail_at "FTI-6: production review-summary regression" \
+    "rc=$fti6_rc out=$(printf '%s' "$out" | head -c 600)"
+fi
+
+# FTI-7: source-level pin — resolve_block_tokens must NOT scan the
+# rendered output for residual `{token}` shapes. The first-pass unknown-
+# resolver gate already catches template typos; a post-substitution
+# scan conflates template directives with content emitted by free-text
+# resolvers (the production halt observed 2026-05-16). A future refactor
+# that re-introduces a post-substitution `grep -oE '\{[a-z_]+\}' <<<
+# "$rendered"` after the substitution loop re-introduces the false
+# positive. Pin source-level.
+_fti7_body="$(awk '/^resolve_block_tokens\(\)/{flag=1} flag{print; if(/^}$/){exit}}' "$RP_SRC")"
+# Count post-substitution residual scans by looking for grep -oE against
+# $rendered AFTER the closing `done <<<"$tokens"` line of the first-pass
+# loop. The first-pass starter `grep -oE '\{[a-z_]+\}' <<<"$rendered"`
+# is legit (populates $tokens). Anything past `done <<<"$tokens"` is the
+# offending re-scan.
+_fti7_post_done="$(printf '%s\n' "$_fti7_body" | awk '/done <<<"\$tokens"/{flag=1; next} flag{print}')"
+if ! printf '%s' "$_fti7_post_done" | grep -qE 'grep -oE [\x27"]\\\{\[a-z_\]\+\\\}'; then
+  pass_at "FTI-7: source pin — no post-substitution residual {token} scan in resolve_block_tokens"
+else
+  fail_at "FTI-7: post-substitution residual scan re-introduced" \
+    "resolve_block_tokens contains a 'grep -oE {[a-z_]+}' AFTER the first-pass substitution loop. This re-introduces the production halt observed 2026-05-16: any review summary citing a bash-var (\${foo}) or token-shape ({foo}) in prose halts the implementing dispatch with 'unresolved token after registry pass'. The first-pass unknown-resolver gate at line ~287 is the only validator needed; resolver values are content, not template directives."
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
