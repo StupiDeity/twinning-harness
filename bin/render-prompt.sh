@@ -295,19 +295,23 @@ resolve_block_tokens() {
     # interpreted literally, so unquoted is both correct and safe.
     rendered="${rendered//$t/$value}"
   done <<<"$tokens"
-  # Render-time validator: any remaining {<lowercase-snake>} is
-  # unresolved AND not on the agent-runtime allowlist. The list-membership
-  # check uses the same substring form as the resolver-skip above so a
-  # name added/removed from one site cannot drift from the other.
-  local _residual_name
-  while IFS= read -r _r; do
-    [[ -z "$_r" ]] && continue
-    _residual_name="${_r#\{}"; _residual_name="${_residual_name%\}}"
-    if [[ "$AGENT_RUNTIME_TOKENS" == *" $_residual_name "* ]]; then
-      continue
-    fi
-    die "render-prompt: unresolved token after registry pass: $_r"
-  done <<<"$(grep -oE '\{[a-z_]+\}' <<<"$rendered" | sort -u || true)"
+  # No post-substitution residual scan: the first-pass already dies on
+  # any unknown token present in the source template (the `[[ -n
+  # "$resolver" ]] || die "unknown token in source"` gate above).
+  # A second-pass scan over $rendered conflates two distinct shapes:
+  #   (a) template-side directives — already caught by the first pass.
+  #   (b) `{token}`-shaped substrings injected by free-text resolver
+  #       values (e.g. {review_findings} embedding a prior review summary
+  #       that cites `${ident_lower}` bash-var syntax or names another
+  #       `{plan_json}` token literally in prose).
+  # Pre-fix the second pass false-positived on (b) and halted the
+  # implementing dispatch with `unresolved token after registry pass`
+  # any time a review summary mentioned a bash variable or token name.
+  # Resolver values are content, not template directives, and the
+  # renderer must not parse them for template tokens. Drift detection
+  # for new tokens added to AGENT_PROMPTS.md without a matching resolver
+  # lives in render-prompt-test.sh case ENG-87 R5 (the registry-coverage
+  # pin) — a stronger guarantee than a runtime residual scan.
   printf '%s' "$rendered"
 }
 
