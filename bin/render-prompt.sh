@@ -449,7 +449,7 @@ main() {
   brainstorm_file="$(find_doc "$TARGET_REPO/docs/brainstorms" "$issue_id" "$slug")"
   plan_file="$(find_doc "$TARGET_REPO/docs/plans" "$issue_id" "$slug")"
 
-  local issue_id_lower branch_name stage_summary_path learned_rules_dir
+  local issue_id_lower branch_name stage_summary_path progress_md_path learned_rules_dir
   issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
   # ENG-79: source the canonical branch-name resolver instead of hand-rolling
   # the form `feature/<lower>-<slug>`. See git history for context (ENG-74).

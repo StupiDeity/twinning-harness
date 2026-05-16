@@ -255,14 +255,9 @@ _render_and_capture_stream() {
   fi
 }
 
-# ENG-106: filesystem detective for the plan-stage progress.md writer.
-# Stage-gated caller at the end of _render_and_capture_stream invokes
-# this helper only when $stage == "planning". Reads PIPELINE_DISPATCH_ID
-# from env (single-dash idiom — ENG-46 secret-probe-lint clean; the
-# var name is not on the secret regex). Returns 0 if the file contains
-# exactly one H2 entry stamped with the current dispatch_id; returns
-# 31 with a diagnostic written to $violation_file otherwise. Direct
-# caller, no Linear or git surface — pure filesystem check.
+# ENG-106 — stage-gated to planning; rc=31 maps to progress-md-entry-missing
+# in failure_outcome_for_exit. Single-dash on PIPELINE_DISPATCH_ID: ENG-46
+# idiom, consistent with other callers (var not on the secret regex).
 _assert_progress_md_entry() {
   local issue_dir="$1" violation_file="$2"
   local progress_path entry_count
