@@ -1391,6 +1391,26 @@ main() {
         "stage transcript invoked forbidden core.bare git form: $_viol_cmd_13" 13
       rm -f "$_viol_file_13" "$prompt_file"
       exit 13
+    elif (( dispatch_rc == 29 )); then
+      # ENG-109: dispatch.sh's Write-on-progress.md detective caught
+      # an agent truncating the per-issue progress notebook via the
+      # Write tool (the append-only contract of progress.md is a
+      # convention not an ACL — the detective is the catch-net per
+      # docs/runbooks/progress-md.md §3). Sidecar shape mirrors the
+      # rc=22/23/26/13 arms above. Note: rc=29 is also produced by
+      # the post-dispatch _validate_dispatch_envelope at line ~1630
+      # below; both halt with skip-until-human-acts dispatch-envelope-
+      # violation. The disambiguator lives in the per-stage transcript
+      # (this arm's `[assert] ... forbidden Write on progress.md` log
+      # vs the envelope validator's `mcp__plugin_linear` /
+      # `curl https://api.linear.app` match).
+      local _viol_file_29 _viol_cmd_29
+      _viol_file_29="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_cmd_29="$(cat "$_viol_file_29" 2>/dev/null || printf '<path-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "dispatch-stage transcript invoked forbidden Write on progress.md: $_viol_cmd_29" 29
+      rm -f "$_viol_file_29" "$prompt_file"
+      exit 29
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20

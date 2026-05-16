@@ -204,6 +204,31 @@ assert_no_tool_invocation() {
   return 0
 }
 
+# ENG-109: forbid Write-tool truncation of the per-issue progress.md.
+# Sibling of assert_no_tool_invocation; the contract-shape differs only
+# in (a) the tool name (Write, not Bash), (b) the input field
+# (file_path, not command), and (c) the matcher direction (endswith,
+# because the agent's Write calls carry an absolute path and the
+# discriminating signal is the basename suffix). Exported below.
+assert_no_write_to_path() {
+  local transcript="$1" path_suffix="$2"
+  [[ -s "$transcript" ]] || return 0
+  local matched
+  matched="$(jq -Rr --arg p "$path_suffix" '
+    fromjson? // empty
+    | select(.type == "assistant")
+    | .message.content[]?
+    | select(.type == "tool_use" and .name == "Write")
+    | (.input.file_path // "")
+    | select(endswith($p))
+  ' "$transcript" 2>/dev/null | head -1)" || true
+  if [[ -n "$matched" ]]; then
+    printf '%s\n' "$matched"
+    return 1
+  fi
+  return 0
+}
+
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
@@ -397,7 +422,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id assert_no_tool_invocation progress_md_path
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id assert_no_tool_invocation progress_md_path assert_no_write_to_path
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
