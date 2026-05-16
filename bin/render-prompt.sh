@@ -53,6 +53,7 @@ learned_rules_dir=_resolve_learned_rules_dir
 dispatch_id=_resolve_dispatch_id
 review_findings=_resolve_review_findings
 progress_md_path=_resolve_progress_md_path
+plan_json=_resolve_plan_json
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -244,13 +245,76 @@ _resolve_dispatch_id() { printf '%s' "${_RENDER_DISPATCH_ID-}"; }
 # rejects again, ad infinitum). When no prior review exists (fresh
 # implement-stage dispatch from planning), resolves to a literal marker
 # the prompt's "Review-loopback handling" block treats as a no-op signal.
+# PIPELINE_LOOPBACK_SOURCE — set by run-stage.sh on every implementing
+# dispatch (ENG-139 follow-up) to declare the most-recent transition's
+# `from=` field. Values: planning | reviewing | qa | building |
+# implementing (operator-resume). When the value is anything OTHER than
+# `reviewing`, this is not a review-loopback and we MUST emit the
+# sentinel — stage-summary-reviewing.md persists across non-current-stage
+# clears (by design, so loopback reads of other stages work), and without
+# this gating every dispatch after the first reviewing run would see
+# stale review findings, including build → implementing rebase loopbacks
+# (the ENG-106 / ENG-139 failure mode where the implementer rebased AND
+# opportunistically addressed unrelated review minors) and qa →
+# implementing fail loopbacks.
+#
+# Unset → back-compat: behaves as pre-ENG-139 (file content if non-empty).
+# Preserves debug renders, dry-run.sh, and any caller outside
+# bin/run-stage.sh that hasn't been updated.
 _resolve_review_findings() {
   local p="${_RENDER_REVIEW_FINDINGS_PATH-}"
+  local source="${PIPELINE_LOOPBACK_SOURCE-}"
+  if [[ -n "$source" && "$source" != "reviewing" ]]; then
+    printf '(no prior review for this issue — this dispatch is not a review-loopback)'
+    return 0
+  fi
   if [[ -n "$p" && -s "$p" ]]; then
     cat "$p"
   else
     printf '(no prior review for this issue — this dispatch is not a review-loopback)'
   fi
+}
+
+# Without a structured plan.json sibling, the implement agent re-interprets
+# prose pass-criteria on every dispatch, which drifts across rebases and
+# BE↔FE re-readings (ENG-123). Inlining the JSON makes structured fields
+# authoritative at dispatch time; `plan_json_missing` in events.jsonl lets
+# the retrospective measure how often the fallback path fires.
+# Note: explicit `|| return $?` on every metrics.sh call propagates errors
+# reliably regardless of set -e scope; resolve_block_tokens wraps resolvers
+# with `2>/dev/null || printf ''`, so the practical effect is an empty
+# {plan_json} substitution rather than a render-prompt.sh crash.
+_resolve_plan_json() {
+  local plan_md_rel="$_RENDER_PLAN_FILE"
+  local plan_json_rel plan_json_abs
+  if [[ -n "$plan_md_rel" ]]; then
+    plan_json_rel="${plan_md_rel%.md}.json"
+    plan_json_abs="$TARGET_REPO/$plan_json_rel"
+    if [[ -L "$plan_json_abs" ]]; then
+      log "render-prompt: plan.json is a symlink — refusing to follow ($plan_json_rel)"
+      bash "$SCRIPT_DIR/metrics.sh" plan_json_missing "$_RENDER_ISSUE_ID" "implementing" symlink_rejected 0 || return $?
+      printf '%s' "(no plan.json — falling back to prose plan)"
+      return 0
+    fi
+    if [[ -s "$plan_json_abs" ]]; then
+      if grep -qFe '<<<PLAN_JSON_END>>>' -e '<<<PLAN_JSON_BEGIN>>>' "$plan_json_abs"; then
+        log "render-prompt: plan.json contains literal delimiter — falling back"
+        bash "$SCRIPT_DIR/metrics.sh" plan_json_missing "$_RENDER_ISSUE_ID" "implementing" delimiter_collision 0 || return $?
+        printf '%s' "(no plan.json — falling back to prose plan)"
+        return 0
+      fi
+      cat "$plan_json_abs"
+      return 0
+    fi
+  fi
+  if [[ -n "$plan_md_rel" ]]; then
+    log "render-prompt: no plan.json sibling for $_RENDER_ISSUE_ID ($plan_json_rel); falling back to prose plan"
+  else
+    log "render-prompt: no markdown plan resolved for $_RENDER_ISSUE_ID; falling back to prose plan"
+  fi
+  # Stage label hardcoded per brainstorm §5 (iter-1 scope tightening); QA-sibling decides whether to lift to _RENDER_STAGE.
+  bash "$SCRIPT_DIR/metrics.sh" plan_json_missing "$_RENDER_ISSUE_ID" "implementing" fallback 0 || return $?
+  printf '%s' "(no plan.json — falling back to prose plan)"
 }
 
 # Look up the resolver function name for a token (without surrounding braces).
@@ -385,7 +449,7 @@ main() {
   brainstorm_file="$(find_doc "$TARGET_REPO/docs/brainstorms" "$issue_id" "$slug")"
   plan_file="$(find_doc "$TARGET_REPO/docs/plans" "$issue_id" "$slug")"
 
-  local issue_id_lower branch_name stage_summary_path learned_rules_dir
+  local issue_id_lower branch_name stage_summary_path progress_md_path learned_rules_dir
   issue_id_lower="$(tr '[:upper:]' '[:lower:]' <<<"$issue_id")"
   # ENG-79: source the canonical branch-name resolver instead of hand-rolling
   # the form `feature/<lower>-<slug>`. See git history for context (ENG-74).
@@ -393,6 +457,7 @@ main() {
   [[ -n "$branch_name" ]] \
     || die "render-prompt: branch-name.sh returned empty for $issue_id (Linear-API outage or bug-label resolution failed). Cannot render prompt without a canonical branch name."
   stage_summary_path="$(issue_dir "$issue_id")/stage-summary-${stage}.md"
+  progress_md_path="$(progress_md_path "$issue_id")"
   learned_rules_dir="$HARNESS_ROOT/learned-rules/$PROJECT_SLUG"
   # ENG-105 follow-up: per-issue prior-reviewing summary. Preserved across
   # reviewing → implementing transitions by _clear_current_stage_slots
@@ -417,6 +482,7 @@ main() {
   _RENDER_PLAN_FILE="$plan_file"
   _RENDER_BRANCH_NAME="$branch_name"
   _RENDER_STAGE_SUMMARY_PATH="$stage_summary_path"
+  _RENDER_PROGRESS_MD_PATH="$progress_md_path"
   _RENDER_LEARNED_RULES_DIR="$learned_rules_dir"
   _RENDER_REVIEW_FINDINGS_PATH="$review_findings_path"
   # ENG-108: per-issue progress notebook path. Composes on

@@ -133,6 +133,7 @@ out_a="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  PROJECT_STATE_DIR="" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-A 2>/dev/null || true)"
 if grep -q '(no prior review for this issue' <<<"$out_a"; then
   ok "ENG-105 case A: absent reviewing summary → '(no prior review …)' sentinel"
@@ -150,6 +151,7 @@ out_b="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  PROJECT_STATE_DIR="" \
   bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-B 2>/dev/null || true)"
 if grep -qF "$REVIEW_SENTINEL" <<<"$out_b"; then
   ok "ENG-105 case B: present reviewing summary → inlined verbatim in implementing prompt"
@@ -268,6 +270,134 @@ else
   ok "ENG-108 case F: zero-byte progress.md → no 'progress-md missing' info-log (! -e predicate)"
 fi
 rm -f "$err_f"
+
+# ─── ENG-139-follow-up: review_findings is loopback-source-gated ────────
+# Today's _resolve_review_findings emits the file's content whenever
+# stage-summary-reviewing.md is non-empty. That file persists across
+# non-current-stage clears (by design — forward + loopback reads need
+# it), so once any reviewing dispatch has fired on the issue, every
+# subsequent implementing dispatch sees stale review findings — even on
+# building → implementing rebase loopbacks and qa → implementing fail
+# loopbacks, where the implementer should be doing a different shape of
+# work (rebase / bugfix) and being told "address the prior reviewer's
+# findings" is incorrect.
+#
+# Fix: PIPELINE_LOOPBACK_SOURCE env var declares which stage's
+# from-transition put us into implementing. The resolver gates on it:
+#
+#   - PIPELINE_LOOPBACK_SOURCE=reviewing → file content (review-loopback).
+#   - PIPELINE_LOOPBACK_SOURCE=building  → sentinel (rebase or CI-red loop).
+#   - PIPELINE_LOOPBACK_SOURCE=qa        → sentinel (qa fail loopback).
+#   - PIPELINE_LOOPBACK_SOURCE=planning  → sentinel (fresh forward).
+#   - PIPELINE_LOOPBACK_SOURCE unset     → back-compat (file content if file
+#       is non-empty). Preserves behavior for callers outside run-stage.sh
+#       (debug renders, dry-run.sh) that haven't been updated to set the
+#       env var. Production opt-in: run-stage.sh sets it on every
+#       implementing dispatch.
+#
+# Cases G–J reuse the case-B fixture path; the sentinel file IS present.
+# The four cases differ only in PIPELINE_LOOPBACK_SOURCE.
+
+ISSUE_DIR_G="$sandbox/state/test-slug-rc0/ENG-87R6X-G"
+rm -rf "$ISSUE_DIR_G"; mkdir -p "$ISSUE_DIR_G"
+LB_SENTINEL='SENTINEL-REVIEW-FINDINGS-LOOPBACK-GATE-CASE-G-9281'
+printf '## Review summary\n\n[major] %s\n' "$LB_SENTINEL" \
+  > "$ISSUE_DIR_G/stage-summary-reviewing.md"
+
+# Case G: source=reviewing → findings inlined (positive control).
+out_g="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  PIPELINE_LOOPBACK_SOURCE=reviewing \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-G 2>/dev/null || true)"
+if grep -qF "$LB_SENTINEL" <<<"$out_g"; then
+  ok "ENG-139 case G: PIPELINE_LOOPBACK_SOURCE=reviewing + file present → findings inlined"
+else
+  fail "ENG-139 case G: source=reviewing → findings inlined" \
+       "out tail: $(tail -5 <<<"$out_g" | tr '\n' ' ')"
+fi
+
+ISSUE_DIR_H="$sandbox/state/test-slug-rc0/ENG-87R6X-H"
+rm -rf "$ISSUE_DIR_H"; mkdir -p "$ISSUE_DIR_H"
+printf '## Review summary\n\n[major] %s\n' "$LB_SENTINEL" \
+  > "$ISSUE_DIR_H/stage-summary-reviewing.md"
+
+# Case H: source=building → sentinel (the ENG-106 / ENG-139 failure mode).
+out_h="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  PIPELINE_LOOPBACK_SOURCE=building \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-H 2>/dev/null || true)"
+if grep -qF "$LB_SENTINEL" <<<"$out_h"; then
+  fail "ENG-139 case H: source=building → sentinel (NOT findings)" \
+       "stale review findings leaked into build-loopback dispatch — out tail: $(tail -5 <<<"$out_h" | tr '\n' ' ')"
+else
+  ok "ENG-139 case H: PIPELINE_LOOPBACK_SOURCE=building + file present → sentinel (no stale review-findings leak)"
+fi
+# Note: we deliberately do NOT also assert the literal sentinel string is
+# present in $out_h — AGENT_PROMPTS.md's prose quotes the literal sentinel
+# (as documentation of the off-switch), which would make any such grep
+# always-true and mask a regression where the resolver returns empty.
+
+ISSUE_DIR_I="$sandbox/state/test-slug-rc0/ENG-87R6X-I"
+rm -rf "$ISSUE_DIR_I"; mkdir -p "$ISSUE_DIR_I"
+printf '## Review summary\n\n[major] %s\n' "$LB_SENTINEL" \
+  > "$ISSUE_DIR_I/stage-summary-reviewing.md"
+
+# Case I: source=qa → sentinel (qa-loopback should not see stale review).
+out_i="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  PIPELINE_LOOPBACK_SOURCE=qa \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-I 2>/dev/null || true)"
+if grep -qF "$LB_SENTINEL" <<<"$out_i"; then
+  fail "ENG-139 case I: source=qa → sentinel (NOT findings)" \
+       "stale review findings leaked into qa-loopback dispatch — out tail: $(tail -5 <<<"$out_i" | tr '\n' ' ')"
+else
+  ok "ENG-139 case I: PIPELINE_LOOPBACK_SOURCE=qa + file present → sentinel"
+fi
+
+ISSUE_DIR_J="$sandbox/state/test-slug-rc0/ENG-87R6X-J"
+rm -rf "$ISSUE_DIR_J"; mkdir -p "$ISSUE_DIR_J"
+printf '## Review summary\n\n[major] %s\n' "$LB_SENTINEL" \
+  > "$ISSUE_DIR_J/stage-summary-reviewing.md"
+
+# Case J: source=planning → sentinel (forward-from-planning).
+out_j="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  PIPELINE_LOOPBACK_SOURCE=planning \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-J 2>/dev/null || true)"
+if grep -qF "$LB_SENTINEL" <<<"$out_j"; then
+  fail "ENG-139 case J: source=planning → sentinel (NOT findings)" \
+       "stale review findings leaked into fresh-from-planning dispatch — out tail: $(tail -5 <<<"$out_j" | tr '\n' ' ')"
+else
+  ok "ENG-139 case J: PIPELINE_LOOPBACK_SOURCE=planning + file present → sentinel"
+fi
+
+# Case K: source UNSET, file present → findings inlined (back-compat).
+# Preserves case-B semantics so debug renders + dry-run.sh + any caller
+# that hasn't been updated to set PIPELINE_LOOPBACK_SOURCE keeps seeing
+# the file content.
+ISSUE_DIR_K="$sandbox/state/test-slug-rc0/ENG-87R6X-K"
+rm -rf "$ISSUE_DIR_K"; mkdir -p "$ISSUE_DIR_K"
+printf '## Review summary\n\n[major] %s\n' "$LB_SENTINEL" \
+  > "$ISSUE_DIR_K/stage-summary-reviewing.md"
+out_k="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-K 2>/dev/null || true)"
+if grep -qF "$LB_SENTINEL" <<<"$out_k"; then
+  ok "ENG-139 case K: PIPELINE_LOOPBACK_SOURCE unset + file present → findings inlined (back-compat)"
+else
+  fail "ENG-139 case K: source unset → findings inlined (back-compat)" \
+       "out tail: $(tail -5 <<<"$out_k" | tr '\n' ' ')"
+fi
 
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

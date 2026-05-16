@@ -143,6 +143,17 @@ while IFS= read -r kind; do
 done < <(jq -r '.meta_kinds[]' "$REG" 2>/dev/null)
 (( case3_failed == 0 )) && pass_at "case-3: every meta_kinds entry round-trips through parse_pipeline_marker"
 
+# ─── ENG-122: plan-contract-invalid in halt_reasons registry ──────────
+# Verifies that the new halt reason token added by ENG-122 is present in
+# the closed vocabulary so that `bash bin/pipeline.sh event ... verdict
+# halt --reason plan-contract-invalid` passes registry validation.
+if jq -e '.halt_reasons | index("plan-contract-invalid") != null' "$REG" >/dev/null 2>&1; then
+  pass_at "ENG-122 case-4: plan-contract-invalid in halt_reasons registry"
+else
+  fail_at "ENG-122 case-4: plan-contract-invalid in halt_reasons registry" \
+    "expected \"plan-contract-invalid\" in .halt_reasons array of $REG"
+fi
+
 # ─── Summary ─────────────────────────────────────────────────────────
 printf '\nvocabulary-cleanliness-test: passed=%s failed=%s\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1

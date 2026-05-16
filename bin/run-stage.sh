@@ -15,6 +15,9 @@
 #             28=leaked-in-scope-threshold (≥3 consecutive in-scope leaks; ENG-14),
 #             29=envelope-violation (dispatch envelope validator detected agent bypass
 #             of bin/linear.sh — ENG-87),
+#             33=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
+#             34=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
+#             35=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
@@ -98,7 +101,7 @@ _cost_flags_for() {
 # Count <!-- pipeline: verdict result=fail target=<stage> --> markers newer
 # than the most recent <!-- pipeline: transition ... to=<stage> --> comment.
 # Used by _resolve_dispatch_model's escalation predicate (ENG-103 D-002).
-# Reuses the comment-fetch path from guards.sh::count_marker_since_last_transition
+# Reuses the comment-fetch path from guards.sh::count_marker_since_last_operator_resume
 # but projects each body through parse_pipeline_marker (common.sh) so prose-
 # quoted markers don't register (ENG-87 / ENG-61 Bug A precedent). Fail-open:
 # Linear API outage returns 0 (no escalation) — matches the dispatch-side
@@ -119,6 +122,51 @@ _dispatch_made_new_commits() {
   head_post="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || printf '')"
   [[ -n "$head_post" ]] || return 0
   [[ "$head_post" != "$head_pre" ]]
+}
+
+# ENG-139 follow-up: extract the source stage of the most-recent
+# transition `to=<stage>` from Linear comments, excluding operator-resume
+# self-loops (`from=<stage> to=<stage> reason=operator-resume`). Without
+# the operator-resume filter, a resume from a halted review-loopback
+# would return `<stage>` instead of `reviewing` and the caller would
+# wrongly conclude "not a review-loopback" — losing the very signal the
+# resume was meant to continue.
+#
+# Used by main() to set PIPELINE_LOOPBACK_SOURCE before invoking
+# render-prompt.sh, which gates _resolve_review_findings so build →
+# implementing rebase loopbacks (ENG-106 / ENG-139) and qa →
+# implementing fail loopbacks don't inherit stale review findings.
+#
+# Fail-open: Linear API outage / empty comments / parse failure → empty
+# stdout. render-prompt.sh's resolver treats unset env as back-compat
+# (file content if non-empty), so an outage replicates pre-ENG-139
+# behavior rather than surprising the agent.
+_resolve_loopback_source() {
+  local ident="$1" stage="$2"
+  local comments
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident" 2>/dev/null)" \
+    || { printf ''; return 0; }
+  [[ -z "$comments" || "$comments" == "null" ]] && { printf ''; return 0; }
+
+  local latest_ts="" latest_from="" body ts ev
+  local event_field to_field from_field reason_field
+  while IFS=$'\t' read -r ts body; do
+    [[ -z "$ts" ]] && continue
+    ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
+    [[ -z "$ev" ]] && continue
+    event_field="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
+    to_field="$(jq -r '.to // ""' <<<"$ev" 2>/dev/null || printf '')"
+    from_field="$(jq -r '.from // ""' <<<"$ev" 2>/dev/null || printf '')"
+    reason_field="$(jq -r '.reason // ""' <<<"$ev" 2>/dev/null || printf '')"
+    [[ "$event_field" == "transition" && "$to_field" == "$stage" ]] || continue
+    [[ "$reason_field" == "operator-resume" ]] && continue
+    if [[ "$ts" > "$latest_ts" ]]; then
+      latest_ts="$ts"
+      latest_from="$from_field"
+    fi
+  done < <(jq -r '.[] | "\(.createdAt)\t\(.body | gsub("\n"; " "))"' <<<"$comments" 2>/dev/null)
+
+  printf '%s' "$latest_from"
 }
 
 _count_loopback_rejections_for_stage() {
@@ -981,6 +1029,60 @@ _validate_dispatch_envelope() {
   return 0
 }
 
+# ENG-122: plan-contract validator. Runs after dispatch for stage=planning only.
+# Locates the sibling .json alongside the prose .md in docs/plans/, then shells
+# out to bin/plan-schema.sh validate. Returns 0 = valid, 33 = malformed,
+# 34 = incomplete, 35 = missing-file. Caller must gate to stage=planning.
+_validate_plan_contract() {
+  local ident="$1"
+  local wt
+  wt="$(issue_dir "$ident")/worktree"
+  # Fail-open if worktree is absent: caller's earlier preconditions handle it.
+  [[ -d "$wt" ]] || { log "plan-contract: no worktree dir for $ident; fail-open"; return 0; }
+  local ident_lower
+  ident_lower="$(printf '%s' "$ident" | tr '[:upper:]' '[:lower:]')"
+  local today
+  today="$(date +%Y-%m-%d)"
+  local plan_md plan_json schema_out schema_rc=0
+
+  # Trailing hyphen after ident_lower prevents eng-12 from matching eng-122
+  # or eng-1234. The pattern is bound to `today` so a cross-midnight
+  # re-dispatch on a plan written the day before will fail-open (correct:
+  # the plan is the prior day's; no false halt, just a benign skip).
+  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}-*.md" 2>/dev/null | sort | head -1)"
+  # Fail-open if no plan .md for today: the exit-25 agent-contract validator
+  # handles the absent-md case upstream; double-halting here would be noise.
+  if [[ -z "$plan_md" ]]; then
+    log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}-*.md; fail-open"
+    return 0
+  fi
+
+  plan_json="${plan_md%.md}.json"
+
+  schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
+    --ident "$ident")" || schema_rc=$?
+  case "$schema_rc" in
+    0)  return 0 ;;
+    33) _post_plan_contract_halt "$ident" "plan-contract-malformed"  "$schema_out" ; return 33 ;;
+    34) _post_plan_contract_halt "$ident" "plan-contract-incomplete" "$schema_out" ; return 34 ;;
+    35) _post_plan_contract_halt "$ident" "plan-contract-missing"    "$schema_out" ; return 35 ;;
+    *)  _post_plan_contract_halt "$ident" "unexpected-rc" \
+          "validator returned unexpected rc=$schema_rc; stdout: $schema_out" ; return 33 ;;
+  esac
+}
+
+# Posts a halt comment for a plan-contract violation. Mirrors _validate_dispatch_envelope's
+# sanitisation pattern (D-004): replace `<!--` with `<\!--` in agent-controlled text
+# before embedding in the Linear comment body to prevent marker hijacking.
+_post_plan_contract_halt() {
+  local ident="$1" defect="$2" raw="$3"
+  local safe="${raw//<!--/<\\!--}"
+  local body
+  body="$(printf '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->\n\nPlan-contract validation failed on dispatch_id=%s stage=planning:\n\n- Defect: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/plan-schema.sh`.\n\n**Resume:** fix the JSON (or the plan prompt'\''s emission step), commit on the feature branch, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+    "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$safe" "$ident")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+}
+
 # ENG-87 review M1+M2: dispatch_history.jsonl end-row trap. Plan §13.1.2
 # + §A-026 mandate two rows per dispatch (start + end). Pre-fix the end
 # row was only emitted on the success path (1 of 15 exit sites) and was
@@ -1305,7 +1407,19 @@ main() {
     prompt_file="$(mktemp -t pipeline-prompt-XXXXXX)"
     log_file="$PROJECT_STATE_DIR/logs/${ident}-${stage}-$(date -u +%Y%m%dT%H%M%SZ).log"
     mkdir -p "$(dirname "$log_file")"
-    bash "$SCRIPT_DIR/render-prompt.sh" "$stage" "$ident" > "$prompt_file"
+    # ENG-139 follow-up: resolve the loopback shape (which from-stage
+    # routed us here) and hand off via PIPELINE_LOOPBACK_SOURCE so
+    # render-prompt.sh's _resolve_review_findings can gate stale
+    # review findings out of build → implementing rebase loopbacks and
+    # qa → implementing fail loopbacks. Only meaningful for the
+    # implementing stage today; other stages don't read review_findings.
+    local loopback_source=""
+    if [[ "$stage" == "implementing" ]]; then
+      loopback_source="$(_resolve_loopback_source "$ident" "$stage" 2>/dev/null || printf '')"
+      [[ -n "$loopback_source" ]] && log "loopback source=$loopback_source (stage=$stage)"
+    fi
+    PIPELINE_LOOPBACK_SOURCE="$loopback_source" \
+      bash "$SCRIPT_DIR/render-prompt.sh" "$stage" "$ident" > "$prompt_file"
     log "rendered prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
 
     bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "dispatching" 0
@@ -1437,6 +1551,18 @@ main() {
       # redundant for operator triage.
       rm -f "$_viol_file_29" "$prompt_file"
       exit 29
+    elif (( dispatch_rc == 31 )); then
+      # ENG-106: plan-stage progress.md detective halt. Read the diagnostic
+      # message from $(issue_dir "$ident")/.transcript-violation-${stage}
+      # (the sidecar written by _assert_progress_md_entry in dispatch.sh)
+      # and surface a skip-until-human-acts halt. Recovery: docs/runbooks/recovery.md.
+      local _viol_file_31 _viol_msg_31
+      _viol_file_31="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_msg_31="$(cat "$_viol_file_31" 2>/dev/null || printf '<violation-detail-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "plan-stage progress.md entry missing or malformed: $_viol_msg_31" 31
+      rm -f "$_viol_file_31" "$prompt_file"
+      exit 31
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20
@@ -1686,6 +1812,24 @@ main() {
           exit 29
         fi
         rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
+        ;;
+    esac
+  fi
+
+  # ENG-122: plan-contract validator. Post-dispatch; planning stage only.
+  # Halts with plan-contract-invalid if docs/plans/<basename>.json is absent,
+  # malformed, or fails schema-v1 validation. Exit codes 30/31/32 map to the
+  # failure_outcome_for_exit taxonomy entries added in Task 1.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      planning)
+        local _plan_rc=0
+        _validate_plan_contract "$ident" || _plan_rc=$?
+        if (( _plan_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "plan-contract-invalid: $(failure_outcome_for_exit "$_plan_rc")" "$_plan_rc"
+          exit "$_plan_rc"
+        fi
         ;;
     esac
   fi

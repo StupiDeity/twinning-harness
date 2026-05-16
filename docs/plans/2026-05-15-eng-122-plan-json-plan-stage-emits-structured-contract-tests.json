@@ -1,0 +1,43 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-122",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/plan-schema.sh validator CLI exists, ends with the source-and-test sentinel, and rejects schema-v2 documents",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/plan-schema.sh" },
+        { "kind": "grep", "path": "bin/plan-schema.sh", "pattern": "BASH_SOURCE\\[0\\]", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/plan-schema.sh validate docs/plans/2026-05-15-eng-122-plan-json-plan-stage-emits-structured-contract-tests.json --ident ENG-122", "expect_exit": 0 }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/run-stage.sh has _validate_plan_contract + _post_plan_contract_halt wired into the post-dispatch hook block",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "^_validate_plan_contract", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "^_post_plan_contract_halt", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "ENG-122: plan-contract validator", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "Exit-code taxonomy includes 33/34/35 and halt_reasons registry includes plan-contract-invalid",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "33\\) printf 'plan-contract-malformed'", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "34\\) printf 'plan-contract-incomplete'", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "35\\) printf 'plan-contract-missing'", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-events.json", "pattern": "plan-contract-invalid", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "Tests cover well-formed + missing + malformed JSON, plus integration with run-stage's detective scan",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/plan-schema-test.sh" },
+        { "kind": "smoke", "command": "bash bin/plan-schema-test.sh", "expect_exit": 0 },
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0 }
+      ]
+    }
+  ]
+}

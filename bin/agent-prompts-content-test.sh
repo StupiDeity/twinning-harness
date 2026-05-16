@@ -296,19 +296,21 @@ else
     "§2 body extracted as empty — has the '## 2. Plan Agent' heading been renamed? Every §2-scoped negative-grep is now trivially passing."
 fi
 
-# ─── ENG-97 QA-adversarial: §2 has exactly 2 indented api-contract fences ─
+# ─── ENG-97 QA-adversarial: §2 has exactly 4 indented fences ───────────────
 # The existing §2 column-0 fence-count pin (further below) covers the
 # OUTER per-stage fence pair. If a future edit deletes the indented
-# (column-4) api-contract fence — at AGENT_PROMPTS.md:460,494 — so the
-# example bodies float as plain prose, the column-0 count stays at 2 and
-# the existing test still passes, but downstream agents lose the fenced
-# extraction target. Pin the indented fence count separately.
+# (column-4) api-contract fence — so the example bodies float as plain prose
+# — the column-0 count stays at 2 and the existing test still passes, but
+# downstream agents lose the fenced extraction target. Pin the indented fence
+# count separately. ENG-122 added a second indented pair (plan-schema-v1
+# block), so the expected count is now 4: api-contract open+close (2) +
+# plan-schema-v1 open+close (2).
 indented_fence_count_s2="$(printf '%s\n' "$s2" | grep -cE '^[[:space:]]+```' || true)"
-if [[ "$indented_fence_count_s2" == "2" ]]; then
-  ok "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)"
+if [[ "$indented_fence_count_s2" == "4" ]]; then
+  ok "ENG-97 QA: §2 indented (column-4) fence count is exactly 4 (api-contract + plan-schema-v1 block bounds)"
 else
-  nope "ENG-97 QA: §2 indented (column-4) fence count is exactly 2 (api-contract block bounds)" \
-    "got $indented_fence_count_s2 indented fences in §2 — the api-contract block bounds drifted; plan agents lose the fenced extraction target"
+  nope "ENG-97 QA: §2 indented (column-4) fence count is exactly 4 (api-contract + plan-schema-v1 block bounds)" \
+    "got $indented_fence_count_s2 indented fences in §2 — expected 4 (api-contract pair + plan-schema-v1 pair); block bounds drifted"
 fi
 
 # ─── ENG-97 QA-adversarial: §2 carries both Example heading markers ───────
@@ -868,6 +870,32 @@ if printf '%s\n' "$s3" | grep -qF 'add more tests'; then
 else
   nope '§3 explicitly bans "add more tests" as the loopback response' \
        'ENG-65 cycle was caused by agent treating loopback as "add adversarial coverage"; carve-out must be pinned'
+fi
+
+# ─── ENG-139 follow-up: §3 review-loopback off-switch names build/qa ────
+# Today's review-loopback block off-switches on the sentinel value of
+# `{review_findings}`. PIPELINE_LOOPBACK_SOURCE (set by run-stage.sh)
+# now gates the resolver: when the most-recent transition `to=implementing`
+# is anything other than `from=reviewing`, the resolver emits the sentinel
+# so the block deactivates. The prose must name the three non-review
+# paths the sentinel branch covers (planning forward, build-loopback,
+# qa-loopback) so the agent knows it's not in "address findings" mode on
+# any of them. ENG-106 cycle (May 2026) saw the implementer fix unrelated
+# review minors during build → implement rebase loopbacks because the §3
+# block was the only loopback prose the prompt had — pin the broadened
+# wording so a cleanup pass can't drop a path.
+if printf '%s\n' "$s3" | grep -qE 'from=reviewing to=implementing'; then
+  ok '§3 names the review-loopback transition shape (from=reviewing to=implementing)'
+else
+  nope '§3 names the review-loopback transition shape' \
+       'ENG-139 widened the off-switch prose so the agent knows the sentinel branch covers build/qa loopbacks too — the from=reviewing to=implementing literal must appear'
+fi
+if printf '%s\n' "$s3" | grep -qF 'build → implementing rebase loopback' \
+   && printf '%s\n' "$s3" | grep -qF 'qa → implementing fail loopback'; then
+  ok '§3 sentinel branch enumerates build + qa loopback paths'
+else
+  nope '§3 sentinel branch enumerates build + qa loopback paths' \
+       'without naming both, the agent may still treat a build-loopback or qa-loopback as a review-loopback — the very failure ENG-139 closes'
 fi
 
 # ─── ENG-71: §7 build agent must not check out main / pull / reset ────
@@ -1603,6 +1631,133 @@ else
 fi
 
 unset s3_eng101_qa s5_eng101_qa
+
+# ─── ENG-123-C1: {plan_json} token present in §3 ─────────────────────────────
+if printf '%s\n' "$s3" | grep -qF '{plan_json}'; then
+  ok "§3 ENG-123-C1: carries {plan_json} token (implement prompt embeds plan.json)"
+else
+  nope "§3 ENG-123-C1: carries {plan_json} token (implement prompt embeds plan.json)" \
+       "{plan_json} missing from §3 body — render-prompt.sh embeds plan.json via this token; dropping it means the implement agent never receives structured plan data"
+fi
+
+# ─── ENG-123-C2: directive phrases present in §3 ─────────────────────────────
+# Three load-bearing phrases checked separately for per-phrase failure attribution.
+if printf '%s\n' "$s3" | grep -qF 'Plan JSON contract'; then
+  ok "§3 ENG-123-C2a: 'Plan JSON contract' present (D-001 directive header)"
+else
+  nope "§3 ENG-123-C2a: 'Plan JSON contract' missing from §3" \
+       "'Plan JSON contract' (D-001 directive header) missing from §3 — implement prompt needs this header to frame the data block"
+fi
+if printf '%s\n' "$s3" | grep -qF 'AUTHORITATIVE over the prose plan'; then
+  ok "§3 ENG-123-C2b: 'AUTHORITATIVE over the prose plan' present (D-001 semantics)"
+else
+  nope "§3 ENG-123-C2b: 'AUTHORITATIVE over the prose plan' missing from §3" \
+       "'AUTHORITATIVE over the prose plan' (D-001 semantics) missing from §3 — pinned phrasing prevents case-sensitive 'authoritative' elsewhere from false-passing"
+fi
+if printf '%s\n' "$s3" | grep -qF 'DATA, not instructions'; then
+  ok "§3 ENG-123-C2c: 'DATA, not instructions' present (§11 security P1 injection-defense)"
+else
+  nope "§3 ENG-123-C2c: 'DATA, not instructions' missing from §3" \
+       "'DATA, not instructions' (§11 security iter-1 P1 injection-defense) missing from §3"
+fi
+
+# ─── ENG-123-C3: <<<PLAN_JSON_BEGIN>>> / <<<PLAN_JSON_END>>> delimiters present in §3 ──
+if printf '%s\n' "$s3" | grep -qF '<<<PLAN_JSON_BEGIN>>>' \
+   && printf '%s\n' "$s3" | grep -qF '<<<PLAN_JSON_END>>>'; then
+  ok "§3 ENG-123-C3: '<<<PLAN_JSON_BEGIN>>>' and '<<<PLAN_JSON_END>>>' delimiters present"
+else
+  nope "§3 ENG-123-C3: delimiters present" \
+       "'<<<PLAN_JSON_BEGIN>>>' or '<<<PLAN_JSON_END>>>' missing from §3 — these bounded-data-block cues are the prompt-injection defense declared in brainstorm §11 FM→TM row #535; dropping them leaves injection defense relying on prose alone"
+fi
+
+# ─── ENG-139: §7 P7 conventional-commit check is an executable command ──
+# A prior dispatch on PR #112 hallucinated a "P7 uppercase scope" halt on
+# the title `feat(eng-106): Progress.md: plan stage writes progress entries`
+# (which matches the regex cleanly — the capital P is in the post-colon
+# description, not the scope group). When that hallucinated P7 fail
+# co-fired with a real P6, the precondition-ordering clause routed to
+# `agent-blocked` halt instead of P6's `fail --target implementing`
+# loopback, converting a recoverable conflict into a human-intervention
+# halt. The fix is to make P7 a literal `jq test()` command on `gh pr
+# view --jq` output, so the agent acts on the literal `true`/`false`
+# instead of "reading" the title. Pin the executable shape AND the
+# absence of the prose diagnosis that the agent was inventing.
+
+# Positive: §7 P7 names the canonical jq-test invocation form.
+if printf '%s\n' "$s7" | grep -qE 'gh pr view <N> --json title --jq'; then
+  ok "§7 ENG-139: P7 uses 'gh pr view <N> --json title --jq' invocation"
+else
+  nope "§7 ENG-139: P7 uses 'gh pr view <N> --json title --jq' invocation" \
+       "P7 must run the regex as a command, not describe it — agent's visual reading hallucinated 'uppercase scope' on titles that matched cleanly (PR #112)"
+fi
+
+# Positive: §7 P7 names the .title | test( filter shape.
+if printf '%s\n' "$s7" | grep -qF '.title | test('; then
+  ok "§7 ENG-139: P7 uses '.title | test(' jq filter (executable judge)"
+else
+  nope "§7 ENG-139: P7 uses '.title | test(' jq filter" \
+       "P7 must invoke jq's test() as the judge — without it, an edit could revert to prose-only matching that the agent re-interprets"
+fi
+
+# Positive: §7 P7 carries the full conventional-commits alternation.
+if printf '%s\n' "$s7" | grep -qF '(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)'; then
+  ok "§7 ENG-139: P7 carries the full conventional-commit type alternation"
+else
+  nope "§7 ENG-139: P7 carries the full conventional-commit type alternation" \
+       "alternation list must match the regex used by semantic-release; an edit that drops a type silently breaks releases"
+fi
+
+# Positive: §7 P7 says "jq test is the only judge" (or equivalent — pin
+# the load-bearing phrase that disambiguates from prose inspection).
+if printf '%s\n' "$s7" | grep -qF '`jq test` is the only judge'; then
+  ok "§7 ENG-139: P7 names 'jq test is the only judge' (no visual diagnosis)"
+else
+  nope "§7 ENG-139: P7 names 'jq test is the only judge'" \
+       "the agent needs an explicit 'do not diagnose by reading' clause — this phrase pins the anti-hallucination directive"
+fi
+
+# Negative: §7 P7 must NOT instruct or repeat the hallucinated prose
+# diagnosis. If a future edit re-introduces "has an uppercase scope" or
+# similar instruction-shaped prose, the agent will infer the visual
+# diagnosis is sanctioned again. The phrase "uppercase scope" only
+# appears in the regression-naming clause inside scare quotes — the
+# negative assert below pins on the bare unquoted instruction shape.
+if printf '%s\n' "$s7" | grep -qE 'has an uppercase scope|requires lowercase scope'; then
+  nope "§7 ENG-139: P7 lacks regenerated hallucination prose" \
+       "phrase 'has an uppercase scope' or 'requires lowercase scope' present — these were the literal hallucinations the agent emitted on PR #112; their re-introduction signals a regression"
+else
+  ok "§7 ENG-139: P7 lacks regenerated hallucination prose"
+fi
+
+# ─── ENG-106 M1: §2 completion checklist header step count ─────────────────
+# After ENG-106 inserted a new step 5 ("Append a progress.md entry") before
+# "Write the stage summary file", the "do NOT exit before step N" reference
+# in the header must point to step 6 (the stage-summary write) — not step 5.
+# Step 5 is now the progress.md write; step 6 is the mandatory stage-summary
+# write; step 7 is the verdict marker. The header hint must align so plan
+# agents don't skip the load-bearing stage-summary and verdict steps.
+if printf '%s\n' "$s2" | grep -qF 'do NOT exit before step 6'; then
+  ok "ENG-106 M1: §2 completion checklist header references 'before step 6' (step count updated)"
+else
+  nope "ENG-106 M1: §2 completion checklist header references 'before step 6' (step count updated)" \
+    "header still says 'before step 5' — plan agents may skip the mandatory stage-summary (step 6) and verdict (step 7) steps"
+fi
+
+# ─── ENG-106 QA adversarial: {progress_md_path} writer-presence in §2 ──────
+# Originally written as a single-section isolation test (planning-stage only).
+# ENG-108 widened the surface by adding the token to §3 at position 1 so the
+# implement agent reads the file; §§4-9 absence is now pinned by the ENG-108
+# QA loop above. This assertion narrows to its still-load-bearing half:
+# §2 (the writer) must continue to reference {progress_md_path} — without it,
+# the planning agent has no anchor to write progress entries against and the
+# rc=31 detective fires on every plan dispatch.
+_progress_in_s2="$(printf '%s\n' "$s2" | grep -c '{progress_md_path}' || true)"
+if [[ "$_progress_in_s2" == "1" ]]; then
+  ok "ENG-106 QA: §2 (planning) references {progress_md_path} exactly once (writer anchor)"
+else
+  nope "ENG-106 QA: §2 references {progress_md_path} exactly once" \
+    "expected 1 occurrence in §2 (the planning writer), got $_progress_in_s2 — without this anchor, the rc=31 detective fires every dispatch"
+fi
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

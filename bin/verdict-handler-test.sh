@@ -499,25 +499,26 @@ else
   fail_at "case-17 halted-with-pass-marker-transitions-in-handler" "rc=$rc calls=$(cat "$STUB_LOG")"
 fi
 
-# ─── Case 18: counter-reset-on-forward-transition (guards.sh fixture shape) ──
-# The count_marker_since_last_transition helper in guards.sh is tested here
-# by constructing the comment history shape and asserting jq-level counting
-# matches the algorithm. (The helper itself is sourced at test time from
-# guards.sh after Task 9 lands.)
+# ─── Case 18: counter-reset-on-operator-resume (guards.sh fixture shape) ──
+# The count_marker_since_last_operator_resume helper in guards.sh is tested
+# here by constructing the comment history shape and asserting jq-level
+# counting matches the algorithm. Post-ENG-123: only `reason=operator-resume`
+# transitions reset the counter; auto-transitions accumulate.
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:00:00.000Z" \
   "<!-- meta: metric name=qa_rejection -->|2026-04-23T09:30:00.000Z" \
   "<!-- pipeline: transition from=qa to=building -->|2026-04-23T10:00:00.000Z" \
+  "<!-- pipeline: transition from=qa to=qa reason=operator-resume -->|2026-04-23T10:30:00.000Z" \
   "<!-- meta: metric name=qa_rejection -->|2026-04-23T11:00:00.000Z")"
 last_ts="$(jq -r '
-  [.[] | select(.body | contains("<!-- pipeline: transition"))]
+  [.[] | select(.body | test("<!-- pipeline: transition[^>]*reason=operator-resume"))]
   | sort_by(.createdAt) | last | .createdAt // ""' <<<"$VH_FIXTURE_COMMENTS")"
 count_after="$(jq -r --arg t "$last_ts" \
   '[.[] | select(.createdAt > $t) | select(.body | contains("<!-- meta: metric name=qa_rejection -->"))] | length' \
   <<<"$VH_FIXTURE_COMMENTS")"
 [[ "$count_after" == "1" ]] \
-  && pass_at "case-18 counter-reset-on-forward-transition" \
-  || fail_at "case-18 counter-reset-on-forward-transition" "count_after=$count_after (expected 1)"
+  && pass_at "case-18 counter-reset-on-operator-resume" \
+  || fail_at "case-18 counter-reset-on-operator-resume" "count_after=$count_after (expected 1)"
 
 # ─── Case 19: stale-comment-eng24-resume-returns-1 ───────────────────
 # ENG-24 scenario: issue has stage:brainstorming + pipeline:halted, but
