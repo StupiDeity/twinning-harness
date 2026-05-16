@@ -984,19 +984,14 @@ _validate_plan_contract() {
   local plan_md plan_json schema_out schema_rc=0
 
   plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}*.md" 2>/dev/null | sort | head -1)"
-  # Fail-open if no plan .md for today: exit-25 agent-contract validator
-  # handles the no-md case upstream (brainstorm D-004 pseudocode lines 314-316).
+  # Fail-open if no plan .md for today: the exit-25 agent-contract validator
+  # handles the absent-md case upstream; double-halting here would be noise.
   if [[ -z "$plan_md" ]]; then
     log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}*.md; fail-open"
     return 0
   fi
 
   plan_json="${plan_md%.md}.json"
-  if [[ ! -f "$wt/$plan_json" ]]; then
-    _post_plan_contract_halt "$ident" "missing-file" \
-      "no sibling JSON found at $wt/$plan_json"
-    return 32
-  fi
 
   schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
     --ident "$ident" 2>/dev/null)" || schema_rc=$?
@@ -1004,7 +999,8 @@ _validate_plan_contract() {
     0)  return 0 ;;
     30) _post_plan_contract_halt "$ident" "malformed"  "$schema_out" ; return 30 ;;
     31) _post_plan_contract_halt "$ident" "incomplete" "$schema_out" ; return 31 ;;
-    *)  _post_plan_contract_halt "$ident" "unknown" \
+    32) _post_plan_contract_halt "$ident" "missing-file" "$schema_out" ; return 32 ;;
+    *)  _post_plan_contract_halt "$ident" "unexpected-rc" \
           "validator returned unexpected rc=$schema_rc; stdout: $schema_out" ; return 30 ;;
   esac
 }
@@ -1016,7 +1012,7 @@ _post_plan_contract_halt() {
   local ident="$1" defect="$2" raw="$3"
   local safe="${raw//<!--/<\\!--}"
   local body
-  body="$(printf '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->\n\nPlan-contract validation failed on dispatch_id=%s stage=planning:\n\n- Defect: %s\n\n```\n%s\n```\n\nSchema source-of-truth: see header comment in `bin/plan-schema.sh`.\n\n**Resume:** fix the JSON (or the plan prompt'\''s emission step), commit on the feature branch, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+  body="$(printf '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->\n\nPlan-contract validation failed on dispatch_id=%s stage=planning:\n\n- Defect: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/plan-schema.sh`.\n\n**Resume:** fix the JSON (or the plan prompt'\''s emission step), commit on the feature branch, then run `bash bin/pipeline.sh decide %s --action continue`.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$safe" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }

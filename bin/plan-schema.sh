@@ -41,16 +41,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# _emit_incomplete <message> — emit to stdout and return 31.
+# _emit_incomplete <message> — emit diagnostic to stdout.
 _emit_incomplete() {
   printf 'plan-contract-incomplete: %s\n' "$1"
-  return 31
 }
 
-# _emit_malformed <message> — emit to stdout and return 30.
+# _emit_malformed <message> — emit diagnostic to stdout.
 _emit_malformed() {
   printf 'plan-contract-malformed: %s\n' "$1"
-  return 30
 }
 
 # _warn_unknown <level> <field> — emit warning to stderr (exit 0 path).
