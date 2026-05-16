@@ -211,10 +211,10 @@ assert_no_tool_invocation() {
 # because the agent's Write calls carry an absolute path and the
 # discriminating signal is the basename suffix). Exported below.
 assert_no_write_to_path() {
-  local transcript="$1" path_suffix="$2"
+  local transcript="$1" forbidden_path_suffix="$2"
   [[ -s "$transcript" ]] || return 0
   local matched
-  matched="$(jq -Rr --arg p "$path_suffix" '
+  matched="$(jq -Rr --arg p "$forbidden_path_suffix" '
     fromjson? // empty
     | select(.type == "assistant")
     | .message.content[]?
