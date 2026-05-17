@@ -89,6 +89,10 @@ fail_at() { printf '  ❌ %s\n     %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
   && pass_at "retrospective plist rendered with slug 'foo'" \
   || fail_at "retrospective plist rendered" "missing"
 
+[[ -f "$HOME/Library/LaunchAgents/com.twinning.stuck-tick-alarm.foo.plist" ]] \
+  && pass_at "stuck-tick-alarm plist rendered with slug 'foo'" \
+  || fail_at "stuck-tick-alarm plist rendered" "missing"
+
 grep -q 'com.twinning.pipeline.foo' "$HOME/Library/LaunchAgents/com.twinning.pipeline.foo.plist" \
   && pass_at "Label substitution correct" \
   || fail_at "Label substitution" "missing in plist body"
@@ -115,6 +119,11 @@ bash "$HARNESS_DIR/uninstall-launchd.sh" "$TGT" >/dev/null 2>&1
    && -f "$HOME/Library/LaunchAgents/com.twinning.pipeline.bar.plist" ]] \
   && pass_at "uninstall surgical: foo gone, bar intact" \
   || fail_at "uninstall surgical" "wrong files removed"
+
+[[ ! -f "$HOME/Library/LaunchAgents/com.twinning.stuck-tick-alarm.foo.plist" \
+   && -f "$HOME/Library/LaunchAgents/com.twinning.stuck-tick-alarm.bar.plist" ]] \
+  && pass_at "uninstall surgical: stuck-tick-alarm.foo gone, bar intact" \
+  || fail_at "uninstall surgical (stuck-tick-alarm)" "wrong files removed"
 
 printf '\n  passed: %d\n  failed: %d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
