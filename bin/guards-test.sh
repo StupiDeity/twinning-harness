@@ -160,6 +160,147 @@ else
     "rc=$c4_rc out=$c4_out"
 fi
 
+# ── case-5 (QA-adversarial): stage=reviewing does NOT trip review_rejection ──
+# Stage=reviewing with 2 review_rejection markers: the check should fire only
+# on stage=implementing, not on any other non-empty stage.
+write_stub_two_review_rejections
+
+set +e
+c5_out="$(bash "$GUARDS" check ENG-T138E reviewing 2>&1)"
+c5_rc=$?
+set -e
+
+if [[ "$c5_rc" == "0" ]] && grep -q 'guards: clear' <<<"$c5_out"; then
+  pass_at "case-5: stage=reviewing does NOT trip review_rejection (only implementing fires)"
+else
+  fail_at "case-5: stage=reviewing should NOT trip review_rejection" \
+    "rc=$c5_rc out=$c5_out"
+fi
+
+# ── case-6 (QA-adversarial): stage=building does NOT trip review_rejection ───
+# Same fixture. Stage=building (forward edge post-qa-pass) must not trip.
+write_stub_two_review_rejections
+
+set +e
+c6_out="$(bash "$GUARDS" check ENG-T138F building 2>&1)"
+c6_rc=$?
+set -e
+
+if [[ "$c6_rc" == "0" ]] && grep -q 'guards: clear' <<<"$c6_out"; then
+  pass_at "case-6: stage=building does NOT trip review_rejection"
+else
+  fail_at "case-6: stage=building should NOT trip review_rejection" \
+    "rc=$c6_rc out=$c6_out"
+fi
+
+# ── case-7 (QA-adversarial): below-threshold count (1) at stage=implementing ─
+# One review_rejection marker (< threshold 2). Should NOT trip even at
+# implementing — boundary test for the >= operator.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=review_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+c7_out="$(bash "$GUARDS" check ENG-T138G implementing 2>&1)"
+c7_rc=$?
+set -e
+
+if [[ "$c7_rc" == "0" ]] && grep -q 'guards: clear' <<<"$c7_out"; then
+  pass_at "case-7: count=1 < threshold=2 does NOT trip at stage=implementing (boundary)"
+else
+  fail_at "case-7: count below threshold must not trip" \
+    "rc=$c7_rc out=$c7_out"
+fi
+
+# ── case-8 (QA-adversarial): multi-counter trip at stage=implementing ─────────
+# Two review_rejection markers + two qa_rejection markers, stage=implementing.
+# Both counters should appear in the trip output.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=review_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=review_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:30:00.000Z"},
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:45:00.000Z"},
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T10:00:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+c8_out="$(bash "$GUARDS" check ENG-T138H implementing 2>&1)"
+c8_rc=$?
+set -e
+
+if [[ "$c8_rc" == "10" ]] \
+   && grep -q 'review_rejection(2>=2)' <<<"$c8_out" \
+   && grep -q 'qa_rejection(2>=2)' <<<"$c8_out"; then
+  pass_at "case-8: multi-counter trip: review_rejection AND qa_rejection both appear in output"
+else
+  fail_at "case-8: both review_rejection and qa_rejection should trip at stage=implementing" \
+    "rc=$c8_rc out=$c8_out"
+fi
+
+# ── case-9 (QA-adversarial): qa stage with qa_rejection >=threshold still trips
+# Even at stage=qa, a qa_rejection trip (unrelated to review_rejection) must
+# still fire — the ENG-138 narrowing only affects review_rejection.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:30:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+c9_out="$(bash "$GUARDS" check ENG-T138I qa 2>&1)"
+c9_rc=$?
+set -e
+
+if [[ "$c9_rc" == "10" ]] && grep -q 'qa_rejection(2>=2)' <<<"$c9_out"; then
+  pass_at "case-9: qa_rejection still trips at stage=qa (ENG-138 narrowing is review_rejection-only)"
+else
+  fail_at "case-9: qa_rejection at stage=qa should still halt" \
+    "rc=$c9_rc out=$c9_out"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\nguards-test: passed=%s failed=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
