@@ -45,3 +45,4 @@ uninstall_one() {
 
 uninstall_one pipeline
 uninstall_one retrospective
+uninstall_one stuck-tick-alarm

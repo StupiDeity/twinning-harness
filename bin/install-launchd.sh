@@ -55,13 +55,15 @@ install_one() {
   fi
 }
 
-install_one pipeline      1
-install_one retrospective 0
+install_one pipeline        1
+install_one retrospective   0
+install_one stuck-tick-alarm 0
 
 cat <<EOF
 
 Pipeline LaunchAgents installed for project '$PROJECT_SLUG':
-  com.twinning.pipeline.$PROJECT_SLUG       — every 5 min
-  com.twinning.retrospective.$PROJECT_SLUG  — Mondays 09:00
+  com.twinning.pipeline.$PROJECT_SLUG            — every 5 min
+  com.twinning.retrospective.$PROJECT_SLUG       — Mondays 09:00
+  com.twinning.stuck-tick-alarm.$PROJECT_SLUG   — every 15 min
   Logs: $PROJECT_STATE_DIR/logs/launchd.{out,err}.log
 EOF

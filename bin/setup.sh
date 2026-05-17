@@ -598,7 +598,7 @@ is_launchd_done() {
   local slug label
   slug="$(jq -r '.project.slug // empty' "$CONFIG")"
   [[ -n "$slug" ]] || return 1
-  for label in "com.twinning.pipeline.$slug" "com.twinning.retrospective.$slug"; do
+  for label in "com.twinning.pipeline.$slug" "com.twinning.retrospective.$slug" "com.twinning.stuck-tick-alarm.$slug"; do
     launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
   done
 }
