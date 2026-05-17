@@ -208,6 +208,43 @@ else
   fail_at "case-I --cost-usd negative" "cost=$co type=$co_t line=$line"
 fi
 
+# ─── Case ENG-120: free-form impl_iteration event token ───────────────
+# The within-stage iteration loop (ENG-120) emits per-iteration metric
+# events with the free-form event name 'impl_iteration'. metrics.sh
+# accepts any string for $event (no enum validation — line 41 only
+# requires non-empty $event and $outcome). This case pins that the
+# token, outcome, and notes payload land verbatim in the JSONL row so a
+# future schema-tightening refactor that introduced enum validation
+# would surface here, not silently in production.
+reset_jsonl
+run_metrics impl_iteration ENG-T120 implementing pass 1234 "iteration=1"
+line="$(last_line)"
+for expected in \
+  '"event":"impl_iteration"' \
+  '"issue_id":"ENG-T120"' \
+  '"stage":"implementing"' \
+  '"outcome":"pass"' \
+  '"duration_ms":1234' \
+  '"notes":"iteration=1"'; do
+  if printf '%s' "$line" | grep -qF "$expected"; then
+    pass_at "Case ENG-120: row contains $expected"
+  else
+    fail_at "Case ENG-120: row contains $expected" "got: $line"
+  fi
+done
+# Anti-regression: the fail-iteration shape must also land cleanly, including
+# the structured `failed=<kind>:<key>` notes payload.
+reset_jsonl
+run_metrics impl_iteration ENG-T120 implementing fail 5000 "iteration=2 failed=smoke:bash-bin-foo-test.sh"
+line="$(last_line)"
+if printf '%s' "$line" | grep -qF '"outcome":"fail"' \
+   && printf '%s' "$line" | grep -qF '"notes":"iteration=2 failed=smoke:bash-bin-foo-test.sh"'; then
+  pass_at "Case ENG-120: fail-iteration row carries outcome=fail + structured failed= notes"
+else
+  fail_at "Case ENG-120: fail-iteration row carries outcome=fail + structured failed= notes" \
+    "got: $line"
+fi
+
 echo
 echo "metrics-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

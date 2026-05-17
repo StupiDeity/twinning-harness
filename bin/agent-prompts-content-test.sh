@@ -88,6 +88,63 @@ else
   ok "§3 lacks 'gh pr create'"
 fi
 
+# ─── ENG-120: §3 within-stage iteration loop directive ─────────────────
+# The implement agent runs an inner generator-evaluator loop (up to N=3)
+# within one dispatch, sourcing termination criteria from {plan_json}'s
+# pass_criteria[] or the profile gate-suite + zero-P0 fallback, emitting
+# one bash bin/metrics.sh impl_iteration event per iteration, and halting
+# with verdict halt --reason iteration-exhausted on N=3-still-failing.
+# Five literal-anchored assertions guard against the directive being
+# silently deleted or its parameters drifted (N changed, metric name
+# changed, halt reason changed, fallback marker disconnected).
+
+# Assertion C1 (presence of the heading literal):
+if printf '%s\n' "$s3" | grep -qF 'Within-stage iteration loop'; then
+  ok "§3 ENG-120: 'Within-stage iteration loop' directive heading present"
+else
+  nope "§3 ENG-120: 'Within-stage iteration loop' directive heading present" \
+    "phrase missing — has the iteration-loop block been removed or renamed?"
+fi
+
+# Assertion C2 (iteration cap N=3 verbatim — anti-drift on N):
+if printf '%s\n' "$s3" | grep -qF 'up to 3 iterations'; then
+  ok "§3 ENG-120: cap literal 'up to 3 iterations' (N=3) present"
+else
+  nope "§3 ENG-120: cap literal 'up to 3 iterations' (N=3) present" \
+    "phrase missing — has the iteration cap drifted from N=3 (D-002)?"
+fi
+
+# Assertion C3 (metric chokepoint literal):
+if printf '%s\n' "$s3" | grep -qF 'bash bin/metrics.sh impl_iteration'; then
+  ok "§3 ENG-120: 'bash bin/metrics.sh impl_iteration' chokepoint named"
+else
+  nope "§3 ENG-120: 'bash bin/metrics.sh impl_iteration' chokepoint named" \
+    "phrase missing — has the metric emission been replaced with a parallel telemetry path?"
+fi
+
+# Assertion C4 (structured + fallback predicate references):
+if printf '%s\n' "$s3" | grep -qF 'pass_criteria' \
+   && printf '%s\n' "$s3" | grep -qF '(no plan.json — falling back to prose plan)'; then
+  ok "§3 ENG-120: structured (pass_criteria) AND fallback predicate marker both present"
+else
+  nope "§3 ENG-120: structured (pass_criteria) AND fallback predicate marker both present" \
+    "one or both predicates missing — D-003 termination-criteria contract broken"
+fi
+
+# Assertion C5 (halt reason cross-reference — anti-regression on the
+# `iteration-exhausted` token within the loop block specifically, not just the existing
+# verdict-marker enumeration):
+# Substring proximity: 'iteration-exhausted' must appear WITHIN the iteration-loop
+# directive's body (after the heading and before 'Your task:'), not just in the
+# downstream Verdict marker block. awk extracts the loop-block window.
+loop_block="$(printf '%s\n' "$s3" | awk '/Within-stage iteration loop/{in_block=1} in_block; /^Your task:/{exit}')"
+if printf '%s\n' "$loop_block" | grep -qF 'iteration-exhausted'; then
+  ok "§3 ENG-120: loop block names 'iteration-exhausted' halt reason inline"
+else
+  nope "§3 ENG-120: loop block names 'iteration-exhausted' halt reason inline" \
+    "phrase missing from the loop block (may exist only in the downstream verdict-marker enumeration) — D-005 halt-on-exhaustion contract broken"
+fi
+
 # ─── ENG-108: §3 read-first list has {progress_md_path} at position 1 ───
 # The implementing prompt MUST instruct the agent to read the per-issue
 # progress notebook before any other onboarding artifact (Linear AC-1).

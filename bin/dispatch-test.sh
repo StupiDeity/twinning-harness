@@ -100,6 +100,25 @@ for stage in brainstorming planning implementing ui reviewing qa building releas
   fi
 done
 
+# ─── ENG-120: metrics.sh dual-path on implementing arm ────────────────
+# The implementing stage gains Bash(bash .pipeline/bin/metrics.sh:*) AND
+# Bash(bash bin/metrics.sh:*) so the within-stage iteration loop's
+# `bash bin/metrics.sh impl_iteration …` emissions land regardless of
+# whether the agent's worktree has the harness symlinked at .pipeline/ or
+# carries the harness scripts directly at bin/. Scoped to implementing —
+# released + retrospective already carry this pattern via the unchanged
+# allowlist arms.
+impl_tools="$(allowed_tools_for implementing 2>/dev/null)"
+if ! printf '%s' "$impl_tools" | grep -q 'Bash(bash \.pipeline/bin/metrics\.sh:\*)'; then
+  fail_at "ENG-120: implementing allowlist contains Bash(bash .pipeline/bin/metrics.sh:*)" \
+    "tools=$impl_tools"
+elif ! printf '%s' "$impl_tools" | grep -q 'Bash(bash bin/metrics\.sh:\*)'; then
+  fail_at "ENG-120: implementing allowlist contains Bash(bash bin/metrics.sh:*)" \
+    "tools=$impl_tools"
+else
+  pass_at "ENG-120: implementing allowlist carries metrics.sh dual-path"
+fi
+
 # ENG-49 Gap #1: UI allowlist no longer contains gh pr create.
 ui_tools="$(allowed_tools_for ui)"
 if [[ "$ui_tools" != *"gh pr create"* ]]; then
