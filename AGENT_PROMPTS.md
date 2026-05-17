@@ -616,8 +616,12 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    do not attempt direct-to-main pushes. Only knowledge-file changes go through PRs with
    CODEOWNERS. Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 5. **Append a progress.md entry** at `{progress_md_path}`. ONE H2 entry per
-   dispatch; this is the ONLY mutation you make to the file. Schema (per
-   `docs/runbooks/progress-md.md`):
+   dispatch; this is the ONLY mutation you make to the file. Use `Edit` with
+   append-via-anchor (or `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`).
+   **NEVER use `Write`** (truncates — the dispatch.sh detective halts with
+   rc=29 if you do). The orchestrator pre-touches the file before every
+   dispatch, so it always exists; on a fresh issue (empty file, no anchor to
+   `Edit` against) use `cat >>`. Schema (per `docs/runbooks/progress-md.md`):
 
        ## {dispatch_id} - planning - <ISO-8601-UTC-now>
 
@@ -626,16 +630,10 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
        - <one next-dispatch breadcrumb for the implement agent>
        [3–5 bullets total — under 80 chars each, no prose paragraphs]
 
-   **Append, do NOT rewrite.** If the file exists, `Read` it FIRST, then `Write`
-   back the prior content followed by ONE blank line followed by your new H2
-   entry. Do NOT use `Write` with only the new entry — that truncates and
-   discards prior dispatches' entries. Do NOT edit any prior entry. If the
-   file does not exist yet, `Write` it with just your single H2 entry.
-
-   The orchestrator's post-dispatch detective scans this file. A missing
-   entry, more than one entry stamped with your `{dispatch_id}`, or a prior
-   entry that's been removed → halt with `progress-md-entry-missing`
-   (rc=31, see `docs/runbooks/recovery.md`).
+   Append-only — do NOT edit any prior entry. The orchestrator's post-dispatch
+   detective scans this file: a missing entry, more than one entry stamped
+   with your `{dispatch_id}`, or a prior entry that's been removed → halt with
+   `progress-md-entry-missing` (rc=31, see `docs/runbooks/recovery.md`).
 6. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
    Overwrite-on-every-dispatch contract per §0; orchestrator posts it to Linear as
    `completion/plan/{issue_id}`.

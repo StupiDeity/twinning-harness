@@ -1751,13 +1751,52 @@ fi
 # §2 (the writer) must continue to reference {progress_md_path} — without it,
 # the planning agent has no anchor to write progress entries against and the
 # rc=31 detective fires on every plan dispatch.
+#
+# Relaxed from `== 1` to `>= 1` post-ENG-117-halt: the §2 prompt now mirrors
+# the §1 pattern with both an "Append at `{progress_md_path}`" anchor AND a
+# `cat >> {progress_md_path}` example. Pinning ==1 forced an unsafe wording
+# choice. Presence (>=1) is what guards against the rc=31 detective.
 _progress_in_s2="$(printf '%s\n' "$s2" | grep -c '{progress_md_path}' || true)"
-if [[ "$_progress_in_s2" == "1" ]]; then
-  ok "ENG-106 QA: §2 (planning) references {progress_md_path} exactly once (writer anchor)"
+if (( _progress_in_s2 >= 1 )); then
+  ok "ENG-106 QA: §2 (planning) references {progress_md_path} at least once (writer anchor)"
 else
-  nope "ENG-106 QA: §2 references {progress_md_path} exactly once" \
-    "expected 1 occurrence in §2 (the planning writer), got $_progress_in_s2 — without this anchor, the rc=31 detective fires every dispatch"
+  nope "ENG-106 QA: §2 references {progress_md_path} at least once" \
+    "expected ≥1 occurrence in §2 (the planning writer), got $_progress_in_s2 — without this anchor, the rc=31 detective fires every dispatch"
 fi
+
+# ─── ENG-109 regression: every progress.md WRITER stage must forbid `Write` ─
+# The ENG-109 detective in bin/dispatch.sh halts with rc=29 if any Write tool
+# invocation targets a file_path ending in /progress.md. The agent-side
+# prohibition lives in the per-stage prompts; ENG-117 (2026-05-17) tripped
+# because the ENG-109 prompt-retrofit pass updated §§1,4,5,6,7 but missed §2.
+#
+# This loop pins the prohibition across every writer-stage so a future
+# incomplete retrofit fails CI loudly rather than halting a live dispatch.
+# Writers are stages whose prompt contains "Append a `progress.md` entry"
+# (six sections per the 2026-05-17 baseline: brainstorm, plan, ui, review,
+# qa, build). Implementation (§3) and Released (§8) only read progress.md.
+for _writer_pair in \
+    "## 1. Brainstorm Agent|brainstorming" \
+    "## 2. Plan Agent|planning" \
+    "## 4. UI Agent (Frontend)|ui" \
+    "## 5. Review Agent|reviewing" \
+    "## 6. QA Agent|qa" \
+    "## 7. Build Agent|building"; do
+  _section_header="${_writer_pair%%|*}"
+  _stage_key="${_writer_pair##*|}"
+  _body="$(rendered_stage_body "$_section_header")"
+  if printf '%s\n' "$_body" | grep -qE 'Append a (`)?progress\.md(`)? entry'; then
+    if printf '%s\n' "$_body" | grep -qF 'NEVER use `Write`'; then
+      ok "ENG-109 regression: ${_stage_key} progress.md writer forbids Write (rc=29 guard)"
+    else
+      nope "ENG-109 regression: ${_stage_key} progress.md writer forbids Write (rc=29 guard)" \
+        "section has the 'Append a \`progress.md\` entry' instruction but lacks 'NEVER use \`Write\`' — agent will trip the dispatch.sh rc=29 detective (ENG-117 May 2026 halt)"
+    fi
+  else
+    nope "ENG-109 regression: ${_stage_key} progress.md writer baseline present" \
+      "section no longer carries 'Append a \`progress.md\` entry' instruction — if writer was deliberately removed, drop this stage from the writer loop in agent-prompts-content-test.sh; otherwise restore the instruction"
+  fi
+done
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
