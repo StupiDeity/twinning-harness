@@ -228,15 +228,10 @@ _pipeline_drain_issue_state() {
       # original metric semantics for back-compat with PR-E / PR-N.
       local has_alloc
       has_alloc="$(jq -r 'has("current_dispatch_id") and (.current_dispatch_id // "") != ""' "$state_file" 2>/dev/null || printf 'false')"
+      strip_state_preserve_alloc "$state_file"
       if [[ "$has_alloc" == "true" ]]; then
-        local stripped tmp
-        stripped="$(jq -c '{current_dispatch_seq, current_dispatch_id, current_stage}' "$state_file" 2>/dev/null || printf '{}')"
-        tmp="${state_file}.tmp.$$"
-        printf '%s' "$stripped" > "$tmp"
-        mv -f "$tmp" "$state_file"
         log "pipeline-decide: stripped classify-set fields from $state_file (preserved current_dispatch_id)"
       else
-        rm -f "$state_file"
         log "pipeline-decide: removed $state_file (policy=skip-until-human-acts, no allocator fields)"
       fi
       state_drained=true

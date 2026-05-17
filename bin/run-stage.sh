@@ -846,7 +846,7 @@ _pre_dispatch_merge_gate() {
 
   # Success-path state cleanup, mirroring the cleanup at lines 851-855.
   rm -f "$(issue_dir "$ident")/wait-${stage}.json" 2>/dev/null || true
-  rm -f "$(issue_dir "$ident")/issue-state.json"     2>/dev/null || true
+  strip_state_preserve_alloc "$(issue_dir "$ident")/issue-state.json"
 
   # Apply the transition directly. Each step in apply_transition is
   # idempotent (verdict-handler.sh:158-184); on partial failure (e.g.,
@@ -1967,7 +1967,7 @@ main() {
         [[ -n "$_rp_branch" ]] && _post_review_dispatch_update "$ident" "$_rp_branch" || true
       fi
       # Success path: clear any prior failure state + skip labels.
-      rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
+      strip_state_preserve_alloc "$(issue_dir "$ident")/issue-state.json"
       rm -f "$(issue_dir "$ident")/wait-${stage}.json" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
