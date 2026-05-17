@@ -484,6 +484,39 @@ else
 fi
 unset rendered_s5
 
+# ─── ENG-133: §5 mechanical path-B/path-C verdict from (critical, major) ──
+# Background: the review agent's path-B / path-C choice used to be stated
+# in prose ("any critical or major findings" vs "no critical / major
+# findings"), leaving the agent free to emit a path-B verdict marker on a
+# (0, 0) summary. Observed on ENG-122 (2026-05-15T23:03Z) — a path-C
+# summary body and a path-B verdict marker landed 27s apart. The fix
+# requires the agent to (a) print a structured Findings count tuple
+# BEFORE the Decision-path block, and (b) treat the path-B / path-C
+# branch as a mechanical predicate on (critical, major). Pin the literal
+# count-tuple format and the two literal predicate phrases so a future
+# prompt edit that demotes either trips here.
+
+if printf '%s\n' "$s5" | grep -qF 'Findings: (critical=N, major=N, minor=N, nit=N)'; then
+  ok "§5 ENG-133: count-tuple emission instruction present (literal 'Findings: (critical=N, major=N, minor=N, nit=N)')"
+else
+  nope "§5 ENG-133: count-tuple emission instruction present" \
+    "literal 'Findings: (critical=N, major=N, minor=N, nit=N)' missing from §5 — has the structured pre-verdict line been demoted?"
+fi
+
+if printf '%s\n' "$s5" | grep -qF 'mechanical: critical == 0 AND major == 0'; then
+  ok "§5 ENG-133: path-C header states mechanical predicate ('mechanical: critical == 0 AND major == 0')"
+else
+  nope "§5 ENG-133: path-C header states mechanical predicate" \
+    "literal 'mechanical: critical == 0 AND major == 0' missing from §5 — has the path-C gate reverted to prose?"
+fi
+
+if printf '%s\n' "$s5" | grep -qF 'mechanical: critical > 0 OR major > 0'; then
+  ok "§5 ENG-133: path-B header states mechanical predicate ('mechanical: critical > 0 OR major > 0')"
+else
+  nope "§5 ENG-133: path-B header states mechanical predicate" \
+    "literal 'mechanical: critical > 0 OR major > 0' missing from §5 — has the path-B gate reverted to prose?"
+fi
+
 # ─── ENG-77 QA-adversarial: §5 invariant deepening (QA round) ──────────
 # Background: the existing three D-002 asserts (lines 211, 221, 230)
 # run against the entire §5 body. `section_body()` includes pre-fence

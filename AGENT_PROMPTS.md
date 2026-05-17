@@ -1145,6 +1145,19 @@ Wait for all sub-agents to return. Merge findings into a single severity-tagged 
   - `minor`    — nice-to-fix.
   - `nit`      — style; never request changes for nits alone.
 
+Count-tuple emission (MANDATORY — ENG-133):
+After merging findings, emit ONE structured line in the exact format below
+BEFORE the anti-bias pass and BEFORE any free-text "Verdict:" prose. This
+line is what the path-B / path-C predicate keys off; a contradiction
+between this line and the verdict marker emitted at exit is a P0 prompt
+violation.
+
+  Findings: (critical=N, major=N, minor=N, nit=N)
+
+Exact case, exact punctuation, exact order. `N` is the integer count from
+the merged severity-tagged list. The line is auditable from the dispatch
+transcript and from the Linear `completion/reviewing/{issue_id}` summary.
+
 Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
 
 **Premise challenge:** Re-read the brainstorm's core decisions. Are they still sound
@@ -1232,6 +1245,15 @@ Gotcha surfacing (PROPOSE, do not write):
 
 Decision path (apply exactly one):
 
+Compute `(critical, major)` from the merged findings list emitted in the
+`Findings: (critical=N, major=N, minor=N, nit=N)` line above. The path-B /
+path-C choice is a mechanical predicate on those two counts — not a
+judgment call, not derived from a free-text "Verdict:" line, not derived
+from any sub-agent's summary. Emitting path B on `(critical=0, major=0)`,
+emitting path C on a non-zero count, emitting both, or emitting neither
+is a P0 prompt violation (ENG-133). Path A (premise failure) is a separate
+escape hatch and is not gated by the count predicate.
+
   A. Premise failure (brainstorm was wrong).
      - Apply Linear label `pipeline:premise-failure`.
      - Post the `premise_failure` marker comment.
@@ -1239,7 +1261,7 @@ Decision path (apply exactly one):
      - Exit. Orchestrator applies pipeline:halted (ENG-56) and handles
        loop-back.
 
-  B. Changes requested (any `critical` or `major` findings).
+  B. Changes requested (mechanical: critical > 0 OR major > 0).
      - Post a consolidated COMMENTED-state review with all findings via:
          gh pr review {pr_number} --comment --body "<full summary>"
        Body contains severity-prefixed, "path/to/file.ext:LINE"-anchored
@@ -1257,7 +1279,7 @@ Decision path (apply exactly one):
      - Exit. Orchestrator applies pipeline:halted (ENG-56) and transitions
        reviewing → implementing.
 
-  C. Clean review (no `critical` / `major` findings) — ENG-54 contract.
+  C. Clean review (mechanical: critical == 0 AND major == 0) — ENG-54 contract.
      - Post a consolidated COMMENTED-state review via:
          gh pr review {pr_number} --comment --body "<summary>"
        Summary: "Reviewed commit {sha[:8]}. N personas: PASS. 0 critical,
