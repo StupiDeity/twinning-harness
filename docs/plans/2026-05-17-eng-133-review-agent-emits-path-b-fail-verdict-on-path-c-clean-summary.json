@@ -1,0 +1,23 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-133",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "AGENT_PROMPTS.md §5 emits a literal Findings: (critical=N, major=N, minor=N, nit=N) line before the anti-bias pass, the Decision-path block opens with a paragraph stating the path-B/path-C choice is a mechanical predicate on (critical, major), and the path-B and path-C headers reword to state the predicate verbatim. bin/agent-prompts-content-test.sh adds three grep-anchored assertions in the §5 block.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Findings: \\(critical=N, major=N, minor=N, nit=N\\)", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "mechanical: critical == 0 AND major == 0", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "mechanical: critical > 0 OR major > 0", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "B\\. Changes requested \\(any `critical` or `major` findings\\)\\.", "expect_match": false },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "C\\. Clean review \\(no `critical` / `major` findings\\) — ENG-54 contract\\.", "expect_match": false },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "ENG-133", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "Findings: \\(critical=", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "mechanical: critical == 0 AND major == 0", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "mechanical: critical > 0 OR major > 0", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/agent-prompts-content-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}
