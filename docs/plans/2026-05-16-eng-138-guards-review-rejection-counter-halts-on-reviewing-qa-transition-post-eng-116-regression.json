@@ -1,0 +1,43 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-138",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/guards.sh::check accepts an optional [stage] second arg and scopes the review_rejection trip to stage == implementing (empty-stage path trips as today for case-15 / operator-triage back-compat)",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "local stage=\"\\$\\{2:-\\}\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "\\[\\[ -z \"\\$stage\" \\|\\| \"\\$stage\" == \"implementing\" \\]\\]", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "guards\\.sh check <issue_id> \\[stage\\]", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "ENG-138", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/run-stage.sh passes \"$stage\" as the second positional to both guards.sh check invocations at the line 1177-1179 block",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "guards\\.sh\" check \"\\$ident\" \"\\$stage\" 2>/dev/null", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "guards\\.sh\" check \"\\$ident\" \"\\$stage\" 2>&1", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/guards-test.sh exists, ends with the source-and-test sentinel, and asserts the four ENG-138 regression cases",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/guards-test.sh" },
+        { "kind": "grep", "path": "bin/guards-test.sh", "pattern": "BASH_SOURCE\\[0\\]", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards-test.sh", "pattern": "review_rejection", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/guards-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "Existing test surfaces stay green: case-15 (no-stage back-compat), verdict-adversarial A10/A10B/A11 (helper signature unchanged), profile-allowlist reviewing/qa (Bash(bash bin/guards.sh:*) still allowed)",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/verdict-adversarial-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/profile-allowlist-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}

@@ -1235,10 +1235,12 @@ main() {
     exit "$rc"
   }
 
-  # Guards (threshold-based human gates).
-  if ! bash "$SCRIPT_DIR/guards.sh" check "$ident" 2>/dev/null; then
+  # Guards (threshold-based human gates). ENG-138: pass the dispatched
+  # stage so guards.sh::check can scope the review_rejection threshold
+  # trip to stage == implementing (the loopback continuation edge).
+  if ! bash "$SCRIPT_DIR/guards.sh" check "$ident" "$stage" 2>/dev/null; then
     local tripped
-    tripped="$(bash "$SCRIPT_DIR/guards.sh" check "$ident" 2>&1 || true)"
+    tripped="$(bash "$SCRIPT_DIR/guards.sh" check "$ident" "$stage" 2>&1 || true)"
     classify_failure "$ident" "$stage" "skip-until-human-acts" \
       "guards tripped: $tripped" 10
     exit 10

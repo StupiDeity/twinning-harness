@@ -17,7 +17,15 @@
 # `reviewing → implementing` auto-transition zeroed the counter, so the
 # threshold could never trip from review_rejection alone, and the
 # `building → implementing` merge-conflict loopback handed each rebase
-# round a fresh budget. gotcha_triggered and learned_rule_renewal count
+# round a fresh budget.
+# ENG-138 narrows the firing-side: the review_rejection threshold trips
+# only when the dispatched stage is 'implementing' (the loopback
+# continuation edge). Reaching qa after a clean reviewing PASS no
+# longer halts even when the cumulative count is at or over the
+# threshold. The counter still accumulates across loopback cycles for
+# operator audit (visible in the `guards: clear` log line), and reset
+# semantics (operator-resume waypoint clears) are unchanged.
+# gotcha_triggered and learned_rule_renewal count
 # across the whole issue lifetime by design, cleared only by their explicit
 # ack labels:
 #   pipeline:knowledge-reviewed -> clears gotcha_triggered threshold
@@ -28,8 +36,13 @@
 # history predates the ENG-60 vocabulary cutover.
 #
 # Usage:
-#   guards.sh check <issue_id>
-#     exit 0 if clear, exit 10 if a threshold is tripped (prints which)
+#   guards.sh check <issue_id> [stage]
+#     exit 0 if clear, exit 10 if a threshold is tripped (prints which).
+#     When [stage] is omitted, the review_rejection trip fires as today
+#     (operator-triage / case-15 back-compat). When [stage] is provided
+#     (e.g. by bin/run-stage.sh), the review_rejection trip is scoped to
+#     stage == implementing — see header comment above for the ENG-138
+#     contract.
 #   guards.sh bump <issue_id> <counter_name>
 #     counter_name: review_rejection | qa_rejection | implement_rejection | gotcha_triggered | learned_rule_renewal
 
@@ -84,6 +97,7 @@ count_marker_since_last_operator_resume() {
 
 check() {
   local ident="$1"
+  local stage="${2:-}"
   local review_threshold gotcha_threshold rule_threshold qa_threshold impl_threshold
   review_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.review_rejections_per_feature')"
   gotcha_threshold="$(config_get '.human_checkpoints.require_human_on_threshold.gotcha_trigger_count')"
@@ -106,7 +120,13 @@ check() {
   impl="$(count_marker_since_last_operator_resume "$ident" implement_rejection)"
 
   local tripped=""
-  if (( rev >= review_threshold )); then
+  # ENG-138: trip review_rejection only when the next dispatched stage is
+  # 'implementing' (the loopback-continuation edge). Empty-stage CLI
+  # invocations preserve the trip-as-today path used by bin/run-stage-
+  # test.sh::case-15 and operator triage flows. The counter still
+  # accumulates across loopback cycles; reset semantics from ENG-116
+  # (operator-resume only) are unchanged.
+  if (( rev >= review_threshold )) && [[ -z "$stage" || "$stage" == "implementing" ]]; then
     tripped+="review_rejection($rev>=$review_threshold) "
   fi
   if (( got >= gotcha_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:knowledge-reviewed; then
