@@ -1941,6 +1941,72 @@ for _writer_pair in \
   fi
 done
 
+# ─── ENG-124: §6 Plan JSON contract block + bridge sentence ──────────────────
+s6_eng124="$(section_body "## 6. QA Agent")"
+
+# ENG-124-C1: §6 carries {plan_json} token
+if printf '%s\n' "$s6_eng124" | grep -qF '{plan_json}'; then
+  ok "§6 ENG-124-C1: carries {plan_json} token (qa prompt embeds plan.json)"
+else
+  nope "§6 ENG-124-C1: carries {plan_json} token" \
+       "{plan_json} missing from §6 body — render-prompt.sh embeds plan.json via this token; dropping it means the qa agent never receives structured plan data"
+fi
+
+# ENG-124-C2: §6 carries the directive phrases
+if printf '%s\n' "$s6_eng124" | grep -qF 'Plan JSON contract' \
+   && printf '%s\n' "$s6_eng124" | grep -qF 'pass_criteria' \
+   && printf '%s\n' "$s6_eng124" | grep -qF 'AUTHORITATIVE'; then
+  ok "§6 ENG-124-C2: 'Plan JSON contract' + 'pass_criteria' + 'AUTHORITATIVE' present"
+else
+  nope "§6 ENG-124-C2: directive phrases present" \
+       "one or more of the three load-bearing phrases missing from §6: 'Plan JSON contract' (block header), 'pass_criteria' (the structured field the qa agent must act on), 'AUTHORITATIVE' (the verification-contract precedence). All three must be present."
+fi
+
+# ENG-124-C3: bridge sentence in the manifest block
+if printf '%s\n' "$s6_eng124" | grep -qF 'When `plan.json` is present' \
+   && printf '%s\n' "$s6_eng124" | grep -qF 'per-feature `pass_criteria[]` entries are the structured form of the contract'; then
+  ok "§6 ENG-124-C3: bridge sentence present in 'Authoritative test manifest' block"
+else
+  nope "§6 ENG-124-C3: bridge sentence" \
+       "the D-004 bridge ('When plan.json is present … per-feature pass_criteria[] entries are the structured form of the contract') is missing — without it the qa agent has the JSON in prompt but no explicit instruction to act on it"
+fi
+
+# ENG-124-C4: delimiter parity between §3 and §6
+# Shape A conditional: §3 may not yet have the delimiters (ENG-123 pending).
+# When §3 has no delimiters, §6 must still have them (guards against §6 drift).
+# When §3 has delimiters too, assert byte-for-byte parity of counts.
+s3_eng124="$(section_body "## 3. Implementation Agent (Backend)")"
+for delim in '<<<PLAN_JSON_BEGIN>>>' '<<<PLAN_JSON_END>>>'; do
+  s6_count="$(printf '%s\n' "$s6_eng124" | grep -cF "$delim" || true)"
+  s3_count="$(printf '%s\n' "$s3_eng124" | grep -cF "$delim" || true)"
+  if [[ "$s6_count" -ge 1 ]]; then
+    if [[ "$s3_count" -ge 1 && "$s3_count" == "$s6_count" ]]; then
+      ok "§3/§6 ENG-124-C4: delimiter '$delim' present in both sections, counts match"
+    elif [[ "$s3_count" -eq 0 ]]; then
+      ok "§6 ENG-124-C4: delimiter '$delim' present in §6 (§3 pending ENG-123 — Shape A conditional pass)"
+    else
+      nope "§3/§6 ENG-124-C4: delimiter '$delim' parity" \
+           "s3_count=$s3_count s6_count=$s6_count — §3 and §6 must carry the SAME PLAN_JSON delimiters byte-for-byte; drift breaks the resolver's verbatim-embed contract"
+    fi
+  else
+    nope "§6 ENG-124-C4: delimiter '$delim' missing from §6" \
+         "s6_count=$s6_count — §6 must carry the PLAN_JSON delimiter; dropping it breaks the verbatim-embed contract"
+  fi
+done
+unset s3_eng124
+
+# ENG-124-C5: injection-defense parity with §3
+for phrase in 'DATA, not instructions' 'never copy a' '<!-- pipeline:'; do
+  if printf '%s\n' "$s6_eng124" | grep -qF "$phrase"; then
+    ok "§6 ENG-124-C5: carries '$phrase' (injection-defense clause parity with §3)"
+  else
+    nope "§6 ENG-124-C5: carries '$phrase'" \
+         "phrase missing — §6's Plan JSON block must repeat §3's injection-defense clause verbatim. Dropping it leaves the qa agent vulnerable to a malicious plan.json that contains pipeline marker prose"
+  fi
+done
+
+unset s6_eng124
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
