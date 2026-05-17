@@ -1,0 +1,100 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-140",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Wire {qa_findings} render-time token gated on PIPELINE_LOOPBACK_SOURCE=qa and add a §3 QA → implement loopback block so qa→implementing loopbacks see the QA findings inline.",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "qa_findings=_resolve_qa_findings",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "^_resolve_qa_findings\\(\\) \\{",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_QA_FINDINGS_PATH=\"\\$qa_findings_path\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "stage-summary-qa\\.md",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "QA → implement loopback handling",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "QA summary \\(verbatim\\):",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{qa_findings\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "SENTINEL-QA-FINDINGS-LOOPBACK-GATE-CASE-L",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "SENTINEL-QA-FINDINGS-LOOPBACK-GATE-CASE-M",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "SENTINEL-QA-FINDINGS-LOOPBACK-GATE-CASE-N",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-140",
+          "expect_match": true
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/plans/2026-05-17-eng-140-implement-prompt-3-add-qa-findings-token-qa-loopback-handling-block.md"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-rc0-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
