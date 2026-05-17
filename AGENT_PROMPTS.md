@@ -570,6 +570,20 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
     `Bash(cargo:*)` from `dispatch.sh` but missed that `bin/profile-allowlist-test.sh`
     had five assertions pinning that exact token, and the implement agent halted on the
     pre-commit gate failure mid-stage.
+    Then run the **add-side** half of the same closure sweep: for every file in
+    File Structure being NEWLY CREATED under a gate-runnable glob (per the
+    profile's "Build & test gates" Test command — e.g., `bin/*-test.sh` for the
+    harness target, `tests/` for most stacks), the project's
+    `learned-rules/<slug>/project-profile.md` file MUST also appear in File
+    Structure with a task explicitly updating the relevant gate command line
+    under that profile's `## Build & test gates` section to include the new
+    file. If the profile file is absent from File Structure, this is a P0
+    plan-completeness defect — add it. This catches the ENG-122 class of error:
+    the plan added `bin/plan-schema-test.sh` and
+    `bin/plan-schema-adversarial-test.sh` to File Structure but never named
+    `learned-rules/harness/project-profile.md`, so the agent-side gate list
+    silently drifted from the on-disk test set and the post-merge review's
+    minor #4 caught it only after an implement-loopback edit halted on scope.
   - **scope** — every task and every File Structure entry must trace to a brainstorm
     decision or an accepted ADR. Flag gold-plating; flag any task whose `touches` list
     strays outside the declared File Structure.
