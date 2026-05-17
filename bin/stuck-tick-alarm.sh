@@ -68,7 +68,7 @@ _lock_holder_pid() {
 
 _ps_excerpt_for_pid() {
   local pid="$1"
-  if [[ "$pid" == "none" ]]; then
+  if [[ "$pid" == "none" ]] || [[ ! "$pid" =~ ^[0-9]+$ ]]; then
     printf '<no live tick holder>\n'
     return 0
   fi
@@ -76,9 +76,8 @@ _ps_excerpt_for_pid() {
     || printf '<ps unavailable for pid=%s>\n' "$pid"
 }
 
-_log_tail_for_today() {
-  local log_file="$PROJECT_STATE_DIR/logs/local-$(date -u +%Y-%m-%d).log"
-  tail -n 40 "$log_file" 2>/dev/null || true
+_log_path_for_today() {
+  printf '%s/logs/local-%s.log' "$PROJECT_STATE_DIR" "$(date -u +%Y-%m-%d)"
 }
 
 _debounced() {
@@ -95,7 +94,7 @@ _debounced() {
       [[ "$ts" =~ ^[0-9]+$ ]] && last_epoch="$ts" || last_epoch=0
     fi
   fi
-  (( now_epoch - last_epoch <= DEBOUNCE_WINDOW_SECONDS ))
+  (( now_epoch - last_epoch < DEBOUNCE_WINDOW_SECONDS ))
 }
 
 _stamp_debounce() {
@@ -124,10 +123,10 @@ main() {
   fi
 
   last_iso="$(cat "$HEARTBEAT_FILE" 2>/dev/null || printf '<none>')"
-  payload="$(printf 'Stuck tick alarm: %s has not completed a tick for %s sec (threshold %sm; last good %s)\nLock holder: pid=%s\nps excerpt:\n%s\nLog tail:\n%s' \
+  payload="$(printf 'Stuck tick alarm: %s has not completed a tick for %s sec (threshold %sm; last good %s)\nLock holder: pid=%s\nps excerpt:\n%s\nLog: %s (last 40 lines)' \
     "$PROJECT_SLUG" "$age" "$threshold" "$last_iso" \
     "$holder_pid" "$(_ps_excerpt_for_pid "$holder_pid")" \
-    "$(_log_tail_for_today)")"
+    "$(_log_path_for_today)")"
 
   bash "$SCRIPT_DIR/slack.sh" warn "$payload" || true
   _stamp_debounce
