@@ -3010,7 +3010,9 @@ fi
 # would have leaked the slot dir for the rest of the dispatch.sh
 # subshell's life. Pin the structural invariant — the non-empty line
 # immediately preceding `acquire_claude_mutex` in dispatch.sh must be
-# `trap 'release_claude_mutex' EXIT`. A future reorder regression would
+# `trap _dispatch_cleanup EXIT` (the unified composed-cleanup trap;
+# preserves the original `release_claude_mutex` semantic via
+# `_dispatch_cleanup`'s internal call). A future reorder regression would
 # fail silently otherwise.
 _TBA_ACQUIRE_LINE="$(grep -n '^[[:space:]]*acquire_claude_mutex[[:space:]]*$' "$SCRIPT_DIR/dispatch.sh" | head -1 | cut -d: -f1)"
 if [[ -z "$_TBA_ACQUIRE_LINE" ]]; then
@@ -3027,10 +3029,41 @@ else
     fi
     _TBA_PROBE=$((_TBA_PROBE - 1))
   done
-  if [[ "$_TBA_PRIOR" == "trap 'release_claude_mutex' EXIT" ]]; then
-    pass_at "AC-TRAP-BEFORE-ACQUIRE: dispatch.sh installs release trap on the line immediately preceding acquire_claude_mutex (line $_TBA_ACQUIRE_LINE)"
+  if [[ "$_TBA_PRIOR" == "trap _dispatch_cleanup EXIT" ]]; then
+    pass_at "AC-TRAP-BEFORE-ACQUIRE: dispatch.sh installs _dispatch_cleanup trap on the line immediately preceding acquire_claude_mutex (line $_TBA_ACQUIRE_LINE); _dispatch_cleanup composes release_claude_mutex"
   else
-    fail_at "AC-TRAP-BEFORE-ACQUIRE" "expected prior non-blank/non-comment line to be \"trap 'release_claude_mutex' EXIT\", got: $_TBA_PRIOR"
+    fail_at "AC-TRAP-BEFORE-ACQUIRE" "expected prior non-blank/non-comment line to be \"trap _dispatch_cleanup EXIT\", got: $_TBA_PRIOR"
+  fi
+fi
+
+# ─── ENG-131: AC-DISPATCH-CLEANUP-COMPOSES-RELEASE ───────────────────────
+# The AC-TRAP-BEFORE-ACQUIRE invariant above guards the literal trap-install
+# line. The SEMANTIC invariant the test was originally written to protect
+# (release_claude_mutex runs on every exit path between trap-install and any
+# later die()) is preserved by the composed shape ONLY IF _dispatch_cleanup
+# actually calls release_claude_mutex. Pin both: (a) _dispatch_cleanup is
+# defined upstream of the trap-install line; (b) _dispatch_cleanup's body
+# contains a release_claude_mutex call.
+_DC_TRAP_LINE="$(grep -n '^[[:space:]]*trap _dispatch_cleanup EXIT[[:space:]]*$' "$SCRIPT_DIR/dispatch.sh" | head -1 | cut -d: -f1)"
+_DC_DEF_LINE="$(grep -n '^_dispatch_cleanup()' "$SCRIPT_DIR/dispatch.sh" | head -1 | cut -d: -f1)"
+if [[ -z "$_DC_DEF_LINE" || -z "$_DC_TRAP_LINE" ]]; then
+  fail_at "AC-DISPATCH-CLEANUP-COMPOSES-RELEASE" "missing _dispatch_cleanup definition or trap install (def=$_DC_DEF_LINE trap=$_DC_TRAP_LINE)"
+elif (( _DC_DEF_LINE >= _DC_TRAP_LINE )); then
+  fail_at "AC-DISPATCH-CLEANUP-COMPOSES-RELEASE" \
+    "_dispatch_cleanup defined at line $_DC_DEF_LINE but trap installs at $_DC_TRAP_LINE; definition must be upstream"
+else
+  # Probe body for release_claude_mutex (function spans definition through
+  # closing brace `^}` at column 0).
+  _DC_BODY="$(awk -v def="$_DC_DEF_LINE" '
+    NR == def { in_fn = 1 }
+    in_fn { print }
+    in_fn && /^\}/ { exit }
+  ' "$SCRIPT_DIR/dispatch.sh")"
+  if printf '%s\n' "$_DC_BODY" | grep -q 'release_claude_mutex'; then
+    pass_at "AC-DISPATCH-CLEANUP-COMPOSES-RELEASE: _dispatch_cleanup body calls release_claude_mutex (def line $_DC_DEF_LINE, trap line $_DC_TRAP_LINE)"
+  else
+    fail_at "AC-DISPATCH-CLEANUP-COMPOSES-RELEASE" \
+      "_dispatch_cleanup body does NOT contain release_claude_mutex; AC-TRAP-BEFORE-ACQUIRE semantic invariant violated"
   fi
 fi
 
@@ -3400,6 +3433,89 @@ MD
 
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
 fi
+
+# ─── T-A — ENG-131 no-hang (orphan-writer scenario; D-001 file-decoupling) ─
+# The bug class: a `cmd | reader` pipe blocks the reader while orphans of
+# cmd hold the inherited fd1 (the pipe's write end). The fix (D-001) replaces
+# the pipe with `cmd > capture-file; reader < capture-file`, decoupling fd1
+# from the reader's blocking semantics. Test the file-decoupling property
+# directly: spawn a perl-setsid wrapped subshell that exits cleanly while
+# leaving a background writer holding inherited fd1. The parent `wait`
+# returns promptly (well under 5s) because fd1 is now a regular file —
+# orphan writers can keep writing but nothing else is blocked.
+printf '\n--- T-A: ENG-131 no-hang (orphan-writer scenario; D-001 file-decoupling) ---\n'
+TA_CAPTURE="$_TEST_STUB_DIR/ta-cmd-capture.tmp"
+rm -f "$TA_CAPTURE"
+TA_START_SEC=$(date +%s)
+# Wrap under perl-setsid so we can kill the whole tree at test cleanup.
+( exec /usr/bin/perl -e 'use POSIX qw(setsid); setsid; exec @ARGV' \
+    bash -c '
+      printf "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"taXXXXXX\",\"model\":\"test\"}\n"
+      # Background writer holds the inherited fd1 after we exit.
+      ( sleep 30 1>&1 ) &
+      disown 2>/dev/null || true
+      exit 0
+    ' > "$TA_CAPTURE" 2>/dev/null ) &
+TA_PID=$!
+# Parent `wait` MUST return promptly once the perl-setsid leader exits, even
+# though the orphan writer's fd1 is still open — because fd1 is a regular
+# file, not a pipe.
+wait "$TA_PID" 2>/dev/null || true
+TA_ELAPSED=$(( $(date +%s) - TA_START_SEC ))
+# Reap the lingering orphan writer so it doesn't run for 30s in the gate.
+kill -TERM -- "-$TA_PID" 2>/dev/null || true
+sleep 1
+kill -KILL -- "-$TA_PID" 2>/dev/null || true
+if (( TA_ELAPSED <= 5 )) && [[ -s "$TA_CAPTURE" ]] && grep -q '"type":"system"' "$TA_CAPTURE"; then
+  pass_at "T-A: ENG-131 no-hang — sequential capture-file (cmd > file; reader < file) decouples parent wait from orphan fd1 holders (elapsed=${TA_ELAPSED}s, capture-size=$(wc -c < "$TA_CAPTURE" | tr -d ' ') bytes)"
+else
+  fail_at "T-A: ENG-131 no-hang" "elapsed=${TA_ELAPSED}s (expected ≤5s) capture-bytes=$(wc -c < "$TA_CAPTURE" 2>/dev/null | tr -d ' ' || echo 0) — pre-ENG-131 cmd|reader pipe shape regression"
+fi
+rm -f "$TA_CAPTURE"
+
+# ─── T-B — ENG-131 no-orphan (descendant-tree reap; D-002 pgrp cleanup) ───
+# The resource-leak class: when gtimeout SIGKILLs claude, MCP-server
+# descendants get reparented to launchd and accumulate as zombie/runaway
+# processes. The fix (D-002) wraps cmd under perl POSIX::setsid so the
+# descendants share a single pgrp; _dispatch_cleanup's EXIT trap signals
+# -TERM/-KILL on the pgrp to reap them. Test the pgrp-reap semantics
+# directly: spawn a 3-level descendant tree under perl-setsid, capture the
+# pgrp leader's pid, signal -TERM/-KILL, assert no descendant survives.
+printf '\n--- T-B: ENG-131 no-orphan (descendant-tree reap; D-002 pgrp cleanup) ---\n'
+TB_PGID_FILE="$_TEST_STUB_DIR/tb-pgid"
+TB_CAPTURE="$_TEST_STUB_DIR/tb-capture.tmp"
+rm -f "$TB_PGID_FILE" "$TB_CAPTURE"
+( exec /usr/bin/perl -e 'use POSIX qw(setsid); setsid; exec @ARGV' \
+    bash -c "
+      # After setsid, our pid IS our pgrp id; record it for the assertion.
+      printf '%s\n' \"\$\$\" > '$TB_PGID_FILE'
+      # Spawn a 3-level descendant tree of long-sleepers.
+      ( ( sleep 60 ) & ) &
+      ( sleep 60 ) &
+      sleep 60 &
+      disown -a 2>/dev/null || true
+      exit 0
+    " > "$TB_CAPTURE" 2>/dev/null ) &
+TB_PID=$!
+wait "$TB_PID" 2>/dev/null || true
+TB_PGID="$(cat "$TB_PGID_FILE" 2>/dev/null || true)"
+if [[ -z "$TB_PGID" || ! "$TB_PGID" =~ ^[0-9]+$ ]]; then
+  fail_at "T-B: ENG-131 no-orphan" "could not capture pgid (TB_PGID='$TB_PGID')"
+else
+  # Simulate _dispatch_cleanup's pgrp reap.
+  kill -TERM -- "-$TB_PGID" 2>/dev/null || true
+  sleep 1
+  kill -KILL -- "-$TB_PGID" 2>/dev/null || true
+  # Brief grace for the kernel to reap.
+  sleep 1
+  TB_ORPHANS="$(pgrep -g "$TB_PGID" 2>/dev/null || true)"
+  if [[ -z "$TB_ORPHANS" ]]; then
+    pass_at "T-B: ENG-131 no-orphan — pgrp signal reaped all descendants (pgid=$TB_PGID, orphan-count=0)"
+  else
+    fail_at "T-B: ENG-131 no-orphan" "descendants alive after TERM/KILL of pgid $TB_PGID: $TB_ORPHANS"
+  fi
+fi
+rm -f "$TB_CAPTURE" "$TB_PGID_FILE"
 
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"

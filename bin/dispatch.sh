@@ -17,6 +17,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+# _dispatch_cleanup — composed EXIT trap (ENG-131 D-001 + D-002).
+# Single trap that:
+#  1. Signals the cmd's process-group (D-002 pgrp reap of MCP orphans).
+#     `_cmd_pgid` is set after the cmd subshell spawns; guards make this
+#     no-op safely when cmd never spawned (die-before-spawn path).
+#  2. Removes the per-issue capture file (D-001 cleanup).
+#  3. Calls release_claude_mutex (preserves AC-TRAP-BEFORE-ACQUIRE
+#     semantic — release on EVERY exit path between trap install and any
+#     later die()).
+# Integer-validate _cmd_pgid before `kill -- -$pgid` (defense against
+# future regressions that could leave it empty / non-numeric).
+_dispatch_cleanup() {
+  if [[ -n "${_cmd_pgid:-}" && "$_cmd_pgid" =~ ^[0-9]+$ ]]; then
+    kill -TERM -- "-$_cmd_pgid" 2>/dev/null || true
+    sleep 1
+    kill -KILL -- "-$_cmd_pgid" 2>/dev/null || true
+  fi
+  if [[ -n "${_capture_path:-}" && -f "$_capture_path" ]]; then
+    rm -f "$_capture_path"
+  fi
+  release_claude_mutex
+}
+
 # ─── Stream-json renderer (ENG-26 D-002) ─────────────────────────────────
 # Reads NDJSON on stdin; emits prose-ish progress lines on STDOUT (so the
 # caller's `tee "$log_file"` captures them); mirrors the raw NDJSON to a
@@ -504,7 +527,7 @@ main() {
   # Install the release trap BEFORE the acquire so a die() between the two
   # cannot leak the slot. release_claude_mutex is a no-op when
   # _ACQUIRED_SLOT_DIR is empty, so arming the trap pre-acquire is safe.
-  trap 'release_claude_mutex' EXIT
+  trap _dispatch_cleanup EXIT
   acquire_claude_mutex
 
   local denies
@@ -643,29 +666,79 @@ main() {
     --disallowed-tools "$denies"
     --allowed-tools "$tools"
   )
+  # ENG-131 D-001 + D-002: sequential capture file + perl-setsid wrap of cmd.
+  # cmd's stdout lands in a per-issue ndjson file; the renderer reads it
+  # post-process (D-001 file-decoupling — no upstream pipe, so MCP orphans
+  # holding inherited fd1 cannot block our reader). perl execs into setsid
+  # then the gtimeout/claude chain so the wrapped tree is its own session +
+  # pgrp leader; $! is that leader's PID. _dispatch_cleanup (installed at
+  # the pre-acquire trap above) signals the pgrp on EXIT. The renderer's
+  # internal `tee | jq` pipe (line ~66) is preserved — `tee` is a
+  # short-lived non-spawning writer, distinct from the long-lived MCP-
+  # descendant tree the outer pipe used to host.
+  local _capture_path=""
+  if [[ -n "$issue_state_dir" ]]; then
+    _capture_path="${issue_state_dir}/.cmd-capture-${stage}.ndjson.tmp"
+    ( umask 077; : > "$_capture_path" )    # pre-clean stale (EC-1b)
+  else
+    _capture_path="$( umask 077; mktemp -t pipeline-cmd-XXXXXX )"
+  fi
+
+  local dispatch_rc=0
+  local _cmd_pgid=""
   if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname "$log_file")"
     log "dispatching stage=$stage, log=$log_file"
+  else
+    log "dispatching stage=$stage"
+  fi
+
+  ( exec /usr/bin/perl -e 'use POSIX qw(setsid); setsid; exec @ARGV' \
+      "${cmd[@]}" < "$prompt_file" > "$_capture_path" ) &
+  _cmd_pgid=$!
+  if ! [[ "$_cmd_pgid" =~ ^[0-9]+$ ]]; then
+    log "[dispatch] _cmd_pgid not numeric ($_cmd_pgid); pgrp cleanup disabled"
+    _cmd_pgid=""
+  fi
+  wait "$_cmd_pgid" || dispatch_rc=$?
+
+  local render_rc=0
+  if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
     # Renderer prose (and raw stream-json on the no-renderer branch) lands in
     # the per-stage log only. Letting it bubble up to local-*.log via `tee`
     # duplicates every [tool] / [tool-result] line into the orchestrator's
     # day-log, which (post-ENG-26 stream-json renderer) made local-*.log
     # nearly unreadable on busy days.
-    if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
-      "${cmd[@]}" < "$prompt_file" \
-        | _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage" \
-        > "$log_file"
+    if [[ -n "$log_file" ]]; then
+      _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage" \
+        < "$_capture_path" > "$log_file" || render_rc=$?
     else
-      "${cmd[@]}" < "$prompt_file" > "$log_file"
+      _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage" \
+        < "$_capture_path" || render_rc=$?
     fi
   else
-    log "dispatching stage=$stage"
-    if [[ -n "$usage_file" && -n "$issue_state_dir" ]]; then
-      "${cmd[@]}" < "$prompt_file" \
-        | _render_and_capture_stream "$usage_file" "$issue_state_dir" "$stage"
+    # No-renderer arms (ungated callers — release / retrospective /
+    # mutex-test / dry-run-self-check): forward captured ndjson to log_file
+    # (if set) or stdout.
+    if [[ -n "$log_file" ]]; then
+      cat "$_capture_path" > "$log_file" 2>/dev/null || true
     else
-      "${cmd[@]}" < "$prompt_file"
+      cat "$_capture_path" 2>/dev/null || true
     fi
+  fi
+
+  # Renderer rc takes precedence — mirrors today's pipefail "rightmost
+  # non-zero" semantics where renderer violations 22/23/26/29/31 override
+  # gtimeout's 124 when both fire.
+  if (( render_rc != 0 )); then
+    dispatch_rc=$render_rc
+  fi
+
+  # Preserve pre-ENG-131 behavior: ENG-81 metric block + clean function exit
+  # are gated on dispatch_rc == 0. Non-zero exits early with rc; the EXIT
+  # trap (_dispatch_cleanup) reaps the capture file and the pgrp regardless.
+  if (( dispatch_rc != 0 )); then
+    exit "$dispatch_rc"
   fi
 
   # ENG-81 Phase 1: parse gtime -v output and emit dispatch-resource-sample
