@@ -5397,6 +5397,69 @@ else
   fi
 fi
 
+# ─── fix/run-stage-export-dispatch-id: PIPELINE_DISPATCH_ID re-export ───
+# Regression: `allocate_dispatch_id`'s `export PIPELINE_DISPATCH_ID` (at
+# common.sh:155) executes inside the `$(...)` command-substitution
+# subshell at run-stage.sh's call site and is lost on subshell exit.
+# Without an explicit re-export in the parent, dispatch.sh inherits an
+# empty value, which empties: (a) the env block dispatch.sh passes to the
+# claude subprocess, (b) render-prompt.sh's {dispatch_id} resolver,
+# (c) bin/linear.sh's auto-injected `<!-- meta: dispatch id=… -->`
+# markers, (d) the ENG-106 plan-stage detective's grep pattern (the
+# observed ENG-140 false-halt: 'expected exactly 1 entry for
+# dispatch_id=<empty>, found 0').
+printf '\n--- fix/run-stage-export-dispatch-id: re-export after $() ---\n'
+
+# Structural pin: the re-export must appear between the capture and the
+# subsequent dispatch.sh invocation, otherwise the env never propagates.
+_export_block="$(awk '/_dispatch_id="\$\(allocate_dispatch_id /,/bash "\$SCRIPT_DIR\/dispatch\.sh"/' "$HARNESS_DIR/run-stage.sh")"
+if printf '%s\n' "$_export_block" | grep -qE '^[[:space:]]*export PIPELINE_DISPATCH_ID="\$_dispatch_id"[[:space:]]*$'; then
+  pass_at "fix-export-dispatch-id structural: run-stage.sh re-exports PIPELINE_DISPATCH_ID after \$() capture, before dispatch.sh"
+else
+  fail_at "fix-export-dispatch-id structural" \
+    "expected an 'export PIPELINE_DISPATCH_ID=\"\$_dispatch_id\"' line between the capture (_dispatch_id=\$(allocate_dispatch_id ...)) and the dispatch.sh invocation; subshell export at common.sh:155 is lost in \$() and the parent shell must re-export so dispatch.sh / render-prompt.sh / linear.sh / ENG-106 detective see the id"
+fi
+
+# Behavioral pin: the canonical call-site pattern (capture + export)
+# propagates the id to a child process. Documents the contract for any
+# future caller that wants to re-use this idiom.
+_fix_export_t0="$(mktemp -d)"
+trap "rm -rf '$_fix_export_t0'" EXIT
+(
+  set +e
+  unset PIPELINE_DISPATCH_ID
+  export HARNESS_STATE_DIR="$_fix_export_t0/state"
+  export PROJECT_STATE_DIR="$_fix_export_t0/state/test-export-fix"
+  export PROJECT_SLUG="test-export-fix"
+  mkdir -p "$PROJECT_STATE_DIR/ENG-EXP1"
+  source "$HARNESS_DIR/common.sh" 2>/dev/null
+  _id="$(allocate_dispatch_id ENG-EXP1)"
+  # ENG-EXP1-d0001 is the expected first allocation (seq=1).
+  if [[ "$_id" != "ENG-EXP1-d0001" ]]; then
+    printf 'FAIL allocate returned %q (expected ENG-EXP1-d0001)\n' "$_id"
+    exit 2
+  fi
+  # The subshell export is lost — confirm and document the foot-gun.
+  if [[ -n "${PIPELINE_DISPATCH_ID-}" ]]; then
+    printf 'FAIL parent PIPELINE_DISPATCH_ID was unexpectedly set to %q (subshell export should NOT propagate)\n' "$PIPELINE_DISPATCH_ID"
+    exit 3
+  fi
+  # The fix: parent re-exports explicitly.
+  export PIPELINE_DISPATCH_ID="$_id"
+  _child="$(bash -c 'printf "%s" "${PIPELINE_DISPATCH_ID-UNSET}"')"
+  [[ "$_child" == "ENG-EXP1-d0001" ]]
+)
+_fix_export_rc=$?
+trap - EXIT
+rm -rf "$_fix_export_t0"
+if (( _fix_export_rc == 0 )); then
+  pass_at "fix-export-dispatch-id behavioral: capture + explicit export propagates id to subprocess (and subshell-only export is lost without re-export)"
+else
+  fail_at "fix-export-dispatch-id behavioral" \
+    "the canonical pattern '_id=\$(allocate_dispatch_id ENG-N); export PIPELINE_DISPATCH_ID=\"\$_id\"' must yield ENG-N-d0001 in the parent and propagate to subprocesses (rc=$_fix_export_rc)"
+fi
+unset _fix_export_t0 _fix_export_rc _export_block
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

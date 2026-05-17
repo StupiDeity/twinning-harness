@@ -1339,6 +1339,12 @@ main() {
     export PIPELINE_STAGE="$stage"
     local _dispatch_id
     _dispatch_id="$(allocate_dispatch_id "$ident")"
+    # allocate_dispatch_id's `export PIPELINE_DISPATCH_ID` (common.sh:155)
+    # fires inside this $(...) subshell and is lost on its exit. Re-export
+    # in the parent so dispatch.sh inherits it (consumed by dispatch.sh's
+    # env block, render-prompt.sh's {dispatch_id} resolver, bin/linear.sh's
+    # auto-marker injection, and the ENG-106 plan-stage detective).
+    export PIPELINE_DISPATCH_ID="$_dispatch_id"
     log "dispatch-id allocated: $_dispatch_id (stage=$stage)"
     _clear_current_stage_slots "$ident" "$stage"
     # Append dispatch-start row to history (orchestrator-only forensic
