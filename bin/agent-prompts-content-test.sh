@@ -2081,6 +2081,29 @@ else
 fi
 unset s7_eng84
 
+# ─── QA-ADV ENG-120: loop block appears exactly once in §3 ─────────────
+# C1 uses grep -qF which passes on any match count. A merge-conflict
+# duplicate of the block still passes C1 but delivers two contradictory
+# instruction blocks to the agent. Pin exact count = 1.
+_loop_heading_count="$(printf '%s\n' "$s3" | grep -cF 'Within-stage iteration loop')"
+if [[ "$_loop_heading_count" == "1" ]]; then
+  ok "§3 QA-ADV ENG-120: 'Within-stage iteration loop' heading appears exactly once (no duplicate)"
+else
+  nope "§3 QA-ADV ENG-120: 'Within-stage iteration loop' heading appears exactly once" \
+    "found $_loop_heading_count occurrences — duplicate block or accidental removal"
+fi
+
+# ─── QA-ADV ENG-120: K < 3 fail-vs-exhausted threshold pinned ───────────
+# C2 pins 'up to 3 iterations' (the cap header). The fail outcome definition
+# 'K < 3' is a distinct occurrence; if it drifts to 'K < 2', iteration 2
+# incorrectly emits exhausted instead of fail. Pin the literal.
+if printf '%s\n' "$loop_block" | grep -qF 'K < 3'; then
+  ok "§3 QA-ADV ENG-120: 'K < 3' fail-vs-exhausted threshold present in loop block"
+else
+  nope "§3 QA-ADV ENG-120: 'K < 3' fail-vs-exhausted threshold present in loop block" \
+    "phrase missing — fail/exhausted boundary may have drifted (check the 'K ≤ 3' predicate in the loop body)"
+fi
+
 # ─── QA-ADV ENG-120: loop block structural placement in §3 ──────────────
 # The plan requires the Within-stage iteration loop block to sit AFTER
 # `Do NOT invent the contract.` (the Plan-contract completeness block's

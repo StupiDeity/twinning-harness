@@ -245,6 +245,20 @@ else
     "got: $line"
 fi
 
+# ─── QA-ADV ENG-120: duration_ms is a JSON number, not a string ────────
+# Case ENG-120 uses substring match only. If --argjson is replaced by --arg
+# (e.g. for consistency with other fields), duration_ms becomes a string.
+# Pin the type explicitly via jq.
+reset_jsonl
+run_metrics impl_iteration ENG-T120 implementing pass 4567 "iteration=1"
+line="$(last_line)"
+dt="$(jq -r '.duration_ms | type' <<<"$line" 2>/dev/null)"
+if [[ "$dt" == "number" ]]; then
+  pass_at "QA-ADV Case ENG-120: duration_ms field is JSON number type"
+else
+  fail_at "QA-ADV Case ENG-120: duration_ms must be JSON number, got type='$dt'" "line: $line"
+fi
+
 # ─── QA-ADV ENG-120: exhausted outcome roundtrip ──────────────────────
 # The plan tests pass + fail; this adversarial case pins that outcome=exhausted
 # also lands verbatim (completeness of the three-outcome vocabulary).

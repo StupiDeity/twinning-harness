@@ -4009,10 +4009,13 @@ rm -f "$TX_BASH_GAP"
 for _stage in brainstorming planning ui reviewing qa building; do
   _tools="$(allowed_tools_for "$_stage" 2>/dev/null)"
   if printf '%s' "$_tools" | grep -q 'Bash(bash bin/metrics\.sh:\*)'; then
-    fail_at "QA-ADV ENG-120: ${_stage} allowlist must NOT carry bare Bash(bash bin/metrics.sh:*)" \
+    fail_at "QA-ADV ENG-120: ${_stage} allowlist must NOT carry Bash(bash bin/metrics.sh:*)" \
+      "tools=$_tools"
+  elif printf '%s' "$_tools" | grep -q 'Bash(bash \.pipeline/bin/metrics\.sh:\*)'; then
+    fail_at "QA-ADV ENG-120: ${_stage} allowlist must NOT carry Bash(bash .pipeline/bin/metrics.sh:*)" \
       "tools=$_tools"
   else
-    pass_at "QA-ADV ENG-120: ${_stage} allowlist correctly excludes metrics.sh"
+    pass_at "QA-ADV ENG-120: ${_stage} allowlist correctly excludes metrics.sh (both path variants)"
   fi
 done
 
