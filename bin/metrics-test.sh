@@ -245,6 +245,19 @@ else
     "got: $line"
 fi
 
+# ─── QA-ADV ENG-120: exhausted outcome roundtrip ──────────────────────
+# The plan tests pass + fail; this adversarial case pins that outcome=exhausted
+# also lands verbatim (completeness of the three-outcome vocabulary).
+reset_jsonl
+run_metrics impl_iteration ENG-T120 implementing exhausted 9000 "iteration=3 failed=smoke:bash-bin-bar-test.sh,file_exists:bin/new.sh"
+line="$(last_line)"
+if printf '%s' "$line" | grep -qF '"outcome":"exhausted"' \
+   && printf '%s' "$line" | grep -qF '"notes":"iteration=3 failed=smoke:bash-bin-bar-test.sh,file_exists:bin/new.sh"'; then
+  pass_at "QA-ADV Case ENG-120: exhausted-iteration row carries outcome=exhausted + multi-criterion failed= notes"
+else
+  fail_at "QA-ADV Case ENG-120: exhausted-iteration row" "got: $line"
+fi
+
 echo
 echo "metrics-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

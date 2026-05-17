@@ -3999,6 +3999,23 @@ else
 fi
 rm -f "$TX_BASH_GAP"
 
+# ─── QA-ADV ENG-120: metrics.sh isolation — non-implementing stages ─────
+# The ENG-120 allowlist extension is scoped to the `implementing` arm only.
+# brainstorming, planning, ui, reviewing, qa, and building MUST NOT carry
+# Bash(bash bin/metrics.sh:*) via the base allowlist (released and
+# retrospective already had it before ENG-120 and are excluded from this
+# guard). If the pattern bleeds to other stages, the audit surface grows
+# and the intent of "metrics chokepoint for implemented stages only" is lost.
+for _stage in brainstorming planning ui reviewing qa building; do
+  _tools="$(allowed_tools_for "$_stage" 2>/dev/null)"
+  if printf '%s' "$_tools" | grep -q 'Bash(bash bin/metrics\.sh:\*)'; then
+    fail_at "QA-ADV ENG-120: ${_stage} allowlist must NOT carry bare Bash(bash bin/metrics.sh:*)" \
+      "tools=$_tools"
+  else
+    pass_at "QA-ADV ENG-120: ${_stage} allowlist correctly excludes metrics.sh"
+  fi
+done
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

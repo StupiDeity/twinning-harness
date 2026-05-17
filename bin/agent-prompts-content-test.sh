@@ -2081,6 +2081,31 @@ else
 fi
 unset s7_eng84
 
+# ─── QA-ADV ENG-120: loop block structural placement in §3 ──────────────
+# The plan requires the Within-stage iteration loop block to sit AFTER
+# `Do NOT invent the contract.` (the Plan-contract completeness block's
+# last line) AND BEFORE `Your task:` (the task body header). This test
+# verifies ordering rather than mere presence (C1 only checks presence).
+# A future refactor that moves the loop block above the precondition check
+# would pass C1 but fail this structural ordering test.
+_precondition_anchor="the plan is patched. Do NOT invent the contract."
+_task_anchor="Your task:"
+_loop_anchor="Within-stage iteration loop"
+
+_precondition_line="$(printf '%s\n' "$s3" | grep -nF "$_precondition_anchor" | head -1 | cut -d: -f1)"
+_task_line="$(printf '%s\n' "$s3" | grep -nF "$_task_anchor" | head -1 | cut -d: -f1)"
+_loop_line="$(printf '%s\n' "$s3" | grep -nF "$_loop_anchor" | head -1 | cut -d: -f1)"
+
+if [[ -z "$_precondition_line" || -z "$_task_line" || -z "$_loop_line" ]]; then
+  nope "§3 QA-ADV ENG-120: loop block ordering — all three anchors must exist in §3" \
+    "precondition_line='$_precondition_line' task_line='$_task_line' loop_line='$_loop_line'"
+elif [[ "$_loop_line" -gt "$_precondition_line" && "$_loop_line" -lt "$_task_line" ]]; then
+  ok "§3 QA-ADV ENG-120: loop block sits AFTER precondition anchor AND BEFORE 'Your task:' (lines: precond=$_precondition_line loop=$_loop_line task=$_task_line)"
+else
+  nope "§3 QA-ADV ENG-120: loop block ordering — expected precond < loop < task" \
+    "precondition_line=$_precondition_line loop_line=$_loop_line task_line=$_task_line — block may have been moved outside its intended slot"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
