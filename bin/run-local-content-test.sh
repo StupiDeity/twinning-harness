@@ -58,5 +58,18 @@ else
   ok 'dispatch_cwd does not silently fall back to $TARGET_REPO'
 fi
 
+# ENG-132: _write_tick_heartbeat must be called immediately after the
+# success-log line so a wedged tick (which never reaches that line) is
+# surfaced as a stale heartbeat.
+success_log_line='log "== tick end (success, ${#_claimed_workers[@]} worker(s)) =="'
+heartbeat_call='_write_tick_heartbeat'
+if printf '%s\n' "$non_comment" | grep -qF "$success_log_line" \
+   && printf '%s\n' "$non_comment" | grep -qF "$heartbeat_call"; then
+  ok '_write_tick_heartbeat present in run-local.sh (ENG-132)'
+else
+  nope '_write_tick_heartbeat not found in run-local.sh' \
+    'heartbeat call site or helper missing; see ENG-132 Task 1'
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 exit $(( FAIL > 0 ? 1 : 0 ))
