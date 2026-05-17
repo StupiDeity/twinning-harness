@@ -130,6 +130,7 @@ if [[ "$paused" == "true" ]]; then
   log "tick skipped: orchestrator.paused=true"
   log "reset with: bash $HARNESS_ROOT/bin/reset-pipeline.sh   # writes state.local.json (preferred)"
   log "             OR: jq '.orchestrator.paused=false' \$CONFIG > /tmp/c && mv /tmp/c \$CONFIG (legacy)"
+  _write_tick_heartbeat
   exit 0
 fi
 
@@ -353,6 +354,7 @@ decisions_json="$(jq -c '(if type == "array" then . else [] end) | [.[] | select
 decisions_count="$(jq 'length' <<<"$decisions_json")"
 if (( decisions_count == 0 )); then
   log "no work this tick"
+  _write_tick_heartbeat
   exit 0
 fi
 
@@ -462,6 +464,7 @@ release_lock "$LOCK_DIR"
 
 if (( ${#_claimed_workers[@]} == 0 )); then
   log "no workers claimed this tick (all decisions short-circuited in scheduler)"
+  _write_tick_heartbeat
   exit 0
 fi
 
