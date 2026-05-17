@@ -1,0 +1,52 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-131",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/dispatch.sh defines _dispatch_cleanup composing pgrp reap + capture-file removal + release_claude_mutex; pre-acquire trap installs _dispatch_cleanup not release_claude_mutex; outer cmd|renderer pipe is gone",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "^_dispatch_cleanup\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "trap _dispatch_cleanup EXIT", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "trap 'release_claude_mutex' EXIT", "expect_match": false },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "release_claude_mutex", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/dispatch.sh wraps cmd under /usr/bin/perl POSIX::setsid and captures cmd stdout to a per-issue .cmd-capture-<stage>.ndjson.tmp file (D-001 + D-002)",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "/usr/bin/perl -e 'use POSIX qw\\(setsid\\); setsid; exec @ARGV'", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "\\.cmd-capture-", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "_cmd_pgid=\\$!", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/dispatch-test.sh AC-TRAP-BEFORE-ACQUIRE is updated for the composed shape AND a new AC-DISPATCH-CLEANUP-COMPOSES-RELEASE assertion pins the semantic invariant",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "trap _dispatch_cleanup EXIT", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "AC-DISPATCH-CLEANUP-COMPOSES-RELEASE", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "bin/dispatch-test.sh carries T-A (no-hang) and T-B (no-orphan) integration fixtures; the full test exits 0; the pre-commit gate suite exits 0",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "T-A.*ENG-131.*no-hang", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "T-B.*ENG-131.*no-orphan", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/dispatch-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "CLAUDE.md Failure-mode quick reference table carries a new ENG-131-class silent-hang row referencing the post-fix operator runbook",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "CLAUDE.md" },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "ENG-131-class hang", "expect_match": true },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "dispatch.sh exit=", "expect_match": true }
+      ]
+    }
+  ]
+}
