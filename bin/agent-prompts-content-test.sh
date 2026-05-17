@@ -100,6 +100,18 @@ else
     "literal '1. {progress_md_path}' line missing from §3 — has the position-1 placement been demoted, or the token removed entirely?"
 fi
 
+# ─── ENG-140: §3 contains the new QA → implement loopback block ───
+# The implementing prompt MUST carry a QA-loopback handling block so that
+# qa → implementing fail dispatches see the QA findings inline (via
+# {qa_findings}) rather than discovering them via Linear/Read. Pin the
+# distinctive header so a future edit that removes the block trips here.
+if printf '%s\n' "$s3" | grep -qF 'QA → implement loopback handling'; then
+  ok "§3 ENG-140: QA → implement loopback handling block present"
+else
+  nope "§3 ENG-140: QA → implement loopback handling block present" \
+    "literal 'QA → implement loopback handling' header missing from §3 — has the QA-loopback block been removed or its header renamed?"
+fi
+
 # ─── ENG-109: {progress_md_path} now present in §§1, 3, 4, 5, 6, 7;
 # absent from §8 (released uses the legacy sed pass which substitutes
 # only {version}/{tag}/{prev_tag}/{issue_id} — {progress_md_path} would

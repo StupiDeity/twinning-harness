@@ -399,6 +399,87 @@ else
        "out tail: $(tail -5 <<<"$out_k" | tr '\n' ' ')"
 fi
 
+# ─── ENG-140 cases L/M/N: {qa_findings} loopback-gate coverage ───
+# Mirror cases G/H/I exactly with the qa-loopback substitutions:
+#   stage-summary-reviewing.md → stage-summary-qa.md
+#   PIPELINE_LOOPBACK_SOURCE=reviewing → =qa
+# Each case uses a DISTINCT literal sentinel injected into the fixture
+# file so prose quotes of the sentinel in AGENT_PROMPTS.md §3 cannot
+# make a presence-of-sentinel grep always-true (see cases H/I caveat).
+
+# Case L: source=qa + qa-file present → findings inlined (positive control).
+ISSUE_DIR_L="$sandbox/state/test-slug-rc0/ENG-87R6X-L"
+rm -rf "$ISSUE_DIR_L"; mkdir -p "$ISSUE_DIR_L"
+QA_SENTINEL_L='SENTINEL-QA-FINDINGS-LOOPBACK-GATE-CASE-L-9281'
+printf '## QA summary\n\nP0 %s\n' "$QA_SENTINEL_L" \
+  > "$ISSUE_DIR_L/stage-summary-qa.md"
+# Regression-intent (AC-2): a stage-summary-reviewing.md ALSO present
+# under source=qa must NOT leak into the rendered prompt — verifies
+# the existing _resolve_review_findings gate (5ebae80) still works.
+REGRESSION_SENTINEL_L='SENTINEL-REVIEW-FINDINGS-CASE-L-REGRESSION-9281'
+printf '## Review summary\n\n[major] %s\n' "$REGRESSION_SENTINEL_L" \
+  > "$ISSUE_DIR_L/stage-summary-reviewing.md"
+out_l="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  PIPELINE_LOOPBACK_SOURCE=qa \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-L 2>/dev/null || true)"
+if grep -qF "$QA_SENTINEL_L" <<<"$out_l"; then
+  ok "ENG-140 case L: PIPELINE_LOOPBACK_SOURCE=qa + stage-summary-qa.md present → findings inlined"
+else
+  fail "ENG-140 case L: source=qa → findings inlined" \
+       "out tail: $(tail -5 <<<"$out_l" | tr '\n' ' ')"
+fi
+if grep -qF "$REGRESSION_SENTINEL_L" <<<"$out_l"; then
+  fail "ENG-140 case L regression: PIPELINE_LOOPBACK_SOURCE=qa does NOT leak stale review-findings (5ebae80)" \
+       "stale review-findings leaked into qa-loopback dispatch — out tail: $(tail -5 <<<"$out_l" | tr '\n' ' ')"
+else
+  ok "ENG-140 case L regression: PIPELINE_LOOPBACK_SOURCE=qa does NOT leak stale review-findings (5ebae80 still gates correctly)"
+fi
+
+# Case M: source=building + qa-file present → sentinel (the build-loopback no-leak case).
+ISSUE_DIR_M="$sandbox/state/test-slug-rc0/ENG-87R6X-M"
+rm -rf "$ISSUE_DIR_M"; mkdir -p "$ISSUE_DIR_M"
+QA_SENTINEL_M='SENTINEL-QA-FINDINGS-LOOPBACK-GATE-CASE-M-9281'
+printf '## QA summary\n\nP0 %s\n' "$QA_SENTINEL_M" \
+  > "$ISSUE_DIR_M/stage-summary-qa.md"
+out_m="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  PIPELINE_LOOPBACK_SOURCE=building \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-M 2>/dev/null || true)"
+if grep -qF "$QA_SENTINEL_M" <<<"$out_m"; then
+  fail "ENG-140 case M: source=building → sentinel (NOT findings)" \
+       "stale qa findings leaked into build-loopback dispatch — out tail: $(tail -5 <<<"$out_m" | tr '\n' ' ')"
+else
+  ok "ENG-140 case M: PIPELINE_LOOPBACK_SOURCE=building + qa-file present → sentinel (no stale qa-findings leak)"
+fi
+# Note: we deliberately do NOT also assert the literal sentinel string is
+# present in $out_m — AGENT_PROMPTS.md's prose quotes the literal sentinel
+# (as documentation of the off-switch), which would make any such grep
+# always-true and mask a regression where the resolver returns empty.
+
+# Case N: source=reviewing + qa-file present → sentinel (the review-loopback no-leak case).
+ISSUE_DIR_N="$sandbox/state/test-slug-rc0/ENG-87R6X-N"
+rm -rf "$ISSUE_DIR_N"; mkdir -p "$ISSUE_DIR_N"
+QA_SENTINEL_N='SENTINEL-QA-FINDINGS-LOOPBACK-GATE-CASE-N-9281'
+printf '## QA summary\n\nP0 %s\n' "$QA_SENTINEL_N" \
+  > "$ISSUE_DIR_N/stage-summary-qa.md"
+out_n="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  PIPELINE_LOOPBACK_SOURCE=reviewing \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-N 2>/dev/null || true)"
+if grep -qF "$QA_SENTINEL_N" <<<"$out_n"; then
+  fail "ENG-140 case N: source=reviewing → sentinel (NOT findings)" \
+       "stale qa findings leaked into review-loopback dispatch — out tail: $(tail -5 <<<"$out_n" | tr '\n' ' ')"
+else
+  ok "ENG-140 case N: PIPELINE_LOOPBACK_SOURCE=reviewing + qa-file present → sentinel (no stale qa-findings leak)"
+fi
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
