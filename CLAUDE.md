@@ -779,6 +779,7 @@ inspect each surface.
 | Concurrent dispatches not running (expected K=2, observed K=1) | `bash bin/status.sh` "Concurrent dispatches active" row + "Dispatch resource baseline" tail; check `_resolve_K` resolved value in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log` (look for `scheduler: K=…`); inspect `CLAUDE_MAX_CONCURRENT` env in the launchd plist; inspect `orchestrator.max_concurrent_features` in the target's `.pipeline-config/config.json`. |
 | Issue stuck at one stage; `$(issue_dir <issue>)/.in-flight.lock` present | Scheduler-side pre-ENG-81 leak symptom: lock orphaned across a SIGKILL / oomkill / scheduler-error path. **Self-heal:** `try_acquire_lock` (common.sh) writes the holder pid+timestamp on every acquire and reclaims the lock on next attempt if `kill -0 $pid` fails — no operator action needed. If the holder pid IS alive but the issue still appears stuck, inspect `ps -p $(cat .in-flight.lock/pid)` and `.in-flight.lock/timestamp` (ISO-UTC); a manual `rm -rf` is the override of last resort. |
 | `reviewing → qa` transition halts on `review_rejection(N>=2)` after a clean reviewing PASS | Pre-ENG-138 bug; post-ENG-138 (`bin/guards.sh::check`, gated on `stage == implementing`) the trip only fires at the next `implementing` dispatch. If symptom persists, check transcript for `guards: tripped on ENG-N: review_rejection`; recovery is the standard `bash bin/pipeline.sh decide <issue> --action continue` reset, but the bug itself should not recur post-ENG-138. |
+| Slack message "Stuck tick alarm" | `bin/run-local.sh` is wedged or the `com.twinning.stuck-tick-alarm.<slug>` launchd agent is dead. Inspect `$PROJECT_STATE_DIR/.last-tick-end` mtime, `$PROJECT_STATE_DIR/.run-local.lock/pid`, then `ps -p <pid> -o pid,ppid,user,command`. Recovery: `launchctl kickstart -k gui/$(id -u)/com.twinning.pipeline.$PROJECT_SLUG` (force-kill + restart) after confirming the holder is wedged. |
 
 ## Per-project dispatch concurrency (ENG-81)
 
@@ -815,6 +816,42 @@ plus the recent `dispatch-resource-sample` baseline.
 **Emergency rollback** (no deploy needed): `CLAUDE_MAX_CONCURRENT=1` in
 the launchd plist + `launchctl bootstrap`. Per-project rollback: edit
 that target's `config.json::orchestrator.max_concurrent_features` to 1.
+
+## Stuck-tick alarm (ENG-132)
+
+An independent launchd job (`com.twinning.stuck-tick-alarm.<slug>`, every 15 min) reads the
+mtime of `$PROJECT_STATE_DIR/.last-tick-end` — an atomic heartbeat file written by
+`bin/run-local.sh` immediately after each successful tick. When `now - mtime` exceeds the
+configured threshold, `bin/stuck-tick-alarm.sh` posts to Slack via `bin/slack.sh warn`
+with a triage payload (heartbeat age, lock-holder pid + `ps` excerpt, log tail).
+
+**Resolution precedence** (matches `dispatch_timeout_minutes` / `max_concurrent_features`):
+
+1. `STUCK_TICK_ALARM_MINUTES` env var (set in the alarm plist's `EnvironmentVariables`
+   block + `launchctl bootstrap`) — highest.
+2. `orchestrator.stuck_tick_alarm_minutes` in target's `.pipeline-config/config.json`.
+3. Built-in default `30` (minutes).
+
+**Validation:** value must be an integer `>= 10` (floor = 2× tick cadence). Invalid values
+log a warning and fall through to the next layer.
+
+```json
+{
+  "orchestrator": {
+    "stuck_tick_alarm_minutes": 45
+  }
+}
+```
+
+- **K=2 long-brainstorm false-positive:** with K=2 and a 60-min brainstorm dispatch, the
+  heartbeat can go stale for ~60 min, triggering the alarm once. The 24h debounce prevents
+  Slack flood. Tune `stuck_tick_alarm_minutes: 75` to absorb the worst case.
+- **Planned-maintenance silencing:** set `STUCK_TICK_ALARM_MINUTES=9999` in the alarm
+  plist's `EnvironmentVariables` and run `launchctl bootstrap`; revert when done.
+- **Manual smoke test:** `bash bin/stuck-tick-alarm.sh` from the CLI applies the full
+  threshold + debounce logic (no harm if the heartbeat is fresh — exits 0 silently).
+- **File paths:** heartbeat at `$PROJECT_STATE_DIR/.last-tick-end`; debounce stamp at
+  `$PROJECT_STATE_DIR/.stuck-tick-last-alerted`; alarm cadence 15 min.
 
 **What `--action continue` clears (atomic):**
 

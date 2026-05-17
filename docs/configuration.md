@@ -170,6 +170,62 @@ For the full mechanism (counting-semaphore mkdir loop, slot reclaim,
 cross-project semantics), see `CLAUDE.md` §"Per-project dispatch
 concurrency".
 
+### `orchestrator.stuck_tick_alarm_minutes` (ENG-132) <a id="orchestratorstuck_tick_alarm_minutes"></a>
+
+Threshold (in minutes) for the external stuck-tick alarm. When
+`now - mtime($PROJECT_STATE_DIR/.last-tick-end)` exceeds this value,
+`bin/stuck-tick-alarm.sh` posts to Slack and emits a `stuck-tick` metric.
+
+**Default:** `30`.
+
+**Floor:** `10` (= 2× tick interval; below this, legitimate long-stage ticks
+would produce false-positive alerts).
+
+**Resolution precedence** (mirrors `max_concurrent_features`):
+
+1. `STUCK_TICK_ALARM_MINUTES` env var (set in
+   `~/Library/LaunchAgents/com.twinning.stuck-tick-alarm.<slug>.plist`'s
+   `EnvironmentVariables` block + `launchctl bootstrap`) — highest.
+2. `orchestrator.stuck_tick_alarm_minutes` in target's
+   `.pipeline-config/config.json`.
+3. Built-in default `30`.
+
+**Validation rules:**
+- Values must be **integers**. `"30"`, `"30m"`, `"0.5h"` all fail the
+  `^[0-9]+$` regex guard and fall through to the next layer.
+- A resolved value `< 10` falls through (below the floor).
+- Invalid values log a `_resolve_alarm_minutes: invalid …` warning to stderr,
+  visible in `$PROJECT_STATE_DIR/logs/stuck-tick-alarm-launchd.err.log`.
+
+```json
+{
+  "orchestrator": {
+    "stuck_tick_alarm_minutes": 45
+  }
+}
+```
+
+**Inspection:** confirm a config override took effect by grepping the alarm
+log for `threshold=`:
+
+```bash
+grep 'threshold' "$PROJECT_STATE_DIR/logs/stuck-tick-alarm-launchd.err.log"
+# or run manually:
+bash bin/stuck-tick-alarm.sh
+```
+
+**Silencing during planned maintenance:**
+
+```bash
+# In the alarm plist's EnvironmentVariables block:
+#   <key>STUCK_TICK_ALARM_MINUTES</key><string>9999</string>
+launchctl bootout  gui/$(id -u)/com.twinning.stuck-tick-alarm.$PROJECT_SLUG
+launchctl bootstrap gui/$(id -u) \
+  ~/Library/LaunchAgents/com.twinning.stuck-tick-alarm.$PROJECT_SLUG.plist
+```
+
+Remove the override key and re-bootstrap when done.
+
 ### `orchestrator.entry_conditions` (ENG-86)
 
 Config-driven pre-dispatch gates that run before render-prompt + agent
