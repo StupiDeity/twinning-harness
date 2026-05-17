@@ -3580,6 +3580,32 @@ else
     "function must exist and be called before dispatch so Edit on progress.md works on first dispatch"
 fi
 
+# ─── ENG-109 regression: _ensure_progress_md must not crash under set -u
+# when PIPELINE_DRY_RUN is unset. Production dispatch does NOT export
+# PIPELINE_DRY_RUN on every tick; the helper's dry-run gate must tolerate
+# an unset env var. A bare `(( DRY_RUN ))` (typo of the canonical name) or
+# bare `(( PIPELINE_DRY_RUN ))` would crash here with `unbound variable`
+# and halt every brainstorm dispatch in ~7s before the agent ran —
+# observed 2026-05-17, blast radius 15 issues.
+printf '\n--- ENG-109 regression: _ensure_progress_md set -u + unset PIPELINE_DRY_RUN ---\n'
+(
+  set -u
+  unset PIPELINE_DRY_RUN
+  out="$(_ensure_progress_md ENG-TEST-DRY-UNSET 2>&1)"
+  rc=$?
+  if (( rc != 0 )); then
+    fail_at "case-109-2b _ensure_progress_md crashed under set -u with PIPELINE_DRY_RUN unset (rc=$rc)" \
+      "stderr: $out"
+    exit 1
+  fi
+  if grep -q 'unbound variable' <<<"$out"; then
+    fail_at "case-109-2b _ensure_progress_md emitted 'unbound variable' under set -u" \
+      "stderr: $out"
+    exit 1
+  fi
+  exit 0
+) && pass_at "case-109-2b _ensure_progress_md is set -u clean when PIPELINE_DRY_RUN is unset"
+
 # ─── ENG-66 QA adversarial: rc=23 arm sits BETWEEN rc=22 and rc=26 ───
 # Plan A-N4: "inserted between the rc=22 arm and the rc=26 arm".
 # Source ordering matters because each arm is `elif`; if rc=23 sits

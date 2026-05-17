@@ -947,7 +947,7 @@ _ensure_progress_md() {
   local pmd
   pmd="$(progress_md_path "$ident")"
   [[ -f "$pmd" ]] && return 0
-  if (( DRY_RUN )); then
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
     log "_ensure_progress_md: dry-run — would touch $pmd"
     return 0
   fi
