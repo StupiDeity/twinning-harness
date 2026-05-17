@@ -4,8 +4,8 @@
 #   A1: stage=brainstorming (non-rejection stage) → no review_rejection trip
 #   A2: stage=reviewing (the exact regression stage pre-ENG-138) → no trip
 #   A3: count=1 at stage=implementing (below threshold=2) → no trip
-#   A4: qa_rejection at threshold with stage=qa → DOES trip (other counters unaffected)
-#   A5: review_rejection + qa_rejection both at threshold, stage=qa → only qa_rejection trips
+#   A4: qa_rejection at threshold with stage=qa → does NOT trip (ENG-145 inversion)
+#   A5: review_rejection + qa_rejection both at threshold, stage=qa → NEITHER trips (ENG-145 inversion)
 #   A6: explicit empty-string stage arg → trips (same as no-arg back-compat path)
 
 set -euo pipefail
@@ -180,10 +180,10 @@ else
     "rc=$cA3_rc out=$cA3_out"
 fi
 
-# ── case-A4: qa_rejection at threshold, stage=qa → DOES trip ────────────────
-# The ENG-138 fix ONLY suppresses review_rejection on non-implementing stages.
-# qa_rejection is NOT scoped to implementing; it must still trip at stage=qa.
-# This guards against accidentally over-suppressing other counters.
+# ── case-A4 (ENG-145 inversion): qa_rejection at threshold, stage=qa → does NOT trip ──
+# Pre-ENG-145 this asserted that qa_rejection trips at stage=qa (ENG-138 fix was
+# review_rejection-only). ENG-145 extends the stage gate to qa_rejection: trip
+# now fires only at stage=implementing — see bin/guards.sh:138-140.
 write_stub_two_qa_rejections
 
 set +e
@@ -191,16 +191,19 @@ cA4_out="$(bash "$GUARDS" check ENG-TA4 qa 2>&1)"
 cA4_rc=$?
 set -e
 
-if [[ "$cA4_rc" == "10" ]] && grep -q 'qa_rejection(2>=2)' <<<"$cA4_out"; then
-  pass_at "case-A4: qa_rejection still trips at stage=qa (ENG-138 fix must not over-suppress)"
+if [[ "$cA4_rc" == "0" ]] && grep -q 'guards: clear' <<<"$cA4_out"; then
+  pass_at "case-A4: qa_rejection does NOT trip at stage=qa (ENG-145 extends the ENG-138 narrowing)"
 else
-  fail_at "case-A4: qa_rejection SHOULD trip even at stage=qa" \
+  fail_at "case-A4: qa_rejection at stage=qa should NOT trip post-ENG-145" \
     "rc=$cA4_rc out=$cA4_out"
 fi
 
-# ── case-A5: review_rejection + qa_rejection both at threshold, stage=qa ────
-# Mixed: review_rejection suppressed, qa_rejection NOT suppressed.
-# Verifies the scoping is counter-specific, not a blanket guard bypass.
+# ── case-A5 (ENG-145 inversion): both counters at threshold, stage=qa → NEITHER trips ──
+# Pre-ENG-145 this asserted that at stage=qa, qa_rejection trips while
+# review_rejection is suppressed. ENG-145 extends the suppression: at any non-
+# implementing stage, NEITHER counter trips. The scoping is still counter-
+# specific (gotcha/rule counters are unaffected), but qa_rejection now joins
+# review_rejection in the implementing-only firing edge.
 write_stub_two_review_and_two_qa_rejections
 
 set +e
@@ -208,12 +211,13 @@ cA5_out="$(bash "$GUARDS" check ENG-TA5 qa 2>&1)"
 cA5_rc=$?
 set -e
 
-if [[ "$cA5_rc" == "10" ]] \
-    && grep -q 'qa_rejection(2>=2)' <<<"$cA5_out" \
-    && ! grep -q 'review_rejection' <<<"$cA5_out"; then
-  pass_at "case-A5: at stage=qa, qa_rejection trips but review_rejection is suppressed (counter-specific scoping)"
+if [[ "$cA5_rc" == "0" ]] \
+    && grep -q 'guards: clear' <<<"$cA5_out" \
+    && ! grep -q 'qa_rejection(2>=2)' <<<"$cA5_out" \
+    && ! grep -q 'review_rejection(2>=2)' <<<"$cA5_out"; then
+  pass_at "case-A5: at stage=qa, NEITHER qa_rejection NOR review_rejection trips (ENG-145 symmetric suppression)"
 else
-  fail_at "case-A5: stage=qa should suppress review_rejection but still trip qa_rejection" \
+  fail_at "case-A5: stage=qa should suppress BOTH qa_rejection and review_rejection post-ENG-145" \
     "rc=$cA5_rc out=$cA5_out"
 fi
 

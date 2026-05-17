@@ -266,9 +266,11 @@ else
     "rc=$c8_rc out=$c8_out"
 fi
 
-# ── case-9 (QA-adversarial): qa stage with qa_rejection >=threshold still trips
-# Even at stage=qa, a qa_rejection trip (unrelated to review_rejection) must
-# still fire — the ENG-138 narrowing only affects review_rejection.
+# ── case-9 (ENG-145 inversion): qa stage with qa_rejection >=threshold does NOT trip ──
+# Pre-ENG-145 this asserted that qa_rejection trips at stage=qa (ENG-138 narrowing
+# was review_rejection-only). ENG-145 extends the narrowing to qa_rejection (and
+# implement_rejection). The trip now fires only at stage=implementing — see
+# bin/guards.sh:138-140 and the symmetric implementer-rejection block at 141-143.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -294,11 +296,154 @@ c9_out="$(bash "$GUARDS" check ENG-T138I qa 2>&1)"
 c9_rc=$?
 set -e
 
-if [[ "$c9_rc" == "10" ]] && grep -q 'qa_rejection(2>=2)' <<<"$c9_out"; then
-  pass_at "case-9: qa_rejection still trips at stage=qa (ENG-138 narrowing is review_rejection-only)"
+if [[ "$c9_rc" == "0" ]] && grep -q 'guards: clear' <<<"$c9_out"; then
+  pass_at "case-9: qa_rejection does NOT trip at stage=qa (ENG-145 extends the ENG-138 narrowing to qa_rejection)"
 else
-  fail_at "case-9: qa_rejection at stage=qa should still halt" \
+  fail_at "case-9: qa_rejection at stage=qa should NOT trip post-ENG-145" \
     "rc=$c9_rc out=$c9_out"
+fi
+
+# ── case-10: AC#1 — qa_rejection trips at stage=implementing ─────────────────
+# Two qa_rejection markers, no operator-resume, stage=implementing.
+# Expected: rc=10, output contains qa_rejection(2>=2).
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:30:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+c10_out="$(bash "$GUARDS" check ENG-T145A implementing 2>&1)"
+c10_rc=$?
+set -e
+
+if [[ "$c10_rc" == "10" ]] && grep -q 'qa_rejection(2>=2)' <<<"$c10_out"; then
+  pass_at "case-10: qa_rejection trips at stage=implementing (AC#1)"
+else
+  fail_at "case-10: stage=implementing should trip on qa_rejection count=2" \
+    "rc=$c10_rc out=$c10_out"
+fi
+
+# ── case-11: AC#2 — qa_rejection does NOT trip at stage=building (forward edge) ──
+# Two qa_rejection markers, no operator-resume, stage=building (post-PASS forward edge).
+# Expected: rc=0, output contains "guards: clear".
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:30:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+c11_out="$(bash "$GUARDS" check ENG-T145B building 2>&1)"
+c11_rc=$?
+set -e
+
+if [[ "$c11_rc" == "0" ]] && grep -q 'guards: clear' <<<"$c11_out"; then
+  pass_at "case-11: qa_rejection does NOT trip at stage=building (AC#2 — forward edge after qa PASS)"
+else
+  fail_at "case-11: stage=building should NOT trip on cumulative qa_rejection count=2" \
+    "rc=$c11_rc out=$c11_out"
+fi
+
+# ── case-12: AC#3 — implement_rejection trips at stage=implementing ──────────
+# Two implement_rejection markers, no operator-resume, stage=implementing.
+# Expected: rc=10, output contains implement_rejection(2>=2).
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:30:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+c12_out="$(bash "$GUARDS" check ENG-T145C implementing 2>&1)"
+c12_rc=$?
+set -e
+
+if [[ "$c12_rc" == "10" ]] && grep -q 'implement_rejection(2>=2)' <<<"$c12_out"; then
+  pass_at "case-12: implement_rejection trips at stage=implementing (AC#3)"
+else
+  fail_at "case-12: stage=implementing should trip on implement_rejection count=2" \
+    "rc=$c12_rc out=$c12_out"
+fi
+
+# ── case-13: AC#4 — operator-resume waypoint resets BOTH qa and implement counters ──
+# Two qa_rejection markers + two implement_rejection markers + a NEWER operator-resume
+# transition. Stage=implementing. Expected: rc=0 (both counters reset by operator-resume).
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=qa_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:15:00.000Z"},
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:30:00.000Z"},
+  {"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:45:00.000Z"},
+  {"body":"<!-- pipeline: transition from=implementing to=implementing reason=operator-resume -->","createdAt":"2026-05-16T10:00:00.000Z"}
+]
+JSON
+    ;;
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}'
+    ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+c13_out="$(bash "$GUARDS" check ENG-T145D implementing 2>&1)"
+c13_rc=$?
+set -e
+
+if [[ "$c13_rc" == "0" ]] && grep -q 'guards: clear' <<<"$c13_out"; then
+  pass_at "case-13: operator-resume waypoint resets BOTH qa_rejection and implement_rejection (AC#4 — ENG-116 contract preserved)"
+else
+  fail_at "case-13: operator-resume should clear both rejection counters at stage=implementing" \
+    "rc=$c13_rc out=$c13_out"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

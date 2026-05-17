@@ -18,13 +18,16 @@
 # threshold could never trip from review_rejection alone, and the
 # `building → implementing` merge-conflict loopback handed each rebase
 # round a fresh budget.
-# ENG-138 narrows the firing-side: the review_rejection threshold trips
-# only when the dispatched stage is 'implementing' (the loopback
-# continuation edge). Reaching qa after a clean reviewing PASS no
-# longer halts even when the cumulative count is at or over the
-# threshold. The counter still accumulates across loopback cycles for
-# operator audit (visible in the `guards: clear` log line), and reset
-# semantics (operator-resume waypoint clears) are unchanged.
+# ENG-138/ENG-145 narrow the firing-side for all three rejection
+# counters: each threshold (review_rejection, qa_rejection,
+# implement_rejection) trips only when the dispatched stage is
+# 'implementing' — the loopback continuation edge shared by all
+# three loops (verdict-handler.sh:35-37). Reaching a downstream
+# stage after a clean upstream PASS no longer halts even when the
+# cumulative count is at or over the threshold. The counter still
+# accumulates across loopback cycles for operator audit (visible
+# in the `guards: clear` log line), and reset semantics
+# (operator-resume waypoint clears) are unchanged.
 # gotcha_triggered and learned_rule_renewal count
 # across the whole issue lifetime by design, cleared only by their explicit
 # ack labels:
@@ -38,10 +41,11 @@
 # Usage:
 #   guards.sh check <issue_id> [stage]
 #     exit 0 if clear, exit 10 if a threshold is tripped (prints which).
-#     When [stage] is omitted, the review_rejection trip fires as today
-#     (operator-triage / case-15 back-compat). When [stage] is provided
-#     (e.g. by bin/run-stage.sh), the review_rejection trip is scoped to
-#     stage == implementing — see header comment above for the ENG-138
+#     When [stage] is omitted, the review_rejection, qa_rejection,
+#     and implement_rejection trips fire as today (operator-triage /
+#     case-15 back-compat). When [stage] is provided (e.g. by
+#     bin/run-stage.sh), all three trips are scoped to stage ==
+#     implementing — see header comment above for the ENG-138/ENG-145
 #     contract.
 #   guards.sh bump <issue_id> <counter_name>
 #     counter_name: review_rejection | qa_rejection | implement_rejection | gotcha_triggered | learned_rule_renewal
@@ -135,10 +139,10 @@ check() {
   if (( rule >= rule_threshold )) && ! bash "$SCRIPT_DIR/linear.sh" has-label "$ident" pipeline:rule-reviewed; then
     tripped+="learned_rule_renewal($rule>=$rule_threshold) "
   fi
-  if (( qa >= qa_threshold )); then
+  if (( qa >= qa_threshold )) && [[ -z "$stage" || "$stage" == "implementing" ]]; then
     tripped+="qa_rejection($qa>=$qa_threshold) "
   fi
-  if (( impl >= impl_threshold )); then
+  if (( impl >= impl_threshold )) && [[ -z "$stage" || "$stage" == "implementing" ]]; then
     tripped+="implement_rejection($impl>=$impl_threshold) "
   fi
 

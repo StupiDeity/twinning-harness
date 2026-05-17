@@ -1,0 +1,48 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-145",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/guards.sh::check scopes qa_rejection and implement_rejection trips to stage == implementing, mirroring the ENG-138 review_rejection gate; empty-stage CLI path trips as today",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "qa >= qa_threshold \\)\\) && \\[\\[ -z \"\\$stage\" \\|\\| \"\\$stage\" == \"implementing\" \\]\\]", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "impl >= impl_threshold \\)\\) && \\[\\[ -z \"\\$stage\" \\|\\| \"\\$stage\" == \"implementing\" \\]\\]", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "ENG-138/ENG-145 narrow the firing-side", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards.sh", "pattern": "ENG-145", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/guards-test.sh inverts case-9 and adds case-10/11/12/13 covering AC#1-AC#4 (qa_rejection at implementing trips; qa_rejection at building does not; implement_rejection at implementing trips; operator-resume resets both)",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/guards-test.sh" },
+        { "kind": "grep", "path": "bin/guards-test.sh", "pattern": "case-9 \\(ENG-145 inversion\\): qa stage with qa_rejection", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards-test.sh", "pattern": "case-10.*qa_rejection trips at stage=implementing", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards-test.sh", "pattern": "ENG-T145B", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards-test.sh", "pattern": "ENG-T145C", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards-test.sh", "pattern": "ENG-T145D", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/guards-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/guards-adversarial-test.sh inverts case-A4 (qa_rejection at stage=qa no longer trips) and case-A5 (both counters suppressed at stage=qa)",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/guards-adversarial-test.sh" },
+        { "kind": "grep", "path": "bin/guards-adversarial-test.sh", "pattern": "case-A4 \\(ENG-145 inversion\\): qa_rejection at threshold, stage=qa", "expect_match": true },
+        { "kind": "grep", "path": "bin/guards-adversarial-test.sh", "pattern": "case-A5 \\(ENG-145 inversion\\): both counters at threshold, stage=qa", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/guards-adversarial-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "Existing test surfaces stay green: case-15 (no-stage back-compat for implement_rejection), verdict-adversarial A10/A10B/A11 (helper signature unchanged), profile-allowlist reviewing/qa",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/verdict-adversarial-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/profile-allowlist-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}
