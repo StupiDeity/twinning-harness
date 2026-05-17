@@ -167,6 +167,33 @@ current_dispatch_id() {
   jq -r '.current_dispatch_id // ""' "$state_file" 2>/dev/null || printf ''
 }
 
+# ENG-146 — Strip an issue-state.json file to just the allocator-set
+# subset {current_dispatch_seq, current_dispatch_id, current_stage},
+# preserving the dispatch_id monotonic counter across success-path
+# cleanup (run-stage.sh) and operator-resume drain (pipeline.sh).
+# Without this, every stage's first dispatch reads prior_seq=0 and
+# re-emits d0001, colliding with the previous stage's id and tripping
+# the planning detective on progress.md cross-stage entries.
+# When allocator fields are absent (legacy / pre-cutover issue) the
+# file is rm -f'd for back-compat. Idempotent on missing file.
+strip_state_preserve_alloc() {
+  local state_file="$1"
+  [[ -n "$state_file" ]] || return 0
+  [[ -s "$state_file" ]] || return 0
+  jq -e . "$state_file" >/dev/null 2>&1 || { rm -f "$state_file"; return 0; }
+  local has_alloc
+  has_alloc="$(jq -r 'has("current_dispatch_id") and (.current_dispatch_id // "") != ""' "$state_file" 2>/dev/null || printf 'false')"
+  if [[ "$has_alloc" == "true" ]]; then
+    local stripped tmp
+    stripped="$(jq -c '{current_dispatch_seq, current_dispatch_id, current_stage}' "$state_file" 2>/dev/null || printf '{}')"
+    tmp="${state_file}.tmp.$$"
+    printf '%s' "$stripped" > "$tmp"
+    mv -f "$tmp" "$state_file"
+  else
+    rm -f "$state_file"
+  fi
+}
+
 # ─── Transcript-based assertion (ENG-43, hoisted ENG-87) ──────────────
 # Single jq fork; reads NDJSON from $transcript line by line, finds
 # tool_use blocks invoking Bash whose .input.command starts with
@@ -430,7 +457,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id assert_no_tool_invocation progress_md_path assert_no_write_to_path
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

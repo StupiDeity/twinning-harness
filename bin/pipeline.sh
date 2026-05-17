@@ -223,20 +223,14 @@ _pipeline_drain_issue_state() {
     local policy
     policy="$(jq -r '.policy // ""' "$state_file" 2>/dev/null || printf '')"
     if [[ "$policy" == "skip-until-human-acts" ]]; then
-      # Project to the allocator-owned subset; rm -f when no allocator
-      # fields exist (legacy / pre-cutover issues), preserving the
-      # original metric semantics for back-compat with PR-E / PR-N.
-      local has_alloc
-      has_alloc="$(jq -r 'has("current_dispatch_id") and (.current_dispatch_id // "") != ""' "$state_file" 2>/dev/null || printf 'false')"
-      if [[ "$has_alloc" == "true" ]]; then
-        local stripped tmp
-        stripped="$(jq -c '{current_dispatch_seq, current_dispatch_id, current_stage}' "$state_file" 2>/dev/null || printf '{}')"
-        tmp="${state_file}.tmp.$$"
-        printf '%s' "$stripped" > "$tmp"
-        mv -f "$tmp" "$state_file"
+      # ENG-146: delegate the strip-vs-rm branch to common.sh's shared
+      # helper so this code path and run-stage.sh's success cleanup
+      # cannot drift. has_alloc=true → preserve {seq, id, stage};
+      # has_alloc=false → rm -f (legacy back-compat).
+      strip_state_preserve_alloc "$state_file"
+      if [[ -e "$state_file" ]]; then
         log "pipeline-decide: stripped classify-set fields from $state_file (preserved current_dispatch_id)"
       else
-        rm -f "$state_file"
         log "pipeline-decide: removed $state_file (policy=skip-until-human-acts, no allocator fields)"
       fi
       state_drained=true

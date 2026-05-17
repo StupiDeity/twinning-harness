@@ -845,8 +845,11 @@ _pre_dispatch_merge_gate() {
     "$_branch" > "$_summary_path"
 
   # Success-path state cleanup, mirroring the cleanup at lines 851-855.
+  # ENG-146: strip-not-delete preserves the dispatch_id seq counter so
+  # the next stage's first dispatch increments to d<seq+1> instead of
+  # colliding at d0001 with this stage's id.
   rm -f "$(issue_dir "$ident")/wait-${stage}.json" 2>/dev/null || true
-  rm -f "$(issue_dir "$ident")/issue-state.json"     2>/dev/null || true
+  strip_state_preserve_alloc "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
 
   # Apply the transition directly. Each step in apply_transition is
   # idempotent (verdict-handler.sh:158-184); on partial failure (e.g.,
@@ -1967,7 +1970,9 @@ main() {
         [[ -n "$_rp_branch" ]] && _post_review_dispatch_update "$ident" "$_rp_branch" || true
       fi
       # Success path: clear any prior failure state + skip labels.
-      rm -f "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
+      # ENG-146: strip-not-delete preserves the dispatch_id seq counter
+      # so the next stage's first dispatch increments to d<seq+1>.
+      strip_state_preserve_alloc "$(issue_dir "$ident")/issue-state.json" 2>/dev/null || true
       rm -f "$(issue_dir "$ident")/wait-${stage}.json" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-code-changes" 2>/dev/null || true
       bash "$SCRIPT_DIR/linear.sh" remove-label "$ident" "pipeline:skip-until-human-acts"   2>/dev/null || true
