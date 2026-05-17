@@ -86,6 +86,7 @@ _reset_captures() {
   rm -f "$METRICS_CAPTURE" "$SLACK_CAPTURE"
   rm -f "$DEBOUNCE_FILE"
   touch "$METRICS_CAPTURE"
+  unset STUCK_TICK_ALARM_MINUTES
 }
 
 _metrics_count() {
@@ -150,6 +151,19 @@ if jq -e '.event == "stuck-tick"' "$METRICS_CAPTURE" >/dev/null 2>&1; then
   pass_at "AC-STALE: metric event name is 'stuck-tick'"
 else
   fail_at "AC-STALE: metric event name" "expected 'stuck-tick' in events.jsonl"
+fi
+# Verify metric .notes fields carry structured triage data (age=, threshold=, holder_pid=)
+if jq -e '.notes | test("age=[0-9]+") and test("threshold=[0-9]+") and test("holder_pid=")' \
+     "$METRICS_CAPTURE" >/dev/null 2>&1; then
+  pass_at "AC-STALE: metric notes carry age/threshold/holder_pid"
+else
+  fail_at "AC-STALE: metric notes" "missing structured fields (age=, threshold=, holder_pid=)"
+fi
+# Verify Slack payload uses warn level and 'Stuck tick alarm' prefix (operator-visible)
+if grep -q $'^warn\t' "$SLACK_CAPTURE" && grep -q 'Stuck tick alarm' "$SLACK_CAPTURE"; then
+  pass_at "AC-STALE: Slack payload uses warn level + alarm prefix"
+else
+  fail_at "AC-STALE: Slack payload" "missing 'warn' level or 'Stuck tick alarm' prefix"
 fi
 
 # ─── AC-DEBOUNCED ─────────────────────────────────────────────────────────────
