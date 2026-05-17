@@ -93,6 +93,10 @@ fail_at() { printf '  ❌ %s\n     %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
   && pass_at "stuck-tick-alarm plist rendered with slug 'foo'" \
   || fail_at "stuck-tick-alarm plist rendered" "missing"
 
+grep -q 'bootstrap.*com.twinning.stuck-tick-alarm.foo' "$LAUNCHCTL_LOG" \
+  && pass_at "stuck-tick-alarm: launchctl bootstrap invoked" \
+  || fail_at "stuck-tick-alarm: launchctl bootstrap" "missing in LAUNCHCTL_LOG"
+
 grep -q 'com.twinning.pipeline.foo' "$HOME/Library/LaunchAgents/com.twinning.pipeline.foo.plist" \
   && pass_at "Label substitution correct" \
   || fail_at "Label substitution" "missing in plist body"
