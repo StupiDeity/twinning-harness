@@ -52,6 +52,7 @@ stage_summary_path=_resolve_stage_summary_path
 learned_rules_dir=_resolve_learned_rules_dir
 dispatch_id=_resolve_dispatch_id
 review_findings=_resolve_review_findings
+qa_findings=_resolve_qa_findings
 progress_md_path=_resolve_progress_md_path
 plan_json=_resolve_plan_json
 '
@@ -275,6 +276,27 @@ _resolve_review_findings() {
   fi
 }
 
+# ENG-140: per-issue prior-qa summary, mirror of _resolve_review_findings.
+# Preserved across qa → implementing transitions by _clear_current_stage_slots
+# (only the CURRENT stage's summary is cleared). Resolver reads this path into
+# the {qa_findings} token for the implementing prompt; other stages emit the
+# same token but typically don't reference it. Negative gate on
+# PIPELINE_LOOPBACK_SOURCE != "qa" prevents stale qa findings leaking into
+# review-loopback / build-loopback / fresh-from-planning dispatches.
+_resolve_qa_findings() {
+  local p="${_RENDER_QA_FINDINGS_PATH-}"
+  local source="${PIPELINE_LOOPBACK_SOURCE-}"
+  if [[ -n "$source" && "$source" != "qa" ]]; then
+    printf '(no prior qa run for this issue — this dispatch is not a qa-loopback)'
+    return 0
+  fi
+  if [[ -n "$p" && -s "$p" ]]; then
+    cat "$p"
+  else
+    printf '(no prior qa run for this issue — this dispatch is not a qa-loopback)'
+  fi
+}
+
 # Without a structured plan.json sibling, the implement agent re-interprets
 # prose pass-criteria on every dispatch, which drifts across rebases and
 # BE↔FE re-readings (ENG-123). Inlining the JSON makes structured fields
@@ -466,6 +488,11 @@ main() {
   # other stages emit the same token but typically don't reference it.
   local review_findings_path
   review_findings_path="$(issue_dir "$issue_id")/stage-summary-reviewing.md"
+  # ENG-140: per-issue prior-qa summary path, sibling of review_findings_path.
+  # Preserved across qa → implementing transitions by _clear_current_stage_slots
+  # (only the CURRENT stage's summary is cleared).
+  local qa_findings_path
+  qa_findings_path="$(issue_dir "$issue_id")/stage-summary-qa.md"
 
   # Bind to the resolver-side globals before calling resolve_block_tokens.
   # The bash literal-substitution path (${var//pat/repl}) is glob-immune
@@ -485,6 +512,7 @@ main() {
   _RENDER_PROGRESS_MD_PATH="$progress_md_path"
   _RENDER_LEARNED_RULES_DIR="$learned_rules_dir"
   _RENDER_REVIEW_FINDINGS_PATH="$review_findings_path"
+  _RENDER_QA_FINDINGS_PATH="$qa_findings_path"
   # ENG-108: per-issue progress notebook path. Composes on
   # bin/common.sh::progress_md_path (exported per common.sh:400). The
   # resolver is path-shaped (D-001); the agent reads via Read at

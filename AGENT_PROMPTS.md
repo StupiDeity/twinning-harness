@@ -747,6 +747,27 @@ Reviewing summary (verbatim):
 
 {review_findings}
 
+QA → implement loopback handling (MANDATORY when present — ENG-140):
+
+The orchestrator inlines the prior QA stage's summary below as `{qa_findings}` ONLY when the most-recent transition into this dispatch was `from=qa to=implementing`. When the value reads `(no prior qa run for this issue — this dispatch is not a qa-loopback)`, this is one of:
+
+  - a fresh dispatch forward from planning, OR
+  - a review-loopback (handled by the review block above), OR
+  - a build-loopback (handled by the build block below),
+
+and the rest of THIS block does not apply. Otherwise:
+
+  1. Treat every P0 finding in the QA summary as a contract you MUST close by code commits on `{branch_name}` before exit. §6's P0 set (missing tests on a new code path, regression-intent violations, weak assertions on Failure Mode → Test Map rows, missing boundary/failure-mode/concurrency tests) is the exhaustive list — every entry in `{qa_findings}` tagged P0 must be addressed. Non-P0 findings are best-effort: close them when cheap, defer with a one-line rationale in the stage-summary Notes otherwise.
+  2. For each closed P0 finding, the commit message MUST cite the failing test name (e.g. `fix(ENG-N): close P0 — <failing-test-name> now passes`). If the finding cited a `qa-patterns.md` entry as the explanation for a flake, also cite the qa-pattern locator in a trailer (e.g. `Fixes: docs/knowledge/qa-patterns.md:qa-P-0042`). The next QA dispatch grep-cross-checks the test name against the commit log; an unbacked `verdict pass` results in a loopback.
+  3. Do NOT post `verdict pass` if any P0 finding remains uncommitted. The branch's git log is the only authoritative record of work done — re-emitting the prior `completion/implementing/{issue_id}` body via the overwrite-on-every-dispatch contract without making fresh commits is the same NOOP-loopback failure mode the review-loopback block guards against.
+  4. **Scope-drift restraint — a QA finding is NOT authorization to expand scope.** The brainstorm and plan are the only authorization surfaces for behavior in this PR. If addressing a finding would require behavior the brainstorm/plan did not authorize — a new defensive layer, a new contract field, a new validation outcome, a new metric — STOP and file it as a follow-up via `<!-- meta: metric name=plan_gap -->` with the finding text and the brainstorm/plan section that should have covered it.
+     - Carve-out: fixing a real bug that the QA test exposed IS in scope by construction. The plan's Failure Mode → Test Map enumerates the bugs each test guards against; if a test is failing because the code is wrong AND the test correctly encodes the plan's expected behavior, the fix is authorized even if the brainstorm did not enumerate the specific code path. Distinguish "the test reveals a bug in code the plan told you to write" (FIX IT) from "the QA agent wrote an adversarial test exposing a contract the plan did not specify" (FILE `plan_gap`, do NOT silently expand contract).
+     - Concrete failure (mirror of the ENG-123 review-loopback example): an adversarial QA test asserting a 404 response shape the plan never specified is NOT authorization to add 404-shape code paths. QA's adversarial-testing budget (§6 step 5) is exploratory; its tests become specification only via a `plan_gap` follow-up.
+
+QA summary (verbatim):
+
+{qa_findings}
+
 Build → implement loopback handling (MANDATORY when present):
 
 If the most recent `<!-- pipeline: transition ... -->` on this issue has `from=building to=implementing` AND a `<!-- meta: metric name=merge_conflict -->` comment exists, **this dispatch is a build-stage rejection for P6 (conflicts with main). Your FIRST action MUST be to rebase the branch onto `origin/main` and force-push** — without that, the next build cycle will re-fail P6 on the same conflict and the loop is infinite. Concrete steps:
