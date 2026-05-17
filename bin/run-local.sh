@@ -48,6 +48,18 @@ LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 
 mkdir -p "$HARNESS_STATE_DIR"
 
+_write_tick_heartbeat() {
+  local heartbeat_file="$PROJECT_STATE_DIR/.last-tick-end"
+  local tmp="${heartbeat_file}.tmp.$$"
+  if date -u +%Y-%m-%dT%H:%M:%SZ > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$heartbeat_file" 2>/dev/null; then
+    return 0
+  fi
+  log "heartbeat write failed (continuing tick)"
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
 if ! acquire_lock "$LOCK_DIR"; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
   exit 0
@@ -502,3 +514,4 @@ else
 fi
 
 log "== tick end (success, ${#_claimed_workers[@]} worker(s)) =="
+_write_tick_heartbeat
