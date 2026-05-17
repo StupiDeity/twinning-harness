@@ -822,6 +822,84 @@ Action on stop: post a Linear comment on {issue_id} tagged `<!-- meta: metric na
 with the specific defect, and exit cleanly. The orchestrator will pause the issue until
 the plan is patched. Do NOT invent the contract.
 
+Within-stage iteration loop (MANDATORY):
+
+After the Plan-contract completeness precondition passes, run an inner
+generator-evaluator loop INSIDE this single dispatch — up to 3 iterations of
+`apply edits → commit → evaluate pass-criteria → fix`. The goal is to converge
+on a verifiable green state within the warm context of this dispatch rather
+than handing a half-done branch to the reviewer (~$6 per reviewer cycle).
+
+Per iteration K (1 ≤ K ≤ 3):
+
+  1. Apply edits.
+     - Iteration 1: apply the plan's Backend Tasks (or the review's
+       `[critical]` / `[major]` findings on a review-loopback dispatch, or
+       the QA findings on a qa-loopback dispatch) per the TDD discipline
+       described above (test commit first, impl commit second).
+     - Iteration 2+: apply fixes for the preceding iteration's failed
+       pass-criteria. Re-evaluate ALL pass-criteria, not just the failed
+       ones (a fix can regress a previously-passing criterion).
+  2. Commit per the TDD discipline (`test(...)` then `feat(...)` / `fix(...)`).
+  3. Evaluate termination criteria. Two paths:
+     - **Structured path (preferred):** if the `<<<PLAN_JSON_BEGIN>>>`/
+       `<<<PLAN_JSON_END>>>` body parses as JSON with at least one
+       `features[].pass_criteria[]` entry, walk every entry on every feature:
+       - `kind=smoke`: run `<command>`; iteration passes the criterion iff
+         the command's exit status equals `expect_exit`.
+       - `kind=file_exists`: iteration passes the criterion iff the file at
+         `path` exists.
+       - `kind=grep`: iteration passes the criterion iff `grep -Eq <pattern>
+         <path>` agrees with `expect_match` (negated when `expect_match` is
+         false).
+     - **Fallback path:** when the embedded body reads `(no plan.json — falling back to prose plan)`, run every command listed in the Project profile addendum's `## Build & test gates` section's Test line, and apply the existing Self-review block's zero-P0 floor. Iteration passes iff every gate command exits 0 AND self-review reports zero P0.
+  4. Emit per-iteration telemetry — one event per iteration, exactly:
+     ```
+     bash bin/metrics.sh impl_iteration {issue_id} implementing <outcome>
+          <duration_ms> iteration=<K>[ failed=<kind>:<key>,<kind>:<key>,…]
+     ```
+     Where:
+       - `<outcome>` is `pass` (every pass-criterion green, every gate exit 0,
+         zero P0 in self-review), `fail` (one or more criteria red and K < 3),
+         or `exhausted` (one or more criteria red and K = 3).
+       - `<duration_ms>` is `(end_ms - start_ms)` where you observed
+         `date +%s%3N` at the iteration's start (step 1) and end (step 3
+         complete). Approximate; per-iteration cost in dollars is NOT captured
+         (claude does not expose intra-stream cost slices; the whole-dispatch
+         cost lands in `usage-implementing.json` via dispatch.sh).
+       - `failed=…` is a comma-joined list, present only when `<outcome>` is
+         `fail` or `exhausted`. `<kind>` is `smoke` / `file_exists` / `grep` /
+         `gate` / `self-review`; `<key>` is the smoke command, the file path,
+         the grep pattern, the gate command, or the P0 finding summary.
+  5. Decide the next step:
+     - `<outcome>=pass` → EXIT the loop. Proceed to the TDD-evidence comment +
+       stage-summary + verdict pass per the existing Output / Verdict marker
+       blocks below. Do NOT iterate beyond a pass.
+     - `<outcome>=fail` and K < 3 → continue to iteration K+1.
+     - `<outcome>=exhausted` (K = 3 and one or more criteria still red) →
+       post `bash bin/pipeline.sh event {issue_id} verdict halt --reason
+       iteration-exhausted`. Write the stage-summary file per the Output
+       block, name the uncovered pass-criteria in its Notes paragraph
+       (one-line trail like `iteration trail: 1=fail(smoke), 2=fail(smoke),
+       3=exhausted(smoke + file_exists)` per OQ-7), and exit cleanly. The
+       orchestrator will apply `pipeline:halted` per ENG-56.
+
+An iteration's `outcome=pass` requires BOTH every pass-criterion to be green
+AND zero P0 in the Self-review-before-exit block — those are layered checks,
+not alternatives. The Self-review floor is unchanged; the loop discipline
+wraps it.
+
+Iteration semantics on loopback dispatches:
+  - Review-loopback (`from=reviewing to=implementing`): "tasks to apply" =
+    the `[critical]` / `[major]` findings from `{review_findings}`. Otherwise
+    identical.
+  - QA-loopback (`from=qa to=implementing`): "tasks to apply" = the findings
+    in `completion/qa/{issue_id}`. Otherwise identical.
+  - Build-loopback (`from=building to=implementing` with `merge_conflict`):
+    the rebase precondition above fires FIRST. If the rebase resolved cleanly
+    and there is no new code to add, iteration 1 just runs pass-criteria
+    against the rebased branch; passing → exit after one iteration.
+
 Your task:
 - Follow the plan's Backend Tasks in `depends_on` order. Tasks with `depends_on: []` may be
   done in any order.
