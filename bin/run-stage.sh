@@ -975,7 +975,7 @@ _validate_dispatch_envelope() {
   [[ -s "$sidecar" ]] || return 0
 
   local violations=()
-  local _viol_mcp _viol_curl
+  local _viol_mcp _viol_curl _viol_curl_post _viol_gh_graphql _viol_unset_id _viol_wget
   if _viol_mcp="$(assert_no_tool_invocation "$sidecar" "mcp__plugin_linear")"; then
     :
   else
@@ -985,6 +985,26 @@ _validate_dispatch_envelope() {
     :
   else
     violations+=("curl-linear:${_viol_curl}")
+  fi
+  if _viol_curl_post="$(assert_no_tool_invocation "$sidecar" "curl -X POST https://api.linear.app")"; then
+    :
+  else
+    violations+=("curl-post:${_viol_curl_post}")
+  fi
+  if _viol_gh_graphql="$(assert_no_tool_invocation "$sidecar" "gh api graphql")"; then
+    :
+  else
+    violations+=("gh-api-graphql:${_viol_gh_graphql}")
+  fi
+  if _viol_unset_id="$(assert_no_tool_invocation "$sidecar" "unset PIPELINE_DISPATCH_ID")"; then
+    :
+  else
+    violations+=("unset-dispatch-id:${_viol_unset_id}")
+  fi
+  if _viol_wget="$(assert_no_tool_invocation "$sidecar" "wget https://api.linear.app")"; then
+    :
+  else
+    violations+=("wget-linear:${_viol_wget}")
   fi
   if (( ${#violations[@]} > 0 )); then
     # ENG-87 review-iter-7 Critical 3: SANITISE viol_str BEFORE

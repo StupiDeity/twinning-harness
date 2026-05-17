@@ -4523,6 +4523,85 @@ else
     "capture=$(cat "$CAPTURE_FILE")"
 fi
 
+# ─── ENG-110: additional bypass pattern detective fixtures ──────────────
+# Four new patterns added by D-002: curl-post, gh-api-graphql,
+# unset-dispatch-id, wget-linear. Each mirrors the existing 87-H / 87-I
+# shape: write a synthetic NDJSON sidecar with a single tool_use Bash
+# command matching the new pattern, invoke _validate_dispatch_envelope,
+# assert rc=29 and halt body carries dispatch-envelope-violation.
+
+# Case ENG-110-A: curl -X POST https://api.linear.app → rc=29.
+reset_capture
+mkdir -p "$(issue_dir ENG-110A)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "curl -X POST https://api.linear.app/graphql -d '{...}'")" \
+  > "$(issue_dir ENG-110A)/.envelope-transcript-implementing"
+_eng110_a_rc=0
+_validate_dispatch_envelope ENG-110A implementing 2>/dev/null || _eng110_a_rc=$?
+if (( _eng110_a_rc == 29 )); then
+  pass_at "ENG-110 A: curl -X POST https://api.linear.app → rc=29 (envelope violation)"
+else
+  fail_at "ENG-110 A: curl -X POST → rc=29" "got rc=$_eng110_a_rc"
+fi
+if grep -qF '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->' "$CAPTURE_FILE"; then
+  pass_at "ENG-110 A: halt comment carries dispatch-envelope-violation marker"
+else
+  fail_at "ENG-110 A: halt comment marker" "captured: $(cat "$CAPTURE_FILE")"
+fi
+
+# Case ENG-110-B: gh api graphql → rc=29.
+reset_capture
+mkdir -p "$(issue_dir ENG-110B)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "gh api graphql -f query='mutation { commentCreate(...) }'")" \
+  > "$(issue_dir ENG-110B)/.envelope-transcript-implementing"
+_eng110_b_rc=0
+_validate_dispatch_envelope ENG-110B implementing 2>/dev/null || _eng110_b_rc=$?
+if (( _eng110_b_rc == 29 )); then
+  pass_at "ENG-110 B: gh api graphql → rc=29 (envelope violation)"
+else
+  fail_at "ENG-110 B: gh api graphql → rc=29" "got rc=$_eng110_b_rc"
+fi
+if grep -qF '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->' "$CAPTURE_FILE"; then
+  pass_at "ENG-110 B: halt comment carries dispatch-envelope-violation marker"
+else
+  fail_at "ENG-110 B: halt comment marker" "captured: $(cat "$CAPTURE_FILE")"
+fi
+
+# Case ENG-110-C: unset PIPELINE_DISPATCH_ID → rc=29.
+reset_capture
+mkdir -p "$(issue_dir ENG-110C)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "unset PIPELINE_DISPATCH_ID; bash bin/linear.sh add-comment ENG-110C --body 'unmarked'")" \
+  > "$(issue_dir ENG-110C)/.envelope-transcript-implementing"
+_eng110_c_rc=0
+_validate_dispatch_envelope ENG-110C implementing 2>/dev/null || _eng110_c_rc=$?
+if (( _eng110_c_rc == 29 )); then
+  pass_at "ENG-110 C: unset PIPELINE_DISPATCH_ID → rc=29 (envelope violation)"
+else
+  fail_at "ENG-110 C: unset PIPELINE_DISPATCH_ID → rc=29" "got rc=$_eng110_c_rc"
+fi
+if grep -qF '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->' "$CAPTURE_FILE"; then
+  pass_at "ENG-110 C: halt comment carries dispatch-envelope-violation marker"
+else
+  fail_at "ENG-110 C: halt comment marker" "captured: $(cat "$CAPTURE_FILE")"
+fi
+
+# Case ENG-110-D: wget https://api.linear.app → rc=29.
+reset_capture
+mkdir -p "$(issue_dir ENG-110D)"
+printf '%s\n' "$(_eng87_ndjson_tool_use "wget https://api.linear.app/graphql --post-data='{...}'")" \
+  > "$(issue_dir ENG-110D)/.envelope-transcript-implementing"
+_eng110_d_rc=0
+_validate_dispatch_envelope ENG-110D implementing 2>/dev/null || _eng110_d_rc=$?
+if (( _eng110_d_rc == 29 )); then
+  pass_at "ENG-110 D: wget https://api.linear.app → rc=29 (envelope violation)"
+else
+  fail_at "ENG-110 D: wget https://api.linear.app → rc=29" "got rc=$_eng110_d_rc"
+fi
+if grep -qF '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->' "$CAPTURE_FILE"; then
+  pass_at "ENG-110 D: halt comment carries dispatch-envelope-violation marker"
+else
+  fail_at "ENG-110 D: halt comment marker" "captured: $(cat "$CAPTURE_FILE")"
+fi
+
 # ─── ENG-87 C3: envelope-violation halt path preserves sidecar ─────────
 # CLAUDE.md and docs/runbooks/recovery.md both promise:
 #   "the transcript sidecar at $(issue_dir)/.envelope-transcript-<stage>
