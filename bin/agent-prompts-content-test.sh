@@ -401,6 +401,20 @@ else
        "got $fence_count_s2 column-0 fences in §2 body — render-prompt.sh::extract_block requires exactly 2"
 fi
 
+# ─── ENG-135: §2 carries add-side test-gate closure sweep ─────────────
+# Plan agent's feasibility persona must flag NEWLY CREATED gate-runnable
+# files (per the profile's "Build & test gates" glob) that imply a
+# learned-rules/<slug>/project-profile.md update — symmetric to the
+# existing remove-side ENG-94 sweep. Pin both load-bearing literals so a
+# future edit that deletes the rule or drops the canonical-pointer trips.
+if printf '%s\n' "$s2" | grep -qF 'NEWLY CREATED' && \
+   printf '%s\n' "$s2" | grep -qF 'learned-rules/<slug>/project-profile.md'; then
+  ok "§2 ENG-135: add-side test-gate closure sweep present (NEWLY CREATED + project-profile.md pointer)"
+else
+  nope "§2 ENG-135: add-side test-gate closure sweep present (NEWLY CREATED + project-profile.md pointer)" \
+       "literal 'NEWLY CREATED' or path 'learned-rules/<slug>/project-profile.md' missing from §2 — has the add-side rule been deleted or relocated?"
+fi
+
 # ─── ENG-50 / ENG-54: §5 invariants ───────────────────────────────────
 s5="$(section_body "## 5. Review Agent")"
 

@@ -1,0 +1,20 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-135",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "AGENT_PROMPTS.md §2 feasibility-persona self-review gains a symmetric add-side test-gate closure paragraph immediately after the existing remove-side paragraph. The new paragraph instructs the planner: for every NEWLY CREATED file in File Structure matching a gate-runnable glob (per the profile's Build & test gates Test command), the project's learned-rules/<slug>/project-profile.md MUST also appear in File Structure with a task updating the gate command — missing profile is a P0 plan-completeness defect. ENG-122 is the worked-example anchor (mirrors the existing ENG-94 worked example for the remove-side). bin/agent-prompts-content-test.sh gains one new §2-scoped assertion (AND-joined grep on 'NEWLY CREATED' + 'learned-rules/<slug>/project-profile.md').",
+      "pass_criteria": [
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "NEWLY CREATED", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "learned-rules/<slug>/project-profile.md", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "ENG-122", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "ENG-135", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "NEWLY CREATED", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "learned-rules/<slug>/project-profile.md", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/agent-prompts-content-test.sh", "expect_exit": 0, "expect_stdout_match": "OK: §2 ENG-135" },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}
