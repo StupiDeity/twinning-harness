@@ -1,0 +1,56 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-146",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/common.sh defines strip_state_preserve_alloc and exports it; preserves {current_dispatch_seq, current_dispatch_id, current_stage} when allocator fields present; rm -f on legacy/corrupt; no-op on missing",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "^strip_state_preserve_alloc\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "export -f .*strip_state_preserve_alloc", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "current_dispatch_seq, current_dispatch_id, current_stage", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/run-stage.sh's two success-path issue-state.json cleanup sites delegate to strip_state_preserve_alloc; no rm -f issue-state.json remaining",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "rm -f .*issue-state\\.json", "expect_match": false },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "strip_state_preserve_alloc", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/pipeline.sh::_pipeline_drain_issue_state delegates the strip branch to strip_state_preserve_alloc (no inline jq -c '{current_dispatch_seq, current_dispatch_id, current_stage}' block)",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "strip_state_preserve_alloc", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "bin/dispatch.sh::_assert_progress_md_entry takes a 3rd stage arg and scopes the progress.md grep to that stage; call site passes $stage",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "_assert_progress_md_entry .* .* \"\\$stage\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "grep -c \"\\^## \\$\\{PIPELINE_DISPATCH_ID-\\} - \\$\\{stage\\} - \"", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "Regression tests pin: AC-STRIP-A/B/C/D in bin/common-test.sh OR bin/dispatch-test.sh; AC-SUCCESS-PRESERVES-SEQ in bin/run-stage-test.sh; AC-DETECTIVE-STAGE-SCOPED in bin/dispatch-test.sh",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "AC-STRIP-A", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "AC-SUCCESS-PRESERVES-SEQ", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "AC-DETECTIVE-STAGE-SCOPED", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-6",
+      "summary": "Full gate suite green (pre-commit + dispatch-test + run-stage-test + pipeline-test if present)",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash bin/dispatch-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}

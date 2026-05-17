@@ -5460,6 +5460,62 @@ else
 fi
 unset _fix_export_t0 _fix_export_rc _export_block
 
+# ─── AC-SUCCESS-PRESERVES-SEQ — ENG-146 ─────────────────────────────
+# Pin that run-stage.sh's success-path state cleanup uses
+# strip_state_preserve_alloc, not rm -f. Two layers:
+#   1. Content pin — no rm -f issue-state.json remaining in run-stage.sh.
+#   2. Behavioral pin — strip on a populated state file preserves
+#      seq/id/stage, drops classify fields, and the next allocator
+#      invocation bumps seq → d<N+1>.
+if grep -Eq 'rm -f.*issue-state\.json' "$HARNESS_DIR/run-stage.sh"; then
+  fail_at "AC-SUCCESS-PRESERVES-SEQ content" \
+    "rm -f .../issue-state.json still present in run-stage.sh; ENG-146 D-001 requires both success-cleanup sites delegate to strip_state_preserve_alloc"
+else
+  pass_at "AC-SUCCESS-PRESERVES-SEQ content: no rm -f issue-state.json in run-stage.sh"
+fi
+
+if grep -q 'strip_state_preserve_alloc "\$(issue_dir' "$HARNESS_DIR/run-stage.sh"; then
+  pass_at "AC-SUCCESS-PRESERVES-SEQ content: run-stage.sh calls strip_state_preserve_alloc at success sites"
+else
+  fail_at "AC-SUCCESS-PRESERVES-SEQ content" \
+    "expected strip_state_preserve_alloc \"\$(issue_dir ...)/issue-state.json\" calls in run-stage.sh; ENG-146 D-001"
+fi
+
+_ac_sps_t0="$(mktemp -d)"
+trap "rm -rf '$_ac_sps_t0'" EXIT
+(
+  set +e
+  export HARNESS_STATE_DIR="$_ac_sps_t0/state"
+  export PROJECT_STATE_DIR="$_ac_sps_t0/state/test-ac-sps"
+  export PROJECT_SLUG="test-ac-sps"
+  mkdir -p "$PROJECT_STATE_DIR/ENG-SPS1"
+  source "$HARNESS_DIR/common.sh" 2>/dev/null
+  state_file="$(issue_dir ENG-SPS1)/issue-state.json"
+  cat > "$state_file" <<'JSON'
+{"policy":"skip-until-human-acts","reason":"halt at planning","retry_count":1,"current_dispatch_seq":3,"current_dispatch_id":"ENG-SPS1-d0003","current_stage":"planning"}
+JSON
+  strip_state_preserve_alloc "$state_file"
+  [[ -e "$state_file" ]] || { printf 'FAIL: state_file removed (expected preserved)\n'; exit 2; }
+  seq="$(jq -r '.current_dispatch_seq // ""' "$state_file" 2>/dev/null)"
+  id="$(jq -r '.current_dispatch_id // ""' "$state_file" 2>/dev/null)"
+  policy="$(jq -r '.policy // ""' "$state_file" 2>/dev/null)"
+  [[ "$seq" == "3" ]]              || { printf 'FAIL: seq=%s (expected 3)\n' "$seq"; exit 3; }
+  [[ "$id"  == "ENG-SPS1-d0003" ]] || { printf 'FAIL: id=%s (expected ENG-SPS1-d0003)\n' "$id"; exit 4; }
+  [[ "$policy" == "" ]]            || { printf 'FAIL: policy=%s (expected stripped)\n' "$policy"; exit 5; }
+  next_id="$(allocate_dispatch_id ENG-SPS1)"
+  [[ "$next_id" == "ENG-SPS1-d0004" ]] || { printf 'FAIL: next_id=%s (expected ENG-SPS1-d0004)\n' "$next_id"; exit 6; }
+)
+_ac_sps_rc=$?
+trap - EXIT
+rm -rf "$_ac_sps_t0"
+if (( _ac_sps_rc == 0 )); then
+  pass_at "AC-SUCCESS-PRESERVES-SEQ behavioral: strip preserves seq=3, drops policy, next allocator → d0004 (ENG-146 D-001)"
+else
+  fail_at "AC-SUCCESS-PRESERVES-SEQ behavioral" \
+    "strip+allocate-next did not yield seq-bumped id (rc=$_ac_sps_rc); ENG-146 D-001 contract violated"
+fi
+unset _ac_sps_t0 _ac_sps_rc
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
