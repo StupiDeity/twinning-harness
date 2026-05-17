@@ -5460,6 +5460,23 @@ else
 fi
 unset _fix_export_t0 _fix_export_rc _export_block
 
+# ─── ENG-146 AC-SUCCESS-PRESERVES-SEQ: success path preserves allocator seq ──
+# Prior to ENG-146, run-stage.sh's success path did `rm -f issue-state.json`
+# which nuked current_dispatch_seq. The next allocate_dispatch_id call read
+# prior_seq=0 and re-emitted d0001 — colliding with the original d0001 and
+# re-introducing the V3 vulnerability. The fix replaces rm -f with
+# strip_state_preserve_alloc at both success sites.
+printf '\n--- ENG-146 AC-SUCCESS-PRESERVES-SEQ: success-path cleanup structural pin ---\n'
+if grep -q 'strip_state_preserve_alloc' "$HARNESS_DIR/run-stage.sh" \
+   && ! grep -qE 'rm -f.*issue-state\.json' "$HARNESS_DIR/run-stage.sh"; then
+  pass_at "AC-SUCCESS-PRESERVES-SEQ: run-stage.sh delegates success-path issue-state cleanup to strip_state_preserve_alloc (no rm -f issue-state.json remaining)"
+else
+  _rs_has_strip=$(grep -c 'strip_state_preserve_alloc' "$HARNESS_DIR/run-stage.sh" 2>/dev/null || echo 0)
+  _rs_has_rm=$(grep -cE 'rm -f.*issue-state\.json' "$HARNESS_DIR/run-stage.sh" 2>/dev/null || echo 0)
+  fail_at "AC-SUCCESS-PRESERVES-SEQ" \
+    "run-stage.sh: strip_state_preserve_alloc occurrences=$_rs_has_strip, rm -f issue-state.json occurrences=$_rs_has_rm (must be strip=≥1, rm=0)"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

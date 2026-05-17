@@ -3135,7 +3135,7 @@ if [[ "$_PG_HELPER_PRESENT" == "1" ]]; then
 - breadcrumb bullet
 MD
   rm -f "$PG1_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$PG1_DIR" "$PG1_DIR/.transcript-violation-planning" && rc_pg1=0 || rc_pg1=$?
+  _assert_progress_md_entry "$PG1_DIR" "$PG1_DIR/.transcript-violation-planning" "planning" && rc_pg1=0 || rc_pg1=$?
   if [[ "$rc_pg1" == "0" && ! -s "$PG1_DIR/.transcript-violation-planning" ]]; then
     pass_at "PG1: well-formed single entry → rc=0, no violation"
   else
@@ -3147,7 +3147,7 @@ MD
   export PIPELINE_DISPATCH_ID="ENG-T-PG2-d0001"
   export PIPELINE_ISSUE_ID="ENG-T-PG2"
   rm -f "$PG2_DIR/progress.md" "$PG2_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$PG2_DIR" "$PG2_DIR/.transcript-violation-planning" && rc_pg2=0 || rc_pg2=$?
+  _assert_progress_md_entry "$PG2_DIR" "$PG2_DIR/.transcript-violation-planning" "planning" && rc_pg2=0 || rc_pg2=$?
   if [[ "$rc_pg2" == "31" ]] && grep -q "missing entirely" "$PG2_DIR/.transcript-violation-planning"; then
     pass_at "PG2: file missing → rc=31 + 'missing entirely' diagnostic"
   else
@@ -3172,7 +3172,7 @@ MD
 - current
 MD
   rm -f "$PG3_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$PG3_DIR" "$PG3_DIR/.transcript-violation-planning" && rc_pg3=0 || rc_pg3=$?
+  _assert_progress_md_entry "$PG3_DIR" "$PG3_DIR/.transcript-violation-planning" "planning" && rc_pg3=0 || rc_pg3=$?
   if [[ "$rc_pg3" == "0" && ! -s "$PG3_DIR/.transcript-violation-planning" ]]; then
     pass_at "PG3: prior entries preserved + new entry → rc=0"
   else
@@ -3189,7 +3189,7 @@ MD
 - prior-1
 MD
   rm -f "$PG4_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$PG4_DIR" "$PG4_DIR/.transcript-violation-planning" && rc_pg4=0 || rc_pg4=$?
+  _assert_progress_md_entry "$PG4_DIR" "$PG4_DIR/.transcript-violation-planning" "planning" && rc_pg4=0 || rc_pg4=$?
   if [[ "$rc_pg4" == "31" ]] && grep -q "found 0" "$PG4_DIR/.transcript-violation-planning"; then
     pass_at "PG4: zero matches for current id → rc=31 + 'found 0'"
   else
@@ -3210,7 +3210,7 @@ MD
 - duplicate
 MD
   rm -f "$PG5_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$PG5_DIR" "$PG5_DIR/.transcript-violation-planning" && rc_pg5=0 || rc_pg5=$?
+  _assert_progress_md_entry "$PG5_DIR" "$PG5_DIR/.transcript-violation-planning" "planning" && rc_pg5=0 || rc_pg5=$?
   if [[ "$rc_pg5" == "31" ]] && grep -q "found 2" "$PG5_DIR/.transcript-violation-planning"; then
     pass_at "PG5: two entries for current id → rc=31 + 'found 2'"
   else
@@ -3277,7 +3277,7 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
   export PIPELINE_ISSUE_ID="ENG-T-QA-A"
   touch "$QA_A_DIR/progress.md"            # exists but zero bytes
   rm -f "$QA_A_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_A_DIR" "$QA_A_DIR/.transcript-violation-planning" \
+  _assert_progress_md_entry "$QA_A_DIR" "$QA_A_DIR/.transcript-violation-planning" "planning" \
     && rc_qa_a=0 || rc_qa_a=$?
   if [[ "$rc_qa_a" == "31" ]] && grep -q "missing entirely" "$QA_A_DIR/.transcript-violation-planning" 2>/dev/null; then
     pass_at "QA-ADV-PGA: zero-byte progress.md → rc=31 + 'missing entirely' (same as absent)"
@@ -3294,7 +3294,7 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
   printf '  ## ENG-T-QA-B-d0001 - planning - 2026-05-16T12:00:00Z\n\n- indented heading (should be rejected)\n' \
     > "$QA_B_DIR/progress.md"
   rm -f "$QA_B_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_B_DIR" "$QA_B_DIR/.transcript-violation-planning" \
+  _assert_progress_md_entry "$QA_B_DIR" "$QA_B_DIR/.transcript-violation-planning" "planning" \
     && rc_qa_b=0 || rc_qa_b=$?
   if [[ "$rc_qa_b" == "31" ]] && grep -q "found 0" "$QA_B_DIR/.transcript-violation-planning" 2>/dev/null; then
     pass_at "QA-ADV-PGB: indented H2 (leading spaces) → rc=31 + 'found 0' (column-0 anchor)"
@@ -3310,7 +3310,7 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
   printf '# ENG-T-QA-C-d0001 - planning - 2026-05-16T12:00:00Z\n\n- H1 not H2 (should be rejected)\n' \
     > "$QA_C_DIR/progress.md"
   rm -f "$QA_C_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_C_DIR" "$QA_C_DIR/.transcript-violation-planning" \
+  _assert_progress_md_entry "$QA_C_DIR" "$QA_C_DIR/.transcript-violation-planning" "planning" \
     && rc_qa_c=0 || rc_qa_c=$?
   if [[ "$rc_qa_c" == "31" ]] && grep -q "found 0" "$QA_C_DIR/.transcript-violation-planning" 2>/dev/null; then
     pass_at "QA-ADV-PGC: H1 heading (single hash) → rc=31 + 'found 0' (brainstorm §6 edge case)"
@@ -3330,7 +3330,7 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
   printf '## ENG-T-QA-D-d0001 - planning - 2026-05-16T12:00:00Z\n\n- real entry (should not match empty dispatch_id)\n' \
     > "$QA_D_DIR/progress.md"
   rm -f "$QA_D_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_D_DIR" "$QA_D_DIR/.transcript-violation-planning" \
+  _assert_progress_md_entry "$QA_D_DIR" "$QA_D_DIR/.transcript-violation-planning" "planning" \
     && rc_qa_d=0 || rc_qa_d=$?
   if [[ "$rc_qa_d" == "31" ]]; then
     pass_at "QA-ADV-PGD: unset PIPELINE_DISPATCH_ID → rc=31 (empty grep pattern, no match)"
@@ -3355,7 +3355,7 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
   printf '## ENG-T-QA-E-d0001 \xe2\x80\x94 planning \xe2\x80\x94 2026-05-16T12:00:00Z\n\n- em-dash (should be rejected)\n' \
     > "$QA_E_DIR/progress.md"
   rm -f "$QA_E_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_E_DIR" "$QA_E_DIR/.transcript-violation-planning" \
+  _assert_progress_md_entry "$QA_E_DIR" "$QA_E_DIR/.transcript-violation-planning" "planning" \
     && rc_qa_e=0 || rc_qa_e=$?
   if [[ "$rc_qa_e" == "31" ]] && grep -q "found 0" "$QA_E_DIR/.transcript-violation-planning" 2>/dev/null; then
     pass_at "QA-ADV-PGE: em-dash separator → rc=31 + 'found 0' (brainstorm §6 — ASCII-only)"
@@ -3364,8 +3364,8 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
   fi
 
   # QA-ADV-PG-F: entry has correct dispatch_id but a different stage token (e.g. "qa")
-  # The detective validates id+separator ONLY — it does NOT validate the stage label.
-  # Expected: rc=0 (by design; brainstorm D-005 scope boundary documented in §6).
+  # ENG-146 F-4: detective now validates id+stage+separator. A "qa" entry for a
+  # "planning" check must be rejected (rc=31, "found 0").
   QA_F_DIR="$_TEST_STUB_DIR/QA-ADV-PGF"; mkdir -p "$QA_F_DIR"
   export PIPELINE_DISPATCH_ID="ENG-T-QA-F-d0001"
   export PIPELINE_ISSUE_ID="ENG-T-QA-F"
@@ -3375,11 +3375,11 @@ if declare -f _assert_progress_md_entry >/dev/null 2>&1; then
 - bullet one (wrong stage label, but dispatch_id matches)
 MD
   rm -f "$QA_F_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_F_DIR" "$QA_F_DIR/.transcript-violation-planning" && rc_qa_f=0 || rc_qa_f=$?
-  if [[ "$rc_qa_f" == "0" ]]; then
-    pass_at "QA-ADV-PGF: wrong stage token in heading → rc=0 (detective validates id+separator only)"
+  _assert_progress_md_entry "$QA_F_DIR" "$QA_F_DIR/.transcript-violation-planning" "planning" && rc_qa_f=0 || rc_qa_f=$?
+  if [[ "$rc_qa_f" == "31" ]] && grep -q "found 0" "$QA_F_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-PGF: wrong stage token in heading → rc=31 + 'found 0' (detective validates id+stage, ENG-146)"
   else
-    fail_at "QA-ADV-PGF" "rc=$rc_qa_f — stage-label mismatch should not cause rejection"
+    fail_at "QA-ADV-PGF" "rc=$rc_qa_f violation=$(cat "$QA_F_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>') — wrong-stage entry must not satisfy planning check (ENG-146)"
   fi
 
   # QA-ADV-PG-G: progress.md contains only newlines (non-zero size, no H2 headings)
@@ -3389,7 +3389,7 @@ MD
   export PIPELINE_ISSUE_ID="ENG-T-QA-G"
   printf '\n\n\n' > "$QA_G_DIR/progress.md"
   rm -f "$QA_G_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_G_DIR" "$QA_G_DIR/.transcript-violation-planning" && rc_qa_g=0 || rc_qa_g=$?
+  _assert_progress_md_entry "$QA_G_DIR" "$QA_G_DIR/.transcript-violation-planning" "planning" && rc_qa_g=0 || rc_qa_g=$?
   # grep-c exits rc=1 on no-match (D-005 brainstorm notes this), so '|| printf 0' appends
   # a second "0" making entry_count="0\n0". The detective still fires rc=31 correctly.
   # Assert rc=31 + any "found" diagnostic (the exact count string is "0\n0" — cosmetic).
@@ -3406,7 +3406,7 @@ MD
   QA_H_DIR="$_TEST_STUB_DIR/QA-ADV-PGH-nonexistent"  # intentionally NOT created
   export PIPELINE_DISPATCH_ID="ENG-T-QA-H-d0001"
   export PIPELINE_ISSUE_ID="ENG-T-QA-H"
-  _assert_progress_md_entry "$QA_H_DIR" "$QA_H_DIR/.transcript-violation-planning" && rc_qa_h=0 || rc_qa_h=$?
+  _assert_progress_md_entry "$QA_H_DIR" "$QA_H_DIR/.transcript-violation-planning" "planning" && rc_qa_h=0 || rc_qa_h=$?
   if [[ "$rc_qa_h" == "31" ]]; then
     pass_at "QA-ADV-PGH: non-existent issue_dir → rc=31 (violation_file may be unwritten; run-stage fallback path)"
   else
@@ -3424,7 +3424,7 @@ MD
     > "$QA_I_DIR/progress.md"
   chmod 000 "$QA_I_DIR/progress.md"
   rm -f "$QA_I_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$QA_I_DIR" "$QA_I_DIR/.transcript-violation-planning" \
+  _assert_progress_md_entry "$QA_I_DIR" "$QA_I_DIR/.transcript-violation-planning" "planning" \
     && rc_qa_i=0 || rc_qa_i=$?
   chmod 644 "$QA_I_DIR/progress.md"  # restore before tmpdir cleanup
   if [[ "$rc_qa_i" == "31" ]]; then
@@ -3433,7 +3433,92 @@ MD
     fail_at "QA-ADV-PGI" "rc=$rc_qa_i (expected 31 when progress.md unreadable)"
   fi
 
+  # AC-DETECTIVE-STAGE-SCOPED: progress.md has same dispatch_id but for a different
+  # stage. With stage-scoped grep (ENG-146 F-4), the 'implementing' entry must NOT
+  # count toward the 'planning' check → rc=31 + "found 0".
+  PG_DS_DIR="$_TEST_STUB_DIR/PG-DS"; mkdir -p "$PG_DS_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-DS-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-DS"
+  cat > "$PG_DS_DIR/progress.md" <<'MD'
+## ENG-T-DS-d0001 - implementing - 2026-05-18T10:00:00Z
+
+- implementing entry with same dispatch_id; must not count for planning check
+MD
+  rm -f "$PG_DS_DIR/.transcript-violation-planning"
+  rc_pgds=0
+  _assert_progress_md_entry "$PG_DS_DIR" "$PG_DS_DIR/.transcript-violation-planning" "planning" \
+    && rc_pgds=0 || rc_pgds=$?
+  if [[ "$rc_pgds" == "31" ]] && grep -q "found 0" "$PG_DS_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "AC-DETECTIVE-STAGE-SCOPED: implementing entry not counted for planning stage (found 0, ENG-146)"
+  else
+    fail_at "AC-DETECTIVE-STAGE-SCOPED" \
+      "rc=$rc_pgds violation=$(cat "$PG_DS_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>') — cross-stage entry must not satisfy planning check"
+  fi
+
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+fi
+
+# ─── ENG-146: AC-STRIP-A/B/C/D — strip_state_preserve_alloc behavioural pins ──
+# strip_state_preserve_alloc (common.sh) is the shared primitive used by
+# run-stage.sh's success-path cleanup and pipeline.sh::_pipeline_drain_issue_state.
+# It preserves allocator-owned fields when present and rm -f's the file otherwise.
+printf '\n--- ENG-146 AC-STRIP: strip_state_preserve_alloc behavioural pins ---\n'
+
+if declare -f strip_state_preserve_alloc >/dev/null 2>&1; then
+  # AC-STRIP-A: missing file → no-op (file must remain absent)
+  _SA_DIR="$_TEST_STUB_DIR/STRIP-A"; mkdir -p "$_SA_DIR"
+  _SA_FILE="$_SA_DIR/issue-state.json"
+  rm -f "$_SA_FILE"
+  strip_state_preserve_alloc "$_SA_FILE"
+  if [[ ! -f "$_SA_FILE" ]]; then
+    pass_at "AC-STRIP-A: missing state file → no-op (file still absent)"
+  else
+    fail_at "AC-STRIP-A" "strip_state_preserve_alloc created a file on a missing-path call"
+  fi
+
+  # AC-STRIP-B: valid JSON with allocator fields → stripped to allocator subset
+  _SB_DIR="$_TEST_STUB_DIR/STRIP-B"; mkdir -p "$_SB_DIR"
+  _SB_FILE="$_SB_DIR/issue-state.json"
+  printf '%s\n' '{"current_dispatch_seq":3,"current_dispatch_id":"ENG-S-d0003","current_stage":"planning","policy":"skip-until-human-acts","reason":"self-leak","retry_count":2}' \
+    > "$_SB_FILE"
+  strip_state_preserve_alloc "$_SB_FILE"
+  _sb_keys="$(jq -r 'keys | sort | join(",")' "$_SB_FILE" 2>/dev/null || echo '')"
+  _sb_seq="$(jq -r '.current_dispatch_seq' "$_SB_FILE" 2>/dev/null || echo '')"
+  _sb_id="$(jq -r '.current_dispatch_id' "$_SB_FILE" 2>/dev/null || echo '')"
+  if [[ "$_sb_keys" == "current_dispatch_id,current_dispatch_seq,current_stage" \
+     && "$_sb_seq" == "3" && "$_sb_id" == "ENG-S-d0003" ]]; then
+    pass_at "AC-STRIP-B: alloc fields preserved (seq=3, id=ENG-S-d0003), classify fields dropped"
+  else
+    fail_at "AC-STRIP-B" "keys=$_sb_keys seq=$_sb_seq id=$_sb_id (expected stripped to allocator subset)"
+  fi
+
+  # AC-STRIP-C: valid JSON with NO allocator fields (legacy) → rm -f
+  _SC_DIR="$_TEST_STUB_DIR/STRIP-C"; mkdir -p "$_SC_DIR"
+  _SC_FILE="$_SC_DIR/issue-state.json"
+  printf '%s\n' '{"policy":"skip-until-human-acts","reason":"self-leak"}' > "$_SC_FILE"
+  strip_state_preserve_alloc "$_SC_FILE"
+  if [[ ! -f "$_SC_FILE" ]]; then
+    pass_at "AC-STRIP-C: no allocator fields → rm -f (file removed)"
+  else
+    fail_at "AC-STRIP-C" "expected file removed for no-alloc JSON, file still present: $(cat "$_SC_FILE" 2>/dev/null)"
+  fi
+
+  # AC-STRIP-D: corrupt JSON → rm -f
+  _SD_DIR="$_TEST_STUB_DIR/STRIP-D"; mkdir -p "$_SD_DIR"
+  _SD_FILE="$_SD_DIR/issue-state.json"
+  printf '%s' '{corrupt json' > "$_SD_FILE"
+  strip_state_preserve_alloc "$_SD_FILE"
+  if [[ ! -f "$_SD_FILE" ]]; then
+    pass_at "AC-STRIP-D: corrupt JSON → rm -f (file removed)"
+  else
+    fail_at "AC-STRIP-D" "expected file removed for corrupt JSON, file still present: $(cat "$_SD_FILE" 2>/dev/null)"
+  fi
+else
+  fail_at "AC-STRIP precondition" "strip_state_preserve_alloc not defined (common.sh missing ENG-146 F-1)"
+  fail_at "AC-STRIP-A" "skipped — precondition failed"
+  fail_at "AC-STRIP-B" "skipped — precondition failed"
+  fail_at "AC-STRIP-C" "skipped — precondition failed"
+  fail_at "AC-STRIP-D" "skipped — precondition failed"
 fi
 
 # ─── T-A — ENG-131 no-hang (orphan-writer scenario; D-001 file-decoupling) ─
