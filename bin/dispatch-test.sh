@@ -3053,13 +3053,15 @@ elif (( _DC_DEF_LINE >= _DC_TRAP_LINE )); then
     "_dispatch_cleanup defined at line $_DC_DEF_LINE but trap installs at $_DC_TRAP_LINE; definition must be upstream"
 else
   # Probe body for release_claude_mutex (function spans definition through
-  # closing brace `^}` at column 0).
+  # closing brace `^}` at column 0). Strip comment lines first so a stale
+  # reference inside a doc comment cannot satisfy the assertion — the
+  # invariant is that the call must actually fire on the exit path.
   _DC_BODY="$(awk -v def="$_DC_DEF_LINE" '
     NR == def { in_fn = 1 }
     in_fn { print }
     in_fn && /^\}/ { exit }
   ' "$SCRIPT_DIR/dispatch.sh")"
-  if printf '%s\n' "$_DC_BODY" | grep -q 'release_claude_mutex'; then
+  if printf '%s\n' "$_DC_BODY" | grep -v '^[[:space:]]*#' | grep -q 'release_claude_mutex'; then
     pass_at "AC-DISPATCH-CLEANUP-COMPOSES-RELEASE: _dispatch_cleanup body calls release_claude_mutex (def line $_DC_DEF_LINE, trap line $_DC_TRAP_LINE)"
   else
     fail_at "AC-DISPATCH-CLEANUP-COMPOSES-RELEASE" \
