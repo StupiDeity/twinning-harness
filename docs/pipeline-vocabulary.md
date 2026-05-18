@@ -26,6 +26,54 @@ Every key=value pair is validated against the closed registry below.
 Unknown tokens cause `bin/pipeline.sh` to die loudly. Unknown fields
 attached by hand are ignored by the orchestrator.
 
+<!-- GENERATED:event-schemas -->
+## Comment schemas
+
+Source: `bin/pipeline-events.json::events` — edit there, not here.
+
+Each pipeline-driving comment has a machine-readable schema that names
+its body shape, required and optional fields, the writer lane that
+authors it, and the dedup-sig policy (when applicable). `bin/pipeline.sh`
+validates every emitted body against the schema below.
+
+### `decision`
+
+- **Body shape:** `<!-- pipeline: decision action=<action>[ gate=<gate>] -->`
+- **Writer lane:** `human`
+- **Required fields:** `action`
+- **Optional fields:** `gate`
+- **Required by arm:**
+  - `continue`: (none)
+  - `approve`: `gate`
+  - `abandon`: `gate`
+
+### `transition`
+
+- **Body shape:** `<!-- pipeline: transition from=<from> to=<to>[ reason=<reason>] -->`
+- **Writer lane:** `orchestrator`
+- **Required fields:** `from, to`
+- **Optional fields:** `reason`
+
+### `verdict`
+
+- **Body shape:** `<!-- pipeline: verdict result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->`
+- **Writer lane:** `agent`
+- **Required fields:** `result`
+- **Required by arm:**
+  - `pass`: `stage`
+  - `fail`: `target`
+  - `halt`: `reason`
+  - `wait`: `reason`
+  - `pivot`: `target`
+- **Dedup sig by arm:**
+  - `pass`: _(append-only)_
+  - `fail`: _(append-only)_
+  - `halt`: `halt/<stage>/<issue>`
+  - `wait`: `wait/<stage>/<issue>`
+  - `pivot`: _(append-only)_
+
+<!-- /GENERATED:event-schemas -->
+
 ## Writing markers
 
 Use `bin/pipeline.sh` — never hand-craft marker bodies.
