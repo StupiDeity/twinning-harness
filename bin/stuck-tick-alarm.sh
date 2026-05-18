@@ -11,6 +11,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+# Load shared secrets so PIPELINE_SLACK_WEBHOOK_URL reaches slack.sh under
+# launchd invocation (plist injects PATH/HOME/TARGET_REPO/HARNESS_STATE_DIR/
+# PROJECT_SLUG only). Mirrors run-local.sh:113-116 and run-retrospective-local.sh:18-22.
+SECRETS_FILE="$HARNESS_CONFIG_DIR/secrets.env"
+if [[ -f "$SECRETS_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$SECRETS_FILE"; set +a
+fi
+
 HEARTBEAT_FILE="$PROJECT_STATE_DIR/.last-tick-end"
 DEBOUNCE_FILE="$PROJECT_STATE_DIR/.stuck-tick-last-alerted"
 DEBOUNCE_WINDOW_SECONDS=86400   # 24h, mirrors _poll_emit_halt_sprawl_alert

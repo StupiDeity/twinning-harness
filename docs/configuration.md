@@ -214,17 +214,22 @@ grep 'threshold' "$PROJECT_STATE_DIR/logs/stuck-tick-alarm-launchd.err.log"
 bash bin/stuck-tick-alarm.sh
 ```
 
-**Silencing during planned maintenance:**
+**Silencing during planned maintenance:** raise the threshold in
+`.pipeline-config/config.json` so the next alarm tick reads the new value
+and sleeps through the window:
 
 ```bash
-# In the alarm plist's EnvironmentVariables block:
-#   <key>STUCK_TICK_ALARM_MINUTES</key><string>9999</string>
-launchctl bootout  gui/$(id -u)/com.twinning.stuck-tick-alarm.$PROJECT_SLUG
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.twinning.stuck-tick-alarm.$PROJECT_SLUG.plist
+jq '.orchestrator.stuck_tick_alarm_minutes = 9999' \
+  .pipeline-config/config.json > /tmp/c && mv /tmp/c .pipeline-config/config.json
+# Revert when done by removing the key (or setting it back to your normal
+# threshold) and committing the result.
 ```
 
-Remove the override key and re-bootstrap when done.
+Editing the rendered plist's `EnvironmentVariables` block also works, but
+the next `bin/install-launchd.sh` run re-renders the plist from
+`launchd/com.twinning.stuck-tick-alarm.plist.template` and silently
+obliterates any in-place override. The config-file path above survives
+re-render.
 
 ### `orchestrator.entry_conditions` (ENG-86)
 

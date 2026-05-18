@@ -10,6 +10,7 @@ export LINEAR_API_KEY=test-mock-key
 export PROJECT_SLUG=test-slug
 
 _TEST_HARNESS_STATE_DIR="$(mktemp -d)"
+_TEST_HARNESS_CONFIG_DIR="$(mktemp -d)"
 _TEST_STUB_DIR="$(mktemp -d)"
 _test_assert_temp_path() {
   case "$1" in
@@ -18,6 +19,7 @@ _test_assert_temp_path() {
   esac
 }
 _test_assert_temp_path "$_TEST_HARNESS_STATE_DIR"
+_test_assert_temp_path "$_TEST_HARNESS_CONFIG_DIR"
 _test_assert_temp_path "$_TEST_STUB_DIR"
 _test_safe_rm() {
   local path="$1"
@@ -26,10 +28,20 @@ _test_safe_rm() {
     *) printf 'SAFETY: trap refusing rm -rf %q (not a temp dir)\n' "$path" >&2 ;;
   esac
 }
-trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_HARNESS_STATE_DIR"' EXIT
+trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_HARNESS_STATE_DIR"; _test_safe_rm "$_TEST_HARNESS_CONFIG_DIR"' EXIT
 
 HARNESS_STATE_DIR="$_TEST_HARNESS_STATE_DIR"
 export HARNESS_STATE_DIR
+# Redirect HARNESS_CONFIG_DIR via XDG_CONFIG_HOME (common.sh:39 unconditionally
+# derives HARNESS_CONFIG_DIR from XDG_CONFIG_HOME, ignoring any pre-set value).
+# Seed secrets.env with a sentinel so the alarm's source block exports
+# PIPELINE_SLACK_WEBHOOK_URL at source time — AC-SECRETS-ENV verifies
+# the slack.sh stub sees this value (proves source block fired).
+XDG_CONFIG_HOME="$_TEST_HARNESS_CONFIG_DIR"
+export XDG_CONFIG_HOME
+mkdir -p "$XDG_CONFIG_HOME/twinning-harness"
+printf 'PIPELINE_SLACK_WEBHOOK_URL=https://hooks.slack.test/AC-SECRETS-ENV-sentinel\n' \
+  > "$XDG_CONFIG_HOME/twinning-harness/secrets.env"
 PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
 export PROJECT_STATE_DIR
 mkdir -p "$PROJECT_STATE_DIR/metrics"
@@ -65,7 +77,10 @@ chmod +x "$STUB_DIR/metrics.sh"
 
 cat > "$STUB_DIR/slack.sh" <<SH
 #!/usr/bin/env bash
-printf '%s\t%s\n' "\${1:-}" "\${2:-}" >> "$SLACK_CAPTURE"
+# Capture level + message PLUS the inherited PIPELINE_SLACK_WEBHOOK_URL so
+# AC-SECRETS-ENV can verify the secrets.env source block exported it.
+printf '%s\t%s\tPIPELINE_SLACK_WEBHOOK_URL=%s\n' \\
+  "\${1:-}" "\${2:-}" "\${PIPELINE_SLACK_WEBHOOK_URL:-<unset>}" >> "$SLACK_CAPTURE"
 SH
 chmod +x "$STUB_DIR/slack.sh"
 
@@ -97,14 +112,15 @@ _slack_count() {
   wc -l < "$SLACK_CAPTURE" 2>/dev/null || printf '0'
 }
 
-# Back-date a file by N seconds on macOS (BSD touch -A requires HH[MM[SS]])
-# or via setting mtime explicitly. We use a tempfile + touch approach:
-# touch -t YYYYMMDDHHMM.SS is portable across BSD/GNU.
+# Back-date a file by N seconds. `touch -t YYYYMMDDHHMM.SS` interprets the
+# timestamp in LOCAL time, so the format string must also be local — using
+# `date -u` here would offset the mtime by the host's TZ (UTC+5:30 → ~5.5h
+# older than intended), pushing every backdated AC past every threshold.
 _backdate_file() {
   local file="$1" seconds="$2"
   local ts
-  ts="$(date -u -v -${seconds}S +%Y%m%d%H%M.%S 2>/dev/null || \
-        date -u -d "@$(( $(date -u +%s) - seconds ))" +%Y%m%d%H%M.%S 2>/dev/null)"
+  ts="$(date -v-${seconds}S +%Y%m%d%H%M.%S 2>/dev/null || \
+        date -d "@$(( $(date +%s) - seconds ))" +%Y%m%d%H%M.%S 2>/dev/null)"
   touch -t "$ts" "$file"
 }
 
@@ -197,26 +213,73 @@ sc="$(_slack_count | tr -d ' ')"
   && pass_at "AC-MISSING-HEARTBEAT: Slack called" \
   || fail_at "AC-MISSING-HEARTBEAT: Slack" "got 0 Slack calls"
 
-# ─── AC-MALFORMED-TIMESTAMP ───────────────────────────────────────────────────
-printf '\n--- AC-MALFORMED-TIMESTAMP: garbage content, mtime past threshold → alarm fires ---\n'
+# ─── AC-MALFORMED-STALE ───────────────────────────────────────────────────────
+printf '\n--- AC-MALFORMED-STALE: garbage content, mtime past threshold → alarm fires ---\n'
 _reset_captures
 printf 'not-a-timestamp\n' > "$HEARTBEAT_FILE"
 _backdate_file "$HEARTBEAT_FILE" 1860   # 31 min stale mtime
 main
 mc="$(_metrics_count | tr -d ' ')"
 [[ "$mc" -ge 1 ]] \
-  && pass_at "AC-MALFORMED-TIMESTAMP: alarm fires on stale mtime despite garbage content" \
-  || fail_at "AC-MALFORMED-TIMESTAMP: alarm fires" "got 0 metric lines"
+  && pass_at "AC-MALFORMED-STALE: alarm fires on stale mtime despite garbage content" \
+  || fail_at "AC-MALFORMED-STALE: alarm fires" "got 0 metric lines"
 
-printf '\n--- AC-MALFORMED-TIMESTAMP (fresh mtime): garbage content, fresh mtime → no alarm ---\n'
+# ─── AC-MALFORMED-FRESH ───────────────────────────────────────────────────────
+printf '\n--- AC-MALFORMED-FRESH: garbage content, fresh mtime → no alarm ---\n'
 _reset_captures
 printf 'not-a-timestamp\n' > "$HEARTBEAT_FILE"
 touch "$HEARTBEAT_FILE"   # fresh mtime
 main
 mc="$(_metrics_count | tr -d ' ')"
 [[ "$mc" -eq 0 ]] \
-  && pass_at "AC-MALFORMED-TIMESTAMP (fresh): no alarm when mtime is fresh" \
-  || fail_at "AC-MALFORMED-TIMESTAMP (fresh): no alarm" "got $mc metric line(s)"
+  && pass_at "AC-MALFORMED-FRESH: no alarm when mtime is fresh" \
+  || fail_at "AC-MALFORMED-FRESH: no alarm" "got $mc metric line(s)"
+
+# ─── AC-SECRETS-ENV ───────────────────────────────────────────────────────────
+# Production-load-bearing: launchd plist doesn't inject PIPELINE_SLACK_WEBHOOK_URL,
+# so the source block in stuck-tick-alarm.sh must lift it from secrets.env. The
+# initial source at file scope (line 74) already ran with the seeded secrets.env;
+# this AC verifies the slack.sh stub received the sentinel webhook URL.
+printf '\n--- AC-SECRETS-ENV: secrets.env supplied PIPELINE_SLACK_WEBHOOK_URL reaches slack.sh ---\n'
+_reset_captures
+touch "$HEARTBEAT_FILE"
+_backdate_file "$HEARTBEAT_FILE" 1860   # 31 min stale → triggers Slack
+main
+if grep -q 'PIPELINE_SLACK_WEBHOOK_URL=https://hooks.slack.test/AC-SECRETS-ENV-sentinel' "$SLACK_CAPTURE"; then
+  pass_at "AC-SECRETS-ENV: secrets.env webhook URL reached slack.sh stub"
+else
+  fail_at "AC-SECRETS-ENV: secrets.env source block missing/broken" \
+    "slack capture: $(cat "$SLACK_CAPTURE" 2>/dev/null || printf '<empty>')"
+fi
+
+# ─── AC-LOCK-HOLDER-PID ───────────────────────────────────────────────────────
+# Operator-load-bearing: the Slack payload + metric notes must surface the
+# live tick holder's pid so the operator can `ps -p <pid>` from Slack alone.
+# Default ACs run with no $PROJECT_STATE_DIR/.run-local.lock/pid file, so
+# every metric carries holder_pid=none — this AC exercises the real-pid path.
+printf '\n--- AC-LOCK-HOLDER-PID: real pid file → metric + Slack carry holder_pid=<digits> ---\n'
+_reset_captures
+mkdir -p "$PROJECT_STATE_DIR/.run-local.lock"
+printf '%s\n' "$$" > "$PROJECT_STATE_DIR/.run-local.lock/pid"
+touch "$HEARTBEAT_FILE"
+_backdate_file "$HEARTBEAT_FILE" 1860
+main
+# Metric notes: holder_pid must be the test's $$ (digits), NOT 'none'.
+if jq -e --argjson p "$$" '.notes | test("holder_pid=\($p|tostring)\\b")' \
+     "$METRICS_CAPTURE" >/dev/null 2>&1; then
+  pass_at "AC-LOCK-HOLDER-PID: metric notes carry holder_pid=$$"
+else
+  fail_at "AC-LOCK-HOLDER-PID: metric notes" \
+    "expected holder_pid=$$ in $(cat "$METRICS_CAPTURE" 2>/dev/null)"
+fi
+# Slack payload's ps excerpt must NOT be the '<no live tick holder>' placeholder.
+if grep -q '<no live tick holder>' "$SLACK_CAPTURE"; then
+  fail_at "AC-LOCK-HOLDER-PID: Slack ps excerpt" \
+    "got '<no live tick holder>' placeholder with live pid file"
+else
+  pass_at "AC-LOCK-HOLDER-PID: Slack payload contains real ps excerpt"
+fi
+rm -rf "$PROJECT_STATE_DIR/.run-local.lock"
 
 # ─── AC-CONFIG-DEFAULT ────────────────────────────────────────────────────────
 printf '\n--- AC-CONFIG-DEFAULT: absent config key → default 30 min applies ---\n'
