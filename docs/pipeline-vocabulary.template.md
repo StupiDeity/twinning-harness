@@ -26,6 +26,9 @@ Every key=value pair is validated against the closed registry below.
 Unknown tokens cause `bin/pipeline.sh` to die loudly. Unknown fields
 attached by hand are ignored by the orchestrator.
 
+<!-- GENERATED:event-schemas -->
+<!-- /GENERATED:event-schemas -->
+
 ## Writing markers
 
 Use `bin/pipeline.sh` — never hand-craft marker bodies.

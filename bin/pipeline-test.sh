@@ -591,6 +591,71 @@ else
 fi
 _ar_clear "ENG-5807"
 
+printf '\n--- bin/pipeline.sh: ENG-112 schema validator ---\n'
+
+# ENG-112 B-001: events.verdict.linear_comment.body_shape reachable via jq.
+# Use _REAL_SCRIPT_DIR (saved at L193) — SCRIPT_DIR was repointed to the
+# atomic-reset stub dir above.
+HARNESS_REG="$_REAL_SCRIPT_DIR/pipeline-events.json"
+HARNESS_PIPELINE_SH="$_REAL_SCRIPT_DIR/pipeline.sh"
+HARNESS_GEN_SH="$_REAL_SCRIPT_DIR/generate-vocabulary-doc.sh"
+HARNESS_VOCAB_MD="$_REAL_SCRIPT_DIR/../docs/pipeline-vocabulary.md"
+
+# ENG-112 test runner: invokes the real pipeline.sh with stubs on PATH +
+# dry-run so no Linear writes happen. Mirrors run_pipe but doesn't depend
+# on SCRIPT_DIR (which is currently pointing at the atomic-reset stub dir).
+run_pipe_real() {
+  PATH="$STUB_DIR:$PATH" PIPELINE_DRY_RUN=1 \
+    bash "$HARNESS_PIPELINE_SH" "$@" 2>&1
+}
+out="$(jq -r '.events.verdict.linear_comment.body_shape' "$HARNESS_REG")"
+[[ "$out" == *"<!-- pipeline: verdict"* ]] && pass_at "ENG-112 B-001: events.verdict.linear_comment.body_shape registered" || fail_at "ENG-112 B-001: events.verdict schema missing" "got: $out"
+
+# ENG-112 B-002: events.transition.linear_comment registered.
+out="$(jq -r '.events.transition.linear_comment.body_shape' "$HARNESS_REG")"
+[[ "$out" == *"<!-- pipeline: transition"* ]] && pass_at "ENG-112 B-002: events.transition.linear_comment registered" || fail_at "ENG-112 B-002: events.transition schema missing" "got: $out"
+
+# ENG-112 B-003: events.decision.linear_comment registered.
+out="$(jq -r '.events.decision.linear_comment.body_shape' "$HARNESS_REG")"
+[[ "$out" == *"<!-- pipeline: decision"* ]] && pass_at "ENG-112 B-003: events.decision.linear_comment registered" || fail_at "ENG-112 B-003: events.decision schema missing" "got: $out"
+
+# ENG-112 B-004: unknown CLI flag rejected (existing case-statement at flag
+# parser layer — schema validation is downstream of CLI parsing).
+out="$(run_pipe_real event ENG-PE-B4 verdict pass --stage implementing --bogus foo 2>&1 || true)"
+[[ "$out" == *"unknown flag '--bogus'"* ]] && pass_at "ENG-112 B-004: unknown --bogus flag rejected at CLI" || fail_at "ENG-112 B-004: unknown flag rejection" "got: $out"
+
+# ENG-112 B-005: schema-driven verdict body shape — halt emits clean body.
+out="$(run_pipe_real event ENG-PE-B5 verdict halt --reason scope-violation)"
+expect='<!-- pipeline: verdict result=halt reason=scope-violation -->'
+[[ "$out" == *"$expect"* ]] && pass_at "ENG-112 B-005: schema-driven halt body" || fail_at "ENG-112 B-005: schema-driven halt body" "got: $out"
+
+# ENG-112 B-006: schema-driven decision body — approve with gate.
+out="$(run_pipe_real decide ENG-PE-B6 --action approve --gate scope)"
+expect='<!-- pipeline: decision action=approve gate=scope -->'
+[[ "$out" == *"$expect"* ]] && pass_at "ENG-112 B-006: schema-driven decision body" || fail_at "ENG-112 B-006: schema-driven decision body" "got: $out"
+
+# ENG-112 B-007: schema validator names the missing required field with
+# CLI-flag wording.
+out="$(run_pipe_real event ENG-PE-B7 verdict pass 2>&1 || true)"
+[[ "$out" == *"--stage required"* ]] && pass_at "ENG-112 B-007: missing required field names the flag" || fail_at "ENG-112 B-007: missing required field" "got: $out"
+
+# ENG-112 B-008: _validate_event_payload + _render_body helpers exist.
+helper_grep="$(grep -Ec '^_validate_event_payload\(\)|^_render_body\(\)' "$HARNESS_PIPELINE_SH")"
+[[ "$helper_grep" == "2" ]] && pass_at "ENG-112 B-008: schema helpers defined in pipeline.sh" || fail_at "ENG-112 B-008: schema helpers missing" "found $helper_grep / 2"
+
+# ENG-112 B-009: bin/generate-vocabulary-doc.sh emits a Comment schemas
+# section. Round-trip from registry → doc.
+out="$(bash "$HARNESS_GEN_SH" 2>&1)"
+if [[ "$out" == *"Generated:"* ]] && grep -q "^## Comment schemas$" "$HARNESS_VOCAB_MD"; then
+  pass_at "ENG-112 B-009: vocabulary doc carries Comment schemas section"
+else
+  fail_at "ENG-112 B-009: vocabulary doc Comment schemas section missing" "generator out: $out"
+fi
+
+# ENG-112 B-010: round-trip pin — both sentinel pairs present in output doc.
+sentinel_count="$(grep -c "GENERATED:" "$HARNESS_VOCAB_MD")"
+[[ "$sentinel_count" == "4" ]] && pass_at "ENG-112 B-010: both sentinel pairs in regenerated doc" || fail_at "ENG-112 B-010: sentinel count" "expected 4, got $sentinel_count"
+
 printf '\npipeline-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'; for c in "${FAILED_CASES[@]}"; do printf '  - %s\n' "$c"; done

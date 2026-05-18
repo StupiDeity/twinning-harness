@@ -83,12 +83,185 @@ _validate_registry() {
     || die "registry: '$value' not in $field — allowed: $(jq -r --arg f "$field" '.[$f] | join(", ")' "$REGISTRY")"
 }
 
+# Validate $1 matches at least one of the pipe-separated registry names in $2.
+# Used for fields like `target` whose allowed-enum depends on the arm
+# (fail_targets for verdict.fail, pivot_targets for verdict.pivot). On no
+# match, die with each registry's contents joined for operator triage.
+_validate_registry_union() {
+  local value="$1" union="$2"
+  local IFS='|'
+  read -r -a fields <<<"$union"
+  local f
+  for f in "${fields[@]}"; do
+    if jq -e --arg f "$f" --arg v "$value" '.[$f] | index($v) // empty' "$REGISTRY" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  local msg="registry: '$value' not in $union — allowed: "
+  for f in "${fields[@]}"; do
+    msg+="[$f: $(jq -r --arg f "$f" '.[$f] | join(", ")' "$REGISTRY")] "
+  done
+  die "$msg"
+}
+
+# ENG-112 schema validator. Reads events.<event>.linear_comment from the
+# closed registry and enforces required-field-by-arm + field_registry rules
+# against the supplied k=v args. Die-loud on any violation (D-005).
+#
+# Usage: _validate_event_payload <event> <arm> <k=v>...
+#
+# <arm> is the value of the result/action field for events that branch on it
+# (verdict, decision). Pass empty string for events without arm-dependent
+# rules (transition).
+_validate_event_payload() {
+  local event="$1" arm="$2"; shift 2 || true
+  local schema
+  schema="$(jq -c --arg e "$event" '.events[$e].linear_comment // empty' "$REGISTRY")"
+  [[ -n "$schema" ]] || die "schema: no linear_comment for event '$event'"
+
+  # Collect k=v args into a parallel keys[] + values[] arrays. Bash 3.2 on
+  # macOS doesn't carry associative arrays without `declare -A`; pipeline.sh
+  # already relies on declare -A elsewhere (TODO: it doesn't here — keep
+  # indexed arrays for portability with sourced-test shells).
+  local keys=() values=()
+  local kv k v
+  for kv in "$@"; do
+    k="${kv%%=*}"
+    v="${kv#*=}"
+    keys+=("$k")
+    values+=("$v")
+  done
+
+  # Required-field set = required[] ∪ required_by_arm[$arm][].
+  local req
+  req="$(jq -r --arg a "$arm" '
+    (.required // []) +
+    ((.required_by_arm // {})[$a] // [])
+    | .[]
+  ' <<<"$schema")"
+  local f
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    local found=0 i
+    for i in "${!keys[@]}"; do
+      [[ "${keys[$i]}" == "$f" ]] && { found=1; break; }
+    done
+    (( found )) || die "$event ${arm:+$arm: }--$f required (schema: ${event} ${arm:+arm=$arm }got: ${keys[*]:-<none>})"
+  done <<<"$req"
+
+  # Per-field registry validation + unknown-field rejection.
+  # The known-field set is (required ∪ optional ∪ field_registry keys).
+  local known
+  known="$(jq -r '
+    (.required // []) + (.optional // []) +
+    ((.required_by_arm // {}) | to_entries | map(.value[]) | flatten) +
+    ((.field_registry // {}) | keys)
+    | unique | .[]
+  ' <<<"$schema")"
+
+  local i
+  for i in "${!keys[@]}"; do
+    k="${keys[$i]}"
+    v="${values[$i]}"
+    grep -Fxq "$k" <<<"$known" \
+      || die "schema: unknown field '$k' on event '$event' (known: $(tr '\n' ' ' <<<"$known"))"
+    local reg
+    reg="$(jq -r --arg k "$k" '.field_registry[$k] // empty' <<<"$schema")"
+    [[ -z "$reg" || "$reg" == "null" ]] && continue
+    if [[ "$reg" == *"|"* ]]; then
+      _validate_registry_union "$v" "$reg"
+    else
+      _validate_registry "$reg" "$v"
+    fi
+  done
+}
+
+# ENG-112 body renderer. Walks the body_shape template literal-by-literal,
+# substitutes <field> placeholders from the supplied k=v args, and omits
+# bracketed [k=<v>] groups when the field has no value. Caller is expected
+# to have run _validate_event_payload first; defensive die on missing
+# required placeholder.
+#
+# Usage: _render_body <event> <k=v>...  -> body string to stdout
+_render_body() {
+  local event="$1"; shift
+  local tmpl
+  tmpl="$(jq -r --arg e "$event" '.events[$e].linear_comment.body_shape // empty' "$REGISTRY")"
+  [[ -n "$tmpl" ]] || die "schema: no body_shape for event '$event'"
+
+  local keys=() values=()
+  local kv k v
+  for kv in "$@"; do
+    k="${kv%%=*}"
+    v="${kv#*=}"
+    keys+=("$k")
+    values+=("$v")
+  done
+
+  # Walk the template token-by-token. Templates use three token shapes:
+  #   1. literal text (anything not <field> and not [...])
+  #   2. <field>         — required placeholder; die if missing
+  #   3. [k=<field>]     — optional group; omit if field has no value
+  #
+  # Bash regex treats `\<` / `\>` as word boundaries, not literal angle
+  # brackets, so we cannot use `[[ var =~ \<...\> ]]` to match placeholders.
+  # Use awk-style char scanning instead. The template alphabet is restricted
+  # to ASCII (enforced by the closed registry), so the simple parser below
+  # is sufficient.
+  local out=""
+  local n=${#tmpl}
+  local i=0
+  while (( i < n )); do
+    local ch="${tmpl:$i:1}"
+    if [[ "$ch" == "[" ]]; then
+      # Optional group: find the matching `]`. Templates embed the leading
+      # space INSIDE the bracket (e.g. `[ stage=<stage>]`) so dropping the
+      # group naturally drops both surrounding spaces — no trim/eat-space
+      # gymnastics needed.
+      local end=$i
+      while (( end < n )) && [[ "${tmpl:$end:1}" != "]" ]]; do ((end++)); done
+      (( end < n )) || die "schema: body_shape unterminated '[' at offset $i"
+      local group="${tmpl:$((i+1)):$((end-i-1))}"
+      # group looks like ` key=<field>` (with leading space). Split on `=`.
+      local lit="${group%%=*}"
+      local placeholder="${group#*=}"
+      local fld="${placeholder#<}"
+      fld="${fld%>}"
+      local got=""
+      local j
+      for j in "${!keys[@]}"; do
+        if [[ "${keys[$j]}" == "$fld" ]]; then got="${values[$j]}"; break; fi
+      done
+      [[ -n "$got" ]] && out+="$lit=$got"
+      i=$((end+1))
+    elif [[ "$ch" == "<" ]] && [[ "${tmpl:$((i+1)):1}" =~ [a-z] ]]; then
+      # Required placeholder: `<` followed by `[a-z]` — distinguishes from
+      # the literal `<!--` HTML-comment opener. Find the matching `>`.
+      local end=$i
+      while (( end < n )) && [[ "${tmpl:$end:1}" != ">" ]]; do ((end++)); done
+      (( end < n )) || die "schema: body_shape unterminated '<' at offset $i"
+      local fld="${tmpl:$((i+1)):$((end-i-1))}"
+      local got=""
+      local j
+      for j in "${!keys[@]}"; do
+        if [[ "${keys[$j]}" == "$fld" ]]; then got="${values[$j]}"; break; fi
+      done
+      [[ -n "$got" ]] || die "schema: body_shape requires '$fld' (got: ${keys[*]:-<none>})"
+      out+="$got"
+      i=$((end+1))
+    else
+      out+="$ch"
+      ((i++))
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # cmd_event_verdict <issue> <result> [--stage X] [--target Y] [--reason Z]
 cmd_event_verdict() {
   local issue="$1"; shift
   local result="${1:-}"; shift || true
   [[ -n "$issue" && -n "$result" ]] || die "event verdict: usage: <issue> <result> [args]"
-  _validate_registry verdict_results "$result"
 
   local stage="" target="" reason=""
   while [[ $# -gt 0 ]]; do
@@ -100,26 +273,14 @@ cmd_event_verdict() {
     esac
   done
 
-  # Per-result required fields.
-  case "$result" in
-    pass)  [[ -n "$stage" ]]  || die "event verdict pass: --stage required"
-           _validate_registry stages "$stage" ;;
-    fail)  [[ -n "$target" ]] || die "event verdict fail: --target required"
-           _validate_registry fail_targets "$target" ;;
-    halt)  [[ -n "$reason" ]] || die "event verdict halt: --reason required"
-           _validate_registry halt_reasons "$reason" ;;
-    wait)  [[ -n "$reason" ]] || die "event verdict wait: --reason required"
-           _validate_registry wait_reasons "$reason" ;;
-    pivot) [[ -n "$target" ]] || die "event verdict pivot: --target required"
-           _validate_registry pivot_targets "$target" ;;
-  esac
-
-  # Build the marker body.
-  local body="<!-- pipeline: verdict result=$result"
-  [[ -n "$stage" ]]  && body="$body stage=$stage"
-  [[ -n "$target" ]] && body="$body target=$target"
-  [[ -n "$reason" ]] && body="$body reason=$reason"
-  body="$body -->"
+  # ENG-112: schema-driven validation + body render.
+  local args=("result=$result")
+  [[ -n "$stage" ]]  && args+=("stage=$stage")
+  [[ -n "$target" ]] && args+=("target=$target")
+  [[ -n "$reason" ]] && args+=("reason=$reason")
+  _validate_event_payload verdict "$result" "${args[@]}"
+  local body
+  body="$(_render_body verdict "${args[@]}")"
 
   # Lane fence: agents emit verdicts. dispatch.sh sets PIPELINE_WRITER=agent
   # for the agent path; common.sh defaults it to orchestrator for everything
@@ -152,10 +313,13 @@ cmd_event_transition() {
   local from to
   from="${arrow%% → *}"
   to="${arrow##* → }"
-  _validate_registry stages "$from"
-  _validate_registry stages "$to"
 
-  local body="<!-- pipeline: transition from=$from to=$to -->"
+  # ENG-112: schema-driven validation + body render. Arm slot is empty —
+  # transition has no arm-dependent rules.
+  local args=("from=$from" "to=$to")
+  _validate_event_payload transition "" "${args[@]}"
+  local body
+  body="$(_render_body transition "${args[@]}")"
 
   if [[ "$PIPELINE_WRITER" != "orchestrator" ]]; then
     log "warning: PIPELINE_WRITER=$PIPELINE_WRITER writing a transition (lane mismatch — set PIPELINE_WRITER=orchestrator to suppress)"
@@ -384,9 +548,13 @@ cmd_decide() {
     fi
   fi
 
-  local body="<!-- pipeline: decision action=$action"
-  [[ -n "$gate" ]] && body="$body gate=$gate"
-  body="$body -->"
+  # ENG-112: schema-driven validation + body render. The continue-rejects-gate
+  # exclusion above stays inline (D-002 in plan); schema is inclusion-only.
+  local _decide_args=("action=$action")
+  [[ -n "$gate" ]] && _decide_args+=("gate=$gate")
+  _validate_event_payload decision "$action" "${_decide_args[@]}"
+  local body
+  body="$(_render_body decision "${_decide_args[@]}")"
 
   if [[ "$PIPELINE_WRITER" != "human" ]]; then
     log "warning: PIPELINE_WRITER=$PIPELINE_WRITER writing a decision (lane mismatch — set PIPELINE_WRITER=human to suppress)"

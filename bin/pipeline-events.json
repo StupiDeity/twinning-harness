@@ -59,5 +59,66 @@
     "qa",
     "building",
     "released"
-  ]
+  ],
+  "events": {
+    "verdict": {
+      "linear_comment": {
+        "body_shape": "<!-- pipeline: verdict result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->",
+        "writer_lane": "agent",
+        "required": ["result"],
+        "required_by_arm": {
+          "pass":  ["stage"],
+          "fail":  ["target"],
+          "halt":  ["reason"],
+          "wait":  ["reason"],
+          "pivot": ["target"]
+        },
+        "field_registry": {
+          "result": "verdict_results",
+          "stage":  "stages",
+          "target": "fail_targets|pivot_targets",
+          "reason": "halt_reasons|wait_reasons"
+        },
+        "dedup_sig_by_arm": {
+          "pass":  null,
+          "fail":  null,
+          "halt":  "halt/<stage>/<issue>",
+          "wait":  "wait/<stage>/<issue>",
+          "pivot": null
+        }
+      }
+    },
+    "transition": {
+      "linear_comment": {
+        "body_shape": "<!-- pipeline: transition from=<from> to=<to>[ reason=<reason>] -->",
+        "writer_lane": "orchestrator",
+        "required": ["from", "to"],
+        "optional": ["reason"],
+        "field_registry": {
+          "from":   "stages",
+          "to":     "stages",
+          "reason": null
+        },
+        "dedup_sig": null
+      }
+    },
+    "decision": {
+      "linear_comment": {
+        "body_shape": "<!-- pipeline: decision action=<action>[ gate=<gate>] -->",
+        "writer_lane": "human",
+        "required": ["action"],
+        "optional": ["gate"],
+        "required_by_arm": {
+          "continue": [],
+          "approve":  ["gate"],
+          "abandon":  ["gate"]
+        },
+        "field_registry": {
+          "action": "decision_actions",
+          "gate":   "decision_gates"
+        },
+        "dedup_sig": null
+      }
+    }
+  }
 }

@@ -1,0 +1,90 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-112",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Codify Linear-comment ledger contract as events.<name>.linear_comment schema in bin/pipeline-events.json, refactor bin/pipeline.sh to consult schema via _validate_event_payload + _render_body helpers, regenerate docs/pipeline-vocabulary.md with a Comment schemas section, and pin behaviour with B-001..B-010 in bin/pipeline-test.sh.",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"events\":",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "linear_comment",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "body_shape",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "required_by_arm",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "field_registry",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline.sh",
+          "pattern": "_validate_event_payload",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline.sh",
+          "pattern": "_render_body",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/generate-vocabulary-doc.sh",
+          "pattern": "GENERATED:event-schemas",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/pipeline-vocabulary.template.md",
+          "pattern": "GENERATED:event-schemas",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/pipeline-vocabulary.md",
+          "pattern": "## Comment schemas",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-test.sh",
+          "pattern": "ENG-112",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-test.sh",
+          "pattern": "B-001",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-test.sh",
+          "pattern": "B-010",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
