@@ -613,7 +613,11 @@ add_or_update_comment() {
   issue_uuid="$(_resolve_issue_uuid "$ident")"
 
   # Look for an existing comment carrying the sig (new or legacy shape).
-  local q='query($id: String!) { issue(id: $id) { comments(first: 50, orderBy: updatedAt) { nodes { id body } } } }'
+  # ENG-111: also request `url` per node so the breadcrumb body (below) can
+  # carry a Linear permalink to the canonical comment without a second
+  # roundtrip. Missing `url` (schema change / null payload) degrades to the
+  # URL-less breadcrumb shape — see body construction below.
+  local q='query($id: String!) { issue(id: $id) { comments(first: 50, orderBy: updatedAt) { nodes { id body url } } } }'
   local vars resp existing_id
   vars="$(jq -cn --arg id "$ident" '{id:$id}')"
   resp="$(linear_query "$q" "$vars")"
@@ -628,6 +632,9 @@ add_or_update_comment() {
     # latest re-apply moment. The strip regex is line-anchored (^…$) to
     # avoid matching a quoted mention of the marker shape inside fenced
     # prose.
+    # ENG-111: track whether this is an identical-body re-apply so the
+    # breadcrumb post (below) fires ONLY on the body-change path.
+    local is_identical_reapply=0
     local existing_body strip_re existing_norm new_norm now_iso
     existing_body="$(jq -r --arg id "$existing_id" \
       '[.data.issue.comments.nodes[]? | select(.id == $id) | .body] | first // ""' \
@@ -651,6 +658,7 @@ add_or_update_comment() {
     existing_norm="${existing_norm%$'\n'}"
     new_norm="${new_norm%$'\n'}"
     if [[ "$existing_norm" == "$new_norm" && -n "$existing_norm" ]]; then
+      is_identical_reapply=1
       now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       body="${new_norm}"$'\n'"<!-- meta: reapplied at=${now_iso} -->"
       bash "$SCRIPT_DIR/metrics.sh" comment-reapplied "$ident" "" \
@@ -661,6 +669,35 @@ add_or_update_comment() {
     mvars="$(jq -cn --arg id "$existing_id" --arg body "$body" '{id:$id, body:$body}')"
     linear_query "$mu" "$mvars" >/dev/null
     log "updated-in-place $sig on $ident (comment=$existing_id)"
+
+    # ENG-111: body-change re-emission posts a sig-less chronological
+    # breadcrumb so a top-down scan of the Linear feed surfaces the re-fire
+    # (the canonical's createdAt is the FIRST emission's moment and stays
+    # fixed across commentUpdate calls). Identical-body re-applies stay
+    # silent at the breadcrumb level — ENG-63's rotating footer is the
+    # canonical signal for that mode.
+    if (( is_identical_reapply == 0 )); then
+      local canonical_url breadcrumb_body prose trailer
+      canonical_url="$(jq -r --arg id "$existing_id" \
+        '[.data.issue.comments.nodes[]? | select(.id == $id) | .url] | first // ""' \
+        <<<"$resp")"
+      prose=$'Re-emitted (body changed) under sig `'"$sig"$'`. Canonical comment was updated in place; this pointer marks the moment.'
+      trailer=$'<!-- meta: breadcrumb sig='"$sig"$' comment_id='"$existing_id"$' -->'
+      if [[ -n "$canonical_url" ]]; then
+        breadcrumb_body="${prose}"$'\n'"${canonical_url}"$'\n\n'"${trailer}"
+      else
+        breadcrumb_body="${prose}"$'\n\n'"${trailer}"
+      fi
+      # add_comment runs the lane fence + dispatch-id auto-injection
+      # + last-10 hash dedup. Non-fatal on failure — the canonical
+      # update has already succeeded and is the load-bearing call.
+      if add_comment "$ident" --body "$breadcrumb_body"; then
+        bash "$SCRIPT_DIR/metrics.sh" comment-breadcrumb "$ident" "" \
+          "posted" 0 || true
+      else
+        log "add-or-update-comment: breadcrumb post failed for $sig on $ident (non-fatal)"
+      fi
+    fi
   else
     local mc='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
     local mcvars
