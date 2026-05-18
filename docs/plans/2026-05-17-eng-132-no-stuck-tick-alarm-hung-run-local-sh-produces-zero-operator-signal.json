@@ -1,0 +1,58 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-132",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/stuck-tick-alarm.sh exists, sources common.sh, ends with the source-and-test sentinel, and passes its sibling unit test",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/stuck-tick-alarm.sh" },
+        { "kind": "grep", "path": "bin/stuck-tick-alarm.sh", "pattern": "source \"\\$SCRIPT_DIR/common.sh\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/stuck-tick-alarm.sh", "pattern": "BASH_SOURCE\\[0\\]", "expect_match": true },
+        { "kind": "grep", "path": "bin/stuck-tick-alarm.sh", "pattern": "_resolve_alarm_minutes", "expect_match": true },
+        { "kind": "grep", "path": "bin/stuck-tick-alarm.sh", "pattern": "_heartbeat_age_seconds", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/stuck-tick-alarm-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/run-local.sh writes a heartbeat after the tick-end success log line via _write_tick_heartbeat",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-local.sh", "pattern": "_write_tick_heartbeat", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-local.sh", "pattern": "\\.last-tick-end", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-local.sh", "pattern": "log \"== tick end \\(success", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "Launchd plist template + install/uninstall wiring covers the third agent",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "launchd/com.twinning.stuck-tick-alarm.plist.template" },
+        { "kind": "grep", "path": "launchd/com.twinning.stuck-tick-alarm.plist.template", "pattern": "com.twinning.stuck-tick-alarm.__PROJECT_SLUG__", "expect_match": true },
+        { "kind": "grep", "path": "launchd/com.twinning.stuck-tick-alarm.plist.template", "pattern": "<integer>900</integer>", "expect_match": true },
+        { "kind": "grep", "path": "bin/install-launchd.sh", "pattern": "install_one stuck-tick-alarm 0", "expect_match": true },
+        { "kind": "grep", "path": "bin/uninstall-launchd.sh", "pattern": "uninstall_one stuck-tick-alarm", "expect_match": true },
+        { "kind": "grep", "path": "bin/setup.sh", "pattern": "com.twinning.stuck-tick-alarm.\\$slug", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/install-launchd-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "Operator docs in CLAUDE.md + docs/configuration.md document the alarm, its config knob, and the failure-mode-table row",
+      "pass_criteria": [
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "Stuck-tick alarm \\(ENG-132\\)", "expect_match": true },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "stuck_tick_alarm_minutes", "expect_match": true },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "Stuck tick alarm", "expect_match": true },
+        { "kind": "grep", "path": "docs/configuration.md", "pattern": "orchestrator\\.stuck_tick_alarm_minutes", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "Project profile enumerates the new sibling test in its gate command and in the implementing + qa tool allowlist blocks",
+      "pass_criteria": [
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "bash bin/stuck-tick-alarm-test.sh", "expect_match": true },
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "Bash\\(bash bin/stuck-tick-alarm-test.sh:\\*\\)", "expect_match": true }
+      ]
+    }
+  ]
+}

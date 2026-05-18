@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.twinning.stuck-tick-alarm.__PROJECT_SLUG__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HARNESS_ROOT__/bin/stuck-tick-alarm.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__TARGET_REPO__</string>
+
+  <!-- Fire every 15 minutes. Independent of the main pipeline plist so
+       it remains runnable even when run-local.sh is wedged. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <!-- Do not fire at load: wait for the first scheduled interval so a
+       fresh install (where no tick has run yet) doesn't immediately
+       alert. Mirrors com.twinning.retrospective behavior. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Don't flood the system if the alarm script fails in a loop. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/stuck-tick-alarm-launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/stuck-tick-alarm-launchd.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>TARGET_REPO</key>
+    <string>__TARGET_REPO__</string>
+    <key>HARNESS_STATE_DIR</key>
+    <string>__HARNESS_STATE_DIR__</string>
+    <key>PROJECT_SLUG</key>
+    <string>__PROJECT_SLUG__</string>
+  </dict>
+</dict>
+</plist>

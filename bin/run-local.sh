@@ -48,6 +48,18 @@ LOG_FILE="$LOG_DIR/local-$(date -u +%Y-%m-%d).log"
 
 mkdir -p "$HARNESS_STATE_DIR"
 
+_write_tick_heartbeat() {
+  local heartbeat_file="$PROJECT_STATE_DIR/.last-tick-end"
+  local tmp="${heartbeat_file}.tmp.$$"
+  if date -u +%Y-%m-%dT%H:%M:%SZ > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$heartbeat_file" 2>/dev/null; then
+    return 0
+  fi
+  log "heartbeat write failed (continuing tick)"
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
 if ! acquire_lock "$LOCK_DIR"; then
   # Silent skip: overlapping tick is expected if a stage runs >5 min.
   exit 0
@@ -118,6 +130,7 @@ if [[ "$paused" == "true" ]]; then
   log "tick skipped: orchestrator.paused=true"
   log "reset with: bash $HARNESS_ROOT/bin/reset-pipeline.sh   # writes state.local.json (preferred)"
   log "             OR: jq '.orchestrator.paused=false' \$CONFIG > /tmp/c && mv /tmp/c \$CONFIG (legacy)"
+  _write_tick_heartbeat
   exit 0
 fi
 
@@ -341,6 +354,7 @@ decisions_json="$(jq -c '(if type == "array" then . else [] end) | [.[] | select
 decisions_count="$(jq 'length' <<<"$decisions_json")"
 if (( decisions_count == 0 )); then
   log "no work this tick"
+  _write_tick_heartbeat
   exit 0
 fi
 
@@ -450,6 +464,7 @@ release_lock "$LOCK_DIR"
 
 if (( ${#_claimed_workers[@]} == 0 )); then
   log "no workers claimed this tick (all decisions short-circuited in scheduler)"
+  _write_tick_heartbeat
   exit 0
 fi
 
@@ -502,3 +517,4 @@ else
 fi
 
 log "== tick end (success, ${#_claimed_workers[@]} worker(s)) =="
+_write_tick_heartbeat

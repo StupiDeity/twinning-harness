@@ -58,5 +58,50 @@ else
   ok 'dispatch_cwd does not silently fall back to $TARGET_REPO'
 fi
 
+# ENG-132: _write_tick_heartbeat must be called AFTER the success-log
+# line (order matters — crash-before-log produces a stale heartbeat even
+# if the call came first). awk scans from the log line; any bare `exit`
+# before the heartbeat call is a failure. Reviewer finding: prior
+# co-presence check was insufficient; order must be verified.
+printf '%s\n' "$non_comment" \
+    | awk '/log "== tick end \(success/{seen=1; next}
+            seen && /^[[:space:]]*exit/{exit 1}
+            seen && /_write_tick_heartbeat/{found=1; exit}
+            END{exit !found}' \
+  && ok '_write_tick_heartbeat follows success-log (ENG-132 D-001)' \
+  || nope '_write_tick_heartbeat order' \
+      'heartbeat must follow success-log per ENG-132 D-001; see review [major]'
+
+# ENG-132: heartbeat must also fire on the other three clean-exit paths
+# so a healthy-but-idle harness does not trigger false-positive alarms.
+# Each awk: scans from the anchor log line; fails if bare `exit` appears
+# before _write_tick_heartbeat (meaning heartbeat was not called first).
+printf '%s\n' "$non_comment" \
+    | awk '/log "tick skipped: orchestrator.paused/{seen=1; next}
+            seen && /^[[:space:]]*exit/{exit 1}
+            seen && /_write_tick_heartbeat/{found=1; exit}
+            END{exit !found}' \
+  && ok '_write_tick_heartbeat precedes exit at orchestrator.paused path (ENG-132)' \
+  || nope '_write_tick_heartbeat missing before paused exit' \
+      'heartbeat must fire on paused skip; see ENG-132 review [critical]'
+
+printf '%s\n' "$non_comment" \
+    | awk '/log "no work this tick"/{seen=1; next}
+            seen && /^[[:space:]]*exit/{exit 1}
+            seen && /_write_tick_heartbeat/{found=1; exit}
+            END{exit !found}' \
+  && ok '_write_tick_heartbeat precedes exit at no-work path (ENG-132)' \
+  || nope '_write_tick_heartbeat missing before no-work exit' \
+      'heartbeat must fire on no-work skip; see ENG-132 review [critical]'
+
+printf '%s\n' "$non_comment" \
+    | awk '/log "no workers claimed this tick/{seen=1; next}
+            seen && /^[[:space:]]*exit/{exit 1}
+            seen && /_write_tick_heartbeat/{found=1; exit}
+            END{exit !found}' \
+  && ok '_write_tick_heartbeat precedes exit at no-workers-claimed path (ENG-132)' \
+  || nope '_write_tick_heartbeat missing before no-workers exit' \
+      'heartbeat must fire on no-workers skip; see ENG-132 review [critical]'
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 exit $(( FAIL > 0 ? 1 : 0 ))
