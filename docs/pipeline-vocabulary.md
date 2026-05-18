@@ -168,6 +168,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `dispatch-timeout`
 - `pr-opened-too-early`
 - `dispatch-envelope-violation`
+- `plan-contract-invalid`
 
 ### `wait_reasons`
 
@@ -204,6 +205,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `reapplied`
 - `forensic`
 - `dispatch`
+- `breadcrumb`
 
 ### `stages`
 

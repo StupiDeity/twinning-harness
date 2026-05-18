@@ -252,6 +252,15 @@ bash bin/linear.sh get-comments ENG-N \
 
 Look for a `<!-- meta: reapplied at=<ts> -->` line at the bottom of that comment body. The timestamp on that line is the most recent re-application moment (NOT the original `createdAt`).
 
+For body-change re-emissions (e.g., halt bodies whose `pipeline_content_hash`, `branch_head_sha`, or `retry_count` changed between re-fires), ENG-111 emits a fresh chronological breadcrumb pointer per re-emission. Inspect:
+
+```bash
+bash bin/linear.sh get-comments ENG-N \
+  | jq -r '.[] | select(.body | contains("meta: breadcrumb")) | .createdAt + "  " + (.body | split("\n")[0])'
+```
+
+Each breadcrumb carries a fresh `createdAt` for one body-change re-fire; the most recent breadcrumb's `createdAt` is the most recent body-change moment. The canonical comment (matched by `sig=<sig>` inside the breadcrumb's trailing `<!-- meta: breadcrumb sig=… comment_id=… -->` marker) carries the current content. Identical-body re-applies emit only the rotating footer (ENG-63) — not a breadcrumb.
+
 ### Operator decision tree
 
 - **Footer present AND timestamp recent (< 1h)** → halt is FRESH. Investigate the halt's `reason=` token (read the full comment body) BEFORE running `bash bin/pipeline.sh decide ENG-N --action continue`. A bare `--action continue` will be silently re-halted within seconds.

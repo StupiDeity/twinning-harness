@@ -761,6 +761,213 @@ unset _eng63_orig_linear_query _eng63_orig_resolve_uuid _eng63_orig_dry_run \
       _eng63_metric_count_before _eng63_metric_count_after _eng63_metric_delta \
       _eng63_ad002_count _eng63_ad002_old_jan _eng63_ad002_old_feb _eng63_ad002_old_mar
 
+# ─── ENG-111: breadcrumb-on-body-change in add_or_update_comment (B-001..B-006) ─
+# When add_or_update_comment runs commentUpdate with a body that DIFFERS
+# from the existing canonical (post the ENG-63 dispatch+reapplied strip),
+# also post a sig-less chronological breadcrumb via add_comment. The
+# breadcrumb gets a fresh createdAt so a top-down feed scan surfaces the
+# re-fire — closing the gap ENG-63's identical-body footer rotation does
+# not cover.
+printf '\n--- ENG-111: breadcrumb-on-body-change ---\n'
+
+_eng111_orig_linear_query="$(declare -f linear_query)"
+_eng111_orig_resolve_uuid="$(declare -f _resolve_issue_uuid)"
+_eng111_orig_dry_run="$PIPELINE_DRY_RUN"
+_eng111_orig_script_dir="$SCRIPT_DIR"
+
+SCRIPT_DIR="$SCRIPT_DIR_REAL"
+
+_resolve_issue_uuid() { printf 'uuid-mock'; }
+
+_eng111_capture_file="$(mktemp -t eng111-capture.XXXXXX)"
+_eng111_canned_existing_body=""
+_eng111_canned_existing_id="cmt-mock-001"
+_eng111_canned_existing_url=""
+_eng111_canned_no_match=0
+_eng111_force_create_failure=0
+_eng111_create_call_count=0
+
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentUpdate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_eng111_capture_file"
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
+  fi
+  if [[ "$query" =~ commentCreate ]]; then
+    _eng111_create_call_count=$(( _eng111_create_call_count + 1 ))
+    # B-005: fail the breadcrumb commentCreate (the second commentCreate
+    # under a body-change update is the breadcrumb post). The canonical
+    # `commentUpdate` already ran on a prior linear_query call and is
+    # untouched by this failure.
+    if (( _eng111_force_create_failure == 1 && _eng111_create_call_count >= 1 )); then
+      printf 'GraphQL error: simulated breadcrumb post failure\n' 1>&2
+      return 1
+    fi
+    jq -r '.body' <<<"$variables" >> "$_eng111_capture_file"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  # Comments-fetch query path. When _eng111_canned_no_match=1, return a
+  # single unrelated comment whose body does NOT carry the sig (drives
+  # the first-emission commentCreate branch). Otherwise return one node
+  # carrying the canned body + id + url.
+  if (( _eng111_canned_no_match == 1 )); then
+    jq -cn '{data:{issue:{comments:{nodes:[{id:"cmt-unrelated",body:"unrelated comment",url:""}]}}}}'
+    return 0
+  fi
+  jq -cn --arg id "$_eng111_canned_existing_id" \
+         --arg body "$_eng111_canned_existing_body" \
+         --arg url "$_eng111_canned_existing_url" \
+    '{data:{issue:{comments:{nodes:[{id:$id,body:$body,url:$url}]}}}}'
+}
+
+export PIPELINE_DRY_RUN=0
+mkdir -p "$PROJECT_STATE_DIR/metrics"
+: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
+
+# B-001: first-emit (no matching existing comment) → commentCreate path,
+# capture has exactly ONE entry, no breadcrumb. Pins D-004 (first emission
+# does not emit a breadcrumb).
+: > "$_eng111_capture_file"
+_eng111_canned_no_match=1
+_eng111_create_call_count=0
+_eng111_force_create_failure=0
+add_or_update_comment "test/sig/ENG-111T" ENG-111T \
+  --body $'Fresh body line\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
+_eng111_entry_count="$(grep -c 'test/sig/ENG-111T' "$_eng111_capture_file" || true)"
+if [[ "$_eng111_entry_count" == "1" ]] \
+   && ! grep -q 'meta: breadcrumb sig=' "$_eng111_capture_file"; then
+  pass_at "ENG-111 B-001 first-emit → no breadcrumb"
+else
+  fail_at "ENG-111 B-001 first-emit → no breadcrumb" \
+    "entries=$_eng111_entry_count captured: $(cat "$_eng111_capture_file")"
+fi
+_eng111_canned_no_match=0
+
+# B-002: body-change update, canonical URL present → capture has TWO entries
+# (the updated canonical AND a breadcrumb). The breadcrumb's body carries
+# the trailing marker, the canned URL, and the prose phrase referencing
+# the sig. Pins AC #1.
+: > "$_eng111_capture_file"
+_eng111_canned_existing_body=$'Old halt body line\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
+_eng111_canned_existing_url='https://linear.app/example/issue/ENG-111/#comment-cmt-mock-001'
+_eng111_create_call_count=0
+add_or_update_comment "test/sig/ENG-111T" ENG-111T \
+  --body $'New halt body line CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
+_eng111_canonical_count="$(grep -cF 'New halt body line CHANGED' "$_eng111_capture_file" || true)"
+_eng111_breadcrumb_count="$(grep -cF '<!-- meta: breadcrumb sig=test/sig/ENG-111T comment_id=cmt-mock-001 -->' "$_eng111_capture_file" || true)"
+_eng111_url_count="$(grep -cF 'https://linear.app/example/issue/ENG-111/#comment-cmt-mock-001' "$_eng111_capture_file" || true)"
+_eng111_prose_count="$(grep -c 'Re-emitted (body changed) under sig' "$_eng111_capture_file" || true)"
+if [[ "$_eng111_canonical_count" == "1" \
+   && "$_eng111_breadcrumb_count" == "1" \
+   && "$_eng111_url_count" == "1" \
+   && "$_eng111_prose_count" == "1" ]]; then
+  pass_at "ENG-111 B-002 body-change update → breadcrumb with sig+URL+prose"
+else
+  fail_at "ENG-111 B-002 body-change update → breadcrumb with sig+URL+prose" \
+    "canonical=$_eng111_canonical_count breadcrumb=$_eng111_breadcrumb_count url=$_eng111_url_count prose=$_eng111_prose_count captured: $(cat "$_eng111_capture_file")"
+fi
+
+# B-003: identical-body update → no breadcrumb (ENG-63 footer instead).
+# Pins AC #2: identical re-runs stay silent at the breadcrumb level.
+: > "$_eng111_capture_file"
+_eng111_canned_existing_body=$'Halt body steady\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
+_eng111_canned_existing_url='https://linear.app/example/issue/ENG-111/#comment-cmt-mock-001'
+_eng111_create_call_count=0
+add_or_update_comment "test/sig/ENG-111T" ENG-111T \
+  --body "$_eng111_canned_existing_body" >/dev/null 2>&1
+_eng111_footer_present=0
+grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng111_capture_file" \
+  && _eng111_footer_present=1
+if [[ "$_eng111_footer_present" == "1" ]] \
+   && ! grep -q 'meta: breadcrumb sig=' "$_eng111_capture_file"; then
+  pass_at "ENG-111 B-003 identical-body update → no breadcrumb (footer only)"
+else
+  fail_at "ENG-111 B-003 identical-body update → no breadcrumb (footer only)" \
+    "footer=$_eng111_footer_present captured: $(cat "$_eng111_capture_file")"
+fi
+
+# B-004: body-change update, canonical URL empty → breadcrumb still posts
+# but the URL line is omitted. The trailing meta marker is still present.
+# Pins D-002 + D-003 URL-fallback path (A-11 graceful degradation).
+: > "$_eng111_capture_file"
+_eng111_canned_existing_body=$'Old halt body line\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
+_eng111_canned_existing_url=''
+_eng111_create_call_count=0
+add_or_update_comment "test/sig/ENG-111T" ENG-111T \
+  --body $'New halt body line CHANGED v2\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
+_eng111_breadcrumb_present=0
+grep -qF '<!-- meta: breadcrumb sig=test/sig/ENG-111T comment_id=cmt-mock-001 -->' "$_eng111_capture_file" \
+  && _eng111_breadcrumb_present=1
+_eng111_has_url=0
+grep -q 'https://' "$_eng111_capture_file" && _eng111_has_url=1
+if [[ "$_eng111_breadcrumb_present" == "1" && "$_eng111_has_url" == "0" ]]; then
+  pass_at "ENG-111 B-004 body-change + empty URL → breadcrumb posts, URL line omitted"
+else
+  fail_at "ENG-111 B-004 body-change + empty URL → breadcrumb posts, URL line omitted" \
+    "breadcrumb=$_eng111_breadcrumb_present has_url=$_eng111_has_url captured: $(cat "$_eng111_capture_file")"
+fi
+
+# B-005: body-change update, breadcrumb commentCreate fails → canonical
+# commentUpdate is observable in capture AND add_or_update_comment exits 0.
+# Pins §5 error-handling: breadcrumb post is best-effort, never blocks the
+# load-bearing canonical update.
+: > "$_eng111_capture_file"
+_eng111_canned_existing_body=$'Old halt body B5\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
+_eng111_canned_existing_url=''
+_eng111_force_create_failure=1
+_eng111_create_call_count=0
+add_or_update_comment "test/sig/ENG-111T" ENG-111T \
+  --body $'New halt body B5 CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
+_eng111_b5_rc=$?
+_eng111_canonical_seen=0
+grep -qF 'New halt body B5 CHANGED' "$_eng111_capture_file" && _eng111_canonical_seen=1
+_eng111_breadcrumb_seen=0
+grep -q 'meta: breadcrumb sig=' "$_eng111_capture_file" && _eng111_breadcrumb_seen=1
+if [[ "$_eng111_b5_rc" == "0" && "$_eng111_canonical_seen" == "1" && "$_eng111_breadcrumb_seen" == "0" ]]; then
+  pass_at "ENG-111 B-005 breadcrumb post failure → canonical preserved, function rc=0"
+else
+  fail_at "ENG-111 B-005 breadcrumb post failure → canonical preserved, function rc=0" \
+    "rc=$_eng111_b5_rc canonical=$_eng111_canonical_seen breadcrumb=$_eng111_breadcrumb_seen captured: $(cat "$_eng111_capture_file")"
+fi
+_eng111_force_create_failure=0
+
+# B-006: comment-breadcrumb metric emitted exactly once per body-change update.
+# Delta-based to survive residue from B-002/B-004.
+: > "$_eng111_capture_file"
+_eng111_canned_existing_body=$'Old halt body B6\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
+_eng111_canned_existing_url=''
+_eng111_create_call_count=0
+_eng111_metric_count_before="$(grep -c '"event":"comment-breadcrumb"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
+add_or_update_comment "test/sig/ENG-111T" ENG-111T \
+  --body $'New halt body B6 CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
+_eng111_metric_count_after="$(grep -c '"event":"comment-breadcrumb"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
+_eng111_metric_delta=$(( _eng111_metric_count_after - _eng111_metric_count_before ))
+if [[ "$_eng111_metric_delta" == "1" ]]; then
+  pass_at "ENG-111 B-006 body-change update → one comment-breadcrumb metric event"
+else
+  fail_at "ENG-111 B-006 body-change update → one comment-breadcrumb metric event" \
+    "delta=$_eng111_metric_delta before=$_eng111_metric_count_before after=$_eng111_metric_count_after"
+fi
+
+# Restore originals.
+rm -f "$_eng111_capture_file"
+unset -f linear_query _resolve_issue_uuid
+eval "$_eng111_orig_linear_query"
+eval "$_eng111_orig_resolve_uuid"
+export PIPELINE_DRY_RUN="$_eng111_orig_dry_run"
+SCRIPT_DIR="$_eng111_orig_script_dir"
+unset _eng111_orig_linear_query _eng111_orig_resolve_uuid _eng111_orig_dry_run \
+      _eng111_orig_script_dir _eng111_capture_file _eng111_canned_existing_body \
+      _eng111_canned_existing_id _eng111_canned_existing_url \
+      _eng111_canned_no_match _eng111_force_create_failure _eng111_create_call_count \
+      _eng111_entry_count _eng111_canonical_count _eng111_breadcrumb_count \
+      _eng111_url_count _eng111_prose_count _eng111_footer_present \
+      _eng111_breadcrumb_present _eng111_has_url _eng111_b5_rc \
+      _eng111_canonical_seen _eng111_breadcrumb_seen \
+      _eng111_metric_count_before _eng111_metric_count_after _eng111_metric_delta
+
 # ─── ENG-87: dispatch_id auto-injection in add_comment / add_or_update_comment ─
 # bin/linear.sh's _inject_dispatch_marker is the chokepoint where every
 # Linear comment body gets stamped with the current dispatch_id. Tests
