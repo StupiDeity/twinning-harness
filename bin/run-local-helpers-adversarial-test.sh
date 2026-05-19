@@ -2283,23 +2283,27 @@ _eng95_restore_env
 # returning empty. No duplicate stage list to drift.
 
 test_read_mostly_predicate() {
-  if stage_is_read_mostly reviewing; then
+  # `2>/dev/null` on each call suppresses the `log` warning
+  # `stage_output_paths` emits when PROJECT_SLUG is unset (the test
+  # environment). The predicate's rc is captured correctly either way;
+  # this just keeps the suite output clean.
+  if stage_is_read_mostly reviewing 2>/dev/null; then
     report_ok 'read_mostly: reviewing is read-mostly'
   else
     report_fail 'read_mostly: reviewing' 'true' 'false'
   fi
-  if stage_is_read_mostly building; then
+  if stage_is_read_mostly building 2>/dev/null; then
     report_ok 'read_mostly: building is read-mostly'
   else
     report_fail 'read_mostly: building' 'true' 'false'
   fi
-  if stage_is_read_mostly released; then
+  if stage_is_read_mostly released 2>/dev/null; then
     report_ok 'read_mostly: released is read-mostly'
   else
     report_fail 'read_mostly: released' 'true' 'false'
   fi
   for s in brainstorming planning implementing ui qa retrospective; do
-    if stage_is_read_mostly "$s"; then
+    if stage_is_read_mostly "$s" 2>/dev/null; then
       report_fail "read_mostly: $s should NOT be read-mostly" 'false' 'true'
     else
       report_ok "read_mostly: $s correctly not read-mostly"
@@ -2374,9 +2378,9 @@ test_self_leak_reverts_tracked_modification() {
 test_self_leak_reverts_tracked_modification
 
 test_self_leak_preserves_paths_NOT_in_list() {
-  # Core correctness invariant from review finding C1 — the helper
-  # NEVER touches a path it wasn't told to touch. Snapshot protection
-  # comes from run-local.sh's observed-vs-self-leak split upstream.
+  # Core correctness invariant — the helper NEVER touches a path it
+  # wasn't told to touch. Snapshot protection comes from run-local.sh's
+  # observed-vs-self-leak split upstream.
   local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
   local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-preserve"
   echo "operator-work-in-progress" > "$wt/operator-edit.md"
@@ -2392,7 +2396,7 @@ test_self_leak_preserves_paths_NOT_in_list() {
   else
     local op_content; op_content="$(cat "$wt/operator-edit.md")"
     if [[ "$op_content" == "operator-work-in-progress" ]]; then
-      report_ok 'self_leak: operator pre-existing edit preserved (C1 correctness)'
+      report_ok 'self_leak: operator pre-existing edit preserved'
     else
       report_fail 'self_leak: operator content preserved' \
         'operator-work-in-progress' "$op_content"
@@ -2469,29 +2473,40 @@ test_self_leak_refuses_on_main_branch() {
 test_self_leak_refuses_on_main_branch
 
 test_self_leak_dry_run_skips_mutation() {
+  # Dry-run must (a) leave the worktree intact AND (b) emit a [DRY_RUN]
+  # log line so triage can confirm the dry-run branch fired. A regression
+  # that drops the log line (bare `return 0`) would silently pass an
+  # invariant-only assertion. Capture stderr + grep for the prefix.
   local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
   local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-dry"
   echo "junk" > "$wt/tmp.md"
   local sink="$td/metrics.log"; : > "$sink"
   _self_leak_stub_metrics "$td/stubs" "$sink"
+  local stderr_log="$td/stderr.log"
   (
     SCRIPT_DIR="$td/stubs"
     PIPELINE_DRY_RUN=1
     clean_self_leak_residue ENG-SL07 reviewing "$wt" "tmp.md"
-  ) >/dev/null 2>&1
+  ) >/dev/null 2>"$stderr_log"
   if [[ -f "$wt/tmp.md" ]]; then
     report_ok 'self_leak: dry-run preserves worktree'
   else
     report_fail 'self_leak: dry-run' 'preserved' 'cleaned'
+  fi
+  if grep -q '\[DRY_RUN\]' "$stderr_log"; then
+    report_ok 'self_leak: dry-run emits [DRY_RUN] log line'
+  else
+    report_fail 'self_leak: dry-run log' \
+      '[DRY_RUN] prefix in stderr' "$(cat "$stderr_log" 2>/dev/null)"
   fi
   rm -rf "$td"
 }
 test_self_leak_dry_run_skips_mutation
 
 test_self_leak_metric_payload_pinned() {
-  # Review finding M4: assertion must pin event name + issue + stage +
+  # Pin the metric payload positionals (event name + issue + stage +
   # outcome + exit-code + notes including count, branch, hashes, and
-  # per-class failure counts. Substring-match is not enough — a
+  # per-class failure counts). Loose substring-match is not enough — a
   # regression that drops `count=` or `hashes=` would slip past.
   local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
   local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-metric"
@@ -2519,10 +2534,9 @@ test_self_leak_metric_payload_pinned() {
 test_self_leak_metric_payload_pinned
 
 test_self_leak_partial_failure_still_emits_metric() {
-  # Review finding M5: per-class rc bookkeeping does not propagate
-  # rc≠0, AND the metric still emits so retrospective sees the
-  # partial-failure event. Seed a path rm can't remove by making the
-  # parent dir read-only.
+  # Per-class rc bookkeeping must not propagate rc≠0, AND the metric
+  # must still emit so the retrospective sees the partial-failure event.
+  # Seed a path rm can't remove by making the parent dir read-only.
   local td; td="$(mktemp -d -t twinning-self-leak.XXXXXX)"
   local wt="$td/wt"; _self_leak_make_repo "$wt" "feat/sl-fail"
   mkdir -p "$wt/locked"
@@ -2570,18 +2584,18 @@ test_read_mostly_predicate_unknown_stage_returns_false() {
 }
 test_read_mostly_predicate_unknown_stage_returns_false
 
-# ─── clean_scratch_dir (tick-end stage-agnostic cross-dispatch guard) ───
+# ─── clean_scratch_residue (tick-end stage-agnostic cross-dispatch guard) ───
 # Closes the cross-dispatch persistence vector: .scratch/ is gitignored
 # and therefore invisible to git status / partition / self_leak_paths
 # on every stage. Without this cleanup, files an agent drops into
 # .scratch/ during one dispatch survive into the next.
 
-test_clean_scratch_dir_removes_directory() {
+test_clean_scratch_residue_removes_directory() {
   local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
   mkdir -p "$td/.scratch/nested"
   echo "leftover" > "$td/.scratch/payload.md"
   echo "deep" > "$td/.scratch/nested/file.md"
-  clean_scratch_dir "$td" >/dev/null 2>&1
+  clean_scratch_residue "$td" >/dev/null 2>&1
   if [[ -e "$td/.scratch" ]]; then
     report_fail 'scratch-clean: .scratch/ removed' 'absent' 'present'
   else
@@ -2589,55 +2603,70 @@ test_clean_scratch_dir_removes_directory() {
   fi
   rm -rf "$td"
 }
-test_clean_scratch_dir_removes_directory
+test_clean_scratch_residue_removes_directory
 
-test_clean_scratch_dir_missing_noop() {
+test_clean_scratch_residue_missing_noop() {
   local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
   local rc=0
-  clean_scratch_dir "$td" >/dev/null 2>&1 || rc=$?
+  clean_scratch_residue "$td" >/dev/null 2>&1 || rc=$?
   assert_eq 'scratch-clean: missing .scratch/ returns rc=0 (no-op)' '0' "$rc"
   rm -rf "$td"
 }
-test_clean_scratch_dir_missing_noop
+test_clean_scratch_residue_missing_noop
 
-test_clean_scratch_dir_preserves_siblings() {
+test_clean_scratch_residue_preserves_siblings() {
   # Cleanup MUST NOT touch anything outside .scratch/. The worktree's
-  # source files, gitignored .pipeline-config, etc., all stay.
+  # source files, gitignored .pipeline-config, and the other gitignored
+  # operator-local dir .claude/ all stay.
   local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
-  mkdir -p "$td/.scratch" "$td/src" "$td/.pipeline-config"
+  mkdir -p "$td/.scratch" "$td/src" "$td/.pipeline-config" "$td/.claude"
   echo "scratch" > "$td/.scratch/junk.md"
   echo "source"  > "$td/src/main.rs"
   echo "config"  > "$td/.pipeline-config/config.json"
-  clean_scratch_dir "$td" >/dev/null 2>&1
-  if [[ -f "$td/src/main.rs" && -f "$td/.pipeline-config/config.json" && ! -e "$td/.scratch" ]]; then
-    report_ok 'scratch-clean: preserves siblings (.scratch/ gone, src/ + .pipeline-config/ intact)'
+  echo "{}"      > "$td/.claude/should-survive.json"
+  clean_scratch_residue "$td" >/dev/null 2>&1
+  if [[ -f "$td/src/main.rs" \
+        && -f "$td/.pipeline-config/config.json" \
+        && -f "$td/.claude/should-survive.json" \
+        && ! -e "$td/.scratch" ]]; then
+    report_ok 'scratch-clean: preserves siblings (.scratch/ gone; src/, .pipeline-config/, .claude/ intact)'
   else
     report_fail 'scratch-clean: sibling preservation' \
-      'src/main.rs + .pipeline-config/config.json present; .scratch absent' \
-      "src=$([[ -f "$td/src/main.rs" ]] && echo y || echo n) cfg=$([[ -f "$td/.pipeline-config/config.json" ]] && echo y || echo n) scratch=$([[ -e "$td/.scratch" ]] && echo present || echo absent)"
+      'src/main.rs + .pipeline-config/config.json + .claude/should-survive.json present; .scratch absent' \
+      "src=$([[ -f "$td/src/main.rs" ]] && echo y || echo n) cfg=$([[ -f "$td/.pipeline-config/config.json" ]] && echo y || echo n) claude=$([[ -f "$td/.claude/should-survive.json" ]] && echo y || echo n) scratch=$([[ -e "$td/.scratch" ]] && echo present || echo absent)"
   fi
   rm -rf "$td"
 }
-test_clean_scratch_dir_preserves_siblings
+test_clean_scratch_residue_preserves_siblings
 
-test_clean_scratch_dir_dry_run_skips_mutation() {
+test_clean_scratch_residue_dry_run_skips_mutation() {
+  # As with the self-leak twin: dry-run must (a) preserve .scratch/
+  # AND (b) emit a [DRY_RUN] log line. Capture stderr + grep so a
+  # silent-bare-return regression surfaces.
   local td; td="$(mktemp -d -t twinning-scratch.XXXXXX)"
   mkdir -p "$td/.scratch"
   echo "preserved" > "$td/.scratch/payload.md"
+  local stderr_log="$td/stderr.log"
   (
     PIPELINE_DRY_RUN=1
-    clean_scratch_dir "$td"
-  ) >/dev/null 2>&1
+    clean_scratch_residue "$td"
+  ) >/dev/null 2>"$stderr_log"
   if [[ -f "$td/.scratch/payload.md" ]]; then
     report_ok 'scratch-clean: dry-run preserves .scratch/ contents'
   else
     report_fail 'scratch-clean: dry-run' 'preserved' 'removed'
   fi
+  if grep -q '\[DRY_RUN\]' "$stderr_log"; then
+    report_ok 'scratch-clean: dry-run emits [DRY_RUN] log line'
+  else
+    report_fail 'scratch-clean: dry-run log' \
+      '[DRY_RUN] prefix in stderr' "$(cat "$stderr_log" 2>/dev/null)"
+  fi
   rm -rf "$td"
 }
-test_clean_scratch_dir_dry_run_skips_mutation
+test_clean_scratch_residue_dry_run_skips_mutation
 
-# ─── Integration test (M-T2): self-leak handler pipeline end-to-end ─────
+# ─── Integration test: self-leak handler pipeline end-to-end ───────────
 # All clean_self_leak_residue unit tests call the helper directly with
 # hand-crafted path lists. The full production flow is:
 #   tick-start snapshot → dispatch → partition → observed-vs-self-leak
@@ -2693,8 +2722,9 @@ test_self_leak_handler_pipeline_e2e() {
   done < "$out_scope_file"
 
   # Invariant: operator's path went to observed; agent's paths went to
-  # self_leak. The C1 correctness invariant is enforced HERE (the
-  # snapshot check in the classification loop), not in clean_self_leak_residue.
+  # self_leak. The "never touch the operator's pre-existing edits"
+  # invariant is enforced HERE (the snapshot check in the classification
+  # loop), not in clean_self_leak_residue.
   assert_eq 'pipeline: observed_buckets count' '1' "${#observed_buckets[@]}"
   assert_eq 'pipeline: self_leak_paths count'   '2' "${#self_leak_paths[@]}"
   assert_eq 'pipeline: self_leak_hashes count'  '2' "${#self_leak_hashes[@]}"
@@ -2707,12 +2737,12 @@ test_self_leak_handler_pipeline_e2e() {
     ) >/dev/null 2>&1
   fi
 
-  # Assert C1 — operator's edit survives.
+  # Assert the operator's pre-existing edit survives.
   local op_content; op_content="$(cat "$wt/operator-edit.md" 2>/dev/null)"
   if [[ "$op_content" == "operator-wip" ]]; then
-    report_ok 'pipeline-e2e: operator pre-existing edit survives (C1 invariant preserved)'
+    report_ok 'pipeline-e2e: operator pre-existing edit survives'
   else
-    report_fail 'pipeline-e2e: C1 invariant' 'operator-wip' "${op_content:-MISSING}"
+    report_fail 'pipeline-e2e: operator-edit preservation' 'operator-wip' "${op_content:-MISSING}"
   fi
 
   # Assert agent residue removed.
@@ -2740,14 +2770,14 @@ test_self_leak_handler_pipeline_e2e() {
 }
 test_self_leak_handler_pipeline_e2e
 
-# ─── Wire-up assertions (review finding m1 — strengthened post-v2) ──────
-# A regression that deletes any of the four load-bearing wire-up lines
-# from run-local.sh would leave every unit test green while removing
-# the production fix entirely. The previous version used a greedy
-# `.*$issue_id.*$stage.*$dispatch_cwd` regex that matched even when
-# args were reordered or padded with junk — testing-reviewer M-T1.
-# This version pins each load-bearing line with explicit quoted-token
-# anchors so a positional regression visibly fails.
+# ─── Wire-up assertions ─────────────────────────────────────────────────
+# A regression that deletes any of the load-bearing wire-up lines from
+# run-local.sh would leave every unit test green while removing the
+# production fix entirely. The prior shape used a greedy
+# `.*$issue_id.*$stage.*$dispatch_cwd` regex that matched even when args
+# were reordered or padded with junk. Each load-bearing line is pinned
+# below with explicit quoted-token anchors so a positional regression
+# visibly fails.
 test_self_leak_callsite_wired() {
   local rl="$SCRIPT_DIR/run-local.sh"
   if [[ ! -f "$rl" ]]; then
@@ -2795,14 +2825,14 @@ test_self_leak_callsite_wired() {
       'clean_self_leak_residue "$issue_id" "$stage" "$dispatch_cwd" "${self_leak_paths[@]}"' \
       'not found (refactor may have reordered args or dropped the array splat)'
   fi
-  # Anchor 5: clean_scratch_dir tick-end cleanup wired.
-  if grep -qE '^[[:space:]]*clean_scratch_dir[[:space:]]+"\$dispatch_cwd"' "$rl"; then
-    report_ok 'wire-up #5: clean_scratch_dir "$dispatch_cwd" tick-end cleanup present in run-local.sh'
+  # Anchor 5: clean_scratch_residue tick-end cleanup wired.
+  if grep -qE '^[[:space:]]*clean_scratch_residue[[:space:]]+"\$dispatch_cwd"' "$rl"; then
+    report_ok 'wire-up #5: clean_scratch_residue "$dispatch_cwd" tick-end cleanup present in run-local.sh'
   else
-    report_fail 'wire-up #5: scratch-dir cleanup' \
-      'clean_scratch_dir "$dispatch_cwd" before the precedence block' 'not found'
+    report_fail 'wire-up #5: scratch-residue cleanup' \
+      'clean_scratch_residue "$dispatch_cwd" before the precedence block' 'not found'
   fi
-  # Anchor 6: clean_scratch_dir MUST appear BEFORE the rc-gate that
+  # Anchor 6: clean_scratch_residue MUST appear BEFORE the rc-gate that
   # exits on dispatch failure. Without this position invariant, agent
   # failures (timeout rc=124, envelope validator rc=29, scope-check
   # rc=21, crashes) leave stale .scratch/ payload across operator
@@ -2819,17 +2849,17 @@ test_self_leak_callsite_wired() {
   # under pipefail and kills the test before report_fail can run. Using
   # `|| true` on the subshell preserves report_fail's diagnostic.
   local cleanup_line rcgate_line
-  cleanup_line="$(grep -n 'clean_scratch_dir[[:space:]]\+"\$dispatch_cwd"' "$rl" | head -1 | cut -d: -f1 || true)"
+  cleanup_line="$(grep -n 'clean_scratch_residue[[:space:]]\+"\$dispatch_cwd"' "$rl" | head -1 | cut -d: -f1 || true)"
   rcgate_line="$(grep -nE '\[\[[[:space:]]+\$rc[[:space:]]+-ne[[:space:]]+0[[:space:]]+\]\][[:space:]]*;[[:space:]]*then[[:space:]]+return[[:space:]]+\$rc' "$rl" | head -1 | cut -d: -f1 || true)"
   if [[ -z "$cleanup_line" || -z "$rcgate_line" ]]; then
     report_fail 'wire-up #6: positional invariant' \
-      "clean_scratch_dir must appear before [[ \$rc -ne 0 ]]; then return \$rc (cleanup=${cleanup_line:-MISSING}, rc-gate=${rcgate_line:-MISSING})" \
+      "clean_scratch_residue must appear before [[ \$rc -ne 0 ]]; then return \$rc (cleanup=${cleanup_line:-MISSING}, rc-gate=${rcgate_line:-MISSING})" \
       'one or both anchors missing — agent-failure ticks would leak stale .scratch/ across --action continue'
   elif (( cleanup_line < rcgate_line )); then
-    report_ok "wire-up #6: clean_scratch_dir at line $cleanup_line runs BEFORE rc-gate at line $rcgate_line"
+    report_ok "wire-up #6: clean_scratch_residue at line $cleanup_line runs BEFORE rc-gate at line $rcgate_line"
   else
     report_fail 'wire-up #6: positional invariant' \
-      "clean_scratch_dir line < rc-gate line (cleanup=$cleanup_line, rc-gate=$rcgate_line)" \
+      "clean_scratch_residue line < rc-gate line (cleanup=$cleanup_line, rc-gate=$rcgate_line)" \
       'cleanup is at or after rc-gate — agent-failure ticks would leak stale .scratch/ across --action continue'
   fi
 }
@@ -2865,7 +2895,7 @@ test_auto_cleans_self_leak_predicate
 # Clone of test_self_leak_handler_pipeline_e2e (reviewing) for the
 # planning stage. Exercises observed-vs-self-leak split AND the new
 # stage_auto_cleans_self_leak branch end-to-end on a docs-only stage
-# that previously halted. C1 invariant (operator's pre-existing edit
+# that previously halted. The operator-edit preservation invariant
 # is preserved) holds; sub-agent debris is removed; metric is emitted
 # with stage=planning.
 test_planning_self_leak_handler_pipeline_e2e() {
@@ -2910,12 +2940,12 @@ test_planning_self_leak_handler_pipeline_e2e() {
     report_fail 'planning-e2e: stage_auto_cleans_self_leak planning' 'true' 'false'
   fi
 
-  # C1 invariant: operator pre-existing edit survives.
+  # Operator-edit preservation invariant: pre-existing edit survives.
   local op_content; op_content="$(cat "$wt/docs-arch-wip.md" 2>/dev/null)"
   if [[ "$op_content" == "operator-edits-doc" ]]; then
-    report_ok 'planning-e2e: operator pre-existing edit survives (C1 invariant)'
+    report_ok 'planning-e2e: operator pre-existing edit survives'
   else
-    report_fail 'planning-e2e: C1 invariant' 'operator-edits-doc' "${op_content:-MISSING}"
+    report_fail 'planning-e2e: operator-edit preservation' 'operator-edits-doc' "${op_content:-MISSING}"
   fi
 
   # Debris removed.
@@ -3021,7 +3051,7 @@ test_auto_cleans_self_leak_adversarial_inputs() {
 test_auto_cleans_self_leak_adversarial_inputs
 
 # ─── ENG-100 QA adversarial: collision between operator-observed and ─
-# self-leak path. The C1 invariant (operator's pre-existing edit
+# self-leak path. The operator-edit preservation invariant
 # survives) is pinned by test_planning_self_leak_handler_pipeline_e2e
 # for distinct paths. This fixture exercises the harder case: the
 # agent writes to the SAME path the operator was already editing.

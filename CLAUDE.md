@@ -388,7 +388,8 @@ the two doc-writing stages because their `--allowed-tools` surface has no
 to NOT auto-clean.
 `clean_self_leak_residue` runs *after* `partition_dirty_paths` has already
 classified observed-vs-self-leak — operates only on paths NEW since
-tick-start (C1 invariant — never touches operator's pre-existing 'observed'
+tick-start (operator-edit preservation invariant — never touches the
+operator's pre-existing 'observed'
 edits). Per-path: tracked-modified → `git checkout --`; untracked →
 `rm -rf`. Emits `sweep-readonly-residue-cleaned` metric with audit payload
 (`count`, `branch`, `hashes` sha12-csv, `rm_fail`, `checkout_fail`); path
@@ -397,17 +398,22 @@ Defensive guards: empty/missing-worktree/main-or-master/dry-run all no-op
 safely. `implementing | ui | qa` are NOT affected — self-leak halts there
 remain correct policy.
 
-**Tick-end stage-agnostic `.scratch/` cleanup (`clean_scratch_dir`).**
-`.scratch/` is `.gitignore`d so contents are invisible to `git status` on
-every stage; without explicit cleanup, files persist into the next dispatch's
-worktree where they could be `Read` by the next agent.
-`clean_scratch_dir "$dispatch_cwd"` runs in `bin/run-local.sh`
-**immediately after dispatch returns, before the rc-gate** —
-load-bearing ordering pinned by `bin/run-local-helpers-adversarial-test.sh`
-wire-up anchor #6. Placement downstream of the rc-gate would leak stale
-payload across `--action continue` resume for every non-zero exit (timeout
-rc=124, envelope rc=29, scope rc=21, crash). `rm -rf "$worktree/.scratch"`;
-no-op if absent; dry-run logs only; failures non-blocking.
+**Tick-end stage-agnostic `.scratch/` cleanup (`clean_scratch_residue`).**
+The per-stage matrix (`implementing|ui|qa` carve-out vs docs-only
+auto-clean lane) is described above; this section covers the orthogonal
+**cross-dispatch persistence** dimension. `.scratch/` is `.gitignore`d so
+contents are invisible to `git status` and to `partition_dirty_paths` on
+every stage — without explicit cleanup, files an agent drops into
+`.scratch/` during one dispatch survive into the next dispatch's worktree
+where the next agent's `Read` tool can pick them up.
+`clean_scratch_residue "$dispatch_cwd"` runs in `bin/run-local.sh`
+**immediately after dispatch returns, before the rc-gate** — load-bearing
+ordering pinned by `bin/run-local-helpers-adversarial-test.sh` wire-up
+anchor #6, so the cleanup also fires on the failure paths (timeout
+rc=124, envelope rc=29, scope rc=21, crash) where stale payload would
+otherwise survive an operator's `--action continue` resume.
+`rm -rf "$worktree/.scratch"`; no-op if absent; dry-run logs only;
+failures non-blocking.
 
 **Where stack knowledge lives.** The per-slug project profile at
 `$HARNESS_ROOT/learned-rules/<slug>/project-profile.md` is the canonical
