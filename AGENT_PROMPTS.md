@@ -834,9 +834,7 @@ Your task:
     `git add` invocation; do NOT chain with `&&` or pass multiple paths
     in a single `git add A B` call. The auto-mode classifier may reject
     multi-path or chained-command shapes even when the allowlist permits
-    them (CLAUDE.md memory `feedback_dedup_update_silently_rewrites_chronology`
-    / `feedback_manual_shepherd_fresh_brainstorm_halt`). One path per call
-    is the shape that reliably gets through.
+    them. One path per call is the shape that reliably gets through.
 - Follow testing conventions from docs/knowledge/conventions.md and the profile's "Language idioms" section.
 - For projects with an FE↔BE API surface: every new or modified backend handler MUST match its declared signature in the `api-contract` block (name, arg names/types, return type, event name and payload fields).
 - Run the gates listed in the Project profile addendum's "Build & test gates" section before finishing. All MUST pass.
