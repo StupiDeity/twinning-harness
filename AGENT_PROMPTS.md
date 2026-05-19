@@ -748,7 +748,7 @@ The orchestrator inlines the prior reviewing stage's summary below as `{review_f
 
 and the rest of THIS block does not apply. Otherwise:
 
-  1. Treat every `[critical]` and `[major]` finding as a contract you MUST close by code commits on `{branch_name}` before exit. `[minor]` and `[nit]` findings are best-effort — close them when cheap, defer with a one-line rationale in the stage-summary Notes otherwise.
+  1. Treat every `[critical]` and `[major]` finding as a contract you MUST close by code commits on `{branch_name}` before exit. (For `[minor]` and `[nit]` findings, see the **Minor/nit defer rule** block below.)
   2. For each closed finding, the commit message MUST cite the finding's file:line locator from the review (e.g. `fix(ENG-N): address review finding at docs/runbooks/failure-modes.md:531`). The reviewer cross-checks file:line against the commit log on the next iter.
   3. Do NOT post `verdict pass` if any `[critical]` or `[major]` finding remains uncommitted. Doing so causes a NOOP loopback — the next reviewer dispatch re-emits the same findings against an unchanged branch tip, burning ~$6 of reviewer cost per cycle. The orchestrator now detects zero-new-commits on a review-loopback dispatch and halts with `agent-blocked` (exit 30) before the next reviewer dispatch fires. Your verdict must reflect ACTUAL work done — if you cannot address a finding, exit with `verdict halt --reason agent-blocked` and describe what blocks you.
   4. The `completion/implementing/{issue_id}` Linear comment carries a dedup-update mechanic — its body shows your PRIOR dispatch's summary text on every read. Do NOT use it as a source of truth for "what work has been done on this branch." The branch's git log is the only authoritative record. Re-emitting the prior body via the overwrite-on-every-dispatch contract without making fresh commits is the ENG-105 failure mode this block exists to prevent.
@@ -756,6 +756,23 @@ and the rest of THIS block does not apply. Otherwise:
      - `[minor]` and `[nit]` findings get the strictest reading of this rule. A reviewer saying "you could also harden X" is a hypothesis, not a directive — defer it unless brainstorm/plan already authorizes X.
      - `[critical]` / `[major]` findings can also drift. If the fix the reviewer proposes adds a code path the brainstorm/plan never named, the correct response is to either (a) close the finding via a strictly in-scope fix, or (b) halt with `verdict halt --reason agent-blocked` and a comment naming the brainstorm/plan gap. Adding the proposed code AND citing the finding does NOT make it in-scope.
      - Concrete failure (ENG-123 iter 4-6): the implement agent added a 1 MiB oversize cap citing only "minor 3" from a prior review. Brainstorm §6 had explicitly said "No truncation needed this iteration." The cap had no D-00X, no FM→TM row, no test. Each subsequent reviewer iteration found new drift in the freshly-added defensive code, and the review/implement loop burned ~$50 across 6 cycles before halting. The brainstorm decision is load-bearing — overriding it via a nit-driven harden is the failure mode this clause exists to prevent.
+
+Minor/nit defer rule (MANDATORY — read BEFORE the findings list below; ENG-136):
+
+A `[minor]` or `[nit]` finding is "cheap to close" ONLY if the fix requires ZERO edits to files outside the plan's File Structure table (see read-list item 9 — `docs/plans/{plan_file}`). If a fix would require touching ANY file not listed in File Structure — including but not limited to `learned-rules/<slug>/project-profile.md`, sibling test files (`bin/*-test.sh`), knowledge docs (`docs/knowledge/*`), config files (`.pipeline-config/config.json`, `.githooks/*`), or workflow definitions — DEFER the finding. Do not attempt the edit; do not extend File Structure on the fly; do not file a meta-marker as a substitute for the real edit.
+
+For each deferred finding, append a single line to the **Notes** subsection of `stage-summary-implementing.md` in the format:
+
+  `Deferred [<severity>] <finding-id>: <file-path-the-fix-would-touch> — <one-line rationale>`
+
+Examples:
+
+  `Deferred [minor] M4: learned-rules/harness/project-profile.md — outside plan File Structure; closure via next plan iteration (pipeline:extend).`
+  `Deferred [nit] N2: bin/dispatch-test.sh — sibling test file outside plan File Structure; defer to follow-up ticket.`
+
+The next plan iteration (or a `pipeline:extend` operator decision) is the correct closure path for deferred minor/nit findings. The agent MUST NOT use a review finding to authorize editing a file the plan did not list.
+
+Concrete failure (ENG-122 implement-loopback, 2026-05-16): the implement agent attempted to close review minor #4 (`learned-rules/harness/project-profile.md:17` — Build & test gates list missing two new test scripts) on an implement-loopback dispatch. The profile file was not in the plan's File Structure. `bin/scope-check.sh` halted the dispatch as a self-leak, burning one implement-cycle on a fix the agent should have deferred. The rule above closes that failure mode by making the cheap/expensive judgment binary and mechanical: in-File-Structure → close it; out-of-File-Structure → defer it.
 
 Reviewing summary (verbatim):
 

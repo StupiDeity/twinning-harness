@@ -1,0 +1,86 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-136",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Hoist the §3 review-loopback minor/nit defer-rule out of step 1 into a labeled precondition block above {review_findings}; add a hard scope ceiling defining 'cheap' as 'zero edits to files outside plan File Structure'; pin position + content with seven new assertions in bin/agent-prompts-content-test.sh.",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Minor/nit defer rule \\(MANDATORY — read BEFORE the findings list below; ENG-136\\):",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "ZERO edits to files outside the plan's File Structure",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "learned-rules/<slug>/project-profile\\.md",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Deferred \\[<severity>\\] <finding-id>:",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "see the \\*\\*Minor/nit defer rule\\*\\* block below",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "best-effort — close them when cheap",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-136: hoisted defer-rule header present",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-136: hoisted defer-rule block sits between 5-step block and Reviewing summary",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-136: step-1 regression",
+          "expect_match": true
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/plans/2026-05-19-eng-136-implement-loopback-minor-defer-rule-hoist-and-scope-ceiling.md"
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/brainstorms/2026-05-19-eng-136-implement-loopback-minor-defer-rule-hoist-and-scope-ceiling-design.md"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}

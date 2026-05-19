@@ -100,6 +100,90 @@ else
     "literal '1. {progress_md_path}' line missing from §3 — has the position-1 placement been demoted, or the token removed entirely?"
 fi
 
+# ─── ENG-136: §3 review-loopback minor/nit defer rule hoist + scope ceiling ───
+# The defer-rule for [minor]/[nit] findings used to be the trailing
+# sentence of step 1 in §3's review-loopback handling block. It was
+# buried — the agent read the {review_findings} list immediately
+# below and treated "close what the reviewer flagged" as the default.
+# ENG-122's 2026-05-16 implement-loopback halted on a scope-check
+# self-leak because the agent attempted to close a minor finding
+# whose fix required editing learned-rules/harness/project-profile.md
+# (outside the plan's File Structure).
+#
+# ENG-136 hoists the defer-rule into its own labeled block ABOVE
+# `Reviewing summary (verbatim):` and adds a hard scope ceiling:
+# minor/nit fixes touching files outside File Structure must be
+# deferred (not closed). Seven assertions pin position + content.
+
+# Pin 1: Hoisted-header presence.
+if printf '%s\n' "$s3" | grep -qF 'Minor/nit defer rule (MANDATORY — read BEFORE the findings list below; ENG-136):'; then
+  ok "§3 ENG-136: hoisted defer-rule header present"
+else
+  nope "§3 ENG-136: hoisted defer-rule header present" \
+    "literal 'Minor/nit defer rule (MANDATORY — read BEFORE the findings list below; ENG-136):' missing from §3 — has the hoisted block been removed or its header renamed?"
+fi
+
+# Pin 2: Position — hoisted block sits AFTER the 5-step block (step 5's
+# 'Concrete failure (ENG-123 iter 4-6)' anchor) AND BEFORE the
+# 'Reviewing summary (verbatim):' header.
+_eng136_header_ln="$(grep -nF 'Minor/nit defer rule (MANDATORY — read BEFORE the findings list below; ENG-136):' "$PROMPTS" | head -1 | cut -d: -f1)"
+_eng136_step5_ln="$(grep -nF 'Concrete failure (ENG-123 iter 4-6)' "$PROMPTS" | head -1 | cut -d: -f1)"
+_eng136_rev_ln="$(grep -nF 'Reviewing summary (verbatim):' "$PROMPTS" | head -1 | cut -d: -f1)"
+if [[ -n "$_eng136_header_ln" && -n "$_eng136_step5_ln" && -n "$_eng136_rev_ln" \
+      && "$_eng136_header_ln" -gt "$_eng136_step5_ln" \
+      && "$_eng136_header_ln" -lt "$_eng136_rev_ln" ]]; then
+  ok "§3 ENG-136: hoisted defer-rule block sits between 5-step block and Reviewing summary (lines $_eng136_step5_ln < $_eng136_header_ln < $_eng136_rev_ln)"
+else
+  nope "§3 ENG-136: hoisted defer-rule block sits between 5-step block and Reviewing summary" \
+    "expected step5<header<reviewing-summary; got step5=$_eng136_step5_ln header=$_eng136_header_ln reviewing-summary=$_eng136_rev_ln — has the block been moved above the 5-step block, below {review_findings}, or removed entirely?"
+fi
+unset _eng136_header_ln _eng136_step5_ln _eng136_rev_ln
+
+# Pin 3: Scope-ceiling phrase — the binary-judgment language that
+# makes the cheap/expensive call mechanical.
+if printf '%s\n' "$s3" | grep -qF "ZERO edits to files outside the plan's File Structure"; then
+  ok "§3 ENG-136: hard scope-ceiling language present ('ZERO edits to files outside the plan'\''s File Structure')"
+else
+  nope "§3 ENG-136: hard scope-ceiling language present" \
+    "literal 'ZERO edits to files outside the plan'\''s File Structure' missing from §3 — has the binary-judgment ceiling been softened back to fuzzy 'cheap'?"
+fi
+
+# Pin 4: Example file path — anchors the rule against the ENG-122
+# failure mode named in the ticket's AC #3.
+if printf '%s\n' "$s3" | grep -qF 'learned-rules/<slug>/project-profile.md'; then
+  ok "§3 ENG-136: example path 'learned-rules/<slug>/project-profile.md' present"
+else
+  nope "§3 ENG-136: example path 'learned-rules/<slug>/project-profile.md' present" \
+    "literal 'learned-rules/<slug>/project-profile.md' missing from §3 — has the ENG-122-anchored example been demoted to a generic phrasing?"
+fi
+
+# Pin 5: Notes-format prefix — the deferred-finding bookkeeping shape.
+if printf '%s\n' "$s3" | grep -qF 'Deferred [<severity>] <finding-id>:'; then
+  ok "§3 ENG-136: Notes format prefix 'Deferred [<severity>] <finding-id>:' present"
+else
+  nope "§3 ENG-136: Notes format prefix 'Deferred [<severity>] <finding-id>:' present" \
+    "literal 'Deferred [<severity>] <finding-id>:' missing from §3 — has the structured Notes format been replaced with prose?"
+fi
+
+# Pin 6: Step-1 regression — the OLD buried defer-rule sentence
+# must NOT remain in step 1. Catches a hoist that left the original
+# sentence in place (two competing instructions).
+if printf '%s\n' "$s3" | grep -qF 'best-effort — close them when cheap'; then
+  nope "§3 ENG-136: step-1 regression — old buried defer-rule sentence removed" \
+    "phrase 'best-effort — close them when cheap' still present in §3 — hoist left the original sentence in place; either the new block duplicates step 1 or the new block was added without removing the old sentence"
+else
+  ok "§3 ENG-136: step-1 regression — old buried defer-rule sentence removed"
+fi
+
+# Pin 7: Forward reference — step 1 carries the explicit pointer
+# to the hoisted block so the 5-step list stays discoverable.
+if printf '%s\n' "$s3" | grep -qF 'see the **Minor/nit defer rule** block below'; then
+  ok "§3 ENG-136: step-1 forward reference to hoisted block present"
+else
+  nope "§3 ENG-136: step-1 forward reference to hoisted block present" \
+    "literal 'see the **Minor/nit defer rule** block below' missing from §3 — step 1 lost the explicit pointer to the hoisted rule; a reader of step 1 alone would not know minor/nit handling is documented elsewhere"
+fi
+
 # ─── ENG-140: §3 contains the new QA → implement loopback block ───
 # The implementing prompt MUST carry a QA-loopback handling block so that
 # qa → implementing fail dispatches see the QA findings inline (via
