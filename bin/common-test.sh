@@ -1195,7 +1195,18 @@ if [[ "$rc_param_e_neg" == "0" && -z "$out_param_e_neg" ]]; then
 else
   fail_at "AC-PARAM-E endswith negative" "rc=$rc_param_e_neg out=$out_param_e_neg"
 fi
-rm -f "$TX_PARAM_E"
+# Negative (contains): path that does NOT contain the substring returns rc=0 with mode=contains
+TX_PARAM_E2="$(mktemp -t eng155-param-e2-XXXXXX)"
+cat > "$TX_PARAM_E2" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+out_param_e_cneg="$(assert_no_tool_with_input_path "$TX_PARAM_E2" "Write,Edit" "file_path" "/wait-" "contains")" && rc_param_e_cneg=0 || rc_param_e_cneg=$?
+if [[ "$rc_param_e_cneg" == "0" && -z "$out_param_e_cneg" ]]; then
+  pass_at "AC-PARAM-E (contains negative): /progress.md does not contain '/wait-' + mode=contains → rc=0"
+else
+  fail_at "AC-PARAM-E contains negative" "rc=$rc_param_e_cneg out=$out_param_e_cneg"
+fi
+rm -f "$TX_PARAM_E" "$TX_PARAM_E2"
 
 # AC-PARAM-F (unknown mode): defensive soft-fail → rc=0
 TX_PARAM_F="$(mktemp -t eng155-param-f-XXXXXX)"
