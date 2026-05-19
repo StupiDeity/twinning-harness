@@ -1699,15 +1699,19 @@ main() {
         severe_files="$(grep -E '^severe	' <<<"$scope_out" | awk -F'\t' '{print $2}' | sort -u)"
         local severe_patch
         severe_patch="$(printf -- '- `%s`\n' $severe_files)"
-        bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
+        bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection \
+          --reason "SEVERE scope violation on $branch: $(tr '\n' ' ' <<<"$severe_patch")" \
+          --reason-code scope-violation-severe || true
         classify_failure "$ident" "$stage" "skip-until-human-acts" \
           "SEVERE scope violation on $branch: $(tr '\n' ' ' <<<"$severe_patch")" 21 3
         exit 21
         ;;
       *)
-        bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
         local scope_detail
         scope_detail="$(_compose_scope_check_detail "$scope_out")"
+        bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection \
+          --reason "scope-check rc=$scope_rc: ${scope_detail:-no diagnostic captured}" \
+          --reason-code scope-violation || true
         classify_failure "$ident" "$stage" "skip-until-code-changes" \
           "scope-check rc=$scope_rc: ${scope_detail:-no diagnostic captured}" \
           21 "$scope_rc"
@@ -1747,7 +1751,9 @@ main() {
   # after addressing the reviewer's findings on the branch.
   if [[ "$stage" == "implementing" ]] && (( ! skip_dispatch )) && [[ -n "$_HEAD_PRE_DISPATCH" ]]; then
     if ! _dispatch_made_new_commits "$(issue_dir "$ident")/worktree" "$_HEAD_PRE_DISPATCH"; then
-      bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection || true
+      bash "$SCRIPT_DIR/guards.sh" bump "$ident" implement_rejection \
+        --reason "implementing dispatch produced zero new commits (branch HEAD unchanged from $_HEAD_PRE_DISPATCH)" \
+        --reason-code noop-implementation || true
       classify_failure "$ident" "$stage" "skip-until-human-acts" \
         "implementing dispatch produced zero new commits (branch HEAD unchanged from $_HEAD_PRE_DISPATCH). On a review-loopback this means the agent re-emitted its prior stage summary without addressing the reviewer's findings — the ENG-105 NOOP failure mode. Inspect the prior review at \`completion/reviewing/$ident\` in Linear, fix the cited findings on the branch by hand, then resume with \`bash bin/pipeline.sh decide $ident --action continue\`." \
         30
