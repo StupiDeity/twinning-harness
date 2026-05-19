@@ -3769,6 +3769,66 @@ else
     "function not found after sourcing dispatch.sh"
 fi
 
+# AC-D003-K: Write against /.raw-stream.ndjson.tmp → rc=1 (positive fixture for dispatch sidecar)
+TX_D003K="$_TEST_STUB_DIR/tx-d003k.ndjson"
+cat > "$TX_D003K" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/.raw-stream.ndjson.tmp"}}]}}
+NDJSON
+out_d003k="$(assert_no_tool_with_input_path "$TX_D003K" "Write,Edit" "file_path" "/.raw-stream.ndjson.tmp" "contains")" && rc_d003k=0 || rc_d003k=$?
+if [[ "$rc_d003k" == "1" && "$out_d003k" == *"/.raw-stream.ndjson.tmp" ]]; then
+  pass_at "AC-D003-K: Write on /.raw-stream.ndjson.tmp → rc=1"
+else
+  fail_at "AC-D003-K" "rc=$rc_d003k out=$out_d003k"
+fi
+
+# AC-D003-L: Edit against /.cmd-capture-planning → rc=1
+TX_D003L="$_TEST_STUB_DIR/tx-d003l.ndjson"
+cat > "$TX_D003L" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/.cmd-capture-planning"}}]}}
+NDJSON
+out_d003l="$(assert_no_tool_with_input_path "$TX_D003L" "Write,Edit" "file_path" "/.cmd-capture-" "contains")" && rc_d003l=0 || rc_d003l=$?
+if [[ "$rc_d003l" == "1" && "$out_d003l" == *"/.cmd-capture-"* ]]; then
+  pass_at "AC-D003-L: Edit on /.cmd-capture-planning via '/.cmd-capture-' contains → rc=1"
+else
+  fail_at "AC-D003-L" "rc=$rc_d003l out=$out_d003l"
+fi
+
+# AC-D003-M: Write against /.envelope-transcript-planning → rc=1
+TX_D003M="$_TEST_STUB_DIR/tx-d003m.ndjson"
+cat > "$TX_D003M" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/.envelope-transcript-planning"}}]}}
+NDJSON
+out_d003m="$(assert_no_tool_with_input_path "$TX_D003M" "Write,Edit" "file_path" "/.envelope-transcript-" "contains")" && rc_d003m=0 || rc_d003m=$?
+if [[ "$rc_d003m" == "1" && "$out_d003m" == *"/.envelope-transcript-"* ]]; then
+  pass_at "AC-D003-M: Write on /.envelope-transcript-planning via '/.envelope-transcript-' contains → rc=1"
+else
+  fail_at "AC-D003-M" "rc=$rc_d003m out=$out_d003m"
+fi
+
+# AC-D003-N: Edit against /.transcript-violation-planning → rc=1
+TX_D003N="$_TEST_STUB_DIR/tx-d003n.ndjson"
+cat > "$TX_D003N" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/.transcript-violation-planning"}}]}}
+NDJSON
+out_d003n="$(assert_no_tool_with_input_path "$TX_D003N" "Write,Edit" "file_path" "/.transcript-violation-" "contains")" && rc_d003n=0 || rc_d003n=$?
+if [[ "$rc_d003n" == "1" && "$out_d003n" == *"/.transcript-violation-"* ]]; then
+  pass_at "AC-D003-N: Edit on /.transcript-violation-planning via '/.transcript-violation-' contains → rc=1"
+else
+  fail_at "AC-D003-N" "rc=$rc_d003n out=$out_d003n"
+fi
+
+# AC-D003-O: Write against /.allocate.lock → rc=1
+TX_D003O="$_TEST_STUB_DIR/tx-d003o.ndjson"
+cat > "$TX_D003O" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/.allocate.lock"}}]}}
+NDJSON
+out_d003o="$(assert_no_tool_with_input_path "$TX_D003O" "Write,Edit" "file_path" "/.allocate.lock" "contains")" && rc_d003o=0 || rc_d003o=$?
+if [[ "$rc_d003o" == "1" && "$out_d003o" == *"/.allocate.lock" ]]; then
+  pass_at "AC-D003-O: Write on /.allocate.lock → rc=1"
+else
+  fail_at "AC-D003-O" "rc=$rc_d003o out=$out_d003o"
+fi
+
 # AC-D003-H: Write against /.consecutive-failures → rc=1 (ENG-155 review finding #1)
 TX_D003H="$_TEST_STUB_DIR/tx-d003h.ndjson"
 cat > "$TX_D003H" <<'NDJSON'
