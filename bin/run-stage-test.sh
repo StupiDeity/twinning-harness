@@ -3606,6 +3606,74 @@ printf '\n--- ENG-109 regression: _ensure_progress_md set -u + unset PIPELINE_DR
   exit 0
 ) && pass_at "case-109-2b _ensure_progress_md is set -u clean when PIPELINE_DRY_RUN is unset"
 
+# ─── ENG-160: _ensure_progress_md seeds a stable Edit anchor on fresh ──
+# A `touch`-only progress.md is empty, so the agent's `Edit` (append-via-
+# anchor) has no `old_string` to match. Combined with claude 2.1.x's
+# directory sandbox (blocks `bash -c "cat >> /abs/path"` outside cwd) and
+# the ENG-109 Write ban, the first dispatch of any fresh issue had no
+# working option to append. ENG-160 seeds two HTML-comment lines so Edit
+# always has an anchor. Pin all three: seeded-on-fresh, idempotent-on-
+# existing, dry-run no-op.
+printf '\n--- ENG-160: _ensure_progress_md seeds anchor on fresh issue ---\n'
+ENG_160_IDENT_FRESH="ENG-TEST-ENG160-FRESH"
+ENG_160_PMD_FRESH="$(progress_md_path "$ENG_160_IDENT_FRESH")"
+rm -rf "$(issue_dir "$ENG_160_IDENT_FRESH")"
+mkdir -p "$(issue_dir "$ENG_160_IDENT_FRESH")"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_progress_md "$ENG_160_IDENT_FRESH" >/dev/null 2>&1
+) || true
+if [[ ! -s "$ENG_160_PMD_FRESH" ]]; then
+  fail_at "case-160-1 _ensure_progress_md left progress.md empty on fresh issue" \
+    "expected non-empty seeded file at $ENG_160_PMD_FRESH"
+elif ! grep -q '<!-- progress.md' "$ENG_160_PMD_FRESH"; then
+  fail_at "case-160-1 _ensure_progress_md seed marker missing" \
+    "expected '<!-- progress.md' anchor; got: $(head -2 "$ENG_160_PMD_FRESH")"
+elif ! grep -q 'append H2 entries below' "$ENG_160_PMD_FRESH"; then
+  fail_at "case-160-1 _ensure_progress_md seed instruction missing" \
+    "expected 'append H2 entries below' line; got: $(head -2 "$ENG_160_PMD_FRESH")"
+else
+  pass_at "case-160-1 _ensure_progress_md seeds non-empty stable anchor on fresh issue"
+fi
+
+printf '\n--- ENG-160: _ensure_progress_md idempotent on existing file ---\n'
+ENG_160_IDENT_EXIST="ENG-TEST-ENG160-EXIST"
+ENG_160_PMD_EXIST="$(progress_md_path "$ENG_160_IDENT_EXIST")"
+rm -rf "$(issue_dir "$ENG_160_IDENT_EXIST")"
+mkdir -p "$(issue_dir "$ENG_160_IDENT_EXIST")"
+ENG_160_PRE_CONTENT="## ENG-TEST-ENG160-EXIST-d0001 - brainstorming - 2026-05-19T00:00:00Z
+
+- preexisting entry that must not be clobbered"
+printf '%s\n' "$ENG_160_PRE_CONTENT" > "$ENG_160_PMD_EXIST"
+ENG_160_PRE_SHA="$(shasum -a 256 "$ENG_160_PMD_EXIST" | cut -d' ' -f1)"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_progress_md "$ENG_160_IDENT_EXIST" >/dev/null 2>&1
+) || true
+ENG_160_POST_SHA="$(shasum -a 256 "$ENG_160_PMD_EXIST" | cut -d' ' -f1)"
+if [[ "$ENG_160_PRE_SHA" == "$ENG_160_POST_SHA" ]]; then
+  pass_at "case-160-2 _ensure_progress_md is idempotent on existing non-empty file (sha unchanged)"
+else
+  fail_at "case-160-2 _ensure_progress_md rewrote existing progress.md" \
+    "pre-sha=$ENG_160_PRE_SHA post-sha=$ENG_160_POST_SHA; current head: $(head -3 "$ENG_160_PMD_EXIST")"
+fi
+
+printf '\n--- ENG-160: _ensure_progress_md dry-run does not create file ---\n'
+ENG_160_IDENT_DRY="ENG-TEST-ENG160-DRY"
+ENG_160_PMD_DRY="$(progress_md_path "$ENG_160_IDENT_DRY")"
+rm -rf "$(issue_dir "$ENG_160_IDENT_DRY")"
+(
+  PIPELINE_DRY_RUN=1
+  export PIPELINE_DRY_RUN
+  _ensure_progress_md "$ENG_160_IDENT_DRY" >/dev/null 2>&1
+) || true
+if [[ -e "$ENG_160_PMD_DRY" ]]; then
+  fail_at "case-160-3 _ensure_progress_md created file under dry-run" \
+    "file at $ENG_160_PMD_DRY should not exist"
+else
+  pass_at "case-160-3 _ensure_progress_md is no-op under PIPELINE_DRY_RUN=1"
+fi
+
 # ─── ENG-66 QA adversarial: rc=23 arm sits BETWEEN rc=22 and rc=26 ───
 # Plan A-N4: "inserted between the rc=22 arm and the rc=26 arm".
 # Source ordering matters because each arm is `elif`; if rc=23 sits
