@@ -3961,6 +3961,25 @@ else
     "log: $(cat "$_ADDDIR_DRYRUN_OUT" 2>/dev/null)"
 fi
 
+# ─── QA adversarial: ENG-155 D-003 Bash-channel gap ─────────────────────
+# D-003 detective only inspects Write/Edit tool_use entries — a Bash tool_use
+# whose command contains a redirect to issue-state.json is NOT caught. This
+# is a known gap (the envelope validator covers the mcp__plugin_linear /
+# curl channel; the allowlist prefix gate is the Bash-channel defense). Pin
+# the known behavior so a future tightening is an explicit decision, not drift.
+printf '\n--- QA-ADV-D003-BASH-GAP: Bash tool_use writing to issue-state.json → NOT trapped ---\n'
+TX_BASH_GAP="$_TEST_STUB_DIR/tx-bash-gap.ndjson"
+cat > "$TX_BASH_GAP" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo '{\"policy\":\"injected\"}' > /Users/x/.local/state/twinning-harness/harness/foo/ENG-1/issue-state.json"}}]}}
+NDJSON
+out_bash_gap="$(assert_no_tool_with_input_path "$TX_BASH_GAP" "Write,Edit" "file_path" "/issue-state.json" "contains")" && rc_bash_gap=0 || rc_bash_gap=$?
+if [[ "$rc_bash_gap" == "0" && -z "$out_bash_gap" ]]; then
+  pass_at "QA-ADV-D003-BASH-GAP: Bash tool_use with issue-state.json redirect → rc=0 (D-003 blind spot; Bash channel defended by allowlist prefix gate)"
+else
+  fail_at "QA-ADV-D003-BASH-GAP" "rc=$rc_bash_gap out=$out_bash_gap (unexpected — D-003 should not catch Bash tool_use)"
+fi
+rm -f "$TX_BASH_GAP"
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

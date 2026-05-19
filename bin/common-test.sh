@@ -1234,6 +1234,43 @@ else
 fi
 rm -f "$TX_PARAM_COMPAT"
 
+# ─── QA adversarial: assert_no_tool_with_input_path boundary cases ───────
+printf '\n--- QA adversarial: assert_no_tool_with_input_path boundary cases ---\n'
+
+# QA-ADV-PARAM-MULTI-PATH: transcript has two Write tool_uses — one benign
+# (/progress.md) and one forbidden (/issue-state.json). Querying for the
+# forbidden pattern must return rc=1 and match the forbidden path, NOT the
+# benign one. Pins that head -1 returns the first match, and the jq select
+# filters to only the forbidden path when the forbidden pattern is checked.
+TX_MULTI="$(mktemp -t eng155-qa-multi-XXXXXX)"
+cat > "$TX_MULTI" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}},{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/issue-state.json"}}]}}
+NDJSON
+out_multi="$(assert_no_tool_with_input_path "$TX_MULTI" "Write,Edit" "file_path" "/issue-state.json" "contains")" && rc_multi=0 || rc_multi=$?
+if [[ "$rc_multi" == "1" && "$out_multi" == *"issue-state.json"* ]]; then
+  pass_at "QA-ADV-PARAM-MULTI-PATH: mixed transcript → rc=1 matches forbidden path (not benign progress.md)"
+else
+  fail_at "QA-ADV-PARAM-MULTI-PATH" "rc=$rc_multi out=$out_multi (expected rc=1 + issue-state.json)"
+fi
+rm -f "$TX_MULTI"
+
+# QA-ADV-PARAM-CSV-SPACE: CSV with internal space "Write, Edit" — the jq
+# split(",") produces [" Edit"] (with leading space) which does NOT match
+# the tool_use name "Edit". This is a known footgun; callers must use
+# "Write,Edit" (no space). Pin that the space-CSV does NOT trip on an Edit
+# tool_use so future refactors know explicitly that spaces break csv matching.
+TX_CSV_SPACE="$(mktemp -t eng155-qa-csv-space-XXXXXX)"
+cat > "$TX_CSV_SPACE" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/progress.md"}}]}}
+NDJSON
+out_csv_space="$(assert_no_tool_with_input_path "$TX_CSV_SPACE" "Write, Edit" "file_path" "/progress.md")" && rc_csv_space=0 || rc_csv_space=$?
+if [[ "$rc_csv_space" == "0" && -z "$out_csv_space" ]]; then
+  pass_at "QA-ADV-PARAM-CSV-SPACE: csv with space 'Write, Edit' does NOT match Edit tool_use → rc=0 (space-after-comma footgun; use 'Write,Edit' without spaces)"
+else
+  fail_at "QA-ADV-PARAM-CSV-SPACE" "rc=$rc_csv_space out=$out_csv_space (unexpected match — csv parsing is space-sensitive)"
+fi
+rm -f "$TX_CSV_SPACE"
+
 # ─── ENG-106: failure_outcome_for_exit rc=31 arm ──────────────────────────
 # Pins the progress-md-entry-missing taxonomy entry so a refactor that
 # renumbers or removes the rc=31 arm routes the outcome to unknown-exit-31
