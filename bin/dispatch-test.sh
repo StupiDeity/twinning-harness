@@ -3729,7 +3729,7 @@ cat > "$TX_D003F" <<'NDJSON'
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/stage-summary-planning.md"}}]}}
 NDJSON
 _d003f_all_pass=1
-for _d003f_pat in "/issue-state.json" "/dispatch_history.jsonl" "/wait-" "/usage-" "/.raw-stream.ndjson.tmp" "/.cmd-capture-" "/.envelope-transcript-" "/.transcript-violation-" "/.allocate.lock"; do
+for _d003f_pat in "/issue-state.json" "/dispatch_history.jsonl" "/wait-" "/usage-" "/.raw-stream.ndjson.tmp" "/.cmd-capture-" "/.envelope-transcript-" "/.transcript-violation-" "/.allocate.lock" "/.consecutive-failures" "/.in-flight.lock" "/scope-approval"; do
   out_d003f="$(assert_no_tool_with_input_path "$TX_D003F" "Write,Edit" "file_path" "$_d003f_pat" "contains")" && rc_d003f=0 || rc_d003f=$?
   if [[ "$rc_d003f" != "0" || -n "$out_d003f" ]]; then
     fail_at "AC-D003-F: stage-summary-planning.md must NOT trip D-003 pattern '$_d003f_pat'" \
@@ -3738,7 +3738,7 @@ for _d003f_pat in "/issue-state.json" "/dispatch_history.jsonl" "/wait-" "/usage
   fi
 done
 if [[ "$_d003f_all_pass" == "1" ]]; then
-  pass_at "AC-D003-F: Write on /stage-summary-planning.md returns rc=0 for all 9 D-003 patterns (benign)"
+  pass_at "AC-D003-F: Write on /stage-summary-planning.md returns rc=0 for all 12 D-003 patterns (benign)"
 fi
 
 # AC-D003-G: end-to-end via _render_and_capture_stream
@@ -3767,6 +3767,61 @@ if declare -f _render_and_capture_stream >/dev/null 2>&1; then
 else
   fail_at "AC-D003-G precondition: _render_and_capture_stream defined" \
     "function not found after sourcing dispatch.sh"
+fi
+
+# AC-D003-H: Write against /.consecutive-failures → rc=1 (ENG-155 review finding #1)
+TX_D003H="$_TEST_STUB_DIR/tx-d003h.ndjson"
+cat > "$TX_D003H" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/.consecutive-failures"}}]}}
+NDJSON
+out_d003h="$(assert_no_tool_with_input_path "$TX_D003H" "Write,Edit" "file_path" "/.consecutive-failures" "contains")" && rc_d003h=0 || rc_d003h=$?
+if [[ "$rc_d003h" == "1" && "$out_d003h" == *"/.consecutive-failures" ]]; then
+  pass_at "AC-D003-H: Write on /.consecutive-failures → rc=1 + matched path"
+else
+  fail_at "AC-D003-H" "rc=$rc_d003h out=$out_d003h"
+fi
+
+# AC-D003-I: Edit against /.in-flight.lock (directory; matched via its path) → rc=1 (ENG-155 review finding #1)
+TX_D003I="$_TEST_STUB_DIR/tx-d003i.ndjson"
+cat > "$TX_D003I" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/.in-flight.lock/pid"}}]}}
+NDJSON
+out_d003i="$(assert_no_tool_with_input_path "$TX_D003I" "Write,Edit" "file_path" "/.in-flight.lock" "contains")" && rc_d003i=0 || rc_d003i=$?
+if [[ "$rc_d003i" == "1" && "$out_d003i" == *"/.in-flight.lock"* ]]; then
+  pass_at "AC-D003-I: Edit on /.in-flight.lock/pid → rc=1 (contains /.in-flight.lock)"
+else
+  fail_at "AC-D003-I" "rc=$rc_d003i out=$out_d003i"
+fi
+
+# AC-D003-J: Write against /scope-approval sentinel → rc=1 (ENG-155 review finding #1)
+TX_D003J="$_TEST_STUB_DIR/tx-d003j.ndjson"
+cat > "$TX_D003J" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/scope-approval"}}]}}
+NDJSON
+out_d003j="$(assert_no_tool_with_input_path "$TX_D003J" "Write,Edit" "file_path" "/scope-approval" "contains")" && rc_d003j=0 || rc_d003j=$?
+if [[ "$rc_d003j" == "1" && "$out_d003j" == *"/scope-approval" ]]; then
+  pass_at "AC-D003-J: Write on /scope-approval → rc=1 + matched path"
+else
+  fail_at "AC-D003-J" "rc=$rc_d003j out=$out_d003j"
+fi
+
+# AC-D003-FP: adversarial — file OUTSIDE $issue_state_dir with matching substring trips the detective.
+# This is the accepted trade-off for unanchored contains patterns (review finding #2, dispatch.sh:302):
+# patterns like "/wait-" match anywhere in file_path, not just under $issue_state_dir. A Write to
+# a file named "wait-something.md" directly in any directory (e.g. docs/plans/wait-something.md)
+# produces a path ending in ".../plans/wait-something.md" which DOES contain "/wait-" (the
+# directory-separator slash + the filename). The FP fires; rc=29; recoverable via --action continue.
+# Note: hyphenated names like "2026-X-wait-something.md" have "-wait-" (not "/wait-") and do NOT
+# trigger the FP. Pinned here so future anchoring (would flip rc to 0) updates this test.
+TX_D003FP="$_TEST_STUB_DIR/tx-d003fp.ndjson"
+cat > "$TX_D003FP" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/code/twinning-harness/docs/plans/wait-something.md"}}]}}
+NDJSON
+out_d003fp="$(assert_no_tool_with_input_path "$TX_D003FP" "Write,Edit" "file_path" "/wait-" "contains")" && rc_d003fp=0 || rc_d003fp=$?
+if [[ "$rc_d003fp" == "1" ]]; then
+  pass_at "AC-D003-FP: OQ-5 FP pin — Write on docs/plans/wait-something.md trips /wait- (unanchored, known trade-off; review finding #2)"
+else
+  fail_at "AC-D003-FP: expected rc=1 (OQ-5 FP behavior)" "rc=$rc_d003fp out=$out_d003fp"
 fi
 
 # ─── ENG-155 AC-ADDDIR: --add-dir argv splice and DRY_RUN log ────────────
