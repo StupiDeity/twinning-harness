@@ -557,6 +557,12 @@ main() {
     # Pre-emptive cleanup so a missing file is the canonical "no usage to
     # report" signal — applies to BOTH branches below (E-04 / D-006).
     rm -f "$usage_file"
+    # ENG-155 D-001: belt-and-suspenders mkdir for non-run-stage callers
+    # (release/retrospective/mutex-test/dry-run-self-check leave
+    # PIPELINE_ISSUE_ID unset; this only fires inside the gated block,
+    # mirroring usage_file resolution). run-stage.sh:1344 already mkdirs
+    # the same path before invoking dispatch.sh.
+    mkdir -p "$issue_state_dir"
   fi
 
   # Install the release trap BEFORE the acquire so a die() between the two
@@ -633,7 +639,11 @@ main() {
     if [[ -n "${PIPELINE_DISPATCH_MODEL:-}" ]]; then
       _dry_model_seg=" --model $PIPELINE_DISPATCH_MODEL"
     fi
-    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose${_dry_model_seg} --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
+    local _dry_addir_seg=""
+    if [[ -n "${issue_state_dir:-}" ]]; then
+      _dry_addir_seg=" --add-dir $issue_state_dir"
+    fi
+    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose${_dry_model_seg}${_dry_addir_seg} --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
     head -c 500 "$prompt_file" >&2
     printf '\n' >&2
@@ -694,6 +704,18 @@ main() {
   # is ENG-46-clean (mirrors _cfg_minutes at line 481).
   if [[ -n "${PIPELINE_DISPATCH_MODEL:-}" ]]; then
     cmd+=(--model "$PIPELINE_DISPATCH_MODEL")
+  fi
+  # ENG-155 D-001: widen claude's per-session sandbox to include the
+  # per-issue state directory so the agent's Write/Edit on progress.md
+  # and stage-summary-<stage>.md (paths under $issue_state_dir, NOT the
+  # worktree cwd) succeed. Gated on $issue_state_dir non-empty so
+  # non-PIPELINE_ISSUE_ID callers observe zero behavior change.
+  # Placement: between the --model block and the isolation block so the
+  # operator's eye-scan of the rendered argv keeps the isolation segment
+  # (--setting-sources / --disable-slash-commands / --disallowed-tools /
+  # --allowed-tools) visually contiguous.
+  if [[ -n "$issue_state_dir" ]]; then
+    cmd+=(--add-dir "$issue_state_dir")
   fi
   cmd+=(
     --setting-sources project,local
