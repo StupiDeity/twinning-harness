@@ -558,6 +558,7 @@ printf '{"schema": "v1",\n  "pass_criteria": ["a", "b"]}' \
 out="$(run_resolver_body '
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-fixture.md"
   _RENDER_ISSUE_ID="ENG-123R1"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 
@@ -575,6 +576,7 @@ fi
 out_delim="$(run_resolver_body '
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-fixture.md"
   _RENDER_ISSUE_ID="ENG-123R1"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "<<<PLAN_JSON_BEGIN>>>
 {plan_json}
 <<<PLAN_JSON_END>>>"
@@ -607,6 +609,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-fixture.md"
   _RENDER_ISSUE_ID="ENG-123R2A"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -629,6 +632,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-fixture.md"
   _RENDER_ISSUE_ID="ENG-123R2B"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -647,6 +651,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE=""
   _RENDER_ISSUE_ID="ENG-123R2C"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -672,6 +677,7 @@ EOF
 out="$(run_resolver_body '
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-unicode-fixture.md"
   _RENDER_ISSUE_ID="ENG-123ADV"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if printf '%s' "$out" | grep -qF '计划' \
@@ -694,6 +700,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/fixture"
   _RENDER_ISSUE_ID="ENG-123ADV"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -722,6 +729,7 @@ run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs_adv_r5"'"
   _RENDER_PLAN_FILE=""
   _RENDER_ISSUE_ID="ENG-123ADV-R5"
+  _RENDER_STAGE="implementing"
   _resolve_plan_json
 ' >/dev/null 2>&1 || _adv_r5_rc=$?
 if [[ "$_adv_r5_rc" -ne 0 ]]; then
@@ -745,6 +753,7 @@ printf '{"method": "deploy {service}", "type": "batch"}' \
 out="$(run_resolver_body '
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-token-fixture.md"
   _RENDER_ISSUE_ID="ENG-123ADV"
+  _RENDER_STAGE="implementing"
   _resolve_plan_json
 ' 2>&1)"
 if printf '%s' "$out" | grep -qF '{service}' \
@@ -771,6 +780,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-delim-fixture.md"
   _RENDER_ISSUE_ID="ENG-123ADV-R7"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -798,6 +808,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-delim-begin-fixture.md"
   _RENDER_ISSUE_ID="ENG-123ADV-R7B"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -829,6 +840,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-symlink-fixture.md"
   _RENDER_ISSUE_ID="ENG-123ADV-R8"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -859,6 +871,7 @@ out="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-dangling-fixture.md"
   _RENDER_ISSUE_ID="ENG-123ADV-R9"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
@@ -884,11 +897,12 @@ out_ws="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs123"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-whitespace.md"
   _RENDER_ISSUE_ID="ENG-123QA-R10"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out_ws" != '(no plan.json — falling back to prose plan)' ]] \
-   && [[ "$(wc -c < "$ENG123_METRICS_LOG")" -eq 0 ]]; then
-  pass_at 'QA-ADV-R10 (ENG-123): whitespace-only plan.json → embedded verbatim (no fallback marker, no metric — D-003 schema-agnostic)'
+   && [[ "$(grep -c 'plan_json_missing' "$ENG123_METRICS_LOG" || true)" -eq 0 ]]; then
+  pass_at 'QA-ADV-R10 (ENG-123): whitespace-only plan.json → embedded verbatim (no fallback marker, no plan_json_missing metric — D-003 schema-agnostic; D-007 emits plan_json_present on success)'
 else
   fail_at 'QA-ADV-R10 (ENG-123): whitespace-only plan.json behavior' \
     "out='$out_ws' log=$(cat "$ENG123_METRICS_LOG" 2>/dev/null || echo MISSING)"
@@ -913,6 +927,7 @@ out_no_m="$(run_resolver_body '
   SCRIPT_DIR="'"$sandbox/stubs-no-metrics"'"
   _RENDER_PLAN_FILE="docs/plans/2026-05-15-eng-123-fixture.md"
   _RENDER_ISSUE_ID="ENG-123QA-R11"
+  _RENDER_STAGE="implementing"
   resolve_block_tokens "{plan_json}"
 ' 2>&1)"
 if [[ "$out_no_m" == '' ]]; then
@@ -920,6 +935,160 @@ if [[ "$out_no_m" == '' ]]; then
 else
   fail_at 'QA-ADV-R11 (ENG-123): metrics.sh absent → empty substitution contract' \
     "out='$out_no_m' (expected empty string; fallback marker indicates wrong branch; non-empty indicates wrapper violation)"
+fi
+
+# ─── ENG-124-R1: plan.json present, qa stage — embedded verbatim + plan_json_present metric ─
+printf '\n--- ENG-124-R1: plan.json present (qa stage) — embedded verbatim + plan_json_present metric ---\n'
+
+ENG124_METRICS_LOG="$sandbox/stubs124/metrics-calls.log"
+mkdir -p "$sandbox/stubs124"
+cat > "$sandbox/stubs124/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ENG124_METRICS_LOG"
+exit 0
+SH
+
+mkdir -p "$sandbox/target/docs/plans"
+printf '{"plan_schema_version": 1,\n  "features": [{"id": "F1"}]}' \
+  > "$sandbox/target/docs/plans/2026-05-16-eng-124-fixture.json"
+
+: > "$ENG124_METRICS_LOG"
+out="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs124"'"
+  _RENDER_PLAN_FILE="docs/plans/2026-05-16-eng-124-fixture.md"
+  _RENDER_ISSUE_ID="ENG-124R1"
+  _RENDER_STAGE="qa"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+
+if printf '%s' "$out" | grep -qF '"plan_schema_version"' \
+   && printf '%s' "$out" | grep -qF '"features"'; then
+  pass_at 'ENG-124-R1: plan.json contents embedded verbatim (multi-line preserved)'
+else
+  fail_at 'ENG-124-R1: plan.json embedding' "out='$out'"
+fi
+
+if [[ -f "$ENG124_METRICS_LOG" ]] \
+   && [[ "$(grep -c 'plan_json_present' "$ENG124_METRICS_LOG" || true)" -eq 1 ]] \
+   && grep -qF 'plan_json_present ENG-124R1 qa used 0' "$ENG124_METRICS_LOG"; then
+  pass_at 'ENG-124-R1: plan_json_present metric row emitted once with qa stage'
+else
+  fail_at 'ENG-124-R1: plan_json_present metric' \
+    "log=$(cat "$ENG124_METRICS_LOG" 2>/dev/null || echo MISSING)"
+fi
+
+if [[ "$(grep -c 'plan_json_missing' "$ENG124_METRICS_LOG" || true)" -eq 0 ]]; then
+  pass_at 'ENG-124-R1: zero plan_json_missing rows on success path'
+else
+  fail_at 'ENG-124-R1: unexpected plan_json_missing row on success path' \
+    "log=$(cat "$ENG124_METRICS_LOG")"
+fi
+
+# ─── ENG-124-R2: no plan.json, qa stage — fallback marker + plan_json_missing metric ─
+printf '\n--- ENG-124-R2: no plan.json (qa stage) — fallback marker + metric ---\n'
+
+rm -f "$sandbox/target/docs/plans/2026-05-16-eng-124-fixture.json"
+
+# sub-case 1: JSON file absent
+: > "$ENG124_METRICS_LOG"
+out="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs124"'"
+  _RENDER_PLAN_FILE="docs/plans/2026-05-16-eng-124-fixture.md"
+  _RENDER_ISSUE_ID="ENG-124R1"
+  _RENDER_STAGE="qa"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
+   && [[ -f "$ENG124_METRICS_LOG" ]] \
+   && [[ "$(wc -l < "$ENG124_METRICS_LOG")" -eq 1 ]] \
+   && grep -qF 'plan_json_missing ENG-124R1 qa fallback 0' "$ENG124_METRICS_LOG"; then
+  pass_at 'ENG-124-R2 (absent): fallback marker returned + plan_json_missing with qa stage'
+else
+  fail_at 'ENG-124-R2 (absent): fallback + metric' \
+    "out='$out' log=$(cat "$ENG124_METRICS_LOG" 2>/dev/null || echo MISSING)"
+fi
+
+if [[ "$(grep -c 'plan_json_present' "$ENG124_METRICS_LOG" || true)" -eq 0 ]]; then
+  pass_at 'ENG-124-R2: zero plan_json_present rows on miss path'
+else
+  fail_at 'ENG-124-R2: unexpected plan_json_present row on miss path' \
+    "log=$(cat "$ENG124_METRICS_LOG")"
+fi
+
+# sub-case 2: JSON file zero-byte
+: > "$sandbox/target/docs/plans/2026-05-16-eng-124-fixture.json"
+: > "$ENG124_METRICS_LOG"
+out="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs124"'"
+  _RENDER_PLAN_FILE="docs/plans/2026-05-16-eng-124-fixture.md"
+  _RENDER_ISSUE_ID="ENG-124R1"
+  _RENDER_STAGE="qa"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
+   && grep -qF 'plan_json_missing ENG-124R1 qa fallback 0' "$ENG124_METRICS_LOG"; then
+  pass_at 'ENG-124-R2 (zero-byte): fallback marker returned + metric'
+else
+  fail_at 'ENG-124-R2 (zero-byte): fallback + metric' \
+    "out='$out' log=$(cat "$ENG124_METRICS_LOG" 2>/dev/null || echo MISSING)"
+fi
+
+# sub-case 3: _RENDER_PLAN_FILE empty
+: > "$ENG124_METRICS_LOG"
+out="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs124"'"
+  _RENDER_PLAN_FILE=""
+  _RENDER_ISSUE_ID="ENG-124R1"
+  _RENDER_STAGE="qa"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
+   && grep -qF 'plan_json_missing ENG-124R1 qa fallback 0' "$ENG124_METRICS_LOG"; then
+  pass_at 'ENG-124-R2 (empty plan_file): fallback marker returned + metric'
+else
+  fail_at 'ENG-124-R2 (empty plan_file): fallback + metric' \
+    "out='$out' log=$(cat "$ENG124_METRICS_LOG" 2>/dev/null || echo MISSING)"
+fi
+
+# ─── ENG-124-R3: regression-pin — implementing stage stamp preserved ──────────
+printf '\n--- ENG-124-R3: regression-pin for implementing stage metric stamp ---\n'
+
+# Re-create the fixture file for the with-plan.json path
+printf '{"plan_schema_version": 1,\n  "features": [{"id": "F1"}]}' \
+  > "$sandbox/target/docs/plans/2026-05-16-eng-124-fixture.json"
+
+: > "$ENG124_METRICS_LOG"
+out="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs124"'"
+  _RENDER_PLAN_FILE="docs/plans/2026-05-16-eng-124-fixture.md"
+  _RENDER_ISSUE_ID="ENG-124R1"
+  _RENDER_STAGE="implementing"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+if printf '%s' "$out" | grep -qF '"plan_schema_version"' \
+   && grep -qF 'plan_json_present ENG-124R1 implementing used 0' "$ENG124_METRICS_LOG"; then
+  pass_at 'ENG-124-R3 (with-json): implementing success emits plan_json_present with implementing stage'
+else
+  fail_at 'ENG-124-R3 (with-json): implementing stage success metric' \
+    "out='$out' log=$(cat "$ENG124_METRICS_LOG" 2>/dev/null || echo MISSING)"
+fi
+
+# Now delete the JSON file and verify the miss path stamps 'implementing'
+rm -f "$sandbox/target/docs/plans/2026-05-16-eng-124-fixture.json"
+: > "$ENG124_METRICS_LOG"
+out="$(run_resolver_body '
+  SCRIPT_DIR="'"$sandbox/stubs124"'"
+  _RENDER_PLAN_FILE="docs/plans/2026-05-16-eng-124-fixture.md"
+  _RENDER_ISSUE_ID="ENG-124R1"
+  _RENDER_STAGE="implementing"
+  resolve_block_tokens "{plan_json}"
+' 2>&1)"
+if [[ "$out" == '(no plan.json — falling back to prose plan)' ]] \
+   && grep -qF 'plan_json_missing ENG-124R1 implementing fallback 0' "$ENG124_METRICS_LOG"; then
+  pass_at 'ENG-124-R3 (no-json): implementing miss emits plan_json_missing with implementing stage (regression-pin)'
+else
+  fail_at 'ENG-124-R3 (no-json): implementing stage miss metric' \
+    "out='$out' log=$(cat "$ENG124_METRICS_LOG" 2>/dev/null || echo MISSING)"
 fi
 
 echo
