@@ -47,6 +47,13 @@ validates every emitted body against the schema below.
   - `approve`: `gate`
   - `abandon`: `gate`
 
+### `metric`
+
+- **Body shape:** `<!-- meta: metric name=<name>[ reason-code=<reason-code>] -->`
+- **Writer lane:** `orchestrator`
+- **Required fields:** `name`
+- **Optional fields:** `reason-code`
+
 ### `transition`
 
 - **Body shape:** `<!-- pipeline: transition from=<from> to=<to>[ reason=<reason>] -->`
