@@ -3615,6 +3615,237 @@ else
 fi
 rm -f "$TB_CAPTURE" "$TB_PGID_FILE"
 
+# ─── ENG-155 AC-GIT-ADD-AUDIT: per-stage git add allowlist audit ─────────
+# Pins the deliberate OQ-2 decision: planning stage intentionally omits
+# git add/commit from its allowlist; implementing/ui contain the literal
+# Bash(git add:*); qa uses the wider Bash(git:*) wildcard.
+# When OQ-2's follow-up ticket adds git add to planning, invert the last assertion.
+printf '\n--- ENG-155 AC-GIT-ADD-AUDIT: per-stage git-add allowlist audit ---\n'
+
+for _git_stage in implementing ui; do
+  _git_tools="$(allowed_tools_for "$_git_stage" 2>/dev/null)"
+  if printf '%s' "$_git_tools" | grep -qF 'Bash(git add:*)'; then
+    pass_at "AC-GIT-ADD-AUDIT: stage=$_git_stage contains literal Bash(git add:*)"
+  else
+    fail_at "AC-GIT-ADD-AUDIT: stage=$_git_stage must contain Bash(git add:*)" \
+      "tools=$_git_tools"
+  fi
+done
+
+# qa uses Bash(git:*) wildcard which covers git add
+_qa_tools="$(allowed_tools_for "qa" 2>/dev/null)"
+if printf '%s' "$_qa_tools" | grep -qF 'Bash(git:*)'; then
+  pass_at "AC-GIT-ADD-AUDIT: stage=qa contains Bash(git:*) wildcard (covers git add)"
+else
+  fail_at "AC-GIT-ADD-AUDIT: stage=qa must contain Bash(git:*) wildcard" \
+    "tools=$_qa_tools"
+fi
+
+# planning intentionally omits git add — pinning D-005's deliberate omission
+_planning_tools="$(allowed_tools_for "planning" 2>/dev/null)"
+if ! printf '%s' "$_planning_tools" | grep -qF 'Bash(git add:*)' \
+   && ! printf '%s' "$_planning_tools" | grep -qF 'Bash(git:*)'; then
+  pass_at "AC-GIT-ADD-AUDIT: stage=planning correctly omits Bash(git add:*) and Bash(git:*) (D-005/OQ-2)"
+else
+  fail_at "AC-GIT-ADD-AUDIT: stage=planning must NOT contain Bash(git add:*) or Bash(git:*)" \
+    "tools=$_planning_tools"
+fi
+
+# ─── ENG-155 AC-D003: D-003 orchestrator-owned-file detective fixtures ───
+# Direct-helper-invocation fixtures mirroring the EW1/EW2 (ENG-109) shape.
+# All D-003 calls use mode="contains" (5-arg form) to match the dispatch.sh loop.
+printf '\n--- ENG-155 AC-D003: orchestrator-owned-file detective fixtures ---\n'
+
+if ! declare -f assert_no_tool_with_input_path >/dev/null 2>&1; then
+  fail_at "AC-D003-precondition: assert_no_tool_with_input_path defined" \
+          "function not found — Task 1 implementation missing"
+  printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
+# AC-D003-A: Write against /issue-state.json → rc=1 + matched path
+TX_D003A="$_TEST_STUB_DIR/tx-d003a.ndjson"
+cat > "$TX_D003A" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/issue-state.json"}}]}}
+NDJSON
+out_d003a="$(assert_no_tool_with_input_path "$TX_D003A" "Write,Edit" "file_path" "/issue-state.json" "contains")" && rc_d003a=0 || rc_d003a=$?
+if [[ "$rc_d003a" == "1" && "$out_d003a" == *"/issue-state.json" ]]; then
+  pass_at "AC-D003-A: Write on /issue-state.json → rc=1 + matched path"
+else
+  fail_at "AC-D003-A" "rc=$rc_d003a out=$out_d003a"
+fi
+
+# AC-D003-B: Edit against /wait-planning.json via "/wait-" contains → rc=1
+TX_D003B="$_TEST_STUB_DIR/tx-d003b.ndjson"
+cat > "$TX_D003B" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/wait-planning.json"}}]}}
+NDJSON
+out_d003b="$(assert_no_tool_with_input_path "$TX_D003B" "Write,Edit" "file_path" "/wait-" "contains")" && rc_d003b=0 || rc_d003b=$?
+if [[ "$rc_d003b" == "1" && "$out_d003b" == *"wait-planning"* ]]; then
+  pass_at "AC-D003-B: Edit on /wait-planning.json via '/wait-' contains → rc=1"
+else
+  fail_at "AC-D003-B" "rc=$rc_d003b out=$out_d003b"
+fi
+
+# AC-D003-C: Write against /dispatch_history.jsonl → rc=1
+TX_D003C="$_TEST_STUB_DIR/tx-d003c.ndjson"
+cat > "$TX_D003C" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/dispatch_history.jsonl"}}]}}
+NDJSON
+out_d003c="$(assert_no_tool_with_input_path "$TX_D003C" "Write,Edit" "file_path" "/dispatch_history.jsonl" "contains")" && rc_d003c=0 || rc_d003c=$?
+if [[ "$rc_d003c" == "1" && "$out_d003c" == *"dispatch_history.jsonl" ]]; then
+  pass_at "AC-D003-C: Write on /dispatch_history.jsonl → rc=1"
+else
+  fail_at "AC-D003-C" "rc=$rc_d003c out=$out_d003c"
+fi
+
+# AC-D003-D: Edit against /usage-planning.json via "/usage-" contains → rc=1
+TX_D003D="$_TEST_STUB_DIR/tx-d003d.ndjson"
+cat > "$TX_D003D" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/usage-planning.json"}}]}}
+NDJSON
+out_d003d="$(assert_no_tool_with_input_path "$TX_D003D" "Write,Edit" "file_path" "/usage-" "contains")" && rc_d003d=0 || rc_d003d=$?
+if [[ "$rc_d003d" == "1" && "$out_d003d" == *"usage-planning"* ]]; then
+  pass_at "AC-D003-D: Edit on /usage-planning.json via '/usage-' contains → rc=1"
+else
+  fail_at "AC-D003-D" "rc=$rc_d003d out=$out_d003d"
+fi
+
+# AC-D003-E: Write against /progress.md (benign for D-003) — must NOT trip
+TX_D003E="$_TEST_STUB_DIR/tx-d003e.ndjson"
+cat > "$TX_D003E" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+out_d003e="$(assert_no_tool_with_input_path "$TX_D003E" "Write,Edit" "file_path" "/issue-state.json" "contains")" && rc_d003e=0 || rc_d003e=$?
+if [[ "$rc_d003e" == "0" && -z "$out_d003e" ]]; then
+  pass_at "AC-D003-E: Write on /progress.md (benign) with '/issue-state.json' check → rc=0 (D-003 does not cover progress.md)"
+else
+  fail_at "AC-D003-E" "rc=$rc_d003e out=$out_d003e"
+fi
+
+# AC-D003-F: Write against /stage-summary-planning.md (agent contract) — must NOT trip any D-003 suffix
+TX_D003F="$_TEST_STUB_DIR/tx-d003f.ndjson"
+cat > "$TX_D003F" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/stage-summary-planning.md"}}]}}
+NDJSON
+_d003f_all_pass=1
+for _d003f_pat in "/issue-state.json" "/dispatch_history.jsonl" "/wait-" "/usage-" "/.raw-stream.ndjson.tmp" "/.cmd-capture-" "/.envelope-transcript-" "/.transcript-violation-" "/.allocate.lock"; do
+  out_d003f="$(assert_no_tool_with_input_path "$TX_D003F" "Write,Edit" "file_path" "$_d003f_pat" "contains")" && rc_d003f=0 || rc_d003f=$?
+  if [[ "$rc_d003f" != "0" || -n "$out_d003f" ]]; then
+    fail_at "AC-D003-F: stage-summary-planning.md must NOT trip D-003 pattern '$_d003f_pat'" \
+      "rc=$rc_d003f out=$out_d003f"
+    _d003f_all_pass=0
+  fi
+done
+if [[ "$_d003f_all_pass" == "1" ]]; then
+  pass_at "AC-D003-F: Write on /stage-summary-planning.md returns rc=0 for all 9 D-003 patterns (benign)"
+fi
+
+# AC-D003-G: end-to-end via _render_and_capture_stream
+# Synth a stream containing Write→/issue-state.json + type:result event;
+# assert the renderer returns rc=29 and violation_file names /issue-state.json.
+printf '\n--- ENG-155 AC-D003-G: end-to-end _render_and_capture_stream D-003 trip ---\n'
+if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+  D003G_DIR="$_TEST_STUB_DIR/AC-D003G"; mkdir -p "$D003G_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-D003G-d0001"
+  export PIPELINE_ISSUE_ID="ENG-T-D003G"
+  _d003g_usage="$D003G_DIR/usage-planning.json"
+  # Synthetic NDJSON: assistant Write on issue-state.json + result event
+  rc_d003g=0
+  printf '%s\n%s\n' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-T-D003G/issue-state.json"}}]}}' \
+    '{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.001,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}' \
+    | _render_and_capture_stream "$_d003g_usage" "$D003G_DIR" "planning" \
+    >/dev/null 2>&1 || rc_d003g=$?
+  _d003g_violation="$(cat "$D003G_DIR/.transcript-violation-planning" 2>/dev/null || true)"
+  if [[ "$rc_d003g" == "29" && "$_d003g_violation" == *"/issue-state.json" ]]; then
+    pass_at "AC-D003-G: _render_and_capture_stream returns rc=29 with violation sidecar naming /issue-state.json"
+  else
+    fail_at "AC-D003-G" "rc=$rc_d003g violation='$_d003g_violation' (expected rc=29 + path containing /issue-state.json)"
+  fi
+  unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+else
+  fail_at "AC-D003-G precondition: _render_and_capture_stream defined" \
+    "function not found after sourcing dispatch.sh"
+fi
+
+# ─── ENG-155 AC-ADDDIR: --add-dir argv splice and DRY_RUN log ────────────
+printf '\n--- ENG-155 AC-ADDDIR: --add-dir $issue_state_dir in dispatch argv ---\n'
+
+# Ensure the claude stub is on PATH (Group 2 restored OLD_PATH after its test).
+# Re-create a fresh argv capture file and set PATH.
+_ADDDIR_ARGV_CAPTURE="$_TEST_STUB_DIR/argv-adddir.capture"
+: > "$_ADDDIR_ARGV_CAPTURE"
+# Re-use or re-create the claude stub so it writes to our new capture file.
+cat > "$_TEST_STUB_DIR/claude-adddir" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$_ADDDIR_ARGV_CAPTURE"
+cat > /dev/null
+exit 0
+SH
+chmod +x "$_TEST_STUB_DIR/claude-adddir"
+# Symlink claude-adddir as claude (overwrite) for this test group.
+ln -sf "$_TEST_STUB_DIR/claude-adddir" "$_TEST_STUB_DIR/claude"
+
+_ADDDIR_ISSUE_ID="ENG-T-ADDDIR"
+_ADDDIR_ISSUE_DIR="${PROJECT_STATE_DIR}/${_ADDDIR_ISSUE_ID}"
+mkdir -p "$_ADDDIR_ISSUE_DIR"
+
+( PIPELINE_DRY_RUN=0 PIPELINE_ISSUE_ID="$_ADDDIR_ISSUE_ID" \
+  PATH="$_TEST_STUB_DIR:$OLD_PATH" \
+  main "planning" "$_PROMPT_FILE" 2>/dev/null ) || true
+
+if grep -Fxq -- '--add-dir' "$_ADDDIR_ARGV_CAPTURE"; then
+  _adddir_line_num="$(grep -n '^--add-dir$' "$_ADDDIR_ARGV_CAPTURE" | head -1 | cut -d: -f1)"
+  _adddir_next_line="$(sed -n "$((_adddir_line_num + 1))p" "$_ADDDIR_ARGV_CAPTURE")"
+  if [[ "$_adddir_next_line" == *"$_ADDDIR_ISSUE_DIR"* ]]; then
+    pass_at "AC-ADDDIR: --add-dir present in claude argv with correct issue_state_dir path"
+  else
+    fail_at "AC-ADDDIR: --add-dir present but next arg doesn't match issue_dir" \
+      "expected path containing: $_ADDDIR_ISSUE_DIR, got: $_adddir_next_line"
+  fi
+else
+  fail_at "AC-ADDDIR: --add-dir missing from claude argv (D-001 not implemented)" \
+    "argv: $(tr '\n' ' ' < "$_ADDDIR_ARGV_CAPTURE")"
+fi
+
+# AC-ADDDIR no-issue-id: dispatch without PIPELINE_ISSUE_ID must NOT carry --add-dir
+_ADDDIR_NOISSUE_ARGV="$_TEST_STUB_DIR/argv-adddir-noissue.capture"
+: > "$_ADDDIR_NOISSUE_ARGV"
+cat > "$_TEST_STUB_DIR/claude-noissue" <<SH2
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$_ADDDIR_NOISSUE_ARGV"
+cat > /dev/null
+exit 0
+SH2
+chmod +x "$_TEST_STUB_DIR/claude-noissue"
+ln -sf "$_TEST_STUB_DIR/claude-noissue" "$_TEST_STUB_DIR/claude"
+
+( PIPELINE_DRY_RUN=0 \
+  PATH="$_TEST_STUB_DIR:$OLD_PATH" \
+  main "brainstorming" "$_PROMPT_FILE" 2>/dev/null ) || true
+
+if ! grep -Fxq -- '--add-dir' "$_ADDDIR_NOISSUE_ARGV"; then
+  pass_at "AC-ADDDIR no-issue-id: --add-dir absent when PIPELINE_ISSUE_ID unset (non-run-stage caller)"
+else
+  fail_at "AC-ADDDIR no-issue-id: --add-dir must NOT appear without PIPELINE_ISSUE_ID" \
+    "argv: $(tr '\n' ' ' < "$_ADDDIR_NOISSUE_ARGV")"
+fi
+
+# AC-ADDDIR DRY_RUN: rendered --add-dir appears in the "would invoke" log line
+_ADDDIR_DRYRUN_OUT="$_TEST_STUB_DIR/adddir-dryrun.log"
+( PIPELINE_DRY_RUN=1 PIPELINE_ISSUE_ID="$_ADDDIR_ISSUE_ID" \
+  PATH="$_TEST_STUB_DIR:$OLD_PATH" \
+  main "planning" "$_PROMPT_FILE" 2>"$_ADDDIR_DRYRUN_OUT" ) || true
+
+if grep -qE -- '--verbose( --model [^ ]+)? --add-dir [^ ]+ --setting-sources project,local' \
+   "$_ADDDIR_DRYRUN_OUT"; then
+  pass_at "AC-ADDDIR DRY_RUN: --add-dir present between --verbose and --setting-sources in dry-run log"
+else
+  fail_at "AC-ADDDIR DRY_RUN: --add-dir missing or misplaced in dry-run log (D-001 not implemented or DRY_RUN log not updated)" \
+    "log: $(cat "$_ADDDIR_DRYRUN_OUT" 2>/dev/null)"
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
