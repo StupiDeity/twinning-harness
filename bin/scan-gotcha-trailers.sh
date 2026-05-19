@@ -35,7 +35,9 @@ main() {
   while IFS= read -r gid; do
     [[ -z "$gid" ]] && continue
     log "scan-gotcha-trailers: bumping gotcha_triggered on $issue_id (gotcha=$gid)"
-    bash "$SCRIPT_DIR/guards.sh" bump "$issue_id" gotcha_triggered
+    bash "$SCRIPT_DIR/guards.sh" bump "$issue_id" gotcha_triggered \
+      --reason "Gotcha-hit: $gid trailer found on commit on $branch" \
+      --reason-code gotcha-hit
     count=$((count + 1))
   done <<<"$hits"
 
