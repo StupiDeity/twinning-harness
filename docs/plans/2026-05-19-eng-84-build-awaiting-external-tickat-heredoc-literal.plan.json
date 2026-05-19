@@ -1,0 +1,25 @@
+{
+  "linear": "ENG-84",
+  "title": "Build agent's tick_at heredoc-literal fix",
+  "brainstorm": "docs/brainstorms/2026-05-19-eng-84-build-awaiting-external-tickat-heredoc-literal.md",
+  "plan": "docs/plans/2026-05-19-eng-84-build-awaiting-external-tickat-heredoc-literal.md",
+  "shepherded_by": "operator",
+  "date": "2026-05-19",
+  "tasks": [
+    {
+      "id": "T1",
+      "subject": "Edit AGENT_PROMPTS.md §7 P2 wait-exit to require literal-string tick_at",
+      "files": ["AGENT_PROMPTS.md"]
+    },
+    {
+      "id": "T2",
+      "subject": "Add ENG-84 regression pin in bin/agent-prompts-content-test.sh asserting §7 has no `tick_at: $(date` literal",
+      "files": ["bin/agent-prompts-content-test.sh"]
+    },
+    {
+      "id": "T3",
+      "subject": "Verify with pre-commit hook (full bin/*-test.sh suite)",
+      "files": []
+    }
+  ]
+}

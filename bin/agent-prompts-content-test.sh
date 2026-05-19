@@ -2007,6 +2007,23 @@ done
 
 unset s6_eng124
 
+# ─── ENG-84: §7 must not embed literal `tick_at: $(date …)` ────────────────
+# The build agent's per-tick `awaiting-external/build/<issue>` Linear
+# comment is constructed inside a single-quoted heredoc (mandated by
+# §0 Common rules). Inside `<<'EOF'` the shell does NOT expand
+# `$(date …)` — pasting that substitution syntax produces a literal
+# `$(date …)` line in Linear, defeating per-tick `add_comment`
+# normalised-hash dedup. The §7 prompt must instruct the agent to embed
+# the current UTC time as a literal string instead.
+s7_eng84="$(section_body "## 7. Build Agent")"
+if printf '%s' "$s7_eng84" | grep -qF 'tick_at: $(date'; then
+  nope 'ENG-84 §7 tick_at literal-$(date) pin' \
+       '§7 still instructs `tick_at: $(date …)` — single-quoted heredoc sends substitution verbatim to Linear, defeating per-tick dedup variation. Rewrite the instruction to say embed the current UTC time as a literal string of shape `tick_at: YYYY-MM-DD HH:MM:SSZ`.'
+else
+  ok 'ENG-84 §7: does NOT embed `tick_at: $(date …)` inside heredoc instruction'
+fi
+unset s7_eng84
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

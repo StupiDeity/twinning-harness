@@ -1679,12 +1679,18 @@ precondition has passed and the only failure is P2 or P5.
       Then also post an additional informational comment (via stdin heredoc, ENG-55) —
       `bash .pipeline/bin/linear.sh add-comment {issue_id} --body - <<'EOF' ... EOF`
       (append-only) — whose body includes the human-readable signature
-      `awaiting-external/build/{issue_id}` and a per-tick varying line of the exact
-      shape `tick_at: $(date -u +"%Y-%m-%d %H:%M:%SZ")` (the space separator and
-      lack of a literal `T` are required so the line survives the
-      dedup-by-normalized-hash in `bin/linear.sh::add_comment` — without it
-      ticks 2..N are silently swallowed because their bodies are identical
-      after timestamp + SHA stripping). The body says: "Awaiting human Code
+      `awaiting-external/build/{issue_id}` and a per-tick varying `tick_at:`
+      line. **Embed the current UTC time as a literal string** of the shape
+      `tick_at: YYYY-MM-DD HH:MM:SSZ` (e.g. `tick_at: 2026-05-19 14:07:14Z`)
+      — compute the value yourself; do NOT paste shell-substitution syntax
+      such as `$(date ...)` inside the heredoc, because §0 Common rules
+      mandate `<<'EOF'` and inside a single-quoted heredoc the substitution
+      is sent verbatim to Linear rather than expanding (ENG-84 regression).
+      The space separator between date and time, and the lack of a literal
+      `T`, are required so the line survives the dedup-by-normalized-hash
+      in `bin/linear.sh::add_comment` — without per-tick variation ticks
+      2..N are silently swallowed because their bodies are identical after
+      timestamp + SHA stripping. The body says: "Awaiting human Code
       Owner approval. Will re-check on next tick. If
       `orchestrator.external_signal_budget` is configured, will escalate to
       halt-for-human after the budget exhausts; if not configured, will retry
