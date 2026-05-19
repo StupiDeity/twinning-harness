@@ -1271,6 +1271,23 @@ else
 fi
 rm -f "$TX_CSV_SPACE"
 
+# QA-ADV-PARAM-NO-SLASH: relative path without leading slash in the tool_use
+# (e.g., "issue-state.json" with no parent directory) does NOT contain the
+# substring "/issue-state.json", so the D-003 detective returns rc=0. In
+# production the Claude CLI always provides absolute paths; this pins the
+# known edge case so a future change to accept relative paths is explicit.
+TX_NO_SLASH="$(mktemp -t eng155-qa-no-slash-XXXXXX)"
+cat > "$TX_NO_SLASH" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"issue-state.json"}}]}}
+NDJSON
+out_no_slash="$(assert_no_tool_with_input_path "$TX_NO_SLASH" "Write,Edit" "file_path" "/issue-state.json" "contains")" && rc_no_slash=0 || rc_no_slash=$?
+if [[ "$rc_no_slash" == "0" && -z "$out_no_slash" ]]; then
+  pass_at "QA-ADV-PARAM-NO-SLASH: bare 'issue-state.json' (no leading slash) → rc=0 (detective requires '/' prefix; CLI always provides absolute paths in production)"
+else
+  fail_at "QA-ADV-PARAM-NO-SLASH" "rc=$rc_no_slash out=$out_no_slash"
+fi
+rm -f "$TX_NO_SLASH"
+
 # ─── ENG-106: failure_outcome_for_exit rc=31 arm ──────────────────────────
 # Pins the progress-md-entry-missing taxonomy entry so a refactor that
 # renumbers or removes the rc=31 arm routes the outcome to unknown-exit-31
