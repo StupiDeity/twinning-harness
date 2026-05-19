@@ -50,6 +50,23 @@
     "dispatch",
     "breadcrumb"
   ],
+  "metric_names": [
+    "review_rejection",
+    "qa_rejection",
+    "implement_rejection",
+    "gotcha_triggered",
+    "learned_rule_renewal",
+    "transient-retry",
+    "summary_missing",
+    "summary_truncated",
+    "worktree-mutated-by-agent"
+  ],
+  "metric_reason_codes": [
+    "scope-violation-severe",
+    "scope-violation",
+    "noop-implementation",
+    "gotcha-hit"
+  ],
   "stages": [
     "brainstorming",
     "planning",
@@ -116,6 +133,20 @@
         "field_registry": {
           "action": "decision_actions",
           "gate":   "decision_gates"
+        },
+        "dedup_sig": null
+      }
+    },
+    "metric": {
+      "linear_comment": {
+        "body_shape": "<!-- meta: metric name=<name>[ reason-code=<reason-code>] -->",
+        "writer_lane": "orchestrator",
+        "required": ["name"],
+        "cli_required": ["reason"],
+        "optional": ["reason-code"],
+        "field_registry": {
+          "name": "metric_names",
+          "reason-code": "metric_reason_codes"
         },
         "dedup_sig": null
       }

@@ -1655,7 +1655,11 @@ case "\${1:-}" in
 esac
 SH
 chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
-bash "$FAKE_REPO/.pipeline/bin/guards.sh" bump ENG-T16 implement_rejection >/dev/null 2>&1
+# ENG-153: the bare-form marker remains the default when --reason-code is
+# omitted, preserving the count_marker grep target for back-compat.
+bash "$FAKE_REPO/.pipeline/bin/guards.sh" bump ENG-T16 implement_rejection \
+  --reason "case-16 QA fixture: assert marker text matches count_marker grep target" \
+  >/dev/null 2>&1
 bump_body="$(cat "$BUMP_CAPTURE")"
 if grep -q '<!-- meta: metric name=implement_rejection -->' "$BUMP_CAPTURE"; then
   pass_at "case-16 QA: bump emits the exact marker that count_marker greps for"
