@@ -212,7 +212,7 @@ _run_worker() {
   # crashes). Placing this AFTER the rc-gate would leak stale
   # .scratch/ across operator --action continue resumes on failure
   # paths. .scratch/ is gitignored; cleanup is rc=0 always.
-  clean_scratch_dir "$dispatch_cwd"
+  clean_scratch_residue "$dispatch_cwd"
 
   # ENG-69: route the run-stage exit through the per-issue/global lane
   # split. rc=24 (linear-post-failed) → global counter; every other

@@ -265,7 +265,7 @@ clean_self_leak_residue() {
   esac
 
   # Audit hashes first so the metric payload is reconstructible even
-  # on partial failure (security review #4).
+  # on partial failure (so the audit trail survives a mid-loop crash).
   local hash_csv="" sha p
   for p in "${paths[@]}"; do
     sha="$(sha12 "$p")"
@@ -298,7 +298,7 @@ clean_self_leak_residue() {
     || log "metrics.sh sweep-readonly-residue-cleaned emission failed (non-blocking)"
 }
 
-# clean_scratch_dir <worktree>
+# clean_scratch_residue <worktree>
 #
 # Tick-end stage-agnostic .scratch/ cleanup. Removes the directory if
 # present, regardless of stage. Closes the cross-dispatch persistence
@@ -334,7 +334,7 @@ clean_self_leak_residue() {
 # state-injection vector this helper exists to close. The bin/run-local.sh
 # wire-up at the post-dispatch line satisfies this ordering invariant;
 # bin/run-local-helpers-adversarial-test.sh anchor #6 pins it.
-clean_scratch_dir() {
+clean_scratch_residue() {
   local worktree="$1"
   [[ -d "$worktree/.scratch" ]] || return 0
   if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then
