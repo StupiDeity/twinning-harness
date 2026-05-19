@@ -941,21 +941,36 @@ _clear_current_stage_slots() {
   return 0
 }
 
-# ENG-109 C2: ensure progress.md exists before dispatch so the agent's
-# Edit tool (append-via-anchor path) can find the file on first dispatch
-# on a fresh issue and on stages that lack Write in their allowed-tools
-# (building, released). touch is idempotent; safe to call unconditionally.
+# ENG-109 C2 + ENG-160: ensure progress.md exists AND has a stable Edit
+# anchor before dispatch so the agent's Edit tool (append-via-anchor) can
+# always find a non-empty old_string on first dispatch of a fresh issue
+# and on stages that lack Write in their allowed-tools (building, released).
+#
+# Pre-ENG-160 this just `touch`ed the file; on a fresh issue progress.md
+# was therefore empty and Edit had no anchor to match. Combined with claude
+# 2.1.x's directory sandbox (blocks `bash -c "cat >> /abs/path"` on paths
+# outside cwd) and the ENG-109 Write-tool ban, the first dispatch of any
+# fresh issue had no working option to append: Edit failed (empty file),
+# bash cat>> failed (sandbox), Write succeeded but tripped the rc=29
+# detective. Catch-22 — observed live on ENG-155 brainstorm 2026-05-19.
+#
+# Seeding two HTML-comment lines preserves the append-only contract,
+# survives across dispatches (top of file), and gives Edit a permanent
+# anchor. Idempotent on existing non-empty files via the -f guard.
 _ensure_progress_md() {
   local ident="$1"
   local pmd
   pmd="$(progress_md_path "$ident")"
   [[ -f "$pmd" ]] && return 0
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
-    log "_ensure_progress_md: dry-run — would touch $pmd"
+    log "_ensure_progress_md: dry-run — would seed $pmd"
     return 0
   fi
-  touch "$pmd"
-  log "_ensure_progress_md: created $pmd"
+  {
+    printf '<!-- progress.md — per-issue cross-dispatch notebook; append H2 entries below. -->\n'
+    printf '<!-- See docs/runbooks/progress-md.md. Never truncate; orchestrator-owned. -->\n\n'
+  } > "$pmd"
+  log "_ensure_progress_md: seeded $pmd"
 }
 
 # ENG-87: post-dispatch envelope validator. Detective-only — halts only
