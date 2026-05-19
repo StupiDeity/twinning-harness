@@ -28,10 +28,11 @@ STUB_DIR="$(mktemp -d)"
 FAKE_REPO="$STUB_DIR/fake-repo"
 mkdir -p "$FAKE_REPO/.pipeline/bin" "$FAKE_REPO/.pipeline/schemas"
 
-# Symlink the real guards.sh and common.sh so we test the live code.
+# Symlink the real guards.sh, common.sh, and pipeline-events.json so we test the live code.
 # linear.sh is a per-case stub written inline below.
-ln -sf "$SCRIPT_DIR/guards.sh"  "$FAKE_REPO/.pipeline/bin/guards.sh"
-ln -sf "$SCRIPT_DIR/common.sh"  "$FAKE_REPO/.pipeline/bin/common.sh"
+ln -sf "$SCRIPT_DIR/guards.sh"            "$FAKE_REPO/.pipeline/bin/guards.sh"
+ln -sf "$SCRIPT_DIR/common.sh"            "$FAKE_REPO/.pipeline/bin/common.sh"
+ln -sf "$SCRIPT_DIR/pipeline-events.json" "$FAKE_REPO/.pipeline/bin/pipeline-events.json"
 
 trap 'rm -rf "$STUB_DIR" "$TARGET_REPO_TMP"' EXIT
 
@@ -444,6 +445,220 @@ if [[ "$c13_rc" == "0" ]] && grep -q 'guards: clear' <<<"$c13_out"; then
 else
   fail_at "case-13: operator-resume should clear both rejection counters at stage=implementing" \
     "rc=$c13_rc out=$c13_out"
+fi
+
+# ── case-bump-1: AC#1 — fail-closed without --reason ─────────────────────────
+# bump() invoked with no flags → must die with non-zero rc and '--reason' in message.
+BUMP_CAPTURE="$STUB_DIR/bump-body.capture"
+: > "$BUMP_CAPTURE"
+
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb1_out="$(bash "$GUARDS" bump ENG-T153A implement_rejection 2>&1)"
+cb1_rc=$?
+set -e
+
+if [[ "$cb1_rc" != "0" ]] && grep -q -- '--reason' <<<"$cb1_out"; then
+  pass_at "case-bump-1: bump without --reason exits non-zero with '--reason' in error (AC#1)"
+else
+  fail_at "case-bump-1: bump without --reason should fail citing --reason" \
+    "rc=$cb1_rc out=$cb1_out"
+fi
+
+# ── case-bump-2: AC#3 + AC#4 — populated body with --reason and --reason-code ─
+: > "$BUMP_CAPTURE"
+
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  add-comment)
+    printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb2_out="$(bash "$GUARDS" bump ENG-T153B implement_rejection \
+  --reason "SEVERE scope violation on x.sh" \
+  --reason-code scope-violation-severe 2>&1)"
+cb2_rc=$?
+set -e
+
+cb2_pass=1
+[[ "$cb2_rc" == "0" ]] || cb2_pass=0
+grep -q 'Reason: SEVERE scope violation on x.sh' "$BUMP_CAPTURE" || cb2_pass=0
+grep -q '(1/2)' "$BUMP_CAPTURE" || cb2_pass=0
+grep -q 'Trips at: 2/2' "$BUMP_CAPTURE" || cb2_pass=0
+grep -q '<!-- meta: metric name=implement_rejection reason-code=scope-violation-severe -->' "$BUMP_CAPTURE" || cb2_pass=0
+
+if [[ "$cb2_pass" == "1" ]]; then
+  pass_at "case-bump-2: populated body contains reason, (1/2), threshold, and reason-code marker (AC#3+AC#4)"
+else
+  fail_at "case-bump-2: populated body missing required component(s)" \
+    "rc=$cb2_rc out=$cb2_out body=$(cat "$BUMP_CAPTURE")"
+fi
+
+# ── case-bump-3: AC#3 — bare-form marker when --reason-code omitted ───────────
+: > "$BUMP_CAPTURE"
+
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  add-comment)
+    printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb3_out="$(bash "$GUARDS" bump ENG-T153C implement_rejection \
+  --reason "scope violation" 2>&1)"
+cb3_rc=$?
+set -e
+
+cb3_pass=1
+[[ "$cb3_rc" == "0" ]] || cb3_pass=0
+grep -q 'Reason: scope violation' "$BUMP_CAPTURE" || cb3_pass=0
+grep -q '<!-- meta: metric name=implement_rejection -->' "$BUMP_CAPTURE" || cb3_pass=0
+
+if [[ "$cb3_pass" == "1" ]]; then
+  pass_at "case-bump-3: bare-form marker emitted when --reason-code omitted (AC#3 fallback path)"
+else
+  fail_at "case-bump-3: bare-form marker missing or reason text absent" \
+    "rc=$cb3_rc out=$cb3_out body=$(cat "$BUMP_CAPTURE")"
+fi
+
+# ── case-bump-4: D-003 schema-reject — unknown reason-code dies loud ──────────
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb4_out="$(bash "$GUARDS" bump ENG-T153D implement_rejection \
+  --reason "x" --reason-code bogus-token 2>&1)"
+cb4_rc=$?
+set -e
+
+if [[ "$cb4_rc" != "0" ]] && grep -q 'metric_reason_codes' <<<"$cb4_out"; then
+  pass_at "case-bump-4: unknown --reason-code dies with metric_reason_codes in message (D-003)"
+else
+  fail_at "case-bump-4: unknown reason-code should fail citing metric_reason_codes" \
+    "rc=$cb4_rc out=$cb4_out"
+fi
+
+# ── case-bump-5: D-004 counter math — pre-existing marker bumps count to 2 ────
+: > "$BUMP_CAPTURE"
+
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  query)
+    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[{"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh."}]}}}}'
+    ;;
+  add-comment)
+    printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb5_out="$(bash "$GUARDS" bump ENG-T153E implement_rejection \
+  --reason "x" --reason-code scope-violation 2>&1)"
+cb5_rc=$?
+set -e
+
+if [[ "$cb5_rc" == "0" ]] && grep -q '(2/2)' "$BUMP_CAPTURE"; then
+  pass_at "case-bump-5: counter math shows (2/2) with one pre-existing marker (D-004 §c)"
+else
+  fail_at "case-bump-5: body should show (2/2) with one pre-existing marker" \
+    "rc=$cb5_rc out=$cb5_out body=$(cat "$BUMP_CAPTURE")"
+fi
+
+# ── case-bump-6: D-004 gotcha clearing prose variant ─────────────────────────
+: > "$BUMP_CAPTURE"
+
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  add-comment)
+    printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb6_out="$(bash "$GUARDS" bump ENG-T153F gotcha_triggered \
+  --reason "Gotcha-hit: G-12 found on commit" --reason-code gotcha-hit 2>&1)"
+cb6_rc=$?
+set -e
+
+cb6_pass=1
+[[ "$cb6_rc" == "0" ]] || cb6_pass=0
+grep -q 'cleared by label pipeline:knowledge-reviewed' "$BUMP_CAPTURE" || cb6_pass=0
+grep -q '<!-- meta: metric name=gotcha_triggered reason-code=gotcha-hit -->' "$BUMP_CAPTURE" || cb6_pass=0
+
+if [[ "$cb6_pass" == "1" ]]; then
+  pass_at "case-bump-6: gotcha_triggered body uses knowledge-reviewed clearing prose (D-004)"
+else
+  fail_at "case-bump-6: gotcha body missing clearing-prose or marker" \
+    "rc=$cb6_rc out=$cb6_out body=$(cat "$BUMP_CAPTURE")"
+fi
+
+# ── case-bump-7: D-005 reader regression — check() counts new-shape markers ──
+# Seeds two implement_rejection markers carrying reason-code= suffix. Without
+# Task 2's regex update, count_marker_since_last_operator_resume's contains()
+# match misses them (literal close --> not present), so check() returns 0 and
+# allows infinite loopback. After Task 2 the test() regex correctly counts both.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  get-comments)
+    cat <<'JSON'
+[
+  {"body":"<!-- meta: metric name=implement_rejection reason-code=scope-violation-severe --> Counter bumped.","createdAt":"2026-05-16T09:00:00.000Z"},
+  {"body":"<!-- meta: metric name=implement_rejection reason-code=scope-violation-severe --> Counter bumped.","createdAt":"2026-05-16T09:30:00.000Z"}
+]
+JSON
+    ;;
+  query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  has-label) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb7_out="$(bash "$GUARDS" check ENG-T153G implementing 2>&1)"
+cb7_rc=$?
+set -e
+
+if [[ "$cb7_rc" == "10" ]] && grep -q 'implement_rejection(2>=2)' <<<"$cb7_out"; then
+  pass_at "case-bump-7: reader counts new-shape markers with reason-code= suffix (D-005 regression guard)"
+else
+  fail_at "case-bump-7: reader must count reason-code markers — regex not updated (Task 2)" \
+    "rc=$cb7_rc out=$cb7_out"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
