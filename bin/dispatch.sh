@@ -288,6 +288,28 @@ _render_and_capture_stream() {
   # the absolute path the agent's Write.input.file_path carries — endswith
   # would never match those wildcard-equivalent prefixes; see brainstorm
   # iteration §12 feasibility persona / coherence persona P0).
+  #
+  # FP trade-off (unanchored contains — review finding #2, brainstorm OQ-5):
+  # patterns like "/wait-" are NOT anchored to $issue_state_dir, so a Write
+  # to a file named "wait-something.md" directly in any directory (path
+  # segment "…/plans/wait-something.md" contains the literal "/wait-")
+  # ALSO trips this detective. Accepted: the FP is bounded to files whose
+  # directory-relative name starts with a forbidden prefix (rare in practice),
+  # and rc=29 is recoverable via --action continue. Anchoring each pattern to
+  # "${issue_dir}/<prefix>" would eliminate the FP but requires $issue_dir to
+  # be non-empty (safe here; it is $2 of _render_and_capture_stream). Deferred
+  # to a follow-up; bin/dispatch-test.sh::AC-D003-FP pins the current behavior.
+  #
+  # Bash-channel gap (review finding #3, brainstorm §8 "D-003 scope limit"):
+  # This detective covers Write/Edit tool_use only. A shell redirect inside
+  # a Bash tool_use (e.g. `jq -n '{}' > $issue_state_dir/dispatch_history.jsonl`)
+  # would NOT appear as a Write event and is invisible to this loop. The
+  # existing Bash-allowlist discipline (no Bash(rm:*), no Bash(mv:*) per
+  # CLAUDE.md "No scoped rm allowlist") is the primary defense for this axis;
+  # `Bash(jq:*)` and `Bash(awk:*)` can also produce redirects but the
+  # operator-decision-2026-05-10 assumption did not account for them. A
+  # future ticket should either add a Bash.input.command scan or tighten the
+  # allowlist to exclude redirect-capable forms.
   local _orch_pattern _matched_orch
   for _orch_pattern in \
       "/issue-state.json" \
@@ -298,7 +320,10 @@ _render_and_capture_stream() {
       "/.cmd-capture-" \
       "/.envelope-transcript-" \
       "/.transcript-violation-" \
-      "/.allocate.lock"; do
+      "/.allocate.lock" \
+      "/.consecutive-failures" \
+      "/.in-flight.lock" \
+      "/scope-approval"; do
     if _matched_orch="$(assert_no_tool_with_input_path "$raw_capture" "Write,Edit" "file_path" "$_orch_pattern" "contains")"; then
       :   # rc 0: no match, fall through to next pattern
     else
