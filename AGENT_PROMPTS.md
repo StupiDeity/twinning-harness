@@ -830,6 +830,13 @@ Your task:
     (message: `test({issue_id}): <task summary>`), then commit the implementation
     (message: `feat({issue_id}): <task summary>` — or `fix(…)` if the task is a bugfix).
   - Minimum two commits per task. Review stage counts test-first order.
+  - **Staging discipline (auto-mode bash classifier).** Use one path per
+    `git add` invocation; do NOT chain with `&&` or pass multiple paths
+    in a single `git add A B` call. The auto-mode classifier may reject
+    multi-path or chained-command shapes even when the allowlist permits
+    them (CLAUDE.md memory `feedback_dedup_update_silently_rewrites_chronology`
+    / `feedback_manual_shepherd_fresh_brainstorm_halt`). One path per call
+    is the shape that reliably gets through.
 - Follow testing conventions from docs/knowledge/conventions.md and the profile's "Language idioms" section.
 - For projects with an FE↔BE API surface: every new or modified backend handler MUST match its declared signature in the `api-contract` block (name, arg names/types, return type, event name and payload fields).
 - Run the gates listed in the Project profile addendum's "Build & test gates" section before finishing. All MUST pass.
@@ -1063,6 +1070,11 @@ Do NOT create or edit the pull request. The orchestrator opens it on transition 
 
 Output:
 - Commit any remaining work on `{branch_name}` and push. Do NOT open the pull request yourself — the orchestrator handles it.
+  - **Staging discipline (auto-mode bash classifier).** When staging
+    with `git add`, use one path per invocation; no `&&` chaining, no
+    multi-path `git add A B`. The auto-mode classifier may reject those
+    shapes even when the allowlist permits them; one path per call is
+    the shape that reliably gets through.
 - Write the stage summary file at `{stage_summary_path}` — follow the Stage summary
   comment format contract (preamble). Overwrite-on-every-dispatch contract per §0;
   orchestrator posts it to Linear as `completion/ui/{issue_id}`. Stage-specific slots:
