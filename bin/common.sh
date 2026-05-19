@@ -231,17 +231,6 @@ assert_no_tool_invocation() {
   return 0
 }
 
-# ENG-109: forbid Write-tool truncation of the per-issue progress.md.
-# Sibling of assert_no_tool_invocation; the contract-shape differs only
-# in (a) the tool name (Write, not Bash), (b) the input field
-# (file_path, not command), and (c) the matcher direction (endswith,
-# because the agent's Write calls carry an absolute path and the
-# discriminating signal is the basename suffix). Exported below.
-assert_no_write_to_path() {
-  local transcript="$1" forbidden_path_suffix="$2"
-  assert_no_tool_with_input_path "$transcript" "Write" "file_path" "$forbidden_path_suffix"
-}
-
 # ENG-155 D-003: parameterised generalisation of assert_no_write_to_path.
 # Matches any tool_use whose `name` is in $tool_names_csv AND whose
 # `input[$input_field]` (string) matches $forbidden_substring under the
@@ -285,6 +274,17 @@ assert_no_tool_with_input_path() {
     return 1
   fi
   return 0
+}
+
+# ENG-109: forbid Write-tool truncation of the per-issue progress.md.
+# Sibling of assert_no_tool_invocation; the contract-shape differs only
+# in (a) the tool name (Write, not Bash), (b) the input field
+# (file_path, not command), and (c) the matcher direction (endswith,
+# because the agent's Write calls carry an absolute path and the
+# discriminating signal is the basename suffix). Exported below.
+assert_no_write_to_path() {
+  local transcript="$1" forbidden_path_suffix="$2"
+  assert_no_tool_with_input_path "$transcript" "Write" "file_path" "$forbidden_path_suffix"
 }
 
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
