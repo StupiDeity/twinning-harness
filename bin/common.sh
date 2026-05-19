@@ -231,6 +231,51 @@ assert_no_tool_invocation() {
   return 0
 }
 
+# ENG-155 D-003: parameterised generalisation of assert_no_write_to_path.
+# Matches any tool_use whose `name` is in $tool_names_csv AND whose
+# `input[$input_field]` (string) matches $forbidden_substring under the
+# selected match mode. Used to forbid Write+Edit (and any future tool
+# that takes a path-like input field) against orchestrator-owned files
+# inside $issue_state_dir.
+#
+# mode (positional arg 5, optional, default "endswith"):
+#   - endswith — current ENG-109 semantics; matches a complete trailing
+#     suffix like "/progress.md".
+#   - contains — required for wildcard prefixes like "/wait-" matching
+#     ".../wait-planning.json". Substring match, not suffix.
+#
+# Returns rc=1 + matched path on first hit, rc=0 + empty stdout on miss.
+# Soft-fail (rc=0) on empty/missing transcript so dry-run / planning-only
+# paths never synthesize false positives — mirrors the existing helpers.
+# Soft-fail (rc=0) on unknown mode (defensive — preserves rc=0-on-miss
+# invariant rather than dying inside the dispatch hot path).
+assert_no_tool_with_input_path() {
+  local transcript="$1" tool_names_csv="$2" input_field="$3" forbidden_substring="$4"
+  local mode="${5:-endswith}"
+  [[ -s "$transcript" ]] || return 0
+  local matched
+  matched="$(jq -Rr \
+    --arg names "$tool_names_csv" \
+    --arg field "$input_field" \
+    --arg p "$forbidden_substring" \
+    --arg mode "$mode" '
+    ($names | split(",")) as $allow
+    | fromjson? // empty
+    | select(.type == "assistant")
+    | .message.content[]?
+    | select(.type == "tool_use" and (.name as $n | $allow | index($n)))
+    | (.input[$field] // "")
+    | select(type == "string"
+            and (   ($mode == "endswith" and endswith($p))
+                 or ($mode == "contains" and contains($p)) ))
+  ' "$transcript" 2>/dev/null | head -1)" || true
+  if [[ -n "$matched" ]]; then
+    printf '%s\n' "$matched"
+    return 1
+  fi
+  return 0
+}
+
 # ENG-109: forbid Write-tool truncation of the per-issue progress.md.
 # Sibling of assert_no_tool_invocation; the contract-shape differs only
 # in (a) the tool name (Write, not Bash), (b) the input field
@@ -239,21 +284,7 @@ assert_no_tool_invocation() {
 # discriminating signal is the basename suffix). Exported below.
 assert_no_write_to_path() {
   local transcript="$1" forbidden_path_suffix="$2"
-  [[ -s "$transcript" ]] || return 0
-  local matched
-  matched="$(jq -Rr --arg p "$forbidden_path_suffix" '
-    fromjson? // empty
-    | select(.type == "assistant")
-    | .message.content[]?
-    | select(.type == "tool_use" and .name == "Write")
-    | (.input.file_path // "")
-    | select(endswith($p))
-  ' "$transcript" 2>/dev/null | head -1)" || true
-  if [[ -n "$matched" ]]; then
-    printf '%s\n' "$matched"
-    return 1
-  fi
-  return 0
+  assert_no_tool_with_input_path "$transcript" "Write" "file_path" "$forbidden_path_suffix"
 }
 
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
@@ -457,7 +488,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

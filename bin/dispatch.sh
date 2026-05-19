@@ -274,6 +274,64 @@ _render_and_capture_stream() {
     log "[assert] stage=$stage transcript invoked forbidden Write on progress.md: ${_matched_write}"
     return 29
   fi
+  # ENG-155 D-003: forbid agent Write/Edit against orchestrator-owned files
+  # inside $issue_state_dir. D-001 widens the sandbox to include
+  # $issue_state_dir via --add-dir; this detective restores the ENG-87 /
+  # ENG-146 / ENG-109 invariants that prior-sandbox-by-accident enforced.
+  # No stage gate — fires on any stage's transcript (mirrors the cross-stage
+  # ENG-109 progress.md detective above; brainstorm OQ-3). The substrings
+  # enumerate every orchestrator-owned file shape under $issue_state_dir;
+  # progress.md and stage-summary-<stage>.md are NOT in this list — those
+  # are the writer-side agent contract this ticket exists to enable.
+  # mode="contains" is mandatory for /wait-, /usage-, /.cmd-capture-,
+  # /.envelope-transcript-, /.transcript-violation- (substring matches in
+  # the absolute path the agent's Write.input.file_path carries — endswith
+  # would never match those wildcard-equivalent prefixes; see brainstorm
+  # iteration §12 feasibility persona / coherence persona P0).
+  #
+  # FP trade-off (unanchored contains — review finding #2, brainstorm OQ-5):
+  # patterns like "/wait-" are NOT anchored to $issue_state_dir, so a Write
+  # to a file named "wait-something.md" directly in any directory (path
+  # segment "…/plans/wait-something.md" contains the literal "/wait-")
+  # ALSO trips this detective. Accepted: the FP is bounded to files whose
+  # directory-relative name starts with a forbidden prefix (rare in practice),
+  # and rc=29 is recoverable via --action continue. Anchoring each pattern to
+  # "${issue_dir}/<prefix>" would eliminate the FP but requires $issue_dir to
+  # be non-empty (safe here; it is $2 of _render_and_capture_stream). Deferred
+  # to a follow-up; bin/dispatch-test.sh::AC-D003-FP pins the current behavior.
+  #
+  # Bash-channel gap (review finding #3, brainstorm §8 "D-003 scope limit"):
+  # This detective covers Write/Edit tool_use only. A shell redirect inside
+  # a Bash tool_use (e.g. `jq -n '{}' > $issue_state_dir/dispatch_history.jsonl`)
+  # would NOT appear as a Write event and is invisible to this loop. The
+  # existing Bash-allowlist discipline (no Bash(rm:*), no Bash(mv:*) per
+  # CLAUDE.md "No scoped rm allowlist") is the primary defense for this axis;
+  # `Bash(jq:*)` and `Bash(awk:*)` can also produce redirects but the
+  # operator-decision-2026-05-10 assumption did not account for them. A
+  # future ticket should either add a Bash.input.command scan or tighten the
+  # allowlist to exclude redirect-capable forms.
+  local _orch_pattern _matched_orch
+  for _orch_pattern in \
+      "/issue-state.json" \
+      "/dispatch_history.jsonl" \
+      "/wait-" \
+      "/usage-" \
+      "/.raw-stream.ndjson.tmp" \
+      "/.cmd-capture-" \
+      "/.envelope-transcript-" \
+      "/.transcript-violation-" \
+      "/.allocate.lock" \
+      "/.consecutive-failures" \
+      "/.in-flight.lock" \
+      "/scope-approval"; do
+    if _matched_orch="$(assert_no_tool_with_input_path "$raw_capture" "Write,Edit" "file_path" "$_orch_pattern" "contains")"; then
+      :   # rc 0: no match, fall through to next pattern
+    else
+      printf '%s\n' "$_matched_orch" > "$violation_file"
+      log "[assert] stage=$stage transcript invoked forbidden Write/Edit on orchestrator-owned path: ${_matched_orch}"
+      return 29
+    fi
+  done
   # ENG-106: filesystem detective — confirm the plan agent appended
   # one well-formed progress.md H2 entry stamped with the current
   # PIPELINE_DISPATCH_ID. Stage-gated to "planning" only (other stages
@@ -524,6 +582,12 @@ main() {
     # Pre-emptive cleanup so a missing file is the canonical "no usage to
     # report" signal — applies to BOTH branches below (E-04 / D-006).
     rm -f "$usage_file"
+    # ENG-155 D-001: belt-and-suspenders mkdir for non-run-stage callers
+    # (release/retrospective/mutex-test/dry-run-self-check leave
+    # PIPELINE_ISSUE_ID unset; this only fires inside the gated block,
+    # mirroring usage_file resolution). run-stage.sh:1344 already mkdirs
+    # the same path before invoking dispatch.sh.
+    mkdir -p "$issue_state_dir"
   fi
 
   # Install the release trap BEFORE the acquire so a die() between the two
@@ -600,7 +664,11 @@ main() {
     if [[ -n "${PIPELINE_DISPATCH_MODEL:-}" ]]; then
       _dry_model_seg=" --model $PIPELINE_DISPATCH_MODEL"
     fi
-    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose${_dry_model_seg} --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
+    local _dry_addir_seg=""
+    if [[ -n "${issue_state_dir:-}" ]]; then
+      _dry_addir_seg=" --add-dir $issue_state_dir"
+    fi
+    log "[DRY_RUN] would invoke: gtimeout --signal=TERM --kill-after=10 ${timeout_seconds} claude -p --output-format stream-json --verbose${_dry_model_seg}${_dry_addir_seg} --setting-sources project,local --disable-slash-commands --disallowed-tools \"$denies\" --allowed-tools \"$tools\" < $prompt_file"
     log "[DRY_RUN] prompt preview (first 500 chars):"
     head -c 500 "$prompt_file" >&2
     printf '\n' >&2
@@ -661,6 +729,18 @@ main() {
   # is ENG-46-clean (mirrors _cfg_minutes at line 481).
   if [[ -n "${PIPELINE_DISPATCH_MODEL:-}" ]]; then
     cmd+=(--model "$PIPELINE_DISPATCH_MODEL")
+  fi
+  # ENG-155 D-001: widen claude's per-session sandbox to include the
+  # per-issue state directory so the agent's Write/Edit on progress.md
+  # and stage-summary-<stage>.md (paths under $issue_state_dir, NOT the
+  # worktree cwd) succeed. Gated on $issue_state_dir non-empty so
+  # non-PIPELINE_ISSUE_ID callers observe zero behavior change.
+  # Placement: between the --model block and the isolation block so the
+  # operator's eye-scan of the rendered argv keeps the isolation segment
+  # (--setting-sources / --disable-slash-commands / --disallowed-tools /
+  # --allowed-tools) visually contiguous.
+  if [[ -n "$issue_state_dir" ]]; then
+    cmd+=(--add-dir "$issue_state_dir")
   fi
   cmd+=(
     --setting-sources project,local
