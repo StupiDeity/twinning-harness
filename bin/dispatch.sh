@@ -274,6 +274,39 @@ _render_and_capture_stream() {
     log "[assert] stage=$stage transcript invoked forbidden Write on progress.md: ${_matched_write}"
     return 29
   fi
+  # ENG-155 D-003: forbid agent Write/Edit against orchestrator-owned files
+  # inside $issue_state_dir. D-001 widens the sandbox to include
+  # $issue_state_dir via --add-dir; this detective restores the ENG-87 /
+  # ENG-146 / ENG-109 invariants that prior-sandbox-by-accident enforced.
+  # No stage gate — fires on any stage's transcript (mirrors the cross-stage
+  # ENG-109 progress.md detective above; brainstorm OQ-3). The substrings
+  # enumerate every orchestrator-owned file shape under $issue_state_dir;
+  # progress.md and stage-summary-<stage>.md are NOT in this list — those
+  # are the writer-side agent contract this ticket exists to enable.
+  # mode="contains" is mandatory for /wait-, /usage-, /.cmd-capture-,
+  # /.envelope-transcript-, /.transcript-violation- (substring matches in
+  # the absolute path the agent's Write.input.file_path carries — endswith
+  # would never match those wildcard-equivalent prefixes; see brainstorm
+  # iteration §12 feasibility persona / coherence persona P0).
+  local _orch_pattern _matched_orch
+  for _orch_pattern in \
+      "/issue-state.json" \
+      "/dispatch_history.jsonl" \
+      "/wait-" \
+      "/usage-" \
+      "/.raw-stream.ndjson.tmp" \
+      "/.cmd-capture-" \
+      "/.envelope-transcript-" \
+      "/.transcript-violation-" \
+      "/.allocate.lock"; do
+    if _matched_orch="$(assert_no_tool_with_input_path "$raw_capture" "Write,Edit" "file_path" "$_orch_pattern" "contains")"; then
+      :   # rc 0: no match, fall through to next pattern
+    else
+      printf '%s\n' "$_matched_orch" > "$violation_file"
+      log "[assert] stage=$stage transcript invoked forbidden Write/Edit on orchestrator-owned path: ${_matched_orch}"
+      return 29
+    fi
+  done
   # ENG-106: filesystem detective — confirm the plan agent appended
   # one well-formed progress.md H2 entry stamped with the current
   # PIPELINE_DISPATCH_ID. Stage-gated to "planning" only (other stages
