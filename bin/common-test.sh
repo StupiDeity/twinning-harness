@@ -1110,6 +1110,119 @@ esac
 
 unset _strip_tilde_basic _strip_tilde_with_marker _strip_tilde_mixed
 
+# ─── ENG-155 AC-PARAM: assert_no_tool_with_input_path parameterised helper ──
+# Exercises the 5-arg generalisation of assert_no_write_to_path:
+#   assert_no_tool_with_input_path <transcript> <tool_names_csv> <input_field>
+#                                   <forbidden_substring> [<mode>]
+# mode ∈ {endswith (default), contains}
+# Also pins back-compat: the existing 2-arg assert_no_write_to_path delegates
+# to the new helper and must be bit-identical.
+printf '\n--- ENG-155 AC-PARAM: assert_no_tool_with_input_path ---\n'
+
+if ! declare -f assert_no_tool_with_input_path >/dev/null 2>&1; then
+  fail_at "AC-PARAM-precondition: assert_no_tool_with_input_path defined" \
+          "function not found after sourcing common.sh — Task 1 implementation missing"
+  printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
+# AC-PARAM-A: Write tool_use ending /progress.md, 4-arg call (default mode=endswith) → rc=1
+TX_PARAM_A="$(mktemp -t eng155-param-a-XXXXXX)"
+cat > "$TX_PARAM_A" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+out_param_a="$(assert_no_tool_with_input_path "$TX_PARAM_A" "Write" "file_path" "/progress.md")" && rc_param_a=0 || rc_param_a=$?
+if [[ "$rc_param_a" == "1" && "$out_param_a" == *"progress.md" ]]; then
+  pass_at "AC-PARAM-A: Write on /progress.md (4-arg, default endswith) returns rc=1 + matched path"
+else
+  fail_at "AC-PARAM-A" "rc=$rc_param_a out=$out_param_a"
+fi
+rm -f "$TX_PARAM_A"
+
+# AC-PARAM-B: Edit tool_use ending /progress.md, csv "Write,Edit" → rc=1 (csv resolution)
+TX_PARAM_B="$(mktemp -t eng155-param-b-XXXXXX)"
+cat > "$TX_PARAM_B" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+out_param_b="$(assert_no_tool_with_input_path "$TX_PARAM_B" "Write,Edit" "file_path" "/progress.md")" && rc_param_b=0 || rc_param_b=$?
+if [[ "$rc_param_b" == "1" && "$out_param_b" == *"progress.md" ]]; then
+  pass_at "AC-PARAM-B: Edit on /progress.md with 'Write,Edit' csv returns rc=1 (csv includes Edit)"
+else
+  fail_at "AC-PARAM-B" "rc=$rc_param_b out=$out_param_b"
+fi
+rm -f "$TX_PARAM_B"
+
+# AC-PARAM-C: Edit tool_use ending /progress.md, Write-only csv → rc=0 (Edit not in csv)
+TX_PARAM_C="$(mktemp -t eng155-param-c-XXXXXX)"
+cat > "$TX_PARAM_C" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+out_param_c="$(assert_no_tool_with_input_path "$TX_PARAM_C" "Write" "file_path" "/progress.md")" && rc_param_c=0 || rc_param_c=$?
+if [[ "$rc_param_c" == "0" && -z "$out_param_c" ]]; then
+  pass_at "AC-PARAM-C: Edit on /progress.md with Write-only csv returns rc=0 (Edit excluded)"
+else
+  fail_at "AC-PARAM-C" "rc=$rc_param_c out=$out_param_c"
+fi
+rm -f "$TX_PARAM_C"
+
+# AC-PARAM-D: empty transcript → rc=0 (soft-fail mirrors existing helpers)
+TX_PARAM_D="$(mktemp -t eng155-param-d-XXXXXX)"
+: > "$TX_PARAM_D"
+out_param_d="$(assert_no_tool_with_input_path "$TX_PARAM_D" "Write" "file_path" "/progress.md")" && rc_param_d=0 || rc_param_d=$?
+if [[ "$rc_param_d" == "0" && -z "$out_param_d" ]]; then
+  pass_at "AC-PARAM-D: empty transcript returns rc=0 (soft-fail)"
+else
+  fail_at "AC-PARAM-D" "rc=$rc_param_d out=$out_param_d"
+fi
+rm -f "$TX_PARAM_D"
+
+# AC-PARAM-E (mode=contains): Write on /wait-planning.json matched by "/wait-" + mode=contains
+TX_PARAM_E="$(mktemp -t eng155-param-e-XXXXXX)"
+cat > "$TX_PARAM_E" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/wait-planning.json"}}]}}
+NDJSON
+# Positive: contains mode should match
+out_param_e_pos="$(assert_no_tool_with_input_path "$TX_PARAM_E" "Write,Edit" "file_path" "/wait-" "contains")" && rc_param_e_pos=0 || rc_param_e_pos=$?
+if [[ "$rc_param_e_pos" == "1" && "$out_param_e_pos" == *"wait-planning"* ]]; then
+  pass_at "AC-PARAM-E (contains positive): /wait-planning.json matched by '/wait-' + mode=contains → rc=1"
+else
+  fail_at "AC-PARAM-E contains positive" "rc=$rc_param_e_pos out=$out_param_e_pos"
+fi
+# Negative: endswith mode should NOT match (path does not END with "/wait-")
+out_param_e_neg="$(assert_no_tool_with_input_path "$TX_PARAM_E" "Write,Edit" "file_path" "/wait-" "endswith")" && rc_param_e_neg=0 || rc_param_e_neg=$?
+if [[ "$rc_param_e_neg" == "0" && -z "$out_param_e_neg" ]]; then
+  pass_at "AC-PARAM-E (endswith negative): /wait-planning.json NOT matched by '/wait-' + mode=endswith → rc=0"
+else
+  fail_at "AC-PARAM-E endswith negative" "rc=$rc_param_e_neg out=$out_param_e_neg"
+fi
+rm -f "$TX_PARAM_E"
+
+# AC-PARAM-F (unknown mode): defensive soft-fail → rc=0
+TX_PARAM_F="$(mktemp -t eng155-param-f-XXXXXX)"
+cat > "$TX_PARAM_F" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/progress.md"}}]}}
+NDJSON
+out_param_f="$(assert_no_tool_with_input_path "$TX_PARAM_F" "Write" "file_path" "/progress.md" "foo")" && rc_param_f=0 || rc_param_f=$?
+if [[ "$rc_param_f" == "0" && -z "$out_param_f" ]]; then
+  pass_at "AC-PARAM-F: unknown mode 'foo' returns rc=0 (defensive soft-fail, no false-positive)"
+else
+  fail_at "AC-PARAM-F" "rc=$rc_param_f out=$out_param_f"
+fi
+rm -f "$TX_PARAM_F"
+
+# Back-compat pin: assert_no_write_to_path (thin wrapper) bit-identical to pre-rewire
+TX_PARAM_COMPAT="$(mktemp -t eng155-param-compat-XXXXXX)"
+cat > "$TX_PARAM_COMPAT" <<'NDJSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/Users/x/.local/state/twinning-harness/harness/foo/ENG-1/progress.md"}}]}}
+NDJSON
+out_param_compat="$(assert_no_write_to_path "$TX_PARAM_COMPAT" "/progress.md")" && rc_param_compat=0 || rc_param_compat=$?
+if [[ "$rc_param_compat" == "1" && "$out_param_compat" == *"progress.md" ]]; then
+  pass_at "AC-PARAM-compat: assert_no_write_to_path thin wrapper delegates correctly → rc=1"
+else
+  fail_at "AC-PARAM-compat" "rc=$rc_param_compat out=$out_param_compat"
+fi
+rm -f "$TX_PARAM_COMPAT"
+
 # ─── ENG-106: failure_outcome_for_exit rc=31 arm ──────────────────────────
 # Pins the progress-md-entry-missing taxonomy entry so a refactor that
 # renumbers or removes the rc=31 arm routes the outcome to unknown-exit-31
