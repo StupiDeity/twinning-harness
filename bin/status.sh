@@ -323,10 +323,10 @@ show_markers() {
     done < <(jq -r --arg cutoff "$cutoff" '
       .data.issue.comments.nodes[]?
       | select(.createdAt >= $cutoff)
-      | select(.body | test("<!-- meta: metric name=[a-z_-]+ -->|<!-- pipeline-metric: [a-z_-]+ -->"))
+      | select(.body | test("<!-- meta: metric name=[a-z_-]+( [^>]*)?-->|<!-- pipeline-metric: [a-z_-]+ -->"))
       | [.createdAt,
-         (if (.body | test("<!-- meta: metric name=[a-z_-]+ -->"))
-            then (.body | capture("<!-- meta: metric name=(?<m>[a-z_-]+) -->").m)
+         (if (.body | test("<!-- meta: metric name=[a-z_-]+( [^>]*)?-->"))
+            then (.body | capture("<!-- meta: metric name=(?<m>[a-z_-]+)( [^>]*)?-->").m)
           elif (.body | test("<!-- pipeline-metric: [a-z_-]+ -->"))
             then (.body | capture("<!-- pipeline-metric: (?<m>[a-z_-]+) -->").m)
           else "?" end),
