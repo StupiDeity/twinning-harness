@@ -542,6 +542,9 @@ phase_config_defaults() {
     if (.linear.native_states.inbox // null) == null then
       .linear.native_states.inbox = "Todo"
     else . end |
+    if (.linear.native_states.in_review // null) == null then
+      .linear.native_states.in_review = "In Review"
+    else . end |
     if (.linear.native_states.done // null) == null then
       .linear.native_states.done = "Done"
     else . end

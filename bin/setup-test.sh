@@ -119,6 +119,23 @@ JSON
     || fail_at "config-defaults rewrites pre-existing wrong workflow_stages" "got=$stages"
 }
 
+# ─── ENG-161: fresh-install seeds in_review default (regression) ─────
+{
+  TGT="$(fresh_target)"
+  # No native_states block at all — config-defaults must seed all four
+  # keys, including in_review, so require_native_states does not die.
+  printf '{"linear":{"team_id":"t","project_id":"p"}}\n' \
+    > "$TGT/.pipeline-config/config.json"
+  out="$(HARNESS_STATE_DIR="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)" \
+    bash "$HARNESS_DIR/setup.sh" "$TGT" config-defaults 2>&1)"
+  in_review="$(jq -r '.linear.native_states.in_review // empty' "$TGT/.pipeline-config/config.json")"
+  if [[ "$in_review" == "In Review" ]] && ! grep -q 'FATAL' <<<"$out"; then
+    pass_at "config-defaults seeds in_review default on fresh install"
+  else
+    fail_at "config-defaults seeds in_review default on fresh install" "in_review='$in_review' out=$out"
+  fi
+}
+
 # ─── ENG-49 Gap #5: setup requires linear.native_states.{in_review,done} ──
 test_setup_requires_native_states() {
   local tdir; tdir="$(mktemp -d -t twinning-setup-states.XXXXXX)"
