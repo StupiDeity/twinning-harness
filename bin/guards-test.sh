@@ -698,6 +698,93 @@ else
     "rc=$cb8_rc out=$cb8_out"
 fi
 
+# ── case-bump-qa-1: --reason "" (empty string) is rejected like missing flag ─
+# Exercises the `[[ -n "$reason" ]]` guard at bin/guards.sh:175.
+# The flag is present but its value is empty — parser assigns reason="" via
+# `${2:-}` then the -n gate fires. Distinguishes "flag present, empty value"
+# from "flag absent" (case-bump-1 covers the latter). Both must die identically.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cbq1_out="$(bash "$GUARDS" bump ENG-TQAQ1 implement_rejection \
+  --reason "" 2>&1)"
+cbq1_rc=$?
+set -e
+
+if [[ "$cbq1_rc" != "0" ]] && grep -q 'bump: --reason.*required' <<<"$cbq1_out"; then
+  pass_at "case-bump-qa-1: --reason \"\" (empty string) is rejected identical to missing flag"
+else
+  fail_at "case-bump-qa-1: empty --reason must die with --reason required diagnostic" \
+    "rc=$cbq1_rc out=$cbq1_out"
+fi
+
+# ── case-bump-qa-2: learned_rule_renewal uses rule-reviewed clearing prose ───
+# Parallel to case-bump-6 (gotcha_triggered → knowledge-reviewed). Verifies
+# bin/guards.sh:224 `trip_clause` branch for learned_rule_renewal emits
+# "cleared by label pipeline:rule-reviewed" (not knowledge-reviewed, not the
+# skip-until-human-acts prose).
+: > "$BUMP_CAPTURE"
+
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  add-comment)
+    printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cbq2_out="$(bash "$GUARDS" bump ENG-TQAQ2 learned_rule_renewal \
+  --reason "Rule renewal: retro agent rewrote scope rule for third time" 2>&1)"
+cbq2_rc=$?
+set -e
+
+cbq2_pass=1
+[[ "$cbq2_rc" == "0" ]] || cbq2_pass=0
+grep -q 'cleared by label pipeline:rule-reviewed' "$BUMP_CAPTURE" || cbq2_pass=0
+# must NOT contain the gotcha or skip-until prose
+grep -q 'knowledge-reviewed' "$BUMP_CAPTURE" && cbq2_pass=0
+grep -q 'skip-until-human-acts' "$BUMP_CAPTURE" && cbq2_pass=0
+
+if [[ "$cbq2_pass" == "1" ]]; then
+  pass_at "case-bump-qa-2: learned_rule_renewal body uses rule-reviewed clearing prose"
+else
+  fail_at "case-bump-qa-2: learned_rule_renewal body must carry 'cleared by label pipeline:rule-reviewed'" \
+    "rc=$cbq2_rc out=$cbq2_out body=$(cat "$BUMP_CAPTURE")"
+fi
+
+# ── case-bump-qa-3: unknown CLI flag dies with diagnostic ────────────────────
+# Exercises bin/guards.sh:172 `*) die "bump: unknown flag..."`. Ensures the
+# parser does not silently discard unrecognised flags (which would allow a
+# caller typo like `--resaon` to silently pass, skipping the reason check).
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cbq3_out="$(bash "$GUARDS" bump ENG-TQAQ3 implement_rejection \
+  --bogus-flag "something" --reason "legit reason" 2>&1)"
+cbq3_rc=$?
+set -e
+
+if [[ "$cbq3_rc" != "0" ]] && grep -q "bump: unknown flag" <<<"$cbq3_out"; then
+  pass_at "case-bump-qa-3: unknown CLI flag dies with 'bump: unknown flag' diagnostic"
+else
+  fail_at "case-bump-qa-3: unknown flag must die citing 'bump: unknown flag'" \
+    "rc=$cbq3_rc out=$cbq3_out"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\nguards-test: passed=%s failed=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
