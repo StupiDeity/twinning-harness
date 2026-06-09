@@ -41,15 +41,11 @@ STUB
 
 _write_dispatch_stub 0 yes
 
-# Use a tempdir as HARNESS_ROOT so we can control the .claude-cli-version
-# pin file deterministically per fixture.
-SHAPE_C_HARNESS_ROOT="$(mktemp -d)"
-mkdir -p "$SHAPE_C_HARNESS_ROOT/bin/retro-prompts"
-cp "$HARNESS_DIR/retro-prompts/claude-version-drift.md" \
-   "$SHAPE_C_HARNESS_ROOT/bin/retro-prompts/claude-version-drift.md"
-
+# common.sh OVERWRITES HARNESS_ROOT to (dirname BASH_SOURCE)/.. at source time
+# (see bin/common.sh:9), so a test-time `export HARNESS_ROOT=...` is dead.
+# We therefore monkeypatch _capture_observed_version / _capture_expected_version
+# per-fixture instead of routing the pin-file lookup through a fake HARNESS_ROOT.
 export TARGET_REPO="${TARGET_REPO:-$HARNESS_DIR}"
-export HARNESS_ROOT="$SHAPE_C_HARNESS_ROOT"
 export HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-$(mktemp -d)}"
 export PROJECT_STATE_DIR="${PROJECT_STATE_DIR:-$(mktemp -d)}"
 
@@ -227,15 +223,20 @@ SCRIPT_DIR="$STUB_DIR"
 }
 
 # ---------------------------------------------------------------------------
-# fixture-shapeC-version-file-present: file present resolves expected token
+# fixture-shapeC-version-file-present: monkeypatch _capture_expected_version
+# to simulate the pin file being present → rendered prompt carries the
+# expected version string
 # ---------------------------------------------------------------------------
 {
   name="fixture-shapeC-version-file-present"
-  printf 'claude-cli-1.2.3-rc4\n' > "$SHAPE_C_HARNESS_ROOT/.claude-cli-version"
   artifact_path="$ARTIFACT_DIR/fC1.md"
   export SHAPE_TEST_ARTIFACT_PATH="$artifact_path"
   rm -f "$RENDERED_PROMPT_COPY" "$DISPATCH_INVOKED"
   _write_dispatch_stub 0 yes
+
+  original_capture_expected="$(declare -f _capture_expected_version)"
+  _capture_expected_version() { _EXPECTED_VERSION="claude-cli-1.2.3-rc4"; }
+
   unset PIPELINE_DRY_RUN
   rc=0
   main \
@@ -244,25 +245,30 @@ SCRIPT_DIR="$STUB_DIR"
     --period-end-iso   2026-05-15T00:00:00Z \
     2>/dev/null || rc=$?
   export PIPELINE_DRY_RUN=1
+  eval "$original_capture_expected"
+
   if [[ -f "$RENDERED_PROMPT_COPY" ]] && grep -qF 'claude-cli-1.2.3-rc4' "$RENDERED_PROMPT_COPY"; then
     _pass "$name"
   else
     _fail "$name (rc=$rc expected version string not in rendered prompt)"
   fi
-  rm -f "$SHAPE_C_HARNESS_ROOT/.claude-cli-version"
   export SHAPE_TEST_ARTIFACT_PATH=""
 }
 
 # ---------------------------------------------------------------------------
-# fixture-shapeC-version-file-absent: file absent resolves to (unpinned)
+# fixture-shapeC-version-file-absent: monkeypatch _capture_expected_version
+# to simulate the pin file being absent → rendered prompt carries (unpinned)
 # ---------------------------------------------------------------------------
 {
   name="fixture-shapeC-version-file-absent"
-  rm -f "$SHAPE_C_HARNESS_ROOT/.claude-cli-version"
   artifact_path="$ARTIFACT_DIR/fC2.md"
   export SHAPE_TEST_ARTIFACT_PATH="$artifact_path"
   rm -f "$RENDERED_PROMPT_COPY" "$DISPATCH_INVOKED"
   _write_dispatch_stub 0 yes
+
+  original_capture_expected="$(declare -f _capture_expected_version)"
+  _capture_expected_version() { _EXPECTED_VERSION="(unpinned)"; }
+
   unset PIPELINE_DRY_RUN
   rc=0
   main \
@@ -271,6 +277,8 @@ SCRIPT_DIR="$STUB_DIR"
     --period-end-iso   2026-05-15T00:00:00Z \
     2>/dev/null || rc=$?
   export PIPELINE_DRY_RUN=1
+  eval "$original_capture_expected"
+
   if [[ -f "$RENDERED_PROMPT_COPY" ]] && grep -qF '(unpinned)' "$RENDERED_PROMPT_COPY"; then
     _pass "$name"
   else
@@ -373,7 +381,7 @@ SCRIPT_DIR="$STUB_DIR"
 # ---------------------------------------------------------------------------
 # Cleanup and summary
 # ---------------------------------------------------------------------------
-rm -rf "$STUB_DIR" "$ARTIFACT_DIR" "$SHAPE_C_HARNESS_ROOT"
+rm -rf "$STUB_DIR" "$ARTIFACT_DIR"
 
 printf '\n'
 if (( FAIL == 0 )); then
