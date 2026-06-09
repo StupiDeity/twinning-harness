@@ -47,8 +47,10 @@
 #     bin/run-stage.sh), all three trips are scoped to stage ==
 #     implementing — see header comment above for the ENG-138/ENG-145
 #     contract.
-#   guards.sh bump <issue_id> <counter_name>
+#   guards.sh bump <issue_id> <counter_name> --reason "<text>" [--reason-code <token>]
 #     counter_name: review_rejection | qa_rejection | implement_rejection | gotcha_triggered | learned_rule_renewal
+#     --reason "<text>" required (fail-closed without it).
+#     --reason-code <token> optional; must be in metric_reason_codes registry.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,9 +64,9 @@ count_marker() {
   vars="$(jq -cn --arg id "$ident" '{id:$id}')"
   resp="$(bash "$SCRIPT_DIR/linear.sh" query "$q" "$vars")"
   jq -r \
-    --arg m  "<!-- meta: metric name=$marker -->" \
+    --arg m_re "<!-- meta: metric name=$marker( [^>]*)?-->" \
     --arg m_legacy "<!-- pipeline-metric: $marker -->" \
-    '[.data.issue.comments.nodes[]? | .body | select(contains($m) or contains($m_legacy))] | length' <<<"$resp"
+    '[.data.issue.comments.nodes[]? | .body | select(test($m_re) or contains($m_legacy))] | length' <<<"$resp"
 }
 
 # Count comment bodies containing $marker whose createdAt is newer than
@@ -87,15 +89,15 @@ count_marker_since_last_operator_resume() {
     | sort_by(.createdAt) | last | .createdAt // ""' <<<"$comments")"
   if [[ -z "$last_ts" ]]; then
     jq -r \
-      --arg m  "<!-- meta: metric name=$marker -->" \
+      --arg m_re "<!-- meta: metric name=$marker( [^>]*)?-->" \
       --arg m_legacy "<!-- pipeline-metric: $marker -->" \
-      '[.[] | select(.body | contains($m) or contains($m_legacy))] | length' <<<"$comments"
+      '[.[] | select(.body | test($m_re) or contains($m_legacy))] | length' <<<"$comments"
   else
     jq -r \
-      --arg m  "<!-- meta: metric name=$marker -->" \
+      --arg m_re "<!-- meta: metric name=$marker( [^>]*)?-->" \
       --arg m_legacy "<!-- pipeline-metric: $marker -->" \
       --arg t "$last_ts" \
-      '[.[] | select(.createdAt > $t) | select(.body | contains($m) or contains($m_legacy))] | length' <<<"$comments"
+      '[.[] | select(.createdAt > $t) | select(.body | test($m_re) or contains($m_legacy))] | length' <<<"$comments"
   fi
 }
 
@@ -156,11 +158,86 @@ check() {
 
 bump() {
   local ident="$1" counter="$2"
+  shift 2
   case "$counter" in
     review_rejection|gotcha_triggered|learned_rule_renewal|qa_rejection|implement_rejection) ;;
     *) die "unknown counter: $counter" ;;
   esac
-  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "<!-- meta: metric name=$counter --> Counter bumped by guards.sh."
+
+  local reason="" reason_code=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --reason)      reason="${2:-}";      shift 2 ;;
+      --reason-code) reason_code="${2:-}"; shift 2 ;;
+      *) die "bump: unknown flag '$1'" ;;
+    esac
+  done
+  [[ -n "$reason" ]] || die "bump: --reason \"<text>\" required (counter=$counter, ident=$ident)"
+
+  case "$reason" in
+    *"<!-- pipeline:"*|*"<!-- meta:"*)
+      die "bump: --reason contains a pipeline/meta marker opener (rejected to preserve lane-fence semantics)" ;;
+  esac
+
+  if [[ -n "$reason_code" ]]; then
+    local registry="$SCRIPT_DIR/pipeline-events.json"
+    local valid
+    valid="$(jq -r --arg c "$reason_code" \
+      '(.metric_reason_codes // []) | index($c) // empty' \
+      "$registry")"
+    [[ -n "$valid" ]] || die "bump: --reason-code '$reason_code' not in metric_reason_codes registry (see bin/pipeline-events.json::metric_reason_codes)"
+  fi
+
+  local existing count
+  # Gate the count source on counter type to mirror check()'s denominator:
+  # the 3 rejection counters use since-last-operator-resume semantics
+  # (ENG-123), the 2 ack-label counters accumulate over issue lifetime.
+  # Without this gate, body shows lifetime count (e.g. 4/2 post-resume)
+  # while check() sees the since-resume count (e.g. 1/2) and does not trip
+  # — the "Trips at" prose then misleads the operator.
+  case "$counter" in
+    review_rejection|qa_rejection|implement_rejection)
+      existing="$(count_marker_since_last_operator_resume "$ident" "$counter")" ;;
+    *)
+      existing="$(count_marker "$ident" "$counter")" ;;
+  esac
+  # post-this-bump count (excludes the marker we are about to write;
+  # local arithmetic — no re-read).
+  count=$((existing + 1))
+
+  local threshold_key threshold
+  case "$counter" in
+    review_rejection)     threshold_key="review_rejections_per_feature" ;;
+    qa_rejection)         threshold_key="qa_rejections_per_feature" ;;
+    implement_rejection)  threshold_key="implement_rejections_per_feature" ;;
+    gotcha_triggered)     threshold_key="gotcha_trigger_count" ;;
+    learned_rule_renewal) threshold_key="learned_rule_renewals" ;;
+  esac
+  threshold="$(config_get ".human_checkpoints.require_human_on_threshold.$threshold_key")"
+  [[ "$threshold" == "null" || -z "$threshold" ]] && threshold=2
+
+  local trip_clause
+  case "$counter" in
+    gotcha_triggered)
+      trip_clause="Trips at: $threshold/$threshold → halt; cleared by label pipeline:knowledge-reviewed." ;;
+    learned_rule_renewal)
+      trip_clause="Trips at: $threshold/$threshold → halt; cleared by label pipeline:rule-reviewed." ;;
+    *)
+      trip_clause="Trips at: $threshold/$threshold within current stage iteration → halt with skip-until-human-acts." ;;
+  esac
+
+  local marker
+  if [[ -n "$reason_code" ]]; then
+    marker="<!-- meta: metric name=$counter reason-code=$reason_code -->"
+  else
+    marker="<!-- meta: metric name=$counter -->"
+  fi
+
+  local body
+  body="$(printf 'COUNTER — %s bumped (%d/%d)\nReason: %s\n%s\n\n%s' \
+    "$counter" "$count" "$threshold" "$reason" "$trip_clause" "$marker")"
+
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body"
 }
 
 main() {
@@ -169,7 +246,7 @@ main() {
   case "$cmd" in
     check) check "$@" ;;
     bump)  bump "$@" ;;
-    *)     die "usage: guards.sh <check|bump> <issue_id> [counter]" ;;
+    *)     die "usage: guards.sh check <issue_id> [stage] | guards.sh bump <issue_id> <counter> --reason \"<text>\" [--reason-code <token>]" ;;
   esac
 }
 

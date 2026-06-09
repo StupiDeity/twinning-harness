@@ -1393,7 +1393,7 @@ escape hatch and is not gated by the count predicate.
        Body mirrors the gh pr review summary plus persona verdicts and
        comment-quality self-lint score. Quote the heredoc as `<<'EOF'` so
        any `$VAR` / backticks / `$(cmd)` in the body land verbatim.
-     - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} review_rejection`.
+     - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} review_rejection --reason "<one-line summary of the rejection cause referencing critical/major findings>"`.
      - Run: `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`
      - Exit. Orchestrator applies pipeline:halted (ENG-56) and transitions
        reviewing → implementing.
@@ -1630,7 +1630,8 @@ Decision path (apply exactly one):
 
   B. **Genuine failures** (any P0 or non-flake fail):
      - File deduped Linear bugs per §6.
-     - Bump counter: `.pipeline/bin/guards.sh bump {issue_id} qa_rejection`.
+     - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} qa_rejection --reason "<one-line summary of the genuine-failure cause (P0 / non-flake)>"`.
+       (Omit `--reason-code` — no token registered for qa-side rejection yet; the prose reason is enough for the audit trail.)
      - Post a Linear comment tagged `<!-- meta: metric name=qa_reject -->` with the
        summary and bug-issue links.
      - Run: `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`

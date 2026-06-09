@@ -1,0 +1,92 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-153",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "guards.sh::bump fail-closes without --reason and emits a populated body stating reason, current count, and trip threshold, with the marker shape registered under bin/pipeline-events.json::events.metric.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/guards-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "guards-test: passed=20 failed=0"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "jq -e '.events.metric.linear_comment.required == [\"name\"]' bin/pipeline-events.json",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "jq -e '.metric_reason_codes | length == 4' bin/pipeline-events.json",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "grep",
+          "path": "bin/guards.sh",
+          "pattern": "--reason \"<text>\" required",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/guards.sh",
+          "pattern": "name=\\$marker\\( \\[\\^>\\]\\*\\)\\?-->",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "--reason-code scope-violation-severe",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "--reason-code scope-violation",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "--reason-code noop-implementation",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/scan-gotcha-trailers.sh",
+          "pattern": "--reason-code gotcha-hit",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "guards\\.sh bump \\{issue_id\\} review_rejection --reason",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "guards\\.sh bump \\{issue_id\\} qa_rejection --reason",
+          "expect_match": true
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/pipeline-events.json"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/guards-test.sh"
+        }
+      ]
+    }
+  ]
+}
