@@ -14,7 +14,7 @@ Bash 3.2+ orchestration scripts (macOS-compatible). The repo contains no applica
 ## Build & test gates
 
 - Build: `(n/a) — interpreted bash; no compile step`
-- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh && bash bin/stuck-tick-alarm-test.sh && bash bin/review-payload-schema-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner; bin/eng-81-reproducer-test.sh omitted — KNOWN_BROKEN per .githooks/pre-commit, tracked for a dedicated fix ticket: ENG-154/151/153 fixture drift)*
+- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh && bash bin/stuck-tick-alarm-test.sh && bash bin/review-payload-schema-test.sh && bash bin/retro-shape-tool-denial-trends-test.sh && bash bin/retro-shape-runtime-invariant-audit-test.sh && bash bin/retro-shape-claude-version-drift-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner; bin/eng-81-reproducer-test.sh omitted — KNOWN_BROKEN per .githooks/pre-commit, tracked for a dedicated fix ticket: ENG-154/151/153 fixture drift)*
 - Lint/check: `bash -n bin/*.sh` *(syntax check only; no shellcheck in CI today)*
 - Integration/E2E: `PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/dry-run.sh`
 
@@ -55,6 +55,9 @@ are implicit and not declared here.
   - `Bash(bash bin/render-pr-body-test.sh:*)`
   - `Bash(bash bin/render-prompt-slug-test.sh:*)`
   - `Bash(bash bin/render-prompt-test.sh:*)`
+  - `Bash(bash bin/retro-shape-claude-version-drift-test.sh:*)`
+  - `Bash(bash bin/retro-shape-runtime-invariant-audit-test.sh:*)`
+  - `Bash(bash bin/retro-shape-tool-denial-trends-test.sh:*)`
   - `Bash(bash bin/review-payload-schema-test.sh:*)`
   - `Bash(bash bin/review-poll-test.sh:*)`
   - `Bash(bash bin/review-state-test.sh:*)`
@@ -104,6 +107,9 @@ are implicit and not declared here.
   - `Bash(bash bin/render-pr-body-test.sh:*)`
   - `Bash(bash bin/render-prompt-slug-test.sh:*)`
   - `Bash(bash bin/render-prompt-test.sh:*)`
+  - `Bash(bash bin/retro-shape-claude-version-drift-test.sh:*)`
+  - `Bash(bash bin/retro-shape-runtime-invariant-audit-test.sh:*)`
+  - `Bash(bash bin/retro-shape-tool-denial-trends-test.sh:*)`
   - `Bash(bash bin/review-payload-schema-test.sh:*)`
   - `Bash(bash bin/review-poll-test.sh:*)`
   - `Bash(bash bin/review-state-test.sh:*)`

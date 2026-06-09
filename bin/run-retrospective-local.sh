@@ -68,6 +68,9 @@ SHAPES=(
   knowledge-budget
   pipeline-health-score
   prompt-workflow-amendment
+  tool-denial-trends
+  runtime-invariant-audit
+  claude-version-drift
 )
 
 # ENG-130 D-009: find the most-recent prior retrospective directory

@@ -98,6 +98,16 @@ under `bin/retro-prompts/`, write a driver + sibling test mirroring
 `dispatch.sh retrospective`'s allowed-tools (no new arm in
 `allowed_tools_for`).
 
+ENG-158 ships three additional shapes: `tool-denial-trends` (reads
+`events.jsonl::sandbox_denial` rows, requires the sandbox-denial
+detective ticket to be deployed before findings appear),
+`runtime-invariant-audit` (cross-checks AGENT_PROMPTS.md ↔
+`dispatch.sh` allow-lists ↔ `render-prompt.sh` resolver paths;
+always runnable), and `claude-version-drift` (compares `claude
+--version` against `$HARNESS_ROOT/.claude-cli-version`; requires
+the pin-claude-version ticket). Each shape carves out gracefully
+when its upstream dependency is absent.
+
 ## Common commands
 
 All commands need `TARGET_REPO` exported (point it at the target repo on disk).
