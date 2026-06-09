@@ -208,9 +208,9 @@ export PIPELINE_STAGE="implementing"
 # test output knows which gates are open. Printed BEFORE the
 # timeline-replay so an early failure is still attributable.
 printf '\n--- ENG-150 (landed=%s) ---\n' "$(_dep_150_landed && echo yes || echo no)"
-printf '--- ENG-151 (landed=%s) ---\n'   "$(_dep_151_landed && echo yes || echo no)"
-printf '--- ENG-152 (landed=%s) ---\n'   "$(_dep_152_landed && echo yes || echo no)"
-printf '--- ENG-153 (landed=%s) ---\n\n' "$(_dep_153_landed && echo yes || echo no)"
+printf -- '--- ENG-151 (landed=%s) ---\n' "$(_dep_151_landed && echo yes || echo no)"
+printf -- '--- ENG-152 (landed=%s) ---\n' "$(_dep_152_landed && echo yes || echo no)"
+printf -- '--- ENG-153 (landed=%s) ---\n\n' "$(_dep_153_landed && echo yes || echo no)"
 
 # Comment 1: agent self-claim (PASS) at 15:54:04Z.
 PIPELINE_WRITER=agent _FIXTURE_INJECT_CREATED_AT="2026-05-14T15:54:04Z" \
