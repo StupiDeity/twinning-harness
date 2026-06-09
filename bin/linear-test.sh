@@ -1183,6 +1183,11 @@ unset PIPELINE_WRITER _eng151_h9_first_char
 # strip_re must drop both header lines so ENG-63's reapplied footer can
 # fire.  The canned existing body carries a stale header + content +
 # dedup marker; caller passes the same prose.
+#
+# Also pins H-017 (AC #1): the body Linear stores on reapply must still
+# open with the canonical bracket + EVENT-TYPE header.  Pre-H-017 fix,
+# `body=new_norm+footer` lost the header (strip_re removed it from
+# new_norm) and every reapply landed headerless.
 : > "$_eng151_capture_file"
 _eng151_canned_existing_body=$'[ENG-151T · implementing · d0010 · 2026-05-20T10:00:00Z · agent]\nCOMPLETION — stage implementing summary\n\nagent prose with TODO — fix later\n\n<!-- meta: dispatch id=ENG-151T-d0010 stage=implementing -->\n\n<!-- meta: dedup key=completion/implementing/ENG-151T -->'
 PIPELINE_WRITER=agent \
@@ -1193,11 +1198,15 @@ PIPELINE_STAGE=implementing \
 # Footer should fire (existing matches new after strip_re drops header
 # lines + dispatch marker).  AND the caller's prose line `TODO — fix later`
 # must survive (closed _event_types alternation does NOT match TODO).
+# AND the captured body MUST open with the canonical bracket header line
+# (H-017 — reapply path preserves header).
 if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng151_capture_file" \
-   && grep -qF 'TODO — fix later' "$_eng151_capture_file"; then
-  pass_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved"
+   && grep -qF 'TODO — fix later' "$_eng151_capture_file" \
+   && grep -qE '^\[ENG-151T · implementing · d0010 · [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z · agent\]$' "$_eng151_capture_file" \
+   && grep -qF 'COMPLETION — stage implementing summary' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved, header restored"
 else
-  fail_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved" \
+  fail_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved, header restored" \
     "captured: $(cat "$_eng151_capture_file")"
 fi
 unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
@@ -1340,6 +1349,38 @@ else
     "got: $_eng151_adv_c15_out"
 fi
 unset _eng151_adv_c15_out
+
+# H-017: add_or_update_comment reapply path preserves bracket header
+# (AC #1) — focused regression for the QA-flagged P0.  H-010 also covers
+# this property; this test isolates it for clarity and adds an explicit
+# first-line assertion so a regression points operators at the reapply
+# branch immediately (vs H-010's multi-aspect failure message).
+#
+# Pre-fix: strip_re strips the bracket + EVENT-TYPE lines from new_norm
+# for the byte-equal compare (D-007).  The reapply branch then set
+# body=new_norm+footer, omitting any header re-injection — the stored
+# comment in Linear lost its bracket header after every identical
+# reapply.  Fix: re-derive event-type/summary + re-render header on
+# the reapply branch before commentUpdate; line 1 of the stored body
+# MUST be a fresh bracket header.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=$'[ENG-151T · implementing · d0017 · 2026-05-20T10:00:00Z · agent]\nCOMPLETION — stage implementing summary\n\nidempotent reapply payload\n\n<!-- meta: dispatch id=ENG-151T-d0017 stage=implementing -->\n\n<!-- meta: dedup key=completion/implementing/ENG-151T -->'
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0017 \
+PIPELINE_STAGE=implementing \
+  add_or_update_comment "completion/implementing/ENG-151T" ENG-151T \
+  --body $'idempotent reapply payload' >/dev/null 2>&1
+_eng151_h17_first_line="$(head -n 1 "$_eng151_capture_file" || true)"
+_eng151_h17_second_line="$(sed -n '2p' "$_eng151_capture_file" || true)"
+if [[ "$_eng151_h17_first_line" =~ ^\[ENG-151T\ ·\ implementing\ ·\ d0017\ · ]] \
+   && [[ "$_eng151_h17_second_line" == "COMPLETION — stage implementing summary" ]] \
+   && grep -qE '^<!-- meta: reapplied at=' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-017 reapply path preserves bracket header (AC #1)"
+else
+  fail_at "ENG-151 H-017 reapply path preserves bracket header (AC #1)" \
+    "first_line='$_eng151_h17_first_line' second_line='$_eng151_h17_second_line' captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h17_first_line _eng151_h17_second_line
 
 # Restore originals.
 rm -f "$_eng151_capture_file"
