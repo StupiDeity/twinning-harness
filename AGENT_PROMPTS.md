@@ -42,6 +42,8 @@
 
 The legacy hyphenated shapes — `<!-- pipeline-stage-summary: ... -->`, `<!-- pipeline-rejection: ... -->`, `<!-- pipeline-halt: ... -->`, `<!-- pipeline-wait: ... -->`, `<!-- pipeline-decision: ... -->`, `<!-- pipeline-sig: ... -->`, `<!-- pipeline-metric: ... -->`, `<!-- pipeline-transition: ... -->` — are **REMOVED**. `bin/linear.sh::add_or_update_comment` has a lane-fence (PR #44) that **rejects any comment body containing a legacy `<!-- pipeline-<word>: ... -->` marker** with rc=14, and the orchestrator strips them defensively from your stage summary as a last resort. Do not emit them. If your training memory recalls these shapes, override it: the new vocabulary is the only one the harness reads or writes. ENG-64 implementing halted on 2026-05-05 because the agent prefixed the stage-summary file with both shapes — only emit the `<!-- meta: dedup ... -->` form.
 
+**Header line (ENG-151).** Every `add-comment` / `add-or-update-comment` you post is auto-prepended with `[<ident> · <stage> · <dispatch-id-tail> · <iso-ts> · <actor>]` by the chokepoint, followed by a derived `<EVENT-TYPE> — <summary>` line (the event-type is derived from the body's pipeline/meta marker or the sig). You do NOT manage these lines — the chokepoint owns them. Do NOT emit your own bracketed `[ENG-N · …]` first line; the chokepoint's agent-lane detective REJECTS hand-rolled headers with rc=14 (`legacy-marker-write`). If `PIPELINE_DISPATCH_ID` or `PIPELINE_STAGE` is missing in an agent-lane invocation, the chokepoint exits rc=15 (`header-missing-inputs`). Both are configured by `bin/dispatch.sh::main` before your subshell starts; you do not set them yourself.
+
 ---
 
 ## Verdict-marker protocol
