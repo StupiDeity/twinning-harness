@@ -158,7 +158,7 @@ check() {
 
 bump() {
   local ident="$1" counter="$2"
-  shift 2 || true
+  shift 2
   case "$counter" in
     review_rejection|gotcha_triggered|learned_rule_renewal|qa_rejection|implement_rejection) ;;
     *) die "unknown counter: $counter" ;;
@@ -184,12 +184,25 @@ bump() {
     local valid
     valid="$(jq -r --arg c "$reason_code" \
       '(.metric_reason_codes // []) | index($c) // empty' \
-      "$registry" 2>/dev/null || true)"
+      "$registry")"
     [[ -n "$valid" ]] || die "bump: --reason-code '$reason_code' not in metric_reason_codes registry (see bin/pipeline-events.json::metric_reason_codes)"
   fi
 
   local existing count
-  existing="$(count_marker "$ident" "$counter")"
+  # Gate the count source on counter type to mirror check()'s denominator:
+  # the 3 rejection counters use since-last-operator-resume semantics
+  # (ENG-123), the 2 ack-label counters accumulate over issue lifetime.
+  # Without this gate, body shows lifetime count (e.g. 4/2 post-resume)
+  # while check() sees the since-resume count (e.g. 1/2) and does not trip
+  # — the "Trips at" prose then misleads the operator.
+  case "$counter" in
+    review_rejection|qa_rejection|implement_rejection)
+      existing="$(count_marker_since_last_operator_resume "$ident" "$counter")" ;;
+    *)
+      existing="$(count_marker "$ident" "$counter")" ;;
+  esac
+  # post-this-bump count (excludes the marker we are about to write;
+  # local arithmetic — no re-read).
   count=$((existing + 1))
 
   local threshold_key threshold
