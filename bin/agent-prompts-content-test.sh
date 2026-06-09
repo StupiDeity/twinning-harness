@@ -88,6 +88,63 @@ else
   ok "§3 lacks 'gh pr create'"
 fi
 
+# ─── ENG-120: §3 within-stage iteration loop directive ─────────────────
+# The implement agent runs an inner generator-evaluator loop (up to N=3)
+# within one dispatch, sourcing termination criteria from {plan_json}'s
+# pass_criteria[] or the profile gate-suite + zero-P0 fallback, emitting
+# one bash bin/metrics.sh impl_iteration event per iteration, and halting
+# with verdict halt --reason iteration-exhausted on N=3-still-failing.
+# Five literal-anchored assertions guard against the directive being
+# silently deleted or its parameters drifted (N changed, metric name
+# changed, halt reason changed, fallback marker disconnected).
+
+# Assertion C1 (presence of the heading literal):
+if printf '%s\n' "$s3" | grep -qF 'Within-stage iteration loop'; then
+  ok "§3 ENG-120: 'Within-stage iteration loop' directive heading present"
+else
+  nope "§3 ENG-120: 'Within-stage iteration loop' directive heading present" \
+    "phrase missing — has the iteration-loop block been removed or renamed?"
+fi
+
+# Assertion C2 (iteration cap N=3 verbatim — anti-drift on N):
+if printf '%s\n' "$s3" | grep -qF 'up to 3 iterations'; then
+  ok "§3 ENG-120: cap literal 'up to 3 iterations' (N=3) present"
+else
+  nope "§3 ENG-120: cap literal 'up to 3 iterations' (N=3) present" \
+    "phrase missing — has the iteration cap drifted from N=3 (D-002)?"
+fi
+
+# Assertion C3 (metric chokepoint literal):
+if printf '%s\n' "$s3" | grep -qF 'bash bin/metrics.sh impl_iteration'; then
+  ok "§3 ENG-120: 'bash bin/metrics.sh impl_iteration' chokepoint named"
+else
+  nope "§3 ENG-120: 'bash bin/metrics.sh impl_iteration' chokepoint named" \
+    "phrase missing — has the metric emission been replaced with a parallel telemetry path?"
+fi
+
+# Assertion C4 (structured + fallback predicate references):
+if printf '%s\n' "$s3" | grep -qF 'pass_criteria' \
+   && printf '%s\n' "$s3" | grep -qF '(no plan.json — falling back to prose plan)'; then
+  ok "§3 ENG-120: structured (pass_criteria) AND fallback predicate marker both present"
+else
+  nope "§3 ENG-120: structured (pass_criteria) AND fallback predicate marker both present" \
+    "one or both predicates missing — D-003 termination-criteria contract broken"
+fi
+
+# Assertion C5 (halt reason cross-reference — anti-regression on the
+# `iteration-exhausted` token within the loop block specifically, not just the existing
+# verdict-marker enumeration):
+# Substring proximity: 'iteration-exhausted' must appear WITHIN the iteration-loop
+# directive's body (after the heading and before 'Your task:'), not just in the
+# downstream Verdict marker block. awk extracts the loop-block window.
+loop_block="$(printf '%s\n' "$s3" | awk '/Within-stage iteration loop/{in_block=1} in_block; /^Your task:/{exit}')"
+if printf '%s\n' "$loop_block" | grep -qF 'iteration-exhausted'; then
+  ok "§3 ENG-120: loop block names 'iteration-exhausted' halt reason inline"
+else
+  nope "§3 ENG-120: loop block names 'iteration-exhausted' halt reason inline" \
+    "phrase missing from the loop block (may exist only in the downstream verdict-marker enumeration) — D-005 halt-on-exhaustion contract broken"
+fi
+
 # ─── ENG-108: §3 read-first list has {progress_md_path} at position 1 ───
 # The implementing prompt MUST instruct the agent to read the per-issue
 # progress notebook before any other onboarding artifact (Linear AC-1).
@@ -1975,10 +2032,15 @@ fi
 # Shape A conditional: §3 may not yet have the delimiters (ENG-123 pending).
 # When §3 has no delimiters, §6 must still have them (guards against §6 drift).
 # When §3 has delimiters too, assert byte-for-byte parity of counts.
+# Count only STANDALONE column-0 sentinel lines — those are the actual
+# verbatim-embed blocks render-prompt.sh fills with plan.json. Inline prose
+# mentions of the delimiter names (e.g. ENG-120's §3 "Structured path"
+# instruction referencing `<<<PLAN_JSON_BEGIN>>>`) are documentation, not
+# embed structure, and must not perturb the parity count.
 s3_eng124="$(section_body "## 3. Implementation Agent (Backend)")"
 for delim in '<<<PLAN_JSON_BEGIN>>>' '<<<PLAN_JSON_END>>>'; do
-  s6_count="$(printf '%s\n' "$s6_eng124" | grep -cF "$delim" || true)"
-  s3_count="$(printf '%s\n' "$s3_eng124" | grep -cF "$delim" || true)"
+  s6_count="$(printf '%s\n' "$s6_eng124" | grep -cE "^${delim}$" || true)"
+  s3_count="$(printf '%s\n' "$s3_eng124" | grep -cE "^${delim}$" || true)"
   if [[ "$s6_count" -ge 1 ]]; then
     if [[ "$s3_count" -ge 1 && "$s3_count" == "$s6_count" ]]; then
       ok "§3/§6 ENG-124-C4: delimiter '$delim' present in both sections, counts match"
@@ -2023,6 +2085,54 @@ else
   ok 'ENG-84 §7: does NOT embed `tick_at: $(date …)` inside heredoc instruction'
 fi
 unset s7_eng84
+
+# ─── QA-ADV ENG-120: loop block appears exactly once in §3 ─────────────
+# C1 uses grep -qF which passes on any match count. A merge-conflict
+# duplicate of the block still passes C1 but delivers two contradictory
+# instruction blocks to the agent. Pin exact count = 1.
+_loop_heading_count="$(printf '%s\n' "$s3" | grep -cF 'Within-stage iteration loop')"
+if [[ "$_loop_heading_count" == "1" ]]; then
+  ok "§3 QA-ADV ENG-120: 'Within-stage iteration loop' heading appears exactly once (no duplicate)"
+else
+  nope "§3 QA-ADV ENG-120: 'Within-stage iteration loop' heading appears exactly once" \
+    "found $_loop_heading_count occurrences — duplicate block or accidental removal"
+fi
+
+# ─── QA-ADV ENG-120: K < 3 fail-vs-exhausted threshold pinned ───────────
+# C2 pins 'up to 3 iterations' (the cap header). The fail outcome definition
+# 'K < 3' is a distinct occurrence; if it drifts to 'K < 2', iteration 2
+# incorrectly emits exhausted instead of fail. Pin the literal.
+if printf '%s\n' "$loop_block" | grep -qF 'K < 3'; then
+  ok "§3 QA-ADV ENG-120: 'K < 3' fail-vs-exhausted threshold present in loop block"
+else
+  nope "§3 QA-ADV ENG-120: 'K < 3' fail-vs-exhausted threshold present in loop block" \
+    "phrase missing — fail/exhausted boundary may have drifted (check the 'K ≤ 3' predicate in the loop body)"
+fi
+
+# ─── QA-ADV ENG-120: loop block structural placement in §3 ──────────────
+# The plan requires the Within-stage iteration loop block to sit AFTER
+# `Do NOT invent the contract.` (the Plan-contract completeness block's
+# last line) AND BEFORE `Your task:` (the task body header). This test
+# verifies ordering rather than mere presence (C1 only checks presence).
+# A future refactor that moves the loop block above the precondition check
+# would pass C1 but fail this structural ordering test.
+_precondition_anchor="the plan is patched. Do NOT invent the contract."
+_task_anchor="Your task:"
+_loop_anchor="Within-stage iteration loop"
+
+_precondition_line="$(printf '%s\n' "$s3" | grep -nF "$_precondition_anchor" | head -1 | cut -d: -f1)"
+_task_line="$(printf '%s\n' "$s3" | grep -nF "$_task_anchor" | head -1 | cut -d: -f1)"
+_loop_line="$(printf '%s\n' "$s3" | grep -nF "$_loop_anchor" | head -1 | cut -d: -f1)"
+
+if [[ -z "$_precondition_line" || -z "$_task_line" || -z "$_loop_line" ]]; then
+  nope "§3 QA-ADV ENG-120: loop block ordering — all three anchors must exist in §3" \
+    "precondition_line='$_precondition_line' task_line='$_task_line' loop_line='$_loop_line'"
+elif [[ "$_loop_line" -gt "$_precondition_line" && "$_loop_line" -lt "$_task_line" ]]; then
+  ok "§3 QA-ADV ENG-120: loop block sits AFTER precondition anchor AND BEFORE 'Your task:' (lines: precond=$_precondition_line loop=$_loop_line task=$_task_line)"
+else
+  nope "§3 QA-ADV ENG-120: loop block ordering — expected precond < loop < task" \
+    "precondition_line=$_precondition_line loop_line=$_loop_line task_line=$_task_line — block may have been moved outside its intended slot"
+fi
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

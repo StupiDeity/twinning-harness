@@ -100,6 +100,25 @@ for stage in brainstorming planning implementing ui reviewing qa building releas
   fi
 done
 
+# ─── ENG-120: metrics.sh dual-path on implementing arm ────────────────
+# The implementing stage gains Bash(bash .pipeline/bin/metrics.sh:*) AND
+# Bash(bash bin/metrics.sh:*) so the within-stage iteration loop's
+# `bash bin/metrics.sh impl_iteration …` emissions land regardless of
+# whether the agent's worktree has the harness symlinked at .pipeline/ or
+# carries the harness scripts directly at bin/. Scoped to implementing —
+# released + retrospective already carry this pattern via the unchanged
+# allowlist arms.
+impl_tools="$(allowed_tools_for implementing 2>/dev/null)"
+if ! printf '%s' "$impl_tools" | grep -q 'Bash(bash \.pipeline/bin/metrics\.sh:\*)'; then
+  fail_at "ENG-120: implementing allowlist contains Bash(bash .pipeline/bin/metrics.sh:*)" \
+    "tools=$impl_tools"
+elif ! printf '%s' "$impl_tools" | grep -q 'Bash(bash bin/metrics\.sh:\*)'; then
+  fail_at "ENG-120: implementing allowlist contains Bash(bash bin/metrics.sh:*)" \
+    "tools=$impl_tools"
+else
+  pass_at "ENG-120: implementing allowlist carries metrics.sh dual-path"
+fi
+
 # ENG-49 Gap #1: UI allowlist no longer contains gh pr create.
 ui_tools="$(allowed_tools_for ui)"
 if [[ "$ui_tools" != *"gh pr create"* ]]; then
@@ -3979,6 +3998,26 @@ else
   fail_at "QA-ADV-D003-BASH-GAP" "rc=$rc_bash_gap out=$out_bash_gap (unexpected — D-003 should not catch Bash tool_use)"
 fi
 rm -f "$TX_BASH_GAP"
+
+# ─── QA-ADV ENG-120: metrics.sh isolation — non-implementing stages ─────
+# The ENG-120 allowlist extension is scoped to the `implementing` arm only.
+# brainstorming, planning, ui, reviewing, qa, and building MUST NOT carry
+# Bash(bash bin/metrics.sh:*) via the base allowlist (released and
+# retrospective already had it before ENG-120 and are excluded from this
+# guard). If the pattern bleeds to other stages, the audit surface grows
+# and the intent of "metrics chokepoint for implemented stages only" is lost.
+for _stage in brainstorming planning ui reviewing qa building; do
+  _tools="$(allowed_tools_for "$_stage" 2>/dev/null)"
+  if printf '%s' "$_tools" | grep -q 'Bash(bash bin/metrics\.sh:\*)'; then
+    fail_at "QA-ADV ENG-120: ${_stage} allowlist must NOT carry Bash(bash bin/metrics.sh:*)" \
+      "tools=$_tools"
+  elif printf '%s' "$_tools" | grep -q 'Bash(bash \.pipeline/bin/metrics\.sh:\*)'; then
+    fail_at "QA-ADV ENG-120: ${_stage} allowlist must NOT carry Bash(bash .pipeline/bin/metrics.sh:*)" \
+      "tools=$_tools"
+  else
+    pass_at "QA-ADV ENG-120: ${_stage} allowlist correctly excludes metrics.sh (both path variants)"
+  fi
+done
 
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
