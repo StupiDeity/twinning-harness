@@ -943,6 +943,26 @@ add_or_update_comment() {
       is_identical_reapply=1
       now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       body="${new_norm}"$'\n'"<!-- meta: reapplied at=${now_iso} -->"
+      # ENG-151 H-017: strip_re removed the auto-prepended bracket +
+      # EVENT-TYPE header lines from new_norm so the byte-equal compare
+      # could survive header rotation across re-applies (D-007).  The
+      # body we hand to commentUpdate is composed from that stripped
+      # form, so re-prepend a fresh header here — otherwise every
+      # identical reapply lands headerless in Linear (AC #1 violation).
+      # Human lane bypassed header injection upstream, so its existing
+      # comment was never headered; preserve the symmetry by bypassing
+      # re-injection here too.
+      case "${PIPELINE_WRITER:-orchestrator}" in
+        human) ;;
+        *)
+          local _reapply_event_type _reapply_summary _reapply_header
+          IFS=$'\t' read -r _reapply_event_type _reapply_summary \
+            < <(_derive_event_type_and_summary "$new_norm" "$sig")
+          _reapply_header="$(_render_event_header "$ident" "$_reapply_event_type" "$_reapply_summary")" \
+            || return $?
+          body="${_reapply_header}"$'\n\n'"${body}"
+          ;;
+      esac
       bash "$SCRIPT_DIR/metrics.sh" comment-reapplied "$ident" "" \
         "reapplied" 0 || true
     fi
