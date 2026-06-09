@@ -280,23 +280,23 @@ SCRIPT_DIR="$STUB_DIR"
 }
 
 # ---------------------------------------------------------------------------
-# fixture-shapeC-claude-binary-unavailable: claude not on PATH → (unavailable)
+# fixture-shapeC-claude-binary-unavailable: monkeypatch _capture_observed_version
+# to simulate claude absent → (unavailable)
 # ---------------------------------------------------------------------------
 {
   name="fixture-shapeC-claude-binary-unavailable"
-  EMPTY_PATH_DIR="$(mktemp -d)"
-  ORIG_PATH="$PATH"
-  export PATH="$EMPTY_PATH_DIR"  # no claude here
   rm -f "$SHAPE_C_HARNESS_ROOT/.claude-cli-version"
   artifact_path="$ARTIFACT_DIR/fC3.md"
   export SHAPE_TEST_ARTIFACT_PATH="$artifact_path"
   rm -f "$RENDERED_PROMPT_COPY" "$DISPATCH_INVOKED"
-
-  # Need a dispatch stub but PATH is empty — point absolute path stub into stub_dir.
-  STUB_PATH_DIR="$(mktemp -d)"
-  ln -sf "$STUB_DIR/dispatch.sh" "$STUB_PATH_DIR/dispatch.sh"
-
   _write_dispatch_stub 0 yes
+
+  # Override _capture_observed_version to force the "claude missing" branch
+  # without disturbing PATH (which would break standard utilities used by
+  # main/render/dispatch in the same shell).
+  original_capture="$(declare -f _capture_observed_version)"
+  _capture_observed_version() { _OBSERVED_VERSION="(unavailable)"; }
+
   unset PIPELINE_DRY_RUN
   rc=0
   main \
@@ -305,8 +305,7 @@ SCRIPT_DIR="$STUB_DIR"
     --period-end-iso   2026-05-15T00:00:00Z \
     2>/dev/null || rc=$?
   export PIPELINE_DRY_RUN=1
-  export PATH="$ORIG_PATH"
-  rm -rf "$EMPTY_PATH_DIR" "$STUB_PATH_DIR"
+  eval "$original_capture"
 
   if [[ -f "$RENDERED_PROMPT_COPY" ]] && grep -qF '(unavailable)' "$RENDERED_PROMPT_COPY"; then
     _pass "$name"
