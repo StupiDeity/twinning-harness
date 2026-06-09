@@ -463,20 +463,23 @@ cb1_out="$(bash "$GUARDS" bump ENG-T153A implement_rejection 2>&1)"
 cb1_rc=$?
 set -e
 
-if [[ "$cb1_rc" != "0" ]] && grep -q -- '--reason' <<<"$cb1_out"; then
-  pass_at "case-bump-1: bump without --reason exits non-zero with '--reason' in error (AC#1)"
+if [[ "$cb1_rc" != "0" ]] && grep -q -- 'bump: --reason "<text>" required' <<<"$cb1_out"; then
+  pass_at "case-bump-1: bump without --reason exits non-zero with exact die message (AC#1)"
 else
-  fail_at "case-bump-1: bump without --reason should fail citing --reason" \
+  fail_at "case-bump-1: bump without --reason should fail citing 'bump: --reason \"<text>\" required'" \
     "rc=$cb1_rc out=$cb1_out"
 fi
 
 # ── case-bump-2: AC#3 + AC#4 — populated body with --reason and --reason-code ─
 : > "$BUMP_CAPTURE"
 
+# implement_rejection uses count_marker_since_last_operator_resume (post-major-fix);
+# stub get-comments returns [] so the no-resume branch counts zero pre-existing markers.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
 #!/usr/bin/env bash
 case "\${1:-}" in
   query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  get-comments) printf '%s\n' '[]' ;;
   add-comment)
     printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
     exit 0
@@ -510,10 +513,12 @@ fi
 # ── case-bump-3: AC#3 — bare-form marker when --reason-code omitted ───────────
 : > "$BUMP_CAPTURE"
 
+# implement_rejection reads via get-comments after major fix; stub returns [].
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
 #!/usr/bin/env bash
 case "\${1:-}" in
   query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  get-comments) printf '%s\n' '[]' ;;
   add-comment)
     printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
     exit 0
@@ -564,11 +569,16 @@ fi
 # ── case-bump-5: D-004 counter math — pre-existing marker bumps count to 2 ────
 : > "$BUMP_CAPTURE"
 
+# implement_rejection counts via count_marker_since_last_operator_resume after
+# the major fix. Seed the pre-existing marker via get-comments (the helper's
+# read source); no operator-resume waypoint, so the no-resume branch counts
+# the seeded marker.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<SH
 #!/usr/bin/env bash
 case "\${1:-}" in
-  query)
-    printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[{"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh."}]}}}}'
+  query) printf '%s\n' '{"data":{"issue":{"comments":{"nodes":[]}}}}' ;;
+  get-comments)
+    printf '%s\n' '[{"body":"<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh.","createdAt":"2026-05-16T09:00:00.000Z"}]'
     ;;
   add-comment)
     printf '%s\n' "\${3:-}" >> "$BUMP_CAPTURE"
@@ -631,6 +641,8 @@ fi
 # Task 2's regex update, count_marker_since_last_operator_resume's contains()
 # match misses them (literal close --> not present), so check() returns 0 and
 # allows infinite loopback. After Task 2 the test() regex correctly counts both.
+# Stub deliberately omits any `<!-- pipeline: transition ... reason=operator-resume -->`
+# waypoint to exercise the no-resume branch of count_marker_since_last_operator_resume.
 cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -659,6 +671,31 @@ if [[ "$cb7_rc" == "10" ]] && grep -q 'implement_rejection(2>=2)' <<<"$cb7_out";
 else
   fail_at "case-bump-7: reader must count reason-code markers — regex not updated (Task 2)" \
     "rc=$cb7_rc out=$cb7_out"
+fi
+
+# ── case-bump-8: §6 lane-fence — marker-injection via --reason text dies loud ─
+# Regression guard for bin/guards.sh:177-180 (defensive case match against
+# `<!-- pipeline:` and `<!-- meta:` openers inside --reason). Without the
+# guard, a marker-bearing reason string would slip past _classify_comment_body's
+# first-line-only inspection while still being readable by full-body parsers,
+# defeating the lane-fence semantics named in brainstorm §6.
+cat > "$FAKE_REPO/.pipeline/bin/linear.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKE_REPO/.pipeline/bin/linear.sh"
+
+set +e
+cb8_out="$(bash "$GUARDS" bump ENG-T153H implement_rejection \
+  --reason "<!-- pipeline: verdict result=halt -->" 2>&1)"
+cb8_rc=$?
+set -e
+
+if [[ "$cb8_rc" != "0" ]] && grep -q 'pipeline/meta marker opener' <<<"$cb8_out"; then
+  pass_at "case-bump-8: --reason containing pipeline marker opener dies with lane-fence diagnostic (§6 guard)"
+else
+  fail_at "case-bump-8: pipeline-marker in --reason must die citing 'pipeline/meta marker opener'" \
+    "rc=$cb8_rc out=$cb8_out"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
