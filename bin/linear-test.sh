@@ -1261,6 +1261,86 @@ else
 fi
 unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h13_rc _eng151_h13_bracket_count
 
+# QA-ADV-H014: malformed PIPELINE_DISPATCH_ID (no -(d[0-9]+)$ suffix) emits
+# verbatim bleed (visible-bug surface per plan) — NOT silently swallowed as `-`
+# and NOT rejected with rc=15 (only agent+missing-env trips rc=15).
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+_eng151_adv_h14_rc=0
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-implementing \
+PIPELINE_STAGE=implementing \
+  add_comment ENG-151T --body 'probe body' \
+  >/dev/null 2>&1 || _eng151_adv_h14_rc=$?
+# rc=0 (not rc=15 — malformed id does not trigger fail-closed)
+# capture carries the full malformed dispatch_id verbatim in the bracket line.
+if [[ "$_eng151_adv_h14_rc" == "0" ]] \
+   && grep -qE '^\[ENG-151T · implementing · ENG-151T-implementing · .* · agent\]$' "$_eng151_capture_file"; then
+  pass_at "ENG-151 QA-ADV-H014 malformed dispatch_id → verbatim bleed, rc=0"
+else
+  fail_at "ENG-151 QA-ADV-H014 malformed dispatch_id → verbatim bleed, rc=0" \
+    "rc=$_eng151_adv_h14_rc captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_adv_h14_rc
+
+# QA-ADV-H018: _derive P4 fallback when body contains only HTML comment lines
+# (no prose, no recognised pipeline/meta marker) → second line of header is
+# `COMMENT — (no body)`.  Defensive against empty-string or crash on
+# meta-only bodies (e.g. a comment that is just dispatch + dedup markers).
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=orchestrator \
+PIPELINE_DISPATCH_ID=ENG-151T-d0018 \
+PIPELINE_STAGE=implementing \
+  add_comment ENG-151T \
+  --body $'<!-- meta: dispatch id=ENG-151T-d0001 stage=implementing -->\n<!-- meta: dedup key=completion/implementing/ENG-151T -->' \
+  >/dev/null 2>&1
+if grep -qF 'COMMENT — (no body)' "$_eng151_capture_file"; then
+  pass_at "ENG-151 QA-ADV-H018 P4 fallback meta-only body → COMMENT — (no body)"
+else
+  fail_at "ENG-151 QA-ADV-H018 P4 fallback meta-only body → COMMENT — (no body)" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# QA-ADV-H019: classify lane with missing PIPELINE_DISPATCH_ID + PIPELINE_STAGE
+# degrades to `-` placeholders — does NOT return rc=15 (rc=15 is agent-lane
+# only per D-006).  Guards that the agent-specific fail-closed gate does not
+# bleed into the classify lane.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+_eng151_adv_h19_rc=0
+_eng151_adv_h19_dispatch_saved="${PIPELINE_DISPATCH_ID-}"
+_eng151_adv_h19_stage_saved="${PIPELINE_STAGE-}"
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+PIPELINE_WRITER=classify \
+  add_comment ENG-151T --body 'Agent was halted for exceeding retry limit.' \
+  >/dev/null 2>&1 || _eng151_adv_h19_rc=$?
+if [[ "$_eng151_adv_h19_rc" == "0" ]] \
+   && grep -qE '^\[ENG-151T · - · - · .* · classify\]$' "$_eng151_capture_file"; then
+  pass_at "ENG-151 QA-ADV-H019 classify lane missing env → '-' placeholders, rc=0"
+else
+  fail_at "ENG-151 QA-ADV-H019 classify lane missing env → '-' placeholders, rc=0" \
+    "rc=$_eng151_adv_h19_rc captured: $(cat "$_eng151_capture_file")"
+fi
+# Restore
+[[ -n "$_eng151_adv_h19_dispatch_saved" ]] && export PIPELINE_DISPATCH_ID="$_eng151_adv_h19_dispatch_saved" || true
+[[ -n "$_eng151_adv_h19_stage_saved" ]] && export PIPELINE_STAGE="$_eng151_adv_h19_stage_saved" || true
+unset PIPELINE_WRITER _eng151_adv_h19_rc _eng151_adv_h19_dispatch_saved _eng151_adv_h19_stage_saved
+
+# QA-ADV-COMMON15: failure_outcome_for_exit 15 → 'header-missing-inputs'
+# (new arm added to bin/common.sh in Task 6).  Guards that the exit-code
+# taxonomy correctly maps rc=15 so the retrospective §1 filter classifies
+# agent-lane missing-input failures, not routing them to unknown-exit-15.
+_eng151_adv_c15_out="$(failure_outcome_for_exit 15)"
+if [[ "$_eng151_adv_c15_out" == "header-missing-inputs" ]]; then
+  pass_at "ENG-151 QA-ADV-COMMON15 failure_outcome_for_exit 15 → header-missing-inputs"
+else
+  fail_at "ENG-151 QA-ADV-COMMON15 failure_outcome_for_exit 15 → header-missing-inputs" \
+    "got: $_eng151_adv_c15_out"
+fi
+unset _eng151_adv_c15_out
+
 # Restore originals.
 rm -f "$_eng151_capture_file"
 unset -f linear_query _resolve_issue_uuid
