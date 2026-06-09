@@ -2032,10 +2032,15 @@ fi
 # Shape A conditional: §3 may not yet have the delimiters (ENG-123 pending).
 # When §3 has no delimiters, §6 must still have them (guards against §6 drift).
 # When §3 has delimiters too, assert byte-for-byte parity of counts.
+# Count only STANDALONE column-0 sentinel lines — those are the actual
+# verbatim-embed blocks render-prompt.sh fills with plan.json. Inline prose
+# mentions of the delimiter names (e.g. ENG-120's §3 "Structured path"
+# instruction referencing `<<<PLAN_JSON_BEGIN>>>`) are documentation, not
+# embed structure, and must not perturb the parity count.
 s3_eng124="$(section_body "## 3. Implementation Agent (Backend)")"
 for delim in '<<<PLAN_JSON_BEGIN>>>' '<<<PLAN_JSON_END>>>'; do
-  s6_count="$(printf '%s\n' "$s6_eng124" | grep -cF "$delim" || true)"
-  s3_count="$(printf '%s\n' "$s3_eng124" | grep -cF "$delim" || true)"
+  s6_count="$(printf '%s\n' "$s6_eng124" | grep -cE "^${delim}$" || true)"
+  s3_count="$(printf '%s\n' "$s3_eng124" | grep -cE "^${delim}$" || true)"
   if [[ "$s6_count" -ge 1 ]]; then
     if [[ "$s3_count" -ge 1 && "$s3_count" == "$s6_count" ]]; then
       ok "§3/§6 ENG-124-C4: delimiter '$delim' present in both sections, counts match"
