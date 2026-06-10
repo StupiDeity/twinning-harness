@@ -316,6 +316,7 @@ failure_outcome_for_exit() {
     12) printf 'stage-drift' ;;
     13) printf 'lane-violation' ;;
     14) printf 'legacy-marker-write' ;;
+    15) printf 'header-missing-inputs' ;;
     20) printf 'dispatch-failed' ;;
     21) printf 'scope-violation' ;;
     22) printf 'pr-opened-too-early' ;;

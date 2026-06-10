@@ -76,6 +76,218 @@ _inject_dispatch_marker() {
     "$body" "${PIPELINE_DISPATCH_ID-}" "${PIPELINE_STAGE-}"
 }
 
+# ENG-151: Render the canonical two-line comment header.
+#
+# `_render_event_header <ident> <event_type> <summary>`
+#
+# Reads PIPELINE_STAGE, PIPELINE_DISPATCH_ID, PIPELINE_WRITER from the
+# env.  Emits exactly two lines on stdout (no trailing newline):
+#
+#   [<ident> · <stage-or-dash> · <dispatch-tail-or-dash> · <iso-ts> · <actor>]
+#   <event_type> — <summary>
+#
+# Failure mode (D-006): when actor == agent AND PIPELINE_DISPATCH_ID is
+# empty OR PIPELINE_STAGE is empty, returns 15 with a structured stderr
+# diagnostic.  Routed by failure_outcome_for_exit as
+# `header-missing-inputs`.  Operator/classify/scope-check lanes degrade
+# to `-` placeholders when env is absent (legitimate during boot/manual
+# CLI use); human lane bypasses the helper entirely upstream (D-005).
+_render_event_header() {
+  local ident="$1" event_type="$2" summary="$3"
+  local stage="${PIPELINE_STAGE-}"
+  local dispatch_id="${PIPELINE_DISPATCH_ID-}"
+  local actor="${PIPELINE_WRITER:-orchestrator}"
+  if [[ "$actor" == "agent" && ( -z "$dispatch_id" || -z "$stage" ) ]]; then
+    printf 'linear.sh: agent-lane comment missing header inputs (PIPELINE_DISPATCH_ID=%q PIPELINE_STAGE=%q). Set both env vars or change the lane.\n' \
+      "$dispatch_id" "$stage" >&2
+    return 15
+  fi
+  local stage_render="${stage:--}"
+  local dispatch_tail
+  if [[ -z "$dispatch_id" ]]; then
+    dispatch_tail='-'
+  elif [[ "$dispatch_id" =~ -(d[0-9]+)$ ]]; then
+    dispatch_tail="${BASH_REMATCH[1]}"
+  else
+    # Malformed (regex no-match, non-empty): emit verbatim so the bug
+    # is operator-visible rather than silently swallowed (visible-bug
+    # surface — caught at re-spec, not at the chokepoint).
+    dispatch_tail="$dispatch_id"
+  fi
+  local now_iso
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '[%s · %s · %s · %s · %s]\n%s — %s' \
+    "$ident" "$stage_render" "$dispatch_tail" "$now_iso" "$actor" \
+    "$event_type" "$summary"
+}
+
+# ENG-151: Derive `<event-type>\t<summary>` from a comment body + optional sig.
+#
+# `_derive_event_type_and_summary <body> [<sig>]`
+#
+# Priority ladder (first match wins):
+#   P1: sig matches a known dedup-marker class.  Stage segment of the
+#       sig (when present) is interpolated into the summary.
+#   P2: body carries a `<!-- pipeline: ... -->` marker (verdict /
+#       transition / decision).  Token extracted from k=v pairs.
+#   P3: body carries a `<!-- meta: ... -->` marker (metric / breadcrumb
+#       / forensic).
+#   P4: fallback.  Event-type=COMMENT, summary=first non-blank
+#       non-marker line truncated to 80 chars.
+#
+# Output: single line `<event-type>\t<summary>` with trailing newline
+# (so `IFS=$'\t' read -r` works at the caller).
+_derive_event_type_and_summary() {
+  local body="$1" sig="${2:-}"
+  local mid=''
+  if [[ -n "$sig" ]]; then
+    # Extract stage segment: `<class>/<stage>/<ident>` → `<stage>`;
+    # flat `<class>/<ident>` → empty.  The stage segment is the slash-
+    # delimited middle when the sig has 3 segments AND the middle is
+    # NOT itself an issue identifier (ENG-N).
+    case "$sig" in
+      */*/*)
+        mid="${sig#*/}"
+        mid="${mid%/*}"
+        case "$mid" in
+          ENG-*) mid='' ;;
+        esac
+        ;;
+    esac
+    case "$sig" in
+      completion/*)
+        if [[ -n "$mid" ]]; then
+          printf 'COMPLETION\tstage %s summary\n' "$mid"
+        else
+          printf 'COMPLETION\tstage summary\n'
+        fi
+        return 0
+        ;;
+      tdd-evidence/*)
+        if [[ -n "$mid" ]]; then
+          printf 'TDD-EVIDENCE\tstage %s\n' "$mid"
+        else
+          printf 'TDD-EVIDENCE\tre-emission\n'
+        fi
+        return 0
+        ;;
+      last-review-state/*)
+        printf 'LAST-REVIEW-STATE\tcanonical review state\n'
+        return 0
+        ;;
+      scope-approval/*)
+        if [[ -n "$mid" ]]; then
+          printf 'SCOPE-APPROVAL\t%s\n' "$mid"
+        else
+          printf 'SCOPE-APPROVAL\tapproval request\n'
+        fi
+        return 0
+        ;;
+      halt/*)
+        if [[ -n "$mid" ]]; then
+          printf 'HALT\tstage %s halt\n' "$mid"
+        else
+          printf 'HALT\thalt\n'
+        fi
+        return 0
+        ;;
+      wait/*)
+        if [[ -n "$mid" ]]; then
+          printf 'WAIT\tstage %s wait\n' "$mid"
+        else
+          printf 'WAIT\twait\n'
+        fi
+        return 0
+        ;;
+      worktree-mutation/*)
+        printf 'WORKTREE-MUTATION\tworktree mutation\n'
+        return 0
+        ;;
+      protocol-violation/*)
+        printf 'PROTOCOL-VIOLATION\tprotocol violation\n'
+        return 0
+        ;;
+      retry-pending/*)
+        printf 'RETRY-PENDING\tretry pending\n'
+        return 0
+        ;;
+    esac
+  fi
+  # P2: pipeline-marker derivation.
+  if [[ "$body" == *'<!-- pipeline: verdict result=pass'* ]]; then
+    local _stage
+    _stage="$(printf '%s' "$body" | grep -oE 'stage=[a-z]+' | head -1 | cut -d= -f2)"
+    printf 'PASS\tstage %s complete\n' "${_stage:-?}"
+    return 0
+  fi
+  if [[ "$body" == *'<!-- pipeline: verdict result=fail'* ]]; then
+    local _target
+    _target="$(printf '%s' "$body" | grep -oE 'target=[a-z]+' | head -1 | cut -d= -f2)"
+    printf 'FAIL\ttarget %s\n' "${_target:-?}"
+    return 0
+  fi
+  if [[ "$body" == *'<!-- pipeline: verdict result=halt'* ]]; then
+    local _reason
+    _reason="$(printf '%s' "$body" | grep -oE 'reason=[a-z-]+' | head -1 | cut -d= -f2)"
+    printf 'HALT\t%s\n' "${_reason:-?}"
+    return 0
+  fi
+  if [[ "$body" == *'<!-- pipeline: verdict result=wait'* ]]; then
+    local _reason
+    _reason="$(printf '%s' "$body" | grep -oE 'reason=[a-z-]+' | head -1 | cut -d= -f2)"
+    printf 'WAIT\t%s\n' "${_reason:-?}"
+    return 0
+  fi
+  if [[ "$body" == *'<!-- pipeline: verdict result=pivot'* ]]; then
+    local _target
+    _target="$(printf '%s' "$body" | grep -oE 'target=[a-z]+' | head -1 | cut -d= -f2)"
+    printf 'PIVOT\ttarget %s\n' "${_target:-?}"
+    return 0
+  fi
+  if [[ "$body" == *'<!-- pipeline: transition '* ]]; then
+    local _from _to
+    _from="$(printf '%s' "$body" | grep -oE 'from=[a-z]+' | head -1 | cut -d= -f2)"
+    _to="$(printf '%s' "$body" | grep -oE 'to=[a-z]+' | head -1 | cut -d= -f2)"
+    printf 'TRANSITION\t%s → %s\n' "${_from:-?}" "${_to:-?}"
+    return 0
+  fi
+  if [[ "$body" == *'<!-- pipeline: decision '* ]]; then
+    local _action _gate
+    _action="$(printf '%s' "$body" | grep -oE 'action=[a-z-]+' | head -1 | cut -d= -f2)"
+    _gate="$(printf '%s' "$body" | grep -oE 'gate=[a-z-]+' | head -1 | cut -d= -f2)"
+    if [[ -n "$_gate" ]]; then
+      printf 'DECISION\t%s (gate=%s)\n' "${_action:-?}" "$_gate"
+    else
+      printf 'DECISION\t%s\n' "${_action:-?}"
+    fi
+    return 0
+  fi
+  # P3: meta-marker derivation.
+  if [[ "$body" =~ \<\!--\ meta:\ metric\ name=([a-z_-]+) ]]; then
+    printf 'COUNTER-BUMP\t%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$body" =~ \<\!--\ meta:\ breadcrumb\ sig=([^\ ]+) ]]; then
+    printf 'BREADCRUMB\tre-emit of %s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$body" =~ \<\!--\ meta:\ forensic\ kind=([a-z-]+) ]]; then
+    printf 'FORENSIC\t%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  # P4: prose fallback.
+  local first_prose
+  first_prose="$(grep -m1 -v -e '^<!--' -e '^$' <<<"$body" | head -c 80 || true)"
+  printf 'COMMENT\t%s\n' "${first_prose:-(no body)}"
+}
+
+# IMPORTANT (ENG-151 D-011): must be called on the un-headered body.
+# The ENG-151 header line (`[ENG-N · …]`) is auto-prepended by the
+# chokepoint AFTER this classifier returns. If the order is ever
+# reversed, every comment becomes `other_comment` and the
+# `add transition_comment` lane fence silently admits agent-lane
+# transition writes. Order is asserted indirectly by H-012 in
+# bin/linear-test.sh (agent-lane hand-rolled bracket → exit 14).
 # Classify a comment body into transition_comment or other_comment.
 # transition_comment: the first non-blank line of the body is the
 # orchestrator transition waypoint marker. Recognized shapes:
@@ -504,6 +716,32 @@ add_comment() {
   _comment_class="$(_classify_comment_body "$body")"
   _check_lane "add" "$_comment_class" || return $?
 
+  # ENG-151: auto-prepend bracketed header + event-type/summary line.
+  # Placement: AFTER lane fence (so classifier reads un-headered body),
+  # BEFORE dispatch-id auto-inject (so footer reads below header), BEFORE
+  # the dry-run short-circuit (so unit tests observe the injection).
+  # human lane bypasses (D-005); agent lane with hand-rolled header
+  # rejected (D-009-b); agent lane with missing dispatch context fails
+  # via _render_event_header rc=15 (D-006).
+  case "${PIPELINE_WRITER:-orchestrator}" in
+    human) ;;
+    *)
+      if [[ "${PIPELINE_WRITER:-orchestrator}" == "agent" ]]; then
+        local _first_nonblank
+        _first_nonblank="$(printf '%s' "$body" | grep -m1 '[^ ]' || true)"
+        _first_nonblank="$(printf '%s' "$_first_nonblank" | sed 's/^[[:space:]]*//')"
+        if [[ "$_first_nonblank" =~ ^\[ENG-[0-9A-Z]+\ · ]]; then
+          printf 'linear.sh add-comment: agent-lane comment carries hand-rolled header line — rejected.\n            header line is auto-prepended by the chokepoint; do not emit it manually.\n' >&2
+          return 14
+        fi
+      fi
+      local _event_type _summary _header
+      IFS=$'\t' read -r _event_type _summary < <(_derive_event_type_and_summary "$body" "")
+      _header="$(_render_event_header "$ident" "$_event_type" "$_summary")" || return $?
+      body="${_header}"$'\n\n'"${body}"
+      ;;
+  esac
+
   # ENG-87: auto-inject dispatch_id marker. Placement is load-bearing —
   # AFTER _check_lane (so the comment-class classification reflects the
   # caller's authoring intent; the marker is appended at the END so
@@ -514,7 +752,10 @@ add_comment() {
   body="$(_inject_dispatch_marker "$body")"
 
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
-    log "[DRY_RUN] would comment on $ident: ${body:0:80}..."
+    # ENG-151: window widened from 80 → 400.  Post-header bodies open
+    # with ~60-byte bracket + event-type line; the legacy 80-char
+    # window hid every marker that landed in the body proper.
+    log "[DRY_RUN] would comment on $ident: ${body:0:400}..."
     return 0
   fi
 
@@ -587,6 +828,34 @@ add_or_update_comment() {
     || die "add-or-update-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
   _reject_legacy_marker_body "add-or-update-comment" "$body" || return $?
 
+  # ENG-151: auto-prepend bracketed header + event-type/summary line.
+  # Placement: AFTER legacy-marker reject (so the detective reads the
+  # un-headered body), BEFORE dispatch-id auto-inject + dedup-marker
+  # append (so footer + dedup land below the header), BEFORE the
+  # dry-run short-circuit (so unit tests observe the injection).
+  # human lane bypasses (D-005); agent lane with hand-rolled header
+  # rejected (D-009-b); agent lane with missing dispatch context fails
+  # via _render_event_header rc=15 (D-006).  Sig threaded into
+  # _derive_event_type_and_summary so P1 sig-derivation fires here.
+  case "${PIPELINE_WRITER:-orchestrator}" in
+    human) ;;
+    *)
+      if [[ "${PIPELINE_WRITER:-orchestrator}" == "agent" ]]; then
+        local _first_nonblank
+        _first_nonblank="$(printf '%s' "$body" | grep -m1 '[^ ]' || true)"
+        _first_nonblank="$(printf '%s' "$_first_nonblank" | sed 's/^[[:space:]]*//')"
+        if [[ "$_first_nonblank" =~ ^\[ENG-[0-9A-Z]+\ · ]]; then
+          printf 'linear.sh add-or-update-comment: agent-lane comment carries hand-rolled header line — rejected.\n            header line is auto-prepended by the chokepoint; do not emit it manually.\n' >&2
+          return 14
+        fi
+      fi
+      local _event_type _summary _header
+      IFS=$'\t' read -r _event_type _summary < <(_derive_event_type_and_summary "$body" "$sig")
+      _header="$(_render_event_header "$ident" "$_event_type" "$_summary")" || return $?
+      body="${_header}"$'\n\n'"${body}"
+      ;;
+  esac
+
   # ENG-87: auto-inject dispatch_id marker. Same placement rationale as
   # add_comment — after the legacy-marker reject, before the dedup-marker
   # append. The dedup-append (line ~573) runs on the already-injected
@@ -605,7 +874,8 @@ add_or_update_comment() {
   fi
 
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
-    log "[DRY_RUN] would upsert $sig on $ident: ${body:0:80}..."
+    # ENG-151: window widened from 80 → 400 (see add_comment).
+    log "[DRY_RUN] would upsert $sig on $ident: ${body:0:400}..."
     return 0
   fi
 
@@ -649,9 +919,21 @@ add_or_update_comment() {
     # post-cutover. Stripping both noise lines preserves ENG-63's
     # byte-equal-modulo-meta-noise normalisation under dispatch-id
     # rotation.
-    strip_re='/^<!-- meta: (reapplied at=|dispatch id=)[^>]* -->$/d'
-    existing_norm="$(printf '%s' "$existing_body" | sed -E "$strip_re")"
-    new_norm="$(printf '%s' "$body" | sed -E "$strip_re")"
+    # ENG-151 D-007: also strip the auto-prepended header lines so the
+    # byte-equal-modulo-meta-noise normalisation (ENG-63) survives header
+    # rotation across re-applies. Line 1 = bracket; Line 2 = closed
+    # event-type vocabulary alternation (anchored to ^_event_types$ to
+    # avoid stripping caller prose lines like "TODO — fix later").
+    # `[0-9A-Z]+` (not `[0-9]+`) matches both production identifiers
+    # (`ENG-151`) and test fixtures (`ENG-151T`).
+    local _event_types='PASS|FAIL|HALT|WAIT|PIVOT|TRANSITION|DECISION|COMPLETION|TDD-EVIDENCE|LAST-REVIEW-STATE|SCOPE-APPROVAL|WORKTREE-MUTATION|COUNTER-BUMP|BREADCRUMB|FORENSIC|PROTOCOL-VIOLATION|RETRY-PENDING|COMMENT'
+    strip_re='/^<!-- meta: (reapplied at=|dispatch id=)[^>]* -->$/d; /^\[ENG-[0-9A-Z]+ · .* · .* · .* · [a-z-]+\]$/d; /^('"$_event_types"') — /d'
+    # The header-line strip leaves a leading blank line in new_norm
+    # (the `\n\n` join between the dropped header and the body).
+    # `sed '/./,$!d'` deletes leading blank lines so the byte-equal
+    # compare survives that residue.
+    existing_norm="$(printf '%s' "$existing_body" | sed -E "$strip_re" | sed '/./,$!d')"
+    new_norm="$(printf '%s' "$body" | sed -E "$strip_re" | sed '/./,$!d')"
     # Defensive trailing-newline trim. Shell `$()` already strips trailing
     # newlines from the cmdsub above; the explicit trim documents intent and
     # guards a refactor that loses the cmdsub property.
@@ -661,6 +943,26 @@ add_or_update_comment() {
       is_identical_reapply=1
       now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       body="${new_norm}"$'\n'"<!-- meta: reapplied at=${now_iso} -->"
+      # ENG-151 H-017: strip_re removed the auto-prepended bracket +
+      # EVENT-TYPE header lines from new_norm so the byte-equal compare
+      # could survive header rotation across re-applies (D-007).  The
+      # body we hand to commentUpdate is composed from that stripped
+      # form, so re-prepend a fresh header here — otherwise every
+      # identical reapply lands headerless in Linear (AC #1 violation).
+      # Human lane bypassed header injection upstream, so its existing
+      # comment was never headered; preserve the symmetry by bypassing
+      # re-injection here too.
+      case "${PIPELINE_WRITER:-orchestrator}" in
+        human) ;;
+        *)
+          local _reapply_event_type _reapply_summary _reapply_header
+          IFS=$'\t' read -r _reapply_event_type _reapply_summary \
+            < <(_derive_event_type_and_summary "$new_norm" "$sig")
+          _reapply_header="$(_render_event_header "$ident" "$_reapply_event_type" "$_reapply_summary")" \
+            || return $?
+          body="${_reapply_header}"$'\n\n'"${body}"
+          ;;
+      esac
       bash "$SCRIPT_DIR/metrics.sh" comment-reapplied "$ident" "" \
         "reapplied" 0 || true
     fi

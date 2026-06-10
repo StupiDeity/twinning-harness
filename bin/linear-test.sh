@@ -336,9 +336,15 @@ else
   fail_at "add_comment: agent + transition_comment -> exit 13 + deny error" "rc=$rc stderr=$stderr_out"
 fi
 
-# agent adding other_comment should be allowed (dry-run returns 0)
+# agent adding other_comment should be allowed (dry-run returns 0).
+# Agents ALWAYS run with the dispatch env set (run-stage exports
+# PIPELINE_DISPATCH_ID + PIPELINE_STAGE); _render_event_header (ENG-151 D-006)
+# now requires both on the agent lane and fail-closes (rc=15) without them.
+# Set them here so the test asserts the real production contract rather than
+# passing only because an ambient dispatch env happens to leak in.
 rc=0
-PIPELINE_WRITER=agent add_comment "ENG-99" "Stage summary text here." 2>/dev/null || rc=$?
+PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=ENG-99-d0001 PIPELINE_STAGE=implementing \
+  add_comment "ENG-99" "Stage summary text here." 2>/dev/null || rc=$?
 if [[ "$rc" == 0 ]]; then
   pass_at "add_comment: agent + other_comment -> allow (exit 0)"
 else
@@ -855,7 +861,7 @@ _eng111_canned_existing_url='https://linear.app/example/issue/ENG-111/#comment-c
 _eng111_create_call_count=0
 add_or_update_comment "test/sig/ENG-111T" ENG-111T \
   --body $'New halt body line CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
-_eng111_canonical_count="$(grep -cF 'New halt body line CHANGED' "$_eng111_capture_file" || true)"
+_eng111_canonical_count="$(grep -cE '^New halt body line CHANGED$' "$_eng111_capture_file" || true)"
 _eng111_breadcrumb_count="$(grep -cF '<!-- meta: breadcrumb sig=test/sig/ENG-111T comment_id=cmt-mock-001 -->' "$_eng111_capture_file" || true)"
 _eng111_url_count="$(grep -cF 'https://linear.app/example/issue/ENG-111/#comment-cmt-mock-001' "$_eng111_capture_file" || true)"
 _eng111_prose_count="$(grep -c 'Re-emitted (body changed) under sig' "$_eng111_capture_file" || true)"
@@ -967,6 +973,460 @@ unset _eng111_orig_linear_query _eng111_orig_resolve_uuid _eng111_orig_dry_run \
       _eng111_breadcrumb_present _eng111_has_url _eng111_b5_rc \
       _eng111_canonical_seen _eng111_breadcrumb_seen \
       _eng111_metric_count_before _eng111_metric_count_after _eng111_metric_delta
+
+# ─── ENG-151: header line on every harness-written comment (H-001..H-013) ──
+# bin/linear.sh::add_comment / add_or_update_comment auto-prepend a
+# two-line canonical header (`[<ident> · <stage> · <dispatch-tail> ·
+# <iso-ts> · <actor>]\n<EVENT-TYPE> — <summary>`) for every non-human
+# writer.  Tests pin the per-event-type derivation, the human-lane
+# bypass (D-005), the agent-lane fail-closed on missing dispatch
+# context (D-006), the agent-lane hand-rolled-header rejection
+# (D-009-b), the strip_re byte-equal-modulo-header normalisation
+# (D-007), and the source-of-truth centralisation (AC #2).
+printf '\n--- ENG-151: header line ---\n'
+
+_eng151_orig_linear_query="$(declare -f linear_query)"
+_eng151_orig_resolve_uuid="$(declare -f _resolve_issue_uuid)"
+_eng151_orig_dry_run="$PIPELINE_DRY_RUN"
+_eng151_orig_script_dir="$SCRIPT_DIR"
+
+SCRIPT_DIR="$SCRIPT_DIR_REAL"
+
+_resolve_issue_uuid() { printf 'uuid-mock'; }
+
+_eng151_capture_file="$(mktemp -t eng151-capture.XXXXXX)"
+_eng151_canned_existing_body=""
+_eng151_canned_existing_id="cmt-mock-001"
+_eng151_canned_existing_url=""
+
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentUpdate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_eng151_capture_file"
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
+  fi
+  if [[ "$query" =~ commentCreate ]]; then
+    jq -r '.body' <<<"$variables" >> "$_eng151_capture_file"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  jq -cn --arg id "$_eng151_canned_existing_id" \
+         --arg body "$_eng151_canned_existing_body" \
+         --arg url "$_eng151_canned_existing_url" \
+    '{data:{issue:{comments:{nodes:[{id:$id,body:$body,url:$url}]}}}}'
+}
+
+export PIPELINE_DRY_RUN=0
+mkdir -p "$PROJECT_STATE_DIR/metrics"
+: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
+
+# H-001: verdict.pass under agent lane → canonical bracket line + PASS
+# event-type line.  The body carries `<!-- pipeline: verdict result=pass
+# stage=brainstorming -->`; P2 derivation in _derive_event_type_and_summary
+# extracts the stage and emits `PASS\tstage brainstorming complete`.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0001 \
+PIPELINE_STAGE=brainstorming \
+  add_comment ENG-151T --body '<!-- pipeline: verdict result=pass stage=brainstorming -->' \
+  >/dev/null 2>&1
+if grep -qE '^\[ENG-151T · brainstorming · d0001 · [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z · agent\]$' "$_eng151_capture_file" \
+   && grep -qF 'PASS — stage brainstorming complete' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-001 verdict.pass → canonical bracket + PASS line"
+else
+  fail_at "ENG-151 H-001 verdict.pass → canonical bracket + PASS line" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-002: verdict.halt → HALT — <reason>.  P2 derivation extracts the
+# `reason=` token from the halt marker.
+: > "$_eng151_capture_file"
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0002 \
+PIPELINE_STAGE=implementing \
+  add_comment ENG-151T --body '<!-- pipeline: verdict result=halt reason=scope-violation -->' \
+  >/dev/null 2>&1
+if grep -qE '^\[ENG-151T · implementing · d0002 · .* · agent\]$' "$_eng151_capture_file" \
+   && grep -qF 'HALT — scope-violation' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-002 verdict.halt → HALT — scope-violation"
+else
+  fail_at "ENG-151 H-002 verdict.halt → HALT — scope-violation" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-003: completion via add_or_update_comment → P1 sig-derivation emits
+# `COMPLETION — stage implementing summary` (stage extracted from sig).
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0003 \
+PIPELINE_STAGE=implementing \
+  add_or_update_comment "completion/implementing/ENG-151T" ENG-151T \
+  --body 'agent prose' >/dev/null 2>&1
+if grep -qE '^\[ENG-151T · implementing · d0003 · .* · agent\]$' "$_eng151_capture_file" \
+   && grep -qF 'COMPLETION — stage implementing summary' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-003 completion → COMPLETION — stage implementing summary"
+else
+  fail_at "ENG-151 H-003 completion → COMPLETION — stage implementing summary" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-004: scope-approval via add_or_update_comment → P1 sig-derivation
+# emits `SCOPE-APPROVAL — <stage>`.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0004 \
+PIPELINE_STAGE=implementing \
+  add_or_update_comment "scope-approval/implementing/ENG-151T" ENG-151T \
+  --body 'approval request' >/dev/null 2>&1
+if grep -qF 'SCOPE-APPROVAL — implementing' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-004 scope-approval → SCOPE-APPROVAL — implementing"
+else
+  fail_at "ENG-151 H-004 scope-approval → SCOPE-APPROVAL — implementing" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-005: counter-bump (`<!-- meta: metric name=… -->` marker) → P3
+# derivation emits `COUNTER-BUMP — <metric-name>`.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0005 \
+PIPELINE_STAGE=reviewing \
+  add_comment ENG-151T --body '<!-- meta: metric name=review_rejection --> Counter bumped' \
+  >/dev/null 2>&1
+if grep -qF 'COUNTER-BUMP — review_rejection' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-005 counter-bump → COUNTER-BUMP — review_rejection"
+else
+  fail_at "ENG-151 H-005 counter-bump → COUNTER-BUMP — review_rejection" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-006: last-review-state via add_or_update_comment → P1 sig-derivation
+# emits `LAST-REVIEW-STATE — …`.  Sig is the flat `<class>/<ident>` shape
+# (no embedded stage segment).
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0006 \
+PIPELINE_STAGE=reviewing \
+  add_or_update_comment "last-review-state/ENG-151T" ENG-151T \
+  --body 'last review state body' >/dev/null 2>&1
+if grep -qE '^LAST-REVIEW-STATE — ' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-006 last-review-state → LAST-REVIEW-STATE — …"
+else
+  fail_at "ENG-151 H-006 last-review-state → LAST-REVIEW-STATE — …" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-007: tdd-evidence → `TDD-EVIDENCE — stage implementing`.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0007 \
+PIPELINE_STAGE=implementing \
+  add_or_update_comment "tdd-evidence/implementing/ENG-151T" ENG-151T \
+  --body 'tdd body' >/dev/null 2>&1
+if grep -qF 'TDD-EVIDENCE — stage implementing' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-007 tdd-evidence → TDD-EVIDENCE — stage implementing"
+else
+  fail_at "ENG-151 H-007 tdd-evidence → TDD-EVIDENCE — stage implementing" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-008: agent-lane fail-closed (D-006) — missing PIPELINE_DISPATCH_ID
+# AND/OR missing PIPELINE_STAGE under PIPELINE_WRITER=agent causes
+# _render_event_header to exit 15; the chokepoint propagates.  Stderr
+# carries the documented diagnostic.
+: > "$_eng151_capture_file"
+_eng151_h8_stderr="$(mktemp -t eng151-h8.XXXXXX)"
+_eng151_h8_rc=0
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID= \
+PIPELINE_STAGE= \
+  add_comment ENG-151T --body 'x' \
+  >/dev/null 2>"$_eng151_h8_stderr" || _eng151_h8_rc=$?
+if [[ "$_eng151_h8_rc" == "15" ]] \
+   && grep -qF 'agent-lane comment missing header inputs' "$_eng151_h8_stderr"; then
+  pass_at "ENG-151 H-008 agent fail-closed missing inputs → rc=15"
+else
+  fail_at "ENG-151 H-008 agent fail-closed missing inputs → rc=15" \
+    "rc=$_eng151_h8_rc stderr=$(cat "$_eng151_h8_stderr")"
+fi
+rm -f "$_eng151_h8_stderr"
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h8_stderr _eng151_h8_rc
+
+# H-009: human lane bypass (D-005) — PIPELINE_WRITER=human skips header
+# injection entirely; captured body starts with the caller's prose, not
+# with a bracket line.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=human \
+  add_comment ENG-151T --body 'operator note' \
+  >/dev/null 2>&1
+_eng151_h9_first_char="$(head -c 1 "$_eng151_capture_file" || true)"
+if [[ "$_eng151_h9_first_char" != "[" ]] \
+   && grep -qF 'operator note' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-009 human lane bypass → no header line"
+else
+  fail_at "ENG-151 H-009 human lane bypass → no header line" \
+    "first_char='$_eng151_h9_first_char' captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER _eng151_h9_first_char
+
+# H-010: byte-equal modulo header (D-007) — identical caller bodies on
+# two re-applies have different iso-ts in their auto-prepended headers.
+# strip_re must drop both header lines so ENG-63's reapplied footer can
+# fire.  The canned existing body carries a stale header + content +
+# dedup marker; caller passes the same prose.
+#
+# Also pins H-017 (AC #1): the body Linear stores on reapply must still
+# open with the canonical bracket + EVENT-TYPE header.  Pre-H-017 fix,
+# `body=new_norm+footer` lost the header (strip_re removed it from
+# new_norm) and every reapply landed headerless.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=$'[ENG-151T · implementing · d0010 · 2026-05-20T10:00:00Z · agent]\nCOMPLETION — stage implementing summary\n\nagent prose with TODO — fix later\n\n<!-- meta: dispatch id=ENG-151T-d0010 stage=implementing -->\n\n<!-- meta: dedup key=completion/implementing/ENG-151T -->'
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0010 \
+PIPELINE_STAGE=implementing \
+  add_or_update_comment "completion/implementing/ENG-151T" ENG-151T \
+  --body $'agent prose with TODO — fix later' >/dev/null 2>&1
+# Footer should fire (existing matches new after strip_re drops header
+# lines + dispatch marker).  AND the caller's prose line `TODO — fix later`
+# must survive (closed _event_types alternation does NOT match TODO).
+# AND the captured body MUST open with the canonical bracket header line
+# (H-017 — reapply path preserves header).
+if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng151_capture_file" \
+   && grep -qF 'TODO — fix later' "$_eng151_capture_file" \
+   && grep -qE '^\[ENG-151T · implementing · d0010 · [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z · agent\]$' "$_eng151_capture_file" \
+   && grep -qF 'COMPLETION — stage implementing summary' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved, header restored"
+else
+  fail_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved, header restored" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# H-011: source-of-truth centralisation (AC #2) — the canonical
+# ` · agent` / ` · orchestrator` header glyph pattern must appear only
+# in linear.sh (helper) and linear-test.sh (this file).  Any leakage
+# into another bin/* file indicates a copy-paste of the format outside
+# the chokepoint.
+_eng151_h11_out="$(grep -rn ' · orchestrator\| · agent' "$SCRIPT_DIR_REAL" 2>/dev/null \
+  | grep -v -e linear-test.sh -e linear.sh || true)"
+if [[ -z "$_eng151_h11_out" ]]; then
+  pass_at "ENG-151 H-011 grep-source-of-truth → no leakage outside linear.sh/linear-test.sh"
+else
+  fail_at "ENG-151 H-011 grep-source-of-truth → no leakage outside linear.sh/linear-test.sh" \
+    "unexpected matches: $_eng151_h11_out"
+fi
+unset _eng151_h11_out
+
+# H-012: agent header-spoof rejected (D-009-b) — body whose first
+# non-blank line matches `^\[ENG-[0-9]+ · ` under PIPELINE_WRITER=agent
+# is rejected with rc=14 and a structured stderr.  Mirrors the
+# _reject_legacy_marker_body diagnostic pattern (same exit-code class
+# in failure_outcome_for_exit: `legacy-marker-write`).
+: > "$_eng151_capture_file"
+_eng151_h12_stderr="$(mktemp -t eng151-h12.XXXXXX)"
+_eng151_h12_rc=0
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0012 \
+PIPELINE_STAGE=brainstorming \
+  add_comment ENG-151T --body $'[ENG-151T · brainstorming · d0001 · 2026-05-20T10:00:00Z · orchestrator]\nfake header\nbody' \
+  >/dev/null 2>"$_eng151_h12_stderr" || _eng151_h12_rc=$?
+if [[ "$_eng151_h12_rc" == "14" ]] \
+   && grep -qF 'agent-lane comment carries hand-rolled header line — rejected' "$_eng151_h12_stderr"; then
+  pass_at "ENG-151 H-012 agent header-spoof rejected → rc=14"
+else
+  fail_at "ENG-151 H-012 agent header-spoof rejected → rc=14" \
+    "rc=$_eng151_h12_rc stderr=$(cat "$_eng151_h12_stderr")"
+fi
+rm -f "$_eng151_h12_stderr"
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h12_stderr _eng151_h12_rc
+
+# H-013: orchestrator manual header silently allowed — same body as
+# H-012 under PIPELINE_WRITER=orchestrator.  Detective only fires on
+# agent lane; canonical header is prepended above the manual one
+# (two bracket lines visible to the operator, no rejection).
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+_eng151_h13_rc=0
+PIPELINE_WRITER=orchestrator \
+PIPELINE_DISPATCH_ID=ENG-151T-d0013 \
+PIPELINE_STAGE=brainstorming \
+  add_comment ENG-151T --body $'[ENG-151T · brainstorming · d0001 · 2026-05-20T10:00:00Z · orchestrator]\nfake header\nbody' \
+  >/dev/null 2>&1 || _eng151_h13_rc=$?
+_eng151_h13_bracket_count="$(grep -cE '^\[ENG-151T · brainstorming · d[0-9]+ · .* · (orchestrator|agent)\]$' "$_eng151_capture_file" || true)"
+if [[ "$_eng151_h13_rc" == "0" && "$_eng151_h13_bracket_count" -ge 2 ]]; then
+  pass_at "ENG-151 H-013 orchestrator manual header silently allowed → canonical above hand-rolled"
+else
+  fail_at "ENG-151 H-013 orchestrator manual header silently allowed → canonical above hand-rolled" \
+    "rc=$_eng151_h13_rc bracket_count=$_eng151_h13_bracket_count captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h13_rc _eng151_h13_bracket_count
+
+# QA-ADV-H014: malformed PIPELINE_DISPATCH_ID (no -(d[0-9]+)$ suffix) emits
+# verbatim bleed (visible-bug surface per plan) — NOT silently swallowed as `-`
+# and NOT rejected with rc=15 (only agent+missing-env trips rc=15).
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+_eng151_adv_h14_rc=0
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-implementing \
+PIPELINE_STAGE=implementing \
+  add_comment ENG-151T --body 'probe body' \
+  >/dev/null 2>&1 || _eng151_adv_h14_rc=$?
+# rc=0 (not rc=15 — malformed id does not trigger fail-closed)
+# capture carries the full malformed dispatch_id verbatim in the bracket line.
+if [[ "$_eng151_adv_h14_rc" == "0" ]] \
+   && grep -qE '^\[ENG-151T · implementing · ENG-151T-implementing · .* · agent\]$' "$_eng151_capture_file"; then
+  pass_at "ENG-151 QA-ADV-H014 malformed dispatch_id → verbatim bleed, rc=0"
+else
+  fail_at "ENG-151 QA-ADV-H014 malformed dispatch_id → verbatim bleed, rc=0" \
+    "rc=$_eng151_adv_h14_rc captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_adv_h14_rc
+
+# QA-ADV-H018: _derive P4 fallback when body contains only HTML comment lines
+# (no prose, no recognised pipeline/meta marker) → second line of header is
+# `COMMENT — (no body)`.  Defensive against empty-string or crash on
+# meta-only bodies (e.g. a comment that is just dispatch + dedup markers).
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+PIPELINE_WRITER=orchestrator \
+PIPELINE_DISPATCH_ID=ENG-151T-d0018 \
+PIPELINE_STAGE=implementing \
+  add_comment ENG-151T \
+  --body $'<!-- meta: dispatch id=ENG-151T-d0001 stage=implementing -->\n<!-- meta: dedup key=completion/implementing/ENG-151T -->' \
+  >/dev/null 2>&1
+if grep -qF 'COMMENT — (no body)' "$_eng151_capture_file"; then
+  pass_at "ENG-151 QA-ADV-H018 P4 fallback meta-only body → COMMENT — (no body)"
+else
+  fail_at "ENG-151 QA-ADV-H018 P4 fallback meta-only body → COMMENT — (no body)" \
+    "captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# QA-ADV-H019: classify lane with missing PIPELINE_DISPATCH_ID + PIPELINE_STAGE
+# degrades to `-` placeholders — does NOT return rc=15 (rc=15 is agent-lane
+# only per D-006).  Guards that the agent-specific fail-closed gate does not
+# bleed into the classify lane.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=""
+_eng151_adv_h19_rc=0
+_eng151_adv_h19_dispatch_saved="${PIPELINE_DISPATCH_ID-}"
+_eng151_adv_h19_stage_saved="${PIPELINE_STAGE-}"
+unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
+PIPELINE_WRITER=classify \
+  add_comment ENG-151T --body 'Agent was halted for exceeding retry limit.' \
+  >/dev/null 2>&1 || _eng151_adv_h19_rc=$?
+if [[ "$_eng151_adv_h19_rc" == "0" ]] \
+   && grep -qE '^\[ENG-151T · - · - · .* · classify\]$' "$_eng151_capture_file"; then
+  pass_at "ENG-151 QA-ADV-H019 classify lane missing env → '-' placeholders, rc=0"
+else
+  fail_at "ENG-151 QA-ADV-H019 classify lane missing env → '-' placeholders, rc=0" \
+    "rc=$_eng151_adv_h19_rc captured: $(cat "$_eng151_capture_file")"
+fi
+# Restore
+[[ -n "$_eng151_adv_h19_dispatch_saved" ]] && export PIPELINE_DISPATCH_ID="$_eng151_adv_h19_dispatch_saved" || true
+[[ -n "$_eng151_adv_h19_stage_saved" ]] && export PIPELINE_STAGE="$_eng151_adv_h19_stage_saved" || true
+unset PIPELINE_WRITER _eng151_adv_h19_rc _eng151_adv_h19_dispatch_saved _eng151_adv_h19_stage_saved
+
+# QA-ADV-COMMON15: failure_outcome_for_exit 15 → 'header-missing-inputs'
+# (new arm added to bin/common.sh in Task 6).  Guards that the exit-code
+# taxonomy correctly maps rc=15 so the retrospective §1 filter classifies
+# agent-lane missing-input failures, not routing them to unknown-exit-15.
+_eng151_adv_c15_out="$(failure_outcome_for_exit 15)"
+if [[ "$_eng151_adv_c15_out" == "header-missing-inputs" ]]; then
+  pass_at "ENG-151 QA-ADV-COMMON15 failure_outcome_for_exit 15 → header-missing-inputs"
+else
+  fail_at "ENG-151 QA-ADV-COMMON15 failure_outcome_for_exit 15 → header-missing-inputs" \
+    "got: $_eng151_adv_c15_out"
+fi
+unset _eng151_adv_c15_out
+
+# H-017: add_or_update_comment reapply path preserves bracket header
+# (AC #1) — focused regression for the QA-flagged P0.  H-010 also covers
+# this property; this test isolates it for clarity and adds an explicit
+# first-line assertion so a regression points operators at the reapply
+# branch immediately (vs H-010's multi-aspect failure message).
+#
+# Pre-fix: strip_re strips the bracket + EVENT-TYPE lines from new_norm
+# for the byte-equal compare (D-007).  The reapply branch then set
+# body=new_norm+footer, omitting any header re-injection — the stored
+# comment in Linear lost its bracket header after every identical
+# reapply.  Fix: re-derive event-type/summary + re-render header on
+# the reapply branch before commentUpdate; line 1 of the stored body
+# MUST be a fresh bracket header.
+: > "$_eng151_capture_file"
+_eng151_canned_existing_body=$'[ENG-151T · implementing · d0017 · 2026-05-20T10:00:00Z · agent]\nCOMPLETION — stage implementing summary\n\nidempotent reapply payload\n\n<!-- meta: dispatch id=ENG-151T-d0017 stage=implementing -->\n\n<!-- meta: dedup key=completion/implementing/ENG-151T -->'
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-151T-d0017 \
+PIPELINE_STAGE=implementing \
+  add_or_update_comment "completion/implementing/ENG-151T" ENG-151T \
+  --body $'idempotent reapply payload' >/dev/null 2>&1
+_eng151_h17_first_line="$(head -n 1 "$_eng151_capture_file" || true)"
+_eng151_h17_second_line="$(sed -n '2p' "$_eng151_capture_file" || true)"
+if [[ "$_eng151_h17_first_line" =~ ^\[ENG-151T\ ·\ implementing\ ·\ d0017\ · ]] \
+   && [[ "$_eng151_h17_second_line" == "COMPLETION — stage implementing summary" ]] \
+   && grep -qE '^<!-- meta: reapplied at=' "$_eng151_capture_file"; then
+  pass_at "ENG-151 H-017 reapply path preserves bracket header (AC #1)"
+else
+  fail_at "ENG-151 H-017 reapply path preserves bracket header (AC #1)" \
+    "first_line='$_eng151_h17_first_line' second_line='$_eng151_h17_second_line' captured: $(cat "$_eng151_capture_file")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h17_first_line _eng151_h17_second_line
+
+# QA-ADV-H020: _derive P3 BREADCRUMB path — body carries breadcrumb marker;
+# sig is empty so P1 does not fire; P3 captures the sig verbatim.
+_eng151_h020_et='' _eng151_h020_sm=''
+IFS=$'\t' read -r _eng151_h020_et _eng151_h020_sm \
+  < <(_derive_event_type_and_summary \
+        '<!-- meta: breadcrumb sig=halt/implementing/ENG-151T -->' '')
+if [[ "$_eng151_h020_et" == 'BREADCRUMB' \
+   && "$_eng151_h020_sm" == 're-emit of halt/implementing/ENG-151T' ]]; then
+  pass_at "ENG-151 QA-ADV-H020 P3 BREADCRUMB derivation → BREADCRUMB — re-emit of halt/implementing/ENG-151T"
+else
+  fail_at "ENG-151 QA-ADV-H020 P3 BREADCRUMB derivation → BREADCRUMB — re-emit of halt/implementing/ENG-151T" \
+    "got type='$_eng151_h020_et' summary='$_eng151_h020_sm'"
+fi
+unset _eng151_h020_et _eng151_h020_sm
+
+# QA-ADV-H021: _derive P3 FORENSIC path — body carries forensic marker.
+_eng151_h021_et='' _eng151_h021_sm=''
+IFS=$'\t' read -r _eng151_h021_et _eng151_h021_sm \
+  < <(_derive_event_type_and_summary \
+        '<!-- meta: forensic kind=cross-dispatch -->' '')
+if [[ "$_eng151_h021_et" == 'FORENSIC' \
+   && "$_eng151_h021_sm" == 'cross-dispatch' ]]; then
+  pass_at "ENG-151 QA-ADV-H021 P3 FORENSIC derivation → FORENSIC — cross-dispatch"
+else
+  fail_at "ENG-151 QA-ADV-H021 P3 FORENSIC derivation → FORENSIC — cross-dispatch" \
+    "got type='$_eng151_h021_et' summary='$_eng151_h021_sm'"
+fi
+unset _eng151_h021_et _eng151_h021_sm
+
+# Restore originals.
+rm -f "$_eng151_capture_file"
+unset -f linear_query _resolve_issue_uuid
+eval "$_eng151_orig_linear_query"
+eval "$_eng151_orig_resolve_uuid"
+export PIPELINE_DRY_RUN="$_eng151_orig_dry_run"
+SCRIPT_DIR="$_eng151_orig_script_dir"
+unset _eng151_orig_linear_query _eng151_orig_resolve_uuid _eng151_orig_dry_run \
+      _eng151_orig_script_dir _eng151_capture_file _eng151_canned_existing_body \
+      _eng151_canned_existing_id _eng151_canned_existing_url
 
 # ─── ENG-87: dispatch_id auto-injection in add_comment / add_or_update_comment ─
 # bin/linear.sh's _inject_dispatch_marker is the chokepoint where every
@@ -1089,6 +1549,12 @@ _resolve_issue_uuid() {
   printf 'mock-uuid-eng87-l5'
 }
 export PIPELINE_DRY_RUN=1
+# PIPELINE_WRITER=human bypasses ENG-151's header injection so the
+# 80-char dry-run log truncation window still captures the dispatch
+# marker.  Test intent is lane-agnostic ("does add_comment thread the
+# body through _inject_dispatch_marker before the dry-run short-
+# circuit?"); human lane still runs _inject_dispatch_marker.
+PIPELINE_WRITER=human \
 PIPELINE_DISPATCH_ID="ENG-87L5-d0011" \
 PIPELINE_STAGE="reviewing" \
 add_comment ENG-87L5 "agent body line 1" >/dev/null 2>&1 || true
@@ -1136,6 +1602,7 @@ _eng87_l4i_orig_log="$(declare -f log 2>/dev/null || printf '')"
 log() { printf '%s\n' "$*" >> "$_eng87_l4i_log"; }
 # Use very short id + sig so both markers fit in the 80-char dry-run
 # truncation: body(1) + \n\n(2) + dispatch(46) + \n\n(2) + dedup(26) = 77.
+PIPELINE_WRITER=human \
 PIPELINE_DISPATCH_ID="ENG-X-d0001" \
 PIPELINE_STAGE="ui" \
 PIPELINE_DRY_RUN=1 \

@@ -26,6 +26,28 @@ Every key=value pair is validated against the closed registry below.
 Unknown tokens cause `bin/pipeline.sh` to die loudly. Unknown fields
 attached by hand are ignored by the orchestrator.
 
+## Comment header (ENG-151)
+
+Every harness-written Linear comment opens with one canonical two-line
+header, auto-prepended by `bin/linear.sh::add_comment` /
+`add_or_update_comment`:
+
+```
+[<ident> · <stage> · <dispatch-tail> · <iso-ts> · <actor>]
+<EVENT-TYPE> — <one-line summary>
+```
+
+- `<ident>` — issue identifier (e.g. `ENG-151`).
+- `<stage>` — gerund-form stage from `PIPELINE_STAGE`, or `-` when absent.
+- `<dispatch-tail>` — the `d<NNNN>` suffix of `PIPELINE_DISPATCH_ID` (e.g. `d0007`), or `-` when absent.
+- `<iso-ts>` — `date -u +%Y-%m-%dT%H:%M:%SZ` at render time.
+- `<actor>` — `PIPELINE_WRITER` (`orchestrator | agent | classify | scope-check`); `human` lane bypasses header insertion.
+- `<EVENT-TYPE>` — derived from the body's pipeline/meta marker or the sig (see `bin/linear.sh::_derive_event_type_and_summary`).
+
+Agents do NOT author this header; the chokepoint owns it. An
+agent-lane post whose first line matches `^\[ENG-[0-9]+ · ` is
+rejected with rc=14 (`legacy-marker-write`).
+
 <!-- GENERATED:event-schemas -->
 <!-- /GENERATED:event-schemas -->
 
