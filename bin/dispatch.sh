@@ -348,6 +348,15 @@ _render_and_capture_stream() {
       return 31
     fi
   fi
+  # ENG-125: plan stage emits $issue_dir/init.sh. Same SIGKILL-vs-result
+  # discipline as progress-md detective above.
+  if [[ "$stage" == "planning" && -n "$last_result" ]]; then
+    local _isf_rc=0
+    _assert_init_sh_well_formed "$issue_dir" "$violation_file" "$stage" || _isf_rc=$?
+    if (( _isf_rc != 0 )); then
+      return "$_isf_rc"
+    fi
+  fi
 }
 
 # ENG-106 — stage-gated to planning; rc=31 maps to progress-md-entry-missing
@@ -371,6 +380,21 @@ _assert_progress_md_entry() {
       "${PIPELINE_DISPATCH_ID-<empty>}" "$stage" "$entry_count" > "$violation_file"
     log "[assert] plan-stage progress.md entry count for ${PIPELINE_DISPATCH_ID-<empty>} stage=${stage}: $entry_count (expected 1)"
     return 31
+  fi
+  return 0
+}
+
+# ENG-125 — stage-gated to planning; rc=39/40/41 map to
+# init-sh-{malformed,incomplete,missing} in failure_outcome_for_exit.
+_assert_init_sh_well_formed() {
+  local issue_dir="$1" violation_file="$2" stage="$3"
+  local init_path="${issue_dir}/init.sh"
+  local diag rc=0
+  diag="$(validate_init_sh "$init_path")" || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "$diag" > "$violation_file"
+    log "[assert] plan-stage init.sh validate rc=${rc} for ${PIPELINE_DISPATCH_ID-<empty>}: ${diag}"
+    return "$rc"
   fi
   return 0
 }
