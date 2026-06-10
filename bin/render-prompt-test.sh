@@ -1107,6 +1107,99 @@ else
     "out='$out' log=$(cat "$ENG124_METRICS_LOG" 2>/dev/null || echo MISSING)"
 fi
 
+# ─── ENG-156: _write_rendered_paths_sidecar (Phase B contract surface) ──
+# The sidecar is the harness contract surface the Phase B detective in
+# bin/run-stage.sh matches denied paths against. Fixtures pin the
+# path-shaped allowlist exactly so that adding a new path-shaped
+# PROMPT_RESOLVERS entry without updating the writer fails loudly here.
+printf '\n--- ENG-156: _write_rendered_paths_sidecar ---\n'
+
+# Case 156-W1: all six path-shaped resolver values bound → sidecar has
+# exactly six TSV lines, one per path-shaped resolver.
+eng156_w1_sidecar="$sandbox/eng156-w1.tsv"
+# Pre-create the plan.json so the writer's [[ -f "$_pj_path" ]] guard
+# passes for the plan_json line.
+mkdir -p "$sandbox/eng156"
+touch "$sandbox/eng156/plan.json"
+run_resolver_body '
+  _RENDER_BRAINSTORM_FILE="docs/brainstorms/eng-156-foo.md"
+  _RENDER_PLAN_FILE="'"$sandbox/eng156/plan.md"'"
+  _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-156W1/stage-summary-implementing.md"
+  _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
+  _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W1/progress.md"
+  _write_rendered_paths_sidecar "'"$eng156_w1_sidecar"'"
+' 2>/dev/null
+if [[ -s "$eng156_w1_sidecar" ]] \
+  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "6" ]]; then
+  pass_at "ENG-156 W1: sidecar has exactly six TSV lines for the six path-shaped resolvers"
+else
+  fail_at "ENG-156 W1: sidecar line count" \
+    "expected 6 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
+fi
+_eng156_w1_ok=1
+for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json; do
+  if ! grep -qE "^${tok}"$'\t' "$eng156_w1_sidecar"; then
+    _eng156_w1_ok=0
+    break
+  fi
+done
+if (( _eng156_w1_ok == 1 )); then
+  pass_at "ENG-156 W1: sidecar carries one line per path-shaped resolver token"
+else
+  fail_at "ENG-156 W1: per-token coverage" \
+    "missing tokens in sidecar: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
+fi
+
+# Case 156-W2: some resolvers empty → sidecar omits those lines.
+eng156_w2_sidecar="$sandbox/eng156-w2.tsv"
+run_resolver_body '
+  _RENDER_BRAINSTORM_FILE=""
+  _RENDER_PLAN_FILE=""
+  _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-156W2/stage-summary-implementing.md"
+  _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
+  _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W2/progress.md"
+  _write_rendered_paths_sidecar "'"$eng156_w2_sidecar"'"
+' 2>/dev/null
+_eng156_w2_lines="$(wc -l <"$eng156_w2_sidecar" 2>/dev/null | awk '{print $1}')"
+if [[ "$_eng156_w2_lines" == "3" ]] \
+  && ! grep -qE '^brainstorm_file'$'\t' "$eng156_w2_sidecar" \
+  && ! grep -qE '^plan_file'$'\t' "$eng156_w2_sidecar" \
+  && ! grep -qE '^plan_json'$'\t' "$eng156_w2_sidecar"; then
+  pass_at "ENG-156 W2: empty resolvers omitted (3 lines remain: stage_summary_path, learned_rules_dir, progress_md_path)"
+else
+  fail_at "ENG-156 W2: empty-resolver omission" \
+    "lines=$_eng156_w2_lines, contents=$(cat "$eng156_w2_sidecar" 2>/dev/null)"
+fi
+
+# Case 156-W3: non-path-shaped resolvers MUST NOT be written.
+eng156_w3_sidecar="$sandbox/eng156-w3.tsv"
+run_resolver_body '
+  _RENDER_ISSUE_ID="ENG-156W3"
+  _RENDER_ISSUE_ID_LOWER="eng-156w3"
+  _RENDER_TITLE="Adversarial title"
+  _RENDER_DATE="2026-06-10"
+  _RENDER_SLUG="test-slug"
+  _RENDER_BRANCH_NAME="feat/eng-156w3-foo"
+  _RENDER_DISPATCH_ID="ENG-156W3-d0001"
+  _RENDER_BRAINSTORM_FILE="docs/brainstorms/eng-156w3.md"
+  _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W3/progress.md"
+  _write_rendered_paths_sidecar "'"$eng156_w3_sidecar"'"
+' 2>/dev/null
+_eng156_w3_ok=1
+for tok in issue_id issue_id_lower issue_title date slug branch_name dispatch_id; do
+  if grep -qE "^${tok}"$'\t' "$eng156_w3_sidecar"; then
+    _eng156_w3_ok=0
+    _eng156_w3_leak="$tok"
+    break
+  fi
+done
+if (( _eng156_w3_ok == 1 )); then
+  pass_at "ENG-156 W3: non-path resolvers (issue_id, date, slug, branch_name, dispatch_id, ...) NOT written"
+else
+  fail_at "ENG-156 W3: non-path leak" \
+    "leaked token: $_eng156_w3_leak, contents=$(cat "$eng156_w3_sidecar" 2>/dev/null)"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
