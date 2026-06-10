@@ -4933,6 +4933,58 @@ _validate_plan_contract ENG-17917 2>/dev/null || _eng179adv6_rc=$?
   && pass_at "ENG-179 QA-ADV-6: plan in subdir → rc=35 (pattern rejects subdir paths)" \
   || fail_at "ENG-179 QA-ADV-6: plan in subdir" "expected rc=35, got rc=$_eng179adv6_rc"
 
+# ─── ENG-157 INT6: plan .md missing "## System invariants" → rc=34 ──────────
+# Exercises the JSON-clean / MD-incomplete short-circuit (I-5): a valid
+# sibling .json so the JSON validator passes; an MD body deliberately
+# omitting the `## System invariants` H2 section so the MD validator
+# returns rc=34. The halt comment MUST carry the existing
+# `plan-contract-invalid` marker (reused) AND the new `plan-md-incomplete`
+# Defect prefix (discriminates from JSON-side defects). Reuses ENG-122's
+# STUB_DIR/plan-schema.sh shim and _eng122_write_valid_json helper —
+# no new harness needed.
+printf '\n--- ENG-157 INT6: missing System-invariants section ---\n'
+reset_capture
+mkdir -p "$(issue_dir ENG-15706)/worktree/docs/plans"
+cat > "$(issue_dir ENG-15706)/worktree/docs/plans/${_ENG122_TODAY}-eng-15706-test.md" <<'MDEOF'
+---
+linear: ENG-15706
+date: 2026-06-10
+topic: int6 fixture
+---
+
+## Goal
+
+stub.
+
+## Assumption Inventory
+
+none.
+
+## File Structure
+
+none.
+MDEOF
+_eng122_write_valid_json \
+  "$(issue_dir ENG-15706)/worktree/docs/plans/${_ENG122_TODAY}-eng-15706-test.json" "ENG-15706"
+_eng157_int6_rc=0
+_validate_plan_contract ENG-15706 2>/dev/null || _eng157_int6_rc=$?
+(( _eng157_int6_rc == 34 )) \
+  && pass_at "ENG-157 INT6: missing System-invariants section → rc=34" \
+  || fail_at "ENG-157 INT6: missing section" "expected rc=34, got rc=$_eng157_int6_rc"
+if grep -qF '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->' \
+    "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6: halt comment carries plan-contract-invalid marker"
+else
+  fail_at "ENG-157 INT6: plan-contract-invalid marker absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+if grep -qF 'Defect: plan-md-incomplete' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6: halt comment carries Defect: plan-md-incomplete"
+else
+  fail_at "ENG-157 INT6: Defect: plan-md-incomplete absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
 # ─── ENG-119: _validate_review_payload integration tests (INT1-INT5 + INT_*) ────
 # TDD tests for the review-payload validator (Task 4 of ENG-119).
 # Source-and-stub: STUB_DIR/review-payload-schema.sh delegates to the real validator.
