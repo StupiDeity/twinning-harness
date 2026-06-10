@@ -19,14 +19,15 @@ pass_at() { PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 fail_at() { FAIL=$((FAIL+1)); printf '  ❌ %s — %s\n' "$1" "$2" >&2; }
 
 FIXTURE_DIR="$(mktemp -d -t init-sh-validator-adv-test.XXXXXX)"
+# Install cleanup trap BEFORE sourcing — if dispatch.sh sourcing dies
+# (e.g. common.sh missing) we still want FIXTURE_DIR removed.
+trap 'rm -rf "$FIXTURE_DIR"' EXIT
 export TARGET_REPO="$FIXTURE_DIR/target"
 mkdir -p "$TARGET_REPO/.pipeline-config"
 printf '{"project":{"slug":"test-slug"}}\n' > "$TARGET_REPO/.pipeline-config/config.json"
 
 # shellcheck source=dispatch.sh
 source "$SCRIPT_DIR/dispatch.sh"
-
-trap 'rm -rf "$FIXTURE_DIR"' EXIT
 
 printf '\n--- init-sh-validator-adversarial-test: ENG-125 ---\n'
 
@@ -170,6 +171,34 @@ else
   (( rc == 0 )) \
     && pass_at "T_adv_runs_cleanly_under_bash: \`bash \$init_path\` exits 0 (AC #2)" \
     || fail_at "T_adv_runs_cleanly_under_bash" "expected rc=0 from bash \$init_path, got rc=$rc"
+fi
+
+# ─── T_adv_ascii_em_dash ────────────────────────────────────────────
+# An LLM plan agent may emit `# --- smoke ---` (three ASCII hyphens) instead
+# of `# ─── smoke ───` (three U+2500 BOX DRAWINGS LIGHT HORIZONTAL glyphs).
+# The two render almost identically in many fonts but are different bytes
+# entirely. The matcher's `^# ─── <gate> ───$` regex requires the unicode
+# triple-dash on both sides; the ASCII form must be treated as ABSENT → rc=40.
+# Most likely real-world emission failure for this contract.
+INIT="$FIXTURE_DIR/t-ascii-em-dash.sh"
+cat > "$INIT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# --- smoke ---
+:
+# --- typecheck ---
+:
+# --- lint ---
+:
+# --- test ---
+:
+EOF
+rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
+  pass_at "T_adv_ascii_em_dash: ASCII '# --- smoke ---' → rc=40 (unicode box-drawing required)"
+else
+  fail_at "T_adv_ascii_em_dash" "rc=$rc out='$out'"
 fi
 
 printf '\ninit-sh-validator-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
