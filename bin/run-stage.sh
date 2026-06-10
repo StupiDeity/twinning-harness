@@ -1094,7 +1094,7 @@ _validate_dispatch_envelope() {
 }
 
 # ENG-156 D-001 (Phase A) + D-004 (Phase B): post-dispatch sandbox-denial
-# detective. Scans .envelope-transcript-<stage>.ndjson for
+# detective. Scans .envelope-transcript-<stage> for
 # `tool_result.is_error:true` rows matching a 2-entry signature table.
 # Phase A: always log-only — one events.jsonl row per dispatch when
 # denial count > 0. Phase B: when orchestrator.sandbox_contract_halt is
@@ -1104,7 +1104,12 @@ _validate_dispatch_envelope() {
 # at a different axis (tool_result vs tool_use). Sidecar fail-open: missing
 # or empty file returns 0 silently (matches the envelope-validator's
 # `[[ -s "$sidecar" ]] || return 0` shape).
+# Returns: 0 (Phase A log-only) | 29 (Phase B halt on matched path).
 _emit_sandbox_denial_metric() {
+  # Force orchestrator-lane attribution for the metric + halt-comment write;
+  # PIPELINE_WRITER is otherwise set to agent by dispatch.sh's parent env
+  # and bin/linear.sh refuses orchestrator-namespace writes from the agent
+  # lane (ENG-49 trust-model).
   local PIPELINE_WRITER=orchestrator
   export PIPELINE_WRITER
   local ident="$1" stage="$2"
@@ -1121,6 +1126,12 @@ _emit_sandbox_denial_metric() {
   # awkward to test). Aggregation to count + comma-separated signatures
   # + comma-separated paths happens in shell post-jq for clarity.
   local denials_tsv
+  # tool_use ids are assumed unique per dispatch (claude allocates them
+  # sequentially via the streaming protocol); `from_entries` keeps LAST
+  # on duplicate keys. The path token via `split(" ") | last` is
+  # best-effort labelling for the metric — consumers MUST NOT rely on
+  # this being a real path (OQ-6 bash-classifier commands like
+  # `bash bin/secret-probe-lint.sh` resolve to the .sh basename).
   denials_tsv="$(jq -Rrn '
     [inputs | (fromjson? // empty)] as $events
     | ($events
@@ -1140,13 +1151,28 @@ _emit_sandbox_denial_metric() {
     | select($sig != "")
     | ($tu_map[.tool_use_id] // "") as $p
     | "\($sig)\t\($p)"
-  ' "$sidecar" 2>/dev/null)" || denials_tsv=""
+  ' "$sidecar" 2>/dev/null)" || {
+    log "[sandbox-denial] jq scan failed for $ident/$stage; assuming no denials"
+    denials_tsv=""
+  }
 
   [[ -n "$denials_tsv" ]] || return 0
+  # `printf '%s\n' "$x" | wc -l` relies on $() stripping trailing
+  # newlines from "$x" so the per-denial-row count matches `wc -l`. A
+  # future swap to `echo "$x"` would silently double-count on bash
+  # versions that echo a trailing newline differently — keep printf.
   local count signatures paths
   count="$(printf '%s\n' "$denials_tsv" | wc -l | awk '{print $1}')"
   signatures="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '{print $1}' | sort -u | paste -sd, -)"
   paths="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '$2 != "" {print $2}' | sort -u | paste -sd, -)"
+  # Sanitise paths for the metric notes blob. paths is agent-controlled
+  # (denied paths come from the agent's tool_use); the metric notes line
+  # is space-separated `k=v` fields. A denied path containing an embedded
+  # space would split the notes fields and let `show_sandbox_denials`'s
+  # `capture("claude_version=…")` see a forged version. Replace spaces
+  # with underscores before interpolation. Brainstorm §D-002 flags paths
+  # as agent-controlled best-effort.
+  paths="${paths// /_}"
 
   # Extract only the version token (first whitespace-delimited field).
   # `claude --version` emits e.g. `1.0.93 (Claude Code)` with an embedded
@@ -1173,8 +1199,10 @@ _emit_sandbox_denial_metric() {
   local rp="${d}/.rendered-paths-${stage}"
   if (( phase_b_enabled )) && [[ -s "$rp" ]] && [[ -n "$paths" ]]; then
     # paths is a comma-separated set; iterate denied paths against
-    # each resolved-path line. First match wins.
-    local _dp _tok _val
+    # each resolved-path line. First match wins. `_val` is per-loop
+    # scoped via `IFS=$'\t' read -r _tok _val` and intentionally not
+    # declared at this outer scope so reader doesn't assume shared state.
+    local _dp _tok
     while IFS=, read -ra _denied; do
       for _dp in "${_denied[@]}"; do
         [[ -n "$_dp" ]] || continue
@@ -1214,7 +1242,8 @@ _emit_sandbox_denial_metric() {
     local body
     body="$(printf '<!-- pipeline: verdict result=halt reason=sandbox-contract-violation -->\n\nSandbox blocked agent write to a harness-contract path on dispatch_id=%s stage=%s.\n\nResolver token: `%s`\n\nThe orchestrator rendered this resolver value into the agent prompt and the sandbox denied the agent'\''s tool call against it. Inspect `%s/.transcript-violation-%s` for the denied path; expected fix is the project profile / `--add-dir` / tool-allowlist (NOT the agent prompt).\n\n**Resume:** fix the contract drift, then run `bash bin/pipeline.sh decide %s --action continue`.' \
       "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$matched_token" "$d" "$stage" "$ident")"
-    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" \
+      || log "[sandbox-denial] halt-comment post failed for $ident/$stage; rc=29 still emitted"
     return 29
   fi
   return 0
