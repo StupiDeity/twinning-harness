@@ -104,13 +104,16 @@ _write_rendered_paths_sidecar() {
     # CONTENTS, not the path — so we cannot reuse it here. The path
     # this sidecar is named after is `${_RENDER_PLAN_FILE%.md}.json`
     # (the resolver derives the same way internally; assumes plan-file
-    # ends in `.md` — non-.md plans are not supported today). Only
-    # write the line when the resolved file actually exists on disk;
-    # otherwise the detective would match denials against a
-    # non-existent contract surface.
+    # ends in `.md` — non-.md plans are not supported today). Emit the
+    # line whenever _RENDER_PLAN_FILE is set, regardless of whether
+    # the .json sibling exists on disk — the planning dispatch is the
+    # very dispatch that creates plan_json, so an `-f` guard here
+    # would always omit the line on the dispatch Phase B was designed
+    # to catch (sandbox denies the agent's Write to that path → file
+    # missing on disk → contract surface goes empty → Phase B no-op).
     if [[ -n "${_RENDER_PLAN_FILE:-}" ]]; then
       local _pj_path="${_RENDER_PLAN_FILE%.md}.json"
-      [[ -f "$_pj_path" ]] && printf 'plan_json\t%s\n' "$_pj_path"
+      printf 'plan_json\t%s\n' "$_pj_path"
     fi
   } > "$sidecar_path" 2>/dev/null \
     || log "[render] sidecar write to $sidecar_path failed (Phase B detective will have no contract surface)"

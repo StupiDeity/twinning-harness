@@ -1210,12 +1210,15 @@ else
     "leaked token: $_eng156_w3_leak, contents=$(cat "$eng156_w3_sidecar" 2>/dev/null)"
 fi
 
-# Case 156-W4: plan_json `[[ -f $_pj_path ]]` guard with the file ABSENT.
-# Pre-creating `$sandbox/eng156/plan.json` in W1 made W1's 6-line count
-# assertion load-bearing on that side-effect. Exercise the false arm
-# here: bind _RENDER_PLAN_FILE to a path whose sibling .json does NOT
-# exist; expect the sidecar to omit the plan_json line (5 lines total
-# when the other five path-shaped resolvers are bound).
+# Case 156-W4: plan_json line is ALWAYS emitted when _RENDER_PLAN_FILE
+# is set, regardless of whether the .json sibling exists on disk.
+# Rationale (review-loopback iter-2): the planning dispatch is the very
+# dispatch that creates plan_json — an `-f` guard would always omit the
+# line on the dispatch Phase B was designed to catch (sandbox denies
+# the agent's Write to that path → file missing on disk → contract
+# surface goes empty → Phase B no-op on the case it exists to detect).
+# Pin the new shape: file absent → sidecar carries 6 lines, including
+# plan_json with the derived path.
 eng156_w4_sidecar="$sandbox/eng156-w4.tsv"
 mkdir -p "$sandbox/eng156-w4"
 # Deliberately do NOT touch the sibling .json.
@@ -1229,11 +1232,12 @@ run_resolver_body '
   _write_rendered_paths_sidecar "'"$eng156_w4_sidecar"'"
 ' 2>/dev/null
 _eng156_w4_lines="$(wc -l <"$eng156_w4_sidecar" 2>/dev/null | awk '{print $1}')"
-if [[ "$_eng156_w4_lines" == "5" ]] \
-  && ! grep -qE '^plan_json'$'\t' "$eng156_w4_sidecar"; then
-  pass_at "ENG-156 W4: plan_json line omitted when sibling .json file absent (5 lines remain)"
+if [[ "$_eng156_w4_lines" == "6" ]] \
+  && grep -qE '^plan_json'$'\t' "$eng156_w4_sidecar" \
+  && grep -qF "$sandbox/eng156-w4/plan.json" "$eng156_w4_sidecar"; then
+  pass_at "ENG-156 W4: plan_json line emitted even when sibling .json file absent (6 lines, derived path)"
 else
-  fail_at "ENG-156 W4: plan_json absent-guard" \
+  fail_at "ENG-156 W4: plan_json absent-still-emitted" \
     "lines=$_eng156_w4_lines, contents=$(cat "$eng156_w4_sidecar" 2>/dev/null)"
 fi
 
