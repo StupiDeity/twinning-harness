@@ -694,6 +694,82 @@ ENG-87 D-005 strict id-match).
 
 ---
 
+## 11. rc=36/37/38 — `review-payload-invalid` (review-stage payload detective halt)
+
+**Symptom.** Review dispatch returned 36, 37, or 38; issue carries
+`pipeline:halted` + `pipeline:skip-until-human-acts`. The Linear halt
+comment body reads `Review-payload validation failed on dispatch_id=…
+stage=reviewing: - Defect: review-payload-{malformed,incomplete,missing}`.
+
+**Detect.** Search Linear for the marker:
+
+```bash
+bash bin/linear.sh get-comments ENG-N | grep -F 'review-payload-invalid'
+```
+
+Exit-code triage table:
+
+| rc | outcome token                  | meaning                                            |
+|----|--------------------------------|----------------------------------------------------|
+| 36 | `review-payload-malformed`     | JSON parse error or top-level not an object        |
+| 37 | `review-payload-incomplete`    | required field missing / wrong type / enum mismatch |
+| 38 | `review-payload-missing`       | the agent did not Write the payload at all         |
+
+**Decide.** Which exit code maps to which root cause:
+
+- **rc=38 — `review-payload-missing`:** the agent never invoked `Write`
+  against `{verdict_review_path}` (most common on the first dispatch
+  after AGENT_PROMPTS.md §5 changes — the agent followed the old
+  output sequence). Re-dispatch usually fixes it.
+- **rc=36 — `review-payload-malformed`:** the agent's `Write` emitted
+  bytes that don't parse as JSON (stray prose, heredoc fragment, code
+  fence). Re-dispatch usually fixes it.
+- **rc=37 — `review-payload-incomplete`:** the agent's JSON is
+  well-formed but a required field is missing, has the wrong type, or
+  violates an enum (e.g. `score: "good"` instead of `pass|concern|fail`).
+  Re-dispatch usually fixes it, but a stuck-prompt pattern may need a
+  human edit to AGENT_PROMPTS.md §5 first.
+
+**Recover.** Two paths:
+
+- **Re-dispatch (preferred):**
+  ```bash
+  bash bin/pipeline.sh decide ENG-N --action continue
+  ```
+  The orchestrator clears the halt labels, allocates a fresh
+  `PIPELINE_DISPATCH_ID`, AND **pre-cleans the prior payload file** via
+  the stage-gated `_clear_current_stage_slots` arm. **Any hand-edit you
+  make to `$(issue_dir ENG-N)/verdict-review.json` BEFORE the decide
+  will be erased.** Use this when you trust the agent to converge on a
+  re-dispatch.
+- **Manual repair:** hand-edit `$(issue_dir ENG-N)/verdict-review.json`
+  to a valid schema-v1 payload, then emit the verdict marker yourself:
+  ```bash
+  bash bin/pipeline.sh event ENG-N verdict pass --stage reviewing
+  ```
+  Use this when the underlying review WAS correct but the payload write
+  failed in a way you can repair from the dispatch's PR review comments.
+
+Reproducer one-liner — re-validate a hand-edited payload before posting:
+
+```bash
+bash bin/review-payload-schema.sh validate \
+  "$(bash bin/common.sh issue_dir ENG-N)/verdict-review.json" \
+  --ident ENG-N --dispatch-id "$PIPELINE_DISPATCH_ID"
+```
+
+Schema source-of-truth: header comment in `bin/review-payload-schema.sh`.
+
+**Verify.** After resuming, confirm:
+
+1. `pipeline:halted` is cleared (`bash bin/linear.sh has-label ENG-N pipeline:halted`
+   returns false).
+2. A fresh `<!-- pipeline: verdict result=pass -->` marker landed on the
+   issue with a NEW `<!-- meta: dispatch id=... -->` marker (different
+   from the halt comment's dispatch id).
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
