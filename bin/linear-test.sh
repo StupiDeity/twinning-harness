@@ -336,9 +336,15 @@ else
   fail_at "add_comment: agent + transition_comment -> exit 13 + deny error" "rc=$rc stderr=$stderr_out"
 fi
 
-# agent adding other_comment should be allowed (dry-run returns 0)
+# agent adding other_comment should be allowed (dry-run returns 0).
+# Agents ALWAYS run with the dispatch env set (run-stage exports
+# PIPELINE_DISPATCH_ID + PIPELINE_STAGE); _render_event_header (ENG-151 D-006)
+# now requires both on the agent lane and fail-closes (rc=15) without them.
+# Set them here so the test asserts the real production contract rather than
+# passing only because an ambient dispatch env happens to leak in.
 rc=0
-PIPELINE_WRITER=agent add_comment "ENG-99" "Stage summary text here." 2>/dev/null || rc=$?
+PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=ENG-99-d0001 PIPELINE_STAGE=implementing \
+  add_comment "ENG-99" "Stage summary text here." 2>/dev/null || rc=$?
 if [[ "$rc" == 0 ]]; then
   pass_at "add_comment: agent + other_comment -> allow (exit 0)"
 else
