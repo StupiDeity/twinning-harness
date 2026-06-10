@@ -938,6 +938,14 @@ _clear_current_stage_slots() {
   local d; d="$(issue_dir "$ident")"
   rm -f "$d/stage-summary-${stage}.md" 2>/dev/null || true
   rm -f "$d/wait-${stage}.json"        2>/dev/null || true
+  # ENG-119: pre-clean verdict-review.json on reviewing-stage dispatch
+  # start. Per-medium primitive (CLAUDE.md ENG-87) for the new agent-owned
+  # writer file. Stage-gated to reviewing because the file is review-
+  # specific; clearing on implementing/qa would erase prior-iteration
+  # payloads that ENG-118 / the retrospective may read during loopback.
+  if [[ "$stage" == "reviewing" ]]; then
+    rm -f "$d/verdict-review.json" 2>/dev/null || true
+  fi
   return 0
 }
 
