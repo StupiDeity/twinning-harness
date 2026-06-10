@@ -6713,6 +6713,35 @@ else
     "expected /etc/hosts in paths, capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
 fi
 
+# Case 156-B-bis: `claude --version` fork fails (non-zero exit / missing CLI)
+# → `claude_version=unknown` fallback. Pins Failure-Mode → Test-Map row 13.
+: > "$STUB_DIR/metrics.capture"
+mkdir -p "$(issue_dir ENG-156Bx)"
+{
+  _eng156_ndjson_tool_use_file "tu_1" "Read" "/etc/hosts"
+  _eng156_ndjson_tool_result_str "tu_1" "true" \
+    "Error: may only list files in the allowed working directories"
+} > "$(issue_dir ENG-156Bx)/.envelope-transcript-implementing"
+# Re-stub `claude` so --version exits non-zero with no stdout. Restore the
+# 1.0.93 stub afterwards so subsequent cases keep the deterministic version.
+_eng156_orig_claude_stub="$(cat "$STUB_DIR/claude")"
+cat > "$STUB_DIR/claude" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$STUB_DIR/claude"
+_eng156_bx_rc=0
+_emit_sandbox_denial_metric ENG-156Bx implementing 2>/dev/null || _eng156_bx_rc=$?
+printf '%s\n' "$_eng156_orig_claude_stub" > "$STUB_DIR/claude"
+chmod +x "$STUB_DIR/claude"
+if (( _eng156_bx_rc == 0 )) \
+  && grep -qF 'claude_version=unknown' "$STUB_DIR/metrics.capture"; then
+  pass_at "ENG-156 B-bis: claude --version non-zero exit → claude_version=unknown"
+else
+  fail_at "ENG-156 B-bis: claude_version=unknown fallback" \
+    "rc=$_eng156_bx_rc, capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
+fi
+
 # Case 156-C: success tool_result with is_error:false → no row emitted.
 # Probe-and-recover (e.g. Read on a missing file) returns is_error:true
 # but the content does NOT match the signature table — those rows must
@@ -6772,6 +6801,16 @@ if (( _eng156_d_rc == 29 )); then
   pass_at "ENG-156 D: Phase B contract drift → rc=29 (sandbox-contract-violation)"
 else
   fail_at "ENG-156 D: Phase B rc" "expected 29, got $_eng156_d_rc"
+fi
+# Pin brainstorm §D-001: every-dispatch row including the halt path.
+# A regression that reorders the metric emit after the rc=29 return, or
+# short-circuits the metric on the halt path, would defeat retrospective
+# signal — the events.jsonl row must record outcome=contract-violation.
+if grep -qF 'OUTCOME=contract-violation' "$STUB_DIR/metrics.capture"; then
+  pass_at "ENG-156 D: events.jsonl row carries OUTCOME=contract-violation on halt path"
+else
+  fail_at "ENG-156 D: halt-path metric outcome" \
+    "expected OUTCOME=contract-violation in metrics.capture, got: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
 fi
 if grep -qF '<!-- pipeline: verdict result=halt reason=sandbox-contract-violation -->' "$CAPTURE_FILE"; then
   pass_at "ENG-156 D: halt comment carries sandbox-contract-violation marker"
