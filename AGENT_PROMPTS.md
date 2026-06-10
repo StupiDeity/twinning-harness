@@ -464,12 +464,13 @@ Your task:
 - Required sections, in this order:
   1. Goal — one sentence, a verifiable outcome
   2. Assumption Inventory — see "Codebase-fact verification" below
-  3. File Structure — new + modified files, one line per entry
-  4. API Contract — machine-readable block (see below) if the project has an FE↔BE API surface and any of it changes (skip with "no new API surface" otherwise)
-  5. Backend Tasks — for the Implementation Agent
-  6. Frontend Tasks — for the UI Agent
-  7. Failure Mode → Test Map — see below
-  8. Test Strategy — unit / integration / smoke / adversarial coverage intent
+  3. System invariants — REQUIRED H2 section. One bullet per runtime assumption this plan depends on; each bullet MUST carry a `verified_by:` token of the form `<path>:<test-name>` (existing test pinning the assumption) OR `task:T<N>` (a task in THIS plan that adds the pinning test). Validator: `bin/plan-schema.sh validate-md`; defect tokens `plan-md-incomplete:` / `plan-md-malformed:` / `plan-md-missing:` route through `_post_plan_contract_halt` and halt with `plan-contract-invalid`.
+  4. File Structure — new + modified files, one line per entry
+  5. API Contract — machine-readable block (see below) if the project has an FE↔BE API surface and any of it changes (skip with "no new API surface" otherwise)
+  6. Backend Tasks — for the Implementation Agent
+  7. Frontend Tasks — for the UI Agent
+  8. Failure Mode → Test Map — see below
+  9. Test Strategy — unit / integration / smoke / adversarial coverage intent
 
 Codebase-fact verification (MANDATORY):
 For every file in File Structure that is being *modified* (not newly created), the
@@ -586,6 +587,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
     `learned-rules/harness/project-profile.md`, so the agent-side gate list
     silently drifted from the on-disk test set and the post-merge review's
     minor #4 caught it only after an implement-loopback edit halted on scope.
+    Then run the **System invariants resolution** sweep (ENG-157): for every bullet in the plan's `## System invariants` H2 section, parse the `verified_by:` token. If the token is `<path>:<test-name>`, open `<path>` and verify `<test-name>` appears literally (function definition, test-block label, or grep-anchored assertion); unresolved reference is a P0. If the token is `task:T<N>`, locate `### Task <N>:` in this same plan markdown and verify its `touches:` field names at least one file matching the project's gate-runnable glob (per the profile's "Build & test gates" Test command); unresolved task, missing task, or task that touches no gate-runnable test file is a P0. The structural shape (presence of the H2 section, ≥1 bullet, parseable `verified_by:`) is pinned by the post-dispatch `cmd_validate_md`; this persona's role is semantic resolution.
   - **scope** — every task and every File Structure entry must trace to a brainstorm
     decision or an accepted ADR. Flag gold-plating; flag any task whose `touches` list
     strays outside the declared File Structure.
@@ -621,6 +623,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    - a non-empty `git log --oneline HEAD..origin/main` at plan time AND no Task 0
      "Rebase onto origin/main" in Backend Tasks (see "Branch-base freshness check"
      above) — the plan is drafting against a stale branch base.
+   - a `## System invariants` section bullet whose `verified_by:` token doesn't resolve to a real test (`<path>:<test-name>` not found in `<path>`) or to a real in-plan task (`task:T<N>` not present in the plan markdown's H3 task list, or that task's `touches:` field names no gate-runnable file),
    Iterate at most 3 times. If any P0 remains after iteration 3, set status = `escalate`
    and proceed to step 5 with an escalation comment — do NOT commit an unresolved plan,
    but do NOT silently exit either.
