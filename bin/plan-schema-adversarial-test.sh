@@ -307,5 +307,64 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_embedded_newline.md" >/
   && pass_at "T_adv_md_embedded_newline: token on continuation line → rc=34 (v1 deferral)" \
   || fail_at "T_adv_md_embedded_newline" "expected rc=34, got rc=$rc"
 
+# ─── QA adversarial (ENG-157): cases surfaced by cold sub-agent, NOT in plan's ─
+# Failure Mode → Test Map. Added by QA dispatch 2026-06-10.                    ─
+
+# ─── T_qa_adv_shell_meta_in_token: spaces inside verified_by: token value ─────
+# bullet: `verified_by: $(rm -rf /):test`  — spaces in the token split it; the
+# first non-space seq is `$(rm` with no colon following, so neither alternative
+# matches; `verified_by:` IS present → rc=33 (malformed, not injection).
+# Confirms: awk is internal (no shell expansion); printf '%s' keeps output safe.
+cat > "$FIXTURE_DIR/qa_shell_meta.md" <<'MDEOF'
+## System invariants
+
+- I-1: invariant verified_by: $(rm -rf /):test
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_shell_meta.md" >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "T_qa_adv_shell_meta_in_token: spaces-in-token → rc=33 (malformed; no injection)" \
+  || fail_at "T_qa_adv_shell_meta_in_token" "expected rc=33, got rc=$rc"
+
+# ─── T_qa_adv_multi_section_second_bad: two ## System invariants H2 sections ──
+# First section has a valid bullet; a second `## System invariants` heading later
+# in the doc re-opens the section; its bad bullet increments incomplete_count
+# → combined counts cause rc=34 even though the first section was clean.
+# Documents the known behavior: having two `## System invariants` sections is
+# itself a malformed plan; the behavior is consistent with D-001 §8.3 acceptable
+# noise (analogous to a heading inside a code fence).
+cat > "$FIXTURE_DIR/qa_multi_section.md" <<'MDEOF'
+## System invariants
+
+- I-1: first section good verified_by: bin/foo.sh:T_foo
+
+## Other section
+
+prose.
+
+## System invariants
+
+- I-2: second section — missing token
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_multi_section.md" >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_qa_adv_multi_section_second_bad: duplicate heading; second section bad → rc=34 (documented P2 noise)" \
+  || fail_at "T_qa_adv_multi_section_second_bad" "expected rc=34, got rc=$rc"
+
+# ─── T_qa_adv_task_t_no_digits: verified_by: task:T (no digit after T) ─────────
+# The generic first alternative [^[:space:]]+:[^[:space:]]+ matches `task:T`
+# (two non-space sequences separated by `:`) so the specific `task:T[0-9]+`
+# branch is effectively dead for inputs where the path part happens to be `task`.
+# Expected: rc=0 (generic path:test branch wins — P2 gap; v1 deferral).
+# Documents the regression-guard gap so a future tightening test can pin it.
+cat > "$FIXTURE_DIR/qa_task_no_digits.md" <<'MDEOF'
+## System invariants
+
+- I-1: invariant verified_by: task:T
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_task_no_digits.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_qa_adv_task_t_no_digits: task:T without digits → rc=0 (generic path:test wins; P2 gap documented)" \
+  || fail_at "T_qa_adv_task_t_no_digits" "expected rc=0 (generic-branch win), got rc=$rc"
+
 printf '\nplan-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
