@@ -20,8 +20,10 @@ cat > "$_TEST_TARGET/.pipeline-config/config.json" <<'JSON'
 JSON
 export TARGET_REPO="$_TEST_TARGET"
 
-# Stub linear.sh: capture add-or-update-comment + emulate get-comments
-# from a per-test fixture file.
+# Stub linear.sh: capture add-comment + emulate get-comments from a
+# per-test fixture file. Post-ENG-150, the call shape is
+# `add-comment <issue> --sig <sig> --body <body>` and the stub records
+# the parsed sig + ident.
 LINEAR_CALLS="$_TEST_STUB/linear-calls.log"
 COMMENTS_FIXTURE="$_TEST_STUB/comments.json"
 printf '[]' > "$COMMENTS_FIXTURE"
@@ -29,10 +31,21 @@ printf '[]' > "$COMMENTS_FIXTURE"
 cat > "$_TEST_STUB/linear.sh" <<SH
 #!/usr/bin/env bash
 case "\$1" in
-  add-or-update-comment)
-    # \$1=add-or-update-comment \$2=sig \$3=issue \$4=body
-    printf 'aouc\\t%s\\t%s\\n' "\$2" "\$3" >> "$LINEAR_CALLS"
-    body_json="\$(jq -nc --arg b "\$4" '{id:"c1",createdAt:"2026-04-30T10:00:00Z",body:\$b}')"
+  add-comment)
+    # \$2=issue, then --sig <sig> --body <body>
+    issue="\$2"; shift 2
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)  sig="\$2"; shift 2 ;;
+        --sig=*) sig="\${1#--sig=}"; shift ;;
+        --body) body="\$2"; shift 2 ;;
+        --body=*) body="\${1#--body=}"; shift ;;
+        *) shift ;;
+      esac
+    done
+    printf 'aouc\\t%s\\t%s\\n' "\$sig" "\$issue" >> "$LINEAR_CALLS"
+    body_json="\$(jq -nc --arg b "\$body" '{id:"c1",createdAt:"2026-04-30T10:00:00Z",body:\$b}')"
     jq --argjson new "\$body_json" '. + [\$new]' "$COMMENTS_FIXTURE" > "$_TEST_STUB/_t" && mv "$_TEST_STUB/_t" "$COMMENTS_FIXTURE"
     exit 0 ;;
   get-comments)

@@ -831,9 +831,10 @@ done
 # ─── ENG-57: same-sig retry rule (no -v2 / -trial / -retry mutations) ──
 # ENG-44's dogfood produced 6 duplicate Linear comments on a single ticket
 # (`completion/reviewing/ENG-44-trial`, `…-v3`, `…-v9`, `…-v12`, `…-v13`)
-# because the agent retried `add-or-update-comment` with mutated sigs every
-# time a post appeared to fail. `add-or-update-comment` is idempotent —
-# same sig + new body overwrites in place. The fix is a prompt
+# because the agent retried `add-comment --sig` with mutated sigs every
+# time a post appeared to fail. `add-comment --sig` is append-only —
+# same sig + new body posts a fresh comment carrying the dispatch-suffixed
+# `<!-- meta: dedup key=… -->` marker. The fix is a prompt
 # instruction, replicated across all 9 stages via the universal Tool
 # allowlist & probing paragraph (extended in ENG-57 to cover this case).
 #
@@ -914,7 +915,7 @@ done
 # Pre-fix, agents wrote scratch `.md` files at the worktree root to feed
 # `--body-file <path>` (and then couldn't `rm` them — no stage allow-lists
 # `Bash(rm:*)`). ENG-44's dogfood accumulated 15 such dotfiles. ENG-55 added
-# stdin support to bin/linear.sh's add-comment / add-or-update-comment via
+# stdin support to bin/linear.sh's add-comment via
 # `--body -`, and the prompts must now point agents at the heredoc pattern.
 #
 # Each verdict-marker stage (1-7) needs at least one `--body -` heredoc
@@ -2133,6 +2134,21 @@ else
   nope "§3 QA-ADV ENG-120: loop block ordering — expected precond < loop < task" \
     "precondition_line=$_precondition_line loop_line=$_loop_line task_line=$_task_line — block may have been moved outside its intended slot"
 fi
+
+# ─── ENG-150: AGENT_PROMPTS.md must NOT reference the retired symbol ───
+# After ENG-150 retired the linear.sh upsert subcommand, the prompts
+# must not instruct agents to invoke a subcommand that no longer exists.
+# A surviving prose mention is a P0 plan defect.  Patterns use `[_]` /
+# `[-]` so this file's literal pattern does not self-match a future
+# audit grep against bin/*-test.sh.
+_eng150_prompts_pat='add[-]or[-]update[-]comment\|add[_]or[_]update[_]comment'
+if grep -q "$_eng150_prompts_pat" "$PROMPTS"; then
+  nope "ENG-150: AGENT_PROMPTS.md still references the retired upsert subcommand" \
+    "grep AGENT_PROMPTS.md for the retired symbol literal"
+else
+  ok "ENG-150: AGENT_PROMPTS.md carries zero references to the retired upsert subcommand"
+fi
+unset _eng150_prompts_pat
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

@@ -75,7 +75,7 @@ case "$1" in
     f="$FIXTURE_DIR/comments-$2.json"
     [[ -f "$f" ]] && cat "$f" || printf '[]'
     ;;
-  remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
+  remove-label|add-label|swap-stage|transition-state|add-comment|refresh-cache|stage-of|has-label)
     # No-op for side-effecting subcommands. Optionally append the call to
     # $LINEAR_STUB_LOG so individual tests can assert on side effects.
     [[ -n "${LINEAR_STUB_LOG-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
@@ -1230,7 +1230,7 @@ case "$1" in
     # longer reads it (ENG-53 #12). Mirrors production reality.
     printf '%s' "{\"data\":{\"issue\":{\"identifier\":\"$2\"}}}"
     ;;
-  remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
+  remove-label|add-label|swap-stage|transition-state|add-comment|refresh-cache|stage-of|has-label)
     [[ -n "${LINEAR_STUB_LOG-}" ]] && printf '%s\n' "$*" >> "$LINEAR_STUB_LOG"
     exit 0 ;;
   *) exit 0 ;;

@@ -6,7 +6,7 @@
 #
 # Why this test exists: ENG-60 Phase 3 verification was a markdown
 # checkbox in the plan doc, not a CI gate. The internal writers (verdict-
-# handler::apply_transition, poll auto-resume, linear::add_or_update_comment,
+# handler::apply_transition, poll auto-resume, linear::add_comment,
 # guards::bump, run-stage fallbacks) kept emitting legacy shapes for weeks
 # after the parser stopped recognizing them, because nothing automatically
 # blocked the divergence. This test is that automatic block.

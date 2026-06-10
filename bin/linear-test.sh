@@ -413,8 +413,8 @@ else
   fail_at "all_stage_labels: issue with no stage: labels returns empty string" "got: $got_none"
 fi
 
-# ─── ENG-55: _resolve_body_arg + add-comment / add-or-update-comment ────
-# `add-comment` and `add-or-update-comment` accept body via:
+# ─── ENG-55: _resolve_body_arg + add-comment body shapes ────────────
+# `add-comment` accepts body via:
 #   * legacy positional: `add-comment ENG-N "<body>"`
 #   * `--body <text>` / `--body=<text>`
 #   * `--body -` (read from stdin — heredoc-friendly, no scratch files)
@@ -496,486 +496,27 @@ printf '%s' "$out" | grep -qF "stdin-body-marker" \
   && pass_at "ENG-55 add_comment: --body - reads stdin in dry-run path" \
   || fail_at "ENG-55 add_comment: --body - in dry-run" "out=$out"
 
-# add_or_update_comment with --body - reads stdin and reaches dry-run.
-out="$(printf 'aouc-stdin-marker' | add_or_update_comment "test/sig/ENG-55T" ENG-55T --body - 2>&1)"
+# add_comment --sig with --body - reads stdin and reaches dry-run.
+out="$(printf 'aouc-stdin-marker' | add_comment ENG-55T --sig "test/sig/ENG-55T" --body - 2>&1)"
 printf '%s' "$out" | grep -qF "aouc-stdin-marker" \
-  && pass_at "ENG-55 add_or_update_comment: --body - reads stdin in dry-run path" \
-  || fail_at "ENG-55 add_or_update_comment: --body -" "out=$out"
+  && pass_at "ENG-55 add_comment --sig: --body - reads stdin in dry-run path" \
+  || fail_at "ENG-55 add_comment --sig: --body -" "out=$out"
 
-# add_or_update_comment legacy positional body still works.
-out="$(add_or_update_comment "test/sig/ENG-55T" ENG-55T "legacy-positional-marker" 2>&1)"
+# add_comment --sig legacy positional body still works.
+out="$(add_comment ENG-55T --sig "test/sig/ENG-55T" "legacy-positional-marker" 2>&1)"
 printf '%s' "$out" | grep -qF "legacy-positional-marker" \
-  && pass_at "ENG-55 add_or_update_comment: legacy positional body still works" \
-  || fail_at "ENG-55 add_or_update_comment: legacy positional" "out=$out"
+  && pass_at "ENG-55 add_comment --sig: legacy positional body still works" \
+  || fail_at "ENG-55 add_comment --sig: legacy positional" "out=$out"
 
-# add_or_update_comment with empty body dies.
+# add_comment --sig with empty body dies.
 rc=0
-err="$(add_or_update_comment "test/sig/ENG-55T" ENG-55T 2>&1)" || rc=$?
+err="$(add_comment ENG-55T --sig "test/sig/ENG-55T" 2>&1)" || rc=$?
 [[ "$rc" -ne 0 ]] && printf '%s' "$err" | grep -qF "body is empty" \
-  && pass_at "ENG-55 add_or_update_comment: empty body dies cleanly" \
-  || fail_at "ENG-55 add_or_update_comment: empty body" "rc=$rc err=$err"
-
-# ─── ENG-63: add_or_update_comment identical-body footer (C-001..C-006) ──
-# Exercise the commentUpdate branch under controlled GraphQL responses.
-# Override linear_query and _resolve_issue_uuid post-source (the same idiom
-# used at line 87 for SCRIPT_DIR), and flip PIPELINE_DRY_RUN=0 so the
-# function reaches the existing-id resolution path instead of the dry-run
-# short-circuit at bin/linear.sh:553.
-printf '\n--- ENG-63: identical-body re-apply visibility ---\n'
-
-_eng63_orig_linear_query="$(declare -f linear_query)"
-_eng63_orig_resolve_uuid="$(declare -f _resolve_issue_uuid)"
-_eng63_orig_dry_run="$PIPELINE_DRY_RUN"
-_eng63_orig_script_dir="$SCRIPT_DIR"
-
-# linear.sh's metric emission resolves bin/metrics.sh via $SCRIPT_DIR. The
-# lane-fence section above overrode SCRIPT_DIR to the stub dir; flip it
-# back to the real bin/ so the metric write reaches the real script.
-SCRIPT_DIR="$SCRIPT_DIR_REAL"
-
-_resolve_issue_uuid() { printf 'uuid-mock'; }
-
-_eng63_capture_file="$(mktemp -t eng63-capture.XXXXXX)"
-_eng63_canned_existing_body=""
-_eng63_canned_existing_id="cmt-mock-001"
-
-linear_query() {
-  local query="$1" variables="${2:-{\}}"
-  if [[ "$query" =~ commentUpdate ]]; then
-    jq -r '.body' <<<"$variables" >> "$_eng63_capture_file"
-    printf '{"data":{"commentUpdate":{"success":true}}}\n'
-    return 0
-  fi
-  if [[ "$query" =~ commentCreate ]]; then
-    jq -r '.body' <<<"$variables" >> "$_eng63_capture_file"
-    printf '{"data":{"commentCreate":{"success":true}}}\n'
-    return 0
-  fi
-  jq -cn --arg id "$_eng63_canned_existing_id" --arg body "$_eng63_canned_existing_body" \
-    '{data:{issue:{comments:{nodes:[{id:$id,body:$body}]}}}}'
-}
-
-export PIPELINE_DRY_RUN=0
-mkdir -p "$PROJECT_STATE_DIR/metrics"
-: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
-
-# C-001: identical body (no prior footer) → footer appended
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Test body line 1\nTest body line 2\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
-if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file"; then
-  pass_at "ENG-63 C-001 identical body → footer appended"
-else
-  fail_at "ENG-63 C-001 identical body → footer appended" "captured: $(cat "$_eng63_capture_file")"
-fi
-
-# C-002: different body → no footer
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Test body line 1\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body $'Test body line 1 CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
-if grep -q '<!-- meta: reapplied at=' "$_eng63_capture_file"; then
-  fail_at "ENG-63 C-002 different body → no footer" "captured: $(cat "$_eng63_capture_file")"
-else
-  pass_at "ENG-63 C-002 different body → no footer"
-fi
-
-# C-003: identical body + prior footer → footer rotated, not stacked
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Test body line 1\n<!-- meta: dedup key=test/sig/ENG-63T -->\n<!-- meta: reapplied at=2025-01-01T00:00:00Z -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body $'Test body line 1\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
-_eng63_footer_count="$(grep -cE '^<!-- meta: reapplied at=' "$_eng63_capture_file" || true)"
-_eng63_has_old_ts="$(grep -c '2025-01-01T00:00:00Z' "$_eng63_capture_file" || true)"
-if [[ "$_eng63_footer_count" == "1" && "$_eng63_has_old_ts" == "0" ]]; then
-  pass_at "ENG-63 C-003 identical body + prior footer → rotated, not stacked"
-else
-  fail_at "ENG-63 C-003 identical body + prior footer → rotated, not stacked" \
-    "footer_count=$_eng63_footer_count has_old_ts=$_eng63_has_old_ts captured: $(cat "$_eng63_capture_file")"
-fi
-
-# C-004: identical body emits exactly one comment-reapplied metric event
-# (delta-based: count before vs after, so prior-test residue does not mask
-# a regression where this call writes zero or two events.)
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Test body line 1\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
-_eng63_metric_count_before="$(grep -c '"event":"comment-reapplied"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
-_eng63_metric_count_after="$(grep -c '"event":"comment-reapplied"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
-_eng63_metric_delta=$(( _eng63_metric_count_after - _eng63_metric_count_before ))
-if [[ "$_eng63_metric_delta" == "1" ]]; then
-  pass_at "ENG-63 C-004 identical body → one comment-reapplied metric event"
-else
-  fail_at "ENG-63 C-004 identical body → one comment-reapplied metric event" \
-    "delta=$_eng63_metric_delta before=$_eng63_metric_count_before after=$_eng63_metric_count_after"
-fi
-
-# C-005: identical body, existing carries trailing newline → footer still appended
-# Guards against a future regression where the equality check loses its trailing-
-# newline tolerance (today the shell's $() command-substitution strips trailing
-# newlines from both norms; the test pins the property so a refactor of that path
-# can't silently re-introduce the asymmetry).
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Test body line 1\nTest body line 2\n\n<!-- meta: dedup key=test/sig/ENG-63T -->\n'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body $'Test body line 1\nTest body line 2\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
-if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file"; then
-  pass_at "ENG-63 C-005 trailing-newline asymmetry → footer still appended"
-else
-  fail_at "ENG-63 C-005 trailing-newline asymmetry → footer still appended" \
-    "captured: $(cat "$_eng63_capture_file")"
-fi
-
-# C-006: no existing matching comment → commentCreate path, no footer.
-# Stub returns one node with empty body — first jq's `select(.body | contains($m))`
-# yields no match, existing_id is empty, function falls through to commentCreate.
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=""
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body $'Brand new body\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
-if grep -q '<!-- meta: reapplied at=' "$_eng63_capture_file"; then
-  fail_at "ENG-63 C-006 no existing comment → no footer on create" \
-    "captured: $(cat "$_eng63_capture_file")"
-else
-  pass_at "ENG-63 C-006 no existing comment → no footer on create"
-fi
-
-# ─── ENG-63: QA-authored adversarial coverage (AD-001..AD-005) ──
-# These tests target gaps the plan's Failure Mode → Test Map did not
-# enumerate, surfaced by an independent cold review of the api-contract
-# and new code paths. Each pin is a property already implied by the
-# brainstorm's design decisions (D-002 line-anchored regex; D-003 single
-# rotating footer; D-004 create-path bypass) but not directly exercised
-# by C-001..C-006.
-
-# AD-001: mid-line `<!-- meta: reapplied at=… -->` substring is NOT stripped.
-# Pins D-002's line-anchored regex shape: a quoted mention of the marker
-# (e.g. inside fenced prose) must survive normalization, otherwise an
-# un-anchored regex regression would silently drop content from operator-
-# facing bodies. Construct an existing body with the marker text mid-line;
-# new body identical → footer SHOULD append (norms equal because both
-# carry the mid-line text identically).
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'prefix <!-- meta: reapplied at=2026-01-01T00:00:00Z --> suffix\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
-# Footer must append (bodies equal after strip) AND the original 2026-01-01
-# timestamp must survive in the captured commentUpdate body (line-anchored
-# regex did not strip the mid-line occurrence).
-if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file" \
-   && grep -q 'prefix <!-- meta: reapplied at=2026-01-01T00:00:00Z --> suffix' "$_eng63_capture_file"; then
-  pass_at "ENG-63 AD-001 mid-line marker substring survives strip (line-anchored regex)"
-else
-  fail_at "ENG-63 AD-001 mid-line marker substring survives strip (line-anchored regex)" \
-    "captured: $(cat "$_eng63_capture_file")"
-fi
-
-# AD-002: multiple stacked historical footers in existing body → all stripped,
-# rotation collapses to exactly ONE footer. Pins D-003's single-footer
-# invariant under a corrupted-history scenario where a buggy past write
-# stacked 3 footers; the new write must still detect equality and produce
-# a single fresh footer, not five.
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Halt body\n<!-- meta: dedup key=test/sig/ENG-63T -->\n<!-- meta: reapplied at=2025-01-01T00:00:00Z -->\n<!-- meta: reapplied at=2025-02-02T00:00:00Z -->\n<!-- meta: reapplied at=2025-03-03T00:00:00Z -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body $'Halt body\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
-_eng63_ad002_count="$(grep -cE '^<!-- meta: reapplied at=' "$_eng63_capture_file" || true)"
-_eng63_ad002_old_jan="$(grep -c '2025-01-01T00:00:00Z' "$_eng63_capture_file" || true)"
-_eng63_ad002_old_feb="$(grep -c '2025-02-02T00:00:00Z' "$_eng63_capture_file" || true)"
-_eng63_ad002_old_mar="$(grep -c '2025-03-03T00:00:00Z' "$_eng63_capture_file" || true)"
-if [[ "$_eng63_ad002_count" == "1" \
-   && "$_eng63_ad002_old_jan" == "0" \
-   && "$_eng63_ad002_old_feb" == "0" \
-   && "$_eng63_ad002_old_mar" == "0" ]]; then
-  pass_at "ENG-63 AD-002 stacked historical footers → collapse to one fresh footer"
-else
-  fail_at "ENG-63 AD-002 stacked historical footers → collapse to one fresh footer" \
-    "count=$_eng63_ad002_count jan=$_eng63_ad002_old_jan feb=$_eng63_ad002_old_feb mar=$_eng63_ad002_old_mar captured: $(cat "$_eng63_capture_file")"
-fi
-
-# AD-003: caller body is ONLY a `<!-- meta: reapplied at=… -->` line plus
-# the dedup marker (no other content). After strip, `new_norm` carries
-# only the dedup marker line; if existing body matches that exact shape
-# (no prior content), the `-n existing_norm` guard still fires (norm
-# is non-empty) and footer appends. Pins that the guard's purpose is
-# specifically to short-circuit on EMPTY norms (jq parse failure /
-# null body), not on small-but-present norms.
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'<!-- meta: dedup key=test/sig/ENG-63T -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body $'<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
-if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file"; then
-  pass_at "ENG-63 AD-003 dedup-marker-only body → guard accepts non-empty norm, footer appends"
-else
-  fail_at "ENG-63 AD-003 dedup-marker-only body → guard accepts non-empty norm, footer appends" \
-    "captured: $(cat "$_eng63_capture_file")"
-fi
-
-# AD-004: legacy-marker-shaped existing comment (`<!-- pipeline-sig: ... -->`)
-# is the matched comment in `existing_id` lookup; caller passes a body
-# carrying the new-shape `<!-- meta: dedup key=... -->` marker. The two
-# bodies differ by marker shape → `existing_norm != new_norm` →
-# no footer → caller's body posted (in-place migration to new shape).
-# Pins the documented behaviour for plan Failure Mode row "Mixed
-# legacy/new dedup marker shapes" beyond the C-002 trivial-different-
-# bodies case.
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Halt body\n\n<!-- pipeline-sig: test/sig/ENG-63T -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body $'Halt body\n\n<!-- meta: dedup key=test/sig/ENG-63T -->' >/dev/null 2>&1
-# Footer must NOT appear (norms differ by marker shape) AND the captured
-# body must carry the new-shape marker (in-place migration occurred).
-if grep -q '<!-- meta: reapplied at=' "$_eng63_capture_file"; then
-  fail_at "ENG-63 AD-004 legacy→new marker migration → no footer (bodies differ by marker)" \
-    "captured: $(cat "$_eng63_capture_file")"
-elif grep -qF '<!-- meta: dedup key=test/sig/ENG-63T -->' "$_eng63_capture_file"; then
-  pass_at "ENG-63 AD-004 legacy→new marker migration → no footer (bodies differ by marker)"
-else
-  fail_at "ENG-63 AD-004 legacy→new marker migration → no footer (bodies differ by marker)" \
-    "expected new-shape marker in captured body; captured: $(cat "$_eng63_capture_file")"
-fi
-
-# AD-005: identical body containing multibyte Unicode (emoji + CJK) → footer
-# appends. Pins that the byte-equality comparison and the `sed -E` strip
-# both handle Unicode payloads correctly — operator-facing halt bodies
-# routinely carry non-ASCII (project / branch names, error messages).
-: > "$_eng63_capture_file"
-_eng63_canned_existing_body=$'Halt: 失败 ⚠️ retry\n\n<!-- meta: dedup key=test/sig/ENG-63T -->'
-add_or_update_comment "test/sig/ENG-63T" ENG-63T \
-  --body "$_eng63_canned_existing_body" >/dev/null 2>&1
-if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng63_capture_file" \
-   && grep -q '失败' "$_eng63_capture_file"; then
-  pass_at "ENG-63 AD-005 multibyte Unicode body → footer appends, content survives"
-else
-  fail_at "ENG-63 AD-005 multibyte Unicode body → footer appends, content survives" \
-    "captured: $(cat "$_eng63_capture_file")"
-fi
-
-# Restore originals so subsequent tests in this file (or callers) inherit a
-# pristine env.
-rm -f "$_eng63_capture_file"
-unset -f linear_query _resolve_issue_uuid
-eval "$_eng63_orig_linear_query"
-eval "$_eng63_orig_resolve_uuid"
-export PIPELINE_DRY_RUN="$_eng63_orig_dry_run"
-SCRIPT_DIR="$_eng63_orig_script_dir"
-unset _eng63_orig_linear_query _eng63_orig_resolve_uuid _eng63_orig_dry_run \
-      _eng63_orig_script_dir _eng63_capture_file _eng63_canned_existing_body \
-      _eng63_canned_existing_id _eng63_footer_count _eng63_has_old_ts \
-      _eng63_metric_count_before _eng63_metric_count_after _eng63_metric_delta \
-      _eng63_ad002_count _eng63_ad002_old_jan _eng63_ad002_old_feb _eng63_ad002_old_mar
-
-# ─── ENG-111: breadcrumb-on-body-change in add_or_update_comment (B-001..B-006) ─
-# When add_or_update_comment runs commentUpdate with a body that DIFFERS
-# from the existing canonical (post the ENG-63 dispatch+reapplied strip),
-# also post a sig-less chronological breadcrumb via add_comment. The
-# breadcrumb gets a fresh createdAt so a top-down feed scan surfaces the
-# re-fire — closing the gap ENG-63's identical-body footer rotation does
-# not cover.
-printf '\n--- ENG-111: breadcrumb-on-body-change ---\n'
-
-_eng111_orig_linear_query="$(declare -f linear_query)"
-_eng111_orig_resolve_uuid="$(declare -f _resolve_issue_uuid)"
-_eng111_orig_dry_run="$PIPELINE_DRY_RUN"
-_eng111_orig_script_dir="$SCRIPT_DIR"
-
-SCRIPT_DIR="$SCRIPT_DIR_REAL"
-
-_resolve_issue_uuid() { printf 'uuid-mock'; }
-
-_eng111_capture_file="$(mktemp -t eng111-capture.XXXXXX)"
-_eng111_canned_existing_body=""
-_eng111_canned_existing_id="cmt-mock-001"
-_eng111_canned_existing_url=""
-_eng111_canned_no_match=0
-_eng111_force_create_failure=0
-_eng111_create_call_count=0
-
-linear_query() {
-  local query="$1" variables="${2:-{\}}"
-  if [[ "$query" =~ commentUpdate ]]; then
-    jq -r '.body' <<<"$variables" >> "$_eng111_capture_file"
-    printf '{"data":{"commentUpdate":{"success":true}}}\n'
-    return 0
-  fi
-  if [[ "$query" =~ commentCreate ]]; then
-    _eng111_create_call_count=$(( _eng111_create_call_count + 1 ))
-    # B-005: fail the breadcrumb commentCreate (the second commentCreate
-    # under a body-change update is the breadcrumb post). The canonical
-    # `commentUpdate` already ran on a prior linear_query call and is
-    # untouched by this failure.
-    if (( _eng111_force_create_failure == 1 && _eng111_create_call_count >= 1 )); then
-      printf 'GraphQL error: simulated breadcrumb post failure\n' 1>&2
-      return 1
-    fi
-    jq -r '.body' <<<"$variables" >> "$_eng111_capture_file"
-    printf '{"data":{"commentCreate":{"success":true}}}\n'
-    return 0
-  fi
-  # Comments-fetch query path. When _eng111_canned_no_match=1, return a
-  # single unrelated comment whose body does NOT carry the sig (drives
-  # the first-emission commentCreate branch). Otherwise return one node
-  # carrying the canned body + id + url.
-  if (( _eng111_canned_no_match == 1 )); then
-    jq -cn '{data:{issue:{comments:{nodes:[{id:"cmt-unrelated",body:"unrelated comment",url:""}]}}}}'
-    return 0
-  fi
-  jq -cn --arg id "$_eng111_canned_existing_id" \
-         --arg body "$_eng111_canned_existing_body" \
-         --arg url "$_eng111_canned_existing_url" \
-    '{data:{issue:{comments:{nodes:[{id:$id,body:$body,url:$url}]}}}}'
-}
-
-export PIPELINE_DRY_RUN=0
-mkdir -p "$PROJECT_STATE_DIR/metrics"
-: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
-
-# B-001: first-emit (no matching existing comment) → commentCreate path,
-# capture has exactly ONE entry, no breadcrumb. Pins D-004 (first emission
-# does not emit a breadcrumb).
-: > "$_eng111_capture_file"
-_eng111_canned_no_match=1
-_eng111_create_call_count=0
-_eng111_force_create_failure=0
-add_or_update_comment "test/sig/ENG-111T" ENG-111T \
-  --body $'Fresh body line\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
-_eng111_entry_count="$(grep -c 'test/sig/ENG-111T' "$_eng111_capture_file" || true)"
-if [[ "$_eng111_entry_count" == "1" ]] \
-   && ! grep -q 'meta: breadcrumb sig=' "$_eng111_capture_file"; then
-  pass_at "ENG-111 B-001 first-emit → no breadcrumb"
-else
-  fail_at "ENG-111 B-001 first-emit → no breadcrumb" \
-    "entries=$_eng111_entry_count captured: $(cat "$_eng111_capture_file")"
-fi
-_eng111_canned_no_match=0
-
-# B-002: body-change update, canonical URL present → capture has TWO entries
-# (the updated canonical AND a breadcrumb). The breadcrumb's body carries
-# the trailing marker, the canned URL, and the prose phrase referencing
-# the sig. Pins AC #1.
-: > "$_eng111_capture_file"
-_eng111_canned_existing_body=$'Old halt body line\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
-_eng111_canned_existing_url='https://linear.app/example/issue/ENG-111/#comment-cmt-mock-001'
-_eng111_create_call_count=0
-add_or_update_comment "test/sig/ENG-111T" ENG-111T \
-  --body $'New halt body line CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
-_eng111_canonical_count="$(grep -cE '^New halt body line CHANGED$' "$_eng111_capture_file" || true)"
-_eng111_breadcrumb_count="$(grep -cF '<!-- meta: breadcrumb sig=test/sig/ENG-111T comment_id=cmt-mock-001 -->' "$_eng111_capture_file" || true)"
-_eng111_url_count="$(grep -cF 'https://linear.app/example/issue/ENG-111/#comment-cmt-mock-001' "$_eng111_capture_file" || true)"
-_eng111_prose_count="$(grep -c 'Re-emitted (body changed) under sig' "$_eng111_capture_file" || true)"
-if [[ "$_eng111_canonical_count" == "1" \
-   && "$_eng111_breadcrumb_count" == "1" \
-   && "$_eng111_url_count" == "1" \
-   && "$_eng111_prose_count" == "1" ]]; then
-  pass_at "ENG-111 B-002 body-change update → breadcrumb with sig+URL+prose"
-else
-  fail_at "ENG-111 B-002 body-change update → breadcrumb with sig+URL+prose" \
-    "canonical=$_eng111_canonical_count breadcrumb=$_eng111_breadcrumb_count url=$_eng111_url_count prose=$_eng111_prose_count captured: $(cat "$_eng111_capture_file")"
-fi
-
-# B-003: identical-body update → no breadcrumb (ENG-63 footer instead).
-# Pins AC #2: identical re-runs stay silent at the breadcrumb level.
-: > "$_eng111_capture_file"
-_eng111_canned_existing_body=$'Halt body steady\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
-_eng111_canned_existing_url='https://linear.app/example/issue/ENG-111/#comment-cmt-mock-001'
-_eng111_create_call_count=0
-add_or_update_comment "test/sig/ENG-111T" ENG-111T \
-  --body "$_eng111_canned_existing_body" >/dev/null 2>&1
-_eng111_footer_present=0
-grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng111_capture_file" \
-  && _eng111_footer_present=1
-if [[ "$_eng111_footer_present" == "1" ]] \
-   && ! grep -q 'meta: breadcrumb sig=' "$_eng111_capture_file"; then
-  pass_at "ENG-111 B-003 identical-body update → no breadcrumb (footer only)"
-else
-  fail_at "ENG-111 B-003 identical-body update → no breadcrumb (footer only)" \
-    "footer=$_eng111_footer_present captured: $(cat "$_eng111_capture_file")"
-fi
-
-# B-004: body-change update, canonical URL empty → breadcrumb still posts
-# but the URL line is omitted. The trailing meta marker is still present.
-# Pins D-002 + D-003 URL-fallback path (A-11 graceful degradation).
-: > "$_eng111_capture_file"
-_eng111_canned_existing_body=$'Old halt body line\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
-_eng111_canned_existing_url=''
-_eng111_create_call_count=0
-add_or_update_comment "test/sig/ENG-111T" ENG-111T \
-  --body $'New halt body line CHANGED v2\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
-_eng111_breadcrumb_present=0
-grep -qF '<!-- meta: breadcrumb sig=test/sig/ENG-111T comment_id=cmt-mock-001 -->' "$_eng111_capture_file" \
-  && _eng111_breadcrumb_present=1
-_eng111_has_url=0
-grep -q 'https://' "$_eng111_capture_file" && _eng111_has_url=1
-if [[ "$_eng111_breadcrumb_present" == "1" && "$_eng111_has_url" == "0" ]]; then
-  pass_at "ENG-111 B-004 body-change + empty URL → breadcrumb posts, URL line omitted"
-else
-  fail_at "ENG-111 B-004 body-change + empty URL → breadcrumb posts, URL line omitted" \
-    "breadcrumb=$_eng111_breadcrumb_present has_url=$_eng111_has_url captured: $(cat "$_eng111_capture_file")"
-fi
-
-# B-005: body-change update, breadcrumb commentCreate fails → canonical
-# commentUpdate is observable in capture AND add_or_update_comment exits 0.
-# Pins §5 error-handling: breadcrumb post is best-effort, never blocks the
-# load-bearing canonical update.
-: > "$_eng111_capture_file"
-_eng111_canned_existing_body=$'Old halt body B5\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
-_eng111_canned_existing_url=''
-_eng111_force_create_failure=1
-_eng111_create_call_count=0
-add_or_update_comment "test/sig/ENG-111T" ENG-111T \
-  --body $'New halt body B5 CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
-_eng111_b5_rc=$?
-_eng111_canonical_seen=0
-grep -qF 'New halt body B5 CHANGED' "$_eng111_capture_file" && _eng111_canonical_seen=1
-_eng111_breadcrumb_seen=0
-grep -q 'meta: breadcrumb sig=' "$_eng111_capture_file" && _eng111_breadcrumb_seen=1
-if [[ "$_eng111_b5_rc" == "0" && "$_eng111_canonical_seen" == "1" && "$_eng111_breadcrumb_seen" == "0" ]]; then
-  pass_at "ENG-111 B-005 breadcrumb post failure → canonical preserved, function rc=0"
-else
-  fail_at "ENG-111 B-005 breadcrumb post failure → canonical preserved, function rc=0" \
-    "rc=$_eng111_b5_rc canonical=$_eng111_canonical_seen breadcrumb=$_eng111_breadcrumb_seen captured: $(cat "$_eng111_capture_file")"
-fi
-_eng111_force_create_failure=0
-
-# B-006: comment-breadcrumb metric emitted exactly once per body-change update.
-# Delta-based to survive residue from B-002/B-004.
-: > "$_eng111_capture_file"
-_eng111_canned_existing_body=$'Old halt body B6\n\n<!-- meta: dedup key=test/sig/ENG-111T -->'
-_eng111_canned_existing_url=''
-_eng111_create_call_count=0
-_eng111_metric_count_before="$(grep -c '"event":"comment-breadcrumb"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
-add_or_update_comment "test/sig/ENG-111T" ENG-111T \
-  --body $'New halt body B6 CHANGED\n\n<!-- meta: dedup key=test/sig/ENG-111T -->' >/dev/null 2>&1
-_eng111_metric_count_after="$(grep -c '"event":"comment-breadcrumb"' "$PROJECT_STATE_DIR/metrics/events.jsonl" 2>/dev/null || true)"
-_eng111_metric_delta=$(( _eng111_metric_count_after - _eng111_metric_count_before ))
-if [[ "$_eng111_metric_delta" == "1" ]]; then
-  pass_at "ENG-111 B-006 body-change update → one comment-breadcrumb metric event"
-else
-  fail_at "ENG-111 B-006 body-change update → one comment-breadcrumb metric event" \
-    "delta=$_eng111_metric_delta before=$_eng111_metric_count_before after=$_eng111_metric_count_after"
-fi
-
-# Restore originals.
-rm -f "$_eng111_capture_file"
-unset -f linear_query _resolve_issue_uuid
-eval "$_eng111_orig_linear_query"
-eval "$_eng111_orig_resolve_uuid"
-export PIPELINE_DRY_RUN="$_eng111_orig_dry_run"
-SCRIPT_DIR="$_eng111_orig_script_dir"
-unset _eng111_orig_linear_query _eng111_orig_resolve_uuid _eng111_orig_dry_run \
-      _eng111_orig_script_dir _eng111_capture_file _eng111_canned_existing_body \
-      _eng111_canned_existing_id _eng111_canned_existing_url \
-      _eng111_canned_no_match _eng111_force_create_failure _eng111_create_call_count \
-      _eng111_entry_count _eng111_canonical_count _eng111_breadcrumb_count \
-      _eng111_url_count _eng111_prose_count _eng111_footer_present \
-      _eng111_breadcrumb_present _eng111_has_url _eng111_b5_rc \
-      _eng111_canonical_seen _eng111_breadcrumb_seen \
-      _eng111_metric_count_before _eng111_metric_count_after _eng111_metric_delta
+  && pass_at "ENG-55 add_comment --sig: empty body dies cleanly" \
+  || fail_at "ENG-55 add_comment --sig: empty body" "rc=$rc err=$err"
 
 # ─── ENG-151: header line on every harness-written comment (H-001..H-013) ──
-# bin/linear.sh::add_comment / add_or_update_comment auto-prepend a
+# bin/linear.sh::add_comment auto-prepends a
 # two-line canonical header (`[<ident> · <stage> · <dispatch-tail> ·
 # <iso-ts> · <actor>]\n<EVENT-TYPE> — <summary>`) for every non-human
 # writer.  Tests pin the per-event-type derivation, the human-lane
@@ -1058,40 +599,9 @@ else
 fi
 unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
 
-# H-003: completion via add_or_update_comment → P1 sig-derivation emits
-# `COMPLETION — stage implementing summary` (stage extracted from sig).
-: > "$_eng151_capture_file"
-_eng151_canned_existing_body=""
-PIPELINE_WRITER=agent \
-PIPELINE_DISPATCH_ID=ENG-151T-d0003 \
-PIPELINE_STAGE=implementing \
-  add_or_update_comment "completion/implementing/ENG-151T" ENG-151T \
-  --body 'agent prose' >/dev/null 2>&1
-if grep -qE '^\[ENG-151T · implementing · d0003 · .* · agent\]$' "$_eng151_capture_file" \
-   && grep -qF 'COMPLETION — stage implementing summary' "$_eng151_capture_file"; then
-  pass_at "ENG-151 H-003 completion → COMPLETION — stage implementing summary"
-else
-  fail_at "ENG-151 H-003 completion → COMPLETION — stage implementing summary" \
-    "captured: $(cat "$_eng151_capture_file")"
-fi
-unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
-
-# H-004: scope-approval via add_or_update_comment → P1 sig-derivation
-# emits `SCOPE-APPROVAL — <stage>`.
-: > "$_eng151_capture_file"
-_eng151_canned_existing_body=""
-PIPELINE_WRITER=agent \
-PIPELINE_DISPATCH_ID=ENG-151T-d0004 \
-PIPELINE_STAGE=implementing \
-  add_or_update_comment "scope-approval/implementing/ENG-151T" ENG-151T \
-  --body 'approval request' >/dev/null 2>&1
-if grep -qF 'SCOPE-APPROVAL — implementing' "$_eng151_capture_file"; then
-  pass_at "ENG-151 H-004 scope-approval → SCOPE-APPROVAL — implementing"
-else
-  fail_at "ENG-151 H-004 scope-approval → SCOPE-APPROVAL — implementing" \
-    "captured: $(cat "$_eng151_capture_file")"
-fi
-unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+# H-003 / H-004 deleted in ENG-150: cases exercised the retired
+# upsert lane (retired in ENG-150).  Sig-derivation under the new
+# add_comment --sig chokepoint is covered by ENG-150 A-001 below.
 
 # H-005: counter-bump (`<!-- meta: metric name=… -->` marker) → P3
 # derivation emits `COUNTER-BUMP — <metric-name>`.
@@ -1110,39 +620,9 @@ else
 fi
 unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
 
-# H-006: last-review-state via add_or_update_comment → P1 sig-derivation
-# emits `LAST-REVIEW-STATE — …`.  Sig is the flat `<class>/<ident>` shape
-# (no embedded stage segment).
-: > "$_eng151_capture_file"
-_eng151_canned_existing_body=""
-PIPELINE_WRITER=agent \
-PIPELINE_DISPATCH_ID=ENG-151T-d0006 \
-PIPELINE_STAGE=reviewing \
-  add_or_update_comment "last-review-state/ENG-151T" ENG-151T \
-  --body 'last review state body' >/dev/null 2>&1
-if grep -qE '^LAST-REVIEW-STATE — ' "$_eng151_capture_file"; then
-  pass_at "ENG-151 H-006 last-review-state → LAST-REVIEW-STATE — …"
-else
-  fail_at "ENG-151 H-006 last-review-state → LAST-REVIEW-STATE — …" \
-    "captured: $(cat "$_eng151_capture_file")"
-fi
-unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
-
-# H-007: tdd-evidence → `TDD-EVIDENCE — stage implementing`.
-: > "$_eng151_capture_file"
-_eng151_canned_existing_body=""
-PIPELINE_WRITER=agent \
-PIPELINE_DISPATCH_ID=ENG-151T-d0007 \
-PIPELINE_STAGE=implementing \
-  add_or_update_comment "tdd-evidence/implementing/ENG-151T" ENG-151T \
-  --body 'tdd body' >/dev/null 2>&1
-if grep -qF 'TDD-EVIDENCE — stage implementing' "$_eng151_capture_file"; then
-  pass_at "ENG-151 H-007 tdd-evidence → TDD-EVIDENCE — stage implementing"
-else
-  fail_at "ENG-151 H-007 tdd-evidence → TDD-EVIDENCE — stage implementing" \
-    "captured: $(cat "$_eng151_capture_file")"
-fi
-unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+# H-006 / H-007 deleted in ENG-150: cases exercised the retired
+# upsert lane (retired in ENG-150).  Sig-derivation under the new
+# add_comment --sig chokepoint is covered by ENG-150 A-001 below.
 
 # H-008: agent-lane fail-closed (D-006) — missing PIPELINE_DISPATCH_ID
 # AND/OR missing PIPELINE_STAGE under PIPELINE_WRITER=agent causes
@@ -1184,38 +664,10 @@ else
 fi
 unset PIPELINE_WRITER _eng151_h9_first_char
 
-# H-010: byte-equal modulo header (D-007) — identical caller bodies on
-# two re-applies have different iso-ts in their auto-prepended headers.
-# strip_re must drop both header lines so ENG-63's reapplied footer can
-# fire.  The canned existing body carries a stale header + content +
-# dedup marker; caller passes the same prose.
-#
-# Also pins H-017 (AC #1): the body Linear stores on reapply must still
-# open with the canonical bracket + EVENT-TYPE header.  Pre-H-017 fix,
-# `body=new_norm+footer` lost the header (strip_re removed it from
-# new_norm) and every reapply landed headerless.
-: > "$_eng151_capture_file"
-_eng151_canned_existing_body=$'[ENG-151T · implementing · d0010 · 2026-05-20T10:00:00Z · agent]\nCOMPLETION — stage implementing summary\n\nagent prose with TODO — fix later\n\n<!-- meta: dispatch id=ENG-151T-d0010 stage=implementing -->\n\n<!-- meta: dedup key=completion/implementing/ENG-151T -->'
-PIPELINE_WRITER=agent \
-PIPELINE_DISPATCH_ID=ENG-151T-d0010 \
-PIPELINE_STAGE=implementing \
-  add_or_update_comment "completion/implementing/ENG-151T" ENG-151T \
-  --body $'agent prose with TODO — fix later' >/dev/null 2>&1
-# Footer should fire (existing matches new after strip_re drops header
-# lines + dispatch marker).  AND the caller's prose line `TODO — fix later`
-# must survive (closed _event_types alternation does NOT match TODO).
-# AND the captured body MUST open with the canonical bracket header line
-# (H-017 — reapply path preserves header).
-if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_eng151_capture_file" \
-   && grep -qF 'TODO — fix later' "$_eng151_capture_file" \
-   && grep -qE '^\[ENG-151T · implementing · d0010 · [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z · agent\]$' "$_eng151_capture_file" \
-   && grep -qF 'COMPLETION — stage implementing summary' "$_eng151_capture_file"; then
-  pass_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved, header restored"
-else
-  fail_at "ENG-151 H-010 byte-equal modulo header → footer fires, TODO prose preserved, header restored" \
-    "captured: $(cat "$_eng151_capture_file")"
-fi
-unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+# H-010 deleted in ENG-150: case exercised the retired upsert lane's
+# reapply-path header preservation (retired in ENG-150).  Append-only
+# writes have no reapply path.
+
 
 # H-011: source-of-truth centralisation (AC #2) — the canonical
 # ` · agent` / ` · orchestrator` header glyph pattern must appear only
@@ -1356,37 +808,9 @@ else
 fi
 unset _eng151_adv_c15_out
 
-# H-017: add_or_update_comment reapply path preserves bracket header
-# (AC #1) — focused regression for the QA-flagged P0.  H-010 also covers
-# this property; this test isolates it for clarity and adds an explicit
-# first-line assertion so a regression points operators at the reapply
-# branch immediately (vs H-010's multi-aspect failure message).
-#
-# Pre-fix: strip_re strips the bracket + EVENT-TYPE lines from new_norm
-# for the byte-equal compare (D-007).  The reapply branch then set
-# body=new_norm+footer, omitting any header re-injection — the stored
-# comment in Linear lost its bracket header after every identical
-# reapply.  Fix: re-derive event-type/summary + re-render header on
-# the reapply branch before commentUpdate; line 1 of the stored body
-# MUST be a fresh bracket header.
-: > "$_eng151_capture_file"
-_eng151_canned_existing_body=$'[ENG-151T · implementing · d0017 · 2026-05-20T10:00:00Z · agent]\nCOMPLETION — stage implementing summary\n\nidempotent reapply payload\n\n<!-- meta: dispatch id=ENG-151T-d0017 stage=implementing -->\n\n<!-- meta: dedup key=completion/implementing/ENG-151T -->'
-PIPELINE_WRITER=agent \
-PIPELINE_DISPATCH_ID=ENG-151T-d0017 \
-PIPELINE_STAGE=implementing \
-  add_or_update_comment "completion/implementing/ENG-151T" ENG-151T \
-  --body $'idempotent reapply payload' >/dev/null 2>&1
-_eng151_h17_first_line="$(head -n 1 "$_eng151_capture_file" || true)"
-_eng151_h17_second_line="$(sed -n '2p' "$_eng151_capture_file" || true)"
-if [[ "$_eng151_h17_first_line" =~ ^\[ENG-151T\ ·\ implementing\ ·\ d0017\ · ]] \
-   && [[ "$_eng151_h17_second_line" == "COMPLETION — stage implementing summary" ]] \
-   && grep -qE '^<!-- meta: reapplied at=' "$_eng151_capture_file"; then
-  pass_at "ENG-151 H-017 reapply path preserves bracket header (AC #1)"
-else
-  fail_at "ENG-151 H-017 reapply path preserves bracket header (AC #1)" \
-    "first_line='$_eng151_h17_first_line' second_line='$_eng151_h17_second_line' captured: $(cat "$_eng151_capture_file")"
-fi
-unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h17_first_line _eng151_h17_second_line
+# H-017 deleted in ENG-150: case pinned the retired upsert lane's
+# reapply-path bracket-header preservation (retired in ENG-150).
+# Append-only writes have no reapply path.
 
 # QA-ADV-H020: _derive P3 BREADCRUMB path — body carries breadcrumb marker;
 # sig is empty so P1 does not fire; P3 captures the sig verbatim.
@@ -1428,7 +852,7 @@ unset _eng151_orig_linear_query _eng151_orig_resolve_uuid _eng151_orig_dry_run \
       _eng151_orig_script_dir _eng151_capture_file _eng151_canned_existing_body \
       _eng151_canned_existing_id _eng151_canned_existing_url
 
-# ─── ENG-87: dispatch_id auto-injection in add_comment / add_or_update_comment ─
+# ─── ENG-87: dispatch_id auto-injection in add_comment ───────────────
 # bin/linear.sh's _inject_dispatch_marker is the chokepoint where every
 # Linear comment body gets stamped with the current dispatch_id. Tests
 # pin: env-set → marker appended; env-unset → no injection (operator
@@ -1580,79 +1004,295 @@ fi
 rm -f "$_eng87_l5_log"
 unset _eng87_l5_log _eng87_l5_orig_log _eng87_l5_orig_resolve
 
-# Case 87-L4-int (review-iter-2 M6): integration test for
-# add_or_update_comment — pre-fix, Case-87-L4 only invoked the
-# _inject_dispatch_marker helper directly with a hand-crafted body
-# containing the dedup marker. That asserts the helper is dedup-marker-
-# aware but NOT the production assembly (line 588 inject vs line 597
-# dedup-append). A regression that swapped the two assembly steps
-# (dedup-append before inject) would silently false-pass L4 because
-# the helper invocation is unchanged. This integration test drives
-# add_or_update_comment end-to-end under PIPELINE_DRY_RUN=1 and asserts
-# both markers appear in the production-written body in the documented
-# source-order: dispatch BEFORE dedup.
-#
-# Two-pronged approach: (a) capture-via-log integration test (uses a
-# body short enough that both markers fit in the 80-char truncation
-# the dry-run path applies); (b) source-text grep that pins the
-# inject-before-dedup ordering directly.
-_eng87_l4i_log="$_TEST_STUB_DIR/eng87-l4int.log"
-: > "$_eng87_l4i_log"
-_eng87_l4i_orig_log="$(declare -f log 2>/dev/null || printf '')"
-log() { printf '%s\n' "$*" >> "$_eng87_l4i_log"; }
-# Use very short id + sig so both markers fit in the 80-char dry-run
-# truncation: body(1) + \n\n(2) + dispatch(46) + \n\n(2) + dedup(26) = 77.
-PIPELINE_WRITER=human \
-PIPELINE_DISPATCH_ID="ENG-X-d0001" \
-PIPELINE_STAGE="ui" \
+# Case 87-L4-int deleted in ENG-150: exercised the retired upsert
+# lane's inject-before-dedup ordering (retired in ENG-150).  The new
+# chokepoint (add_comment --sig) carries the equivalent assembly (Task 1
+# places the dedup-marker append AFTER _inject_dispatch_marker) and is
+# covered by ENG-150 A-001 below.
+
+# ─── ENG-150: append-only ledger writes (A-001..A-009) ────────────────
+# Post-cutover, every "canonical comment per logical event" write
+# (halt, completion, protocol-violation, worktree-mutation,
+# retry-pending, last-review-state, core-bare-flip) goes through
+# `add_comment <issue> --sig <category>/<stage>/<issue>`.  The
+# chokepoint suffixes `/d<NNNN>` (from PIPELINE_DISPATCH_ID) and
+# appends `<!-- meta: dedup key=<full-sig> -->`.  Every emission posts
+# a fresh chronological comment; the pre-ENG-150 sig-based commentUpdate
+# is gone (deleted in Task 3).  These cases pin the contract.
+printf '\n--- ENG-150: append-only ledger writes ---\n'
+
+_eng150_orig_linear_query="$(declare -f linear_query 2>/dev/null || printf '')"
+_eng150_orig_resolve_uuid="$(declare -f _resolve_issue_uuid 2>/dev/null || printf '')"
+_eng150_orig_log="$(declare -f log 2>/dev/null || printf '')"
+_eng150_orig_dry_run="${PIPELINE_DRY_RUN-1}"
+_eng150_orig_script_dir="$SCRIPT_DIR"
+SCRIPT_DIR="$SCRIPT_DIR_REAL"
+_eng150_log="$_TEST_STUB_DIR/eng150.log"
+: > "$_eng150_log"
+log() { printf '%s\n' "$*" >> "$_eng150_log"; }
+
+# A-001: --sig with PIPELINE_DISPATCH_ID set under dry-run carries BOTH
+# the dispatch marker (auto-injected) AND the dispatch-suffixed dedup
+# marker.  Also pins the ENG-151 header derivation under the new sig
+# path: P1 sig-derivation emits `HALT — stage implementing halt`.
+: > "$_eng150_log"
 PIPELINE_DRY_RUN=1 \
-add_or_update_comment "t" "ENG-X" "x" >/dev/null 2>&1 || true
-unset -f log
-[[ -n "$_eng87_l4i_orig_log" ]] && eval "$_eng87_l4i_orig_log"
-unset PIPELINE_DISPATCH_ID PIPELINE_STAGE PIPELINE_DRY_RUN
-_eng87_l4i_line="$(cat "$_eng87_l4i_log")"
-# (a) Both markers present.
-if grep -qF '<!-- meta: dispatch id=ENG-X-d0001 stage=ui -->' <<<"$_eng87_l4i_line" \
-   && grep -qF '<!-- meta: dedup key=t -->' <<<"$_eng87_l4i_line"; then
-  pass_at "ENG-87 L4-int (review-iter-2 M6): add_or_update_comment dry-run carries BOTH dispatch + dedup markers"
+PIPELINE_WRITER=agent \
+PIPELINE_DISPATCH_ID=ENG-X-d0007 \
+PIPELINE_STAGE=implementing \
+  add_comment ENG-X --sig "halt/implementing/ENG-X" --body "halt body" >/dev/null 2>&1
+_eng150_a001="$(cat "$_eng150_log")"
+if grep -qF '<!-- meta: dispatch id=ENG-X-d0007 stage=implementing -->' <<<"$_eng150_a001" \
+   && grep -qF '<!-- meta: dedup key=halt/implementing/ENG-X/d0007 -->' <<<"$_eng150_a001" \
+   && grep -qF 'HALT — stage implementing halt' <<<"$_eng150_a001"; then
+  pass_at "ENG-150 A-001 --sig + PIPELINE_DISPATCH_ID → suffixed dedup marker + dispatch marker + HALT header"
 else
-  fail_at "ENG-87 L4-int: dual-marker presence" "log=$_eng87_l4i_line"
+  fail_at "ENG-150 A-001 --sig + PIPELINE_DISPATCH_ID" "captured: $_eng150_a001"
 fi
-# Source-order: dispatch index < dedup index (dispatch injected first;
-# dedup appended last). Production code at lines 588 (inject) and 597
-# (append) — pin via byte-position arithmetic.
-_eng87_l4i_disp_at="$(grep -nF '<!-- meta: dispatch id=ENG-X-d0001' <<<"$_eng87_l4i_line" | head -1 | cut -d: -f1)"
-_eng87_l4i_dedup_at="$(grep -nF '<!-- meta: dedup key=t -->' <<<"$_eng87_l4i_line" | head -1 | cut -d: -f1)"
-_eng87_l4i_disp_at="${_eng87_l4i_disp_at:-0}"
-_eng87_l4i_dedup_at="${_eng87_l4i_dedup_at:-0}"
-if (( _eng87_l4i_disp_at > 0 )) && (( _eng87_l4i_dedup_at > 0 )) \
-   && (( _eng87_l4i_disp_at < _eng87_l4i_dedup_at )); then
-  pass_at "ENG-87 L4-int (review-iter-2 M6): dispatch marker precedes dedup marker (production source-order preserved)"
+unset PIPELINE_DRY_RUN PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
+# A-002: --sig with PIPELINE_DISPATCH_ID UNSET → sig collapses to legacy
+# shape (no `/d<NNNN>` suffix); no dispatch marker.
+: > "$_eng150_log"
+PIPELINE_DRY_RUN=1 \
+  add_comment ENG-X --sig "halt/implementing/ENG-X" --body "halt body" >/dev/null 2>&1
+_eng150_a002="$(cat "$_eng150_log")"
+if grep -qF '<!-- meta: dedup key=halt/implementing/ENG-X -->' <<<"$_eng150_a002" \
+   && ! grep -qF '<!-- meta: dispatch id=' <<<"$_eng150_a002" \
+   && ! grep -qE 'dedup key=halt/implementing/ENG-X/d[0-9]' <<<"$_eng150_a002"; then
+  pass_at "ENG-150 A-002 --sig + PIPELINE_DISPATCH_ID unset → legacy-shape sig, no dispatch marker"
 else
-  fail_at "ENG-87 L4-int: source-order" \
-    "disp_at=$_eng87_l4i_disp_at dedup_at=$_eng87_l4i_dedup_at log=$_eng87_l4i_line"
+  fail_at "ENG-150 A-002 --sig + PIPELINE_DISPATCH_ID unset" "captured: $_eng150_a002"
 fi
-# Source-text pin: linear.sh::add_or_update_comment must call
-# _inject_dispatch_marker BEFORE the dedup-marker append. A behavioral
-# test alone cannot detect a refactor that re-orders these (because
-# both markers would still appear in the body); the source pin closes
-# that gap.
-_eng87_l4i_src="$SCRIPT_DIR_REAL/linear.sh"
-_eng87_l4i_block="$(awk '/^add_or_update_comment\(\)/,/^}/' "$_eng87_l4i_src")"
-_eng87_l4i_inject_line="$(grep -n 'body="$(_inject_dispatch_marker' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
-_eng87_l4i_dedup_line="$(grep -n 'body+=\$.\\n\\n.\"\$marker\"' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
-if [[ -z "$_eng87_l4i_dedup_line" ]]; then
-  _eng87_l4i_dedup_line="$(grep -n 'body+=' <<<"$_eng87_l4i_block" | head -1 | cut -d: -f1)"
-fi
-if [[ -n "$_eng87_l4i_inject_line" ]] && [[ -n "$_eng87_l4i_dedup_line" ]] \
-   && (( _eng87_l4i_inject_line < _eng87_l4i_dedup_line )); then
-  pass_at "ENG-87 L4-int (review-iter-2 M6): linear.sh source-text pins inject-before-dedup ordering"
+unset PIPELINE_DRY_RUN
+
+# A-003: two distinct dispatches under the same sig produce TWO distinct
+# commentCreate calls (no commentUpdate).  Verifies AC #2 — the
+# append-only ledger semantic.
+_eng150_capture_a3="$(mktemp -t eng150-a3.XXXXXX)"
+_resolve_issue_uuid() { printf 'uuid-mock-a3'; }
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentUpdate ]]; then
+    printf 'UPDATE %s\n' "$(jq -r '.body' <<<"$variables")" >> "$_eng150_capture_a3"
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
+  fi
+  if [[ "$query" =~ commentCreate ]]; then
+    printf 'CREATE %s\n' "$(jq -r '.body' <<<"$variables")" >> "$_eng150_capture_a3"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  jq -cn '{data:{issue:{comments:{nodes:[]}}}}'
+}
+export PIPELINE_DRY_RUN=0
+: > "$_eng150_capture_a3"
+PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=ENG-X-d0007 PIPELINE_STAGE=implementing \
+  add_comment ENG-X --sig "halt/implementing/ENG-X" --body "halt body" >/dev/null 2>&1
+PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=ENG-X-d0008 PIPELINE_STAGE=implementing \
+  add_comment ENG-X --sig "halt/implementing/ENG-X" --body "halt body v2" >/dev/null 2>&1
+_eng150_a3_create_count="$(grep -c '^CREATE ' "$_eng150_capture_a3" || true)"
+_eng150_a3_update_count="$(grep -c '^UPDATE ' "$_eng150_capture_a3" || true)"
+if [[ "$_eng150_a3_create_count" == "2" && "$_eng150_a3_update_count" == "0" ]]; then
+  pass_at "ENG-150 A-003 two distinct dispatches → TWO commentCreate, zero commentUpdate (append-only)"
 else
-  fail_at "ENG-87 L4-int: source-text order" \
-    "inject_line=$_eng87_l4i_inject_line dedup_line=$_eng87_l4i_dedup_line"
+  fail_at "ENG-150 A-003 two distinct dispatches → append-only" \
+    "create=$_eng150_a3_create_count update=$_eng150_a3_update_count captured: $(cat "$_eng150_capture_a3")"
 fi
-rm -f "$_eng87_l4i_log"
-unset _eng87_l4i_log _eng87_l4i_orig_log _eng87_l4i_line _eng87_l4i_disp_at _eng87_l4i_dedup_at _eng87_l4i_src _eng87_l4i_block _eng87_l4i_inject_line _eng87_l4i_dedup_line
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+rm -f "$_eng150_capture_a3"
+
+# A-004: same dispatch retries with BYTE-IDENTICAL body and same sig →
+# TWO commentCreate calls (hash dedup skipped on --sig per Task 1's
+# D-007 rule).
+_eng150_capture_a4="$(mktemp -t eng150-a4.XXXXXX)"
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentUpdate ]]; then
+    printf 'UPDATE %s\n' "$(jq -r '.body' <<<"$variables")" >> "$_eng150_capture_a4"
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
+  fi
+  if [[ "$query" =~ commentCreate ]]; then
+    printf 'CREATE %s\n' "$(jq -r '.body' <<<"$variables")" >> "$_eng150_capture_a4"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  # Simulate the first commentCreate having already landed (existing
+  # comment with identical body) so hash dedup would fire in the absence
+  # of the --sig bypass.
+  jq -cn '{data:{issue:{comments:{nodes:[
+    {body:"completion/implementing/ENG-X body\n\n<!-- meta: dispatch id=ENG-X-d0007 stage=implementing -->\n\n<!-- meta: dedup key=completion/implementing/ENG-X/d0007 -->"}
+  ]}}}}'
+}
+: > "$_eng150_capture_a4"
+PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=ENG-X-d0007 PIPELINE_STAGE=implementing \
+  add_comment ENG-X --sig "completion/implementing/ENG-X" --body "completion/implementing/ENG-X body" >/dev/null 2>&1
+PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=ENG-X-d0007 PIPELINE_STAGE=implementing \
+  add_comment ENG-X --sig "completion/implementing/ENG-X" --body "completion/implementing/ENG-X body" >/dev/null 2>&1
+_eng150_a4_create_count="$(grep -c '^CREATE ' "$_eng150_capture_a4" || true)"
+if [[ "$_eng150_a4_create_count" == "2" ]]; then
+  pass_at "ENG-150 A-004 same dispatch + identical body + --sig → TWO commentCreate (hash dedup skipped per D-007)"
+else
+  fail_at "ENG-150 A-004 same dispatch + identical body" \
+    "create=$_eng150_a4_create_count captured: $(cat "$_eng150_capture_a4")"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+rm -f "$_eng150_capture_a4"
+
+# A-005: back-compat reader fixture.  An operator-side prefix-match-sort-
+# latest jq recipe finds the LATEST halt under the sig prefix across a
+# mix of one legacy comment (no /d suffix) and three post-cutover
+# comments.  Verifies D-006 — the runbook recipe works for both shapes.
+_eng150_a5_fixture="$(jq -cn '[
+  {id:"c-legacy", createdAt:"2026-01-01T00:00:00Z", body:"halt body\n<!-- meta: dedup key=halt/X/Y -->"},
+  {id:"c-d0007",  createdAt:"2026-01-02T00:00:00Z", body:"halt body\n<!-- meta: dedup key=halt/X/Y/d0007 -->"},
+  {id:"c-d0008",  createdAt:"2026-01-03T00:00:00Z", body:"halt body\n<!-- meta: dedup key=halt/X/Y/d0008 -->"},
+  {id:"c-d0009",  createdAt:"2026-01-04T00:00:00Z", body:"halt body\n<!-- meta: dedup key=halt/X/Y/d0009 -->"}
+]')"
+_eng150_a5_latest_id="$(jq -r '
+  [.[] | select(.body | contains("<!-- meta: dedup key=halt/X/Y"))]
+  | sort_by(.createdAt) | last | .id
+' <<<"$_eng150_a5_fixture")"
+if [[ "$_eng150_a5_latest_id" == "c-d0009" ]]; then
+  pass_at "ENG-150 A-005 prefix-match-sort-latest finds latest dispatch (c-d0009) across legacy + post-cutover mix"
+else
+  fail_at "ENG-150 A-005 operator-recipe latest-by-prefix" "got: $_eng150_a5_latest_id"
+fi
+# A-005 paired: same recipe against a fixture with only ONE legacy
+# comment returns that single legacy comment id (back-compat for issues
+# that have not yet emitted under the post-cutover code path).
+_eng150_a5b_fixture="$(jq -cn '[
+  {id:"c-legacy", createdAt:"2026-01-01T00:00:00Z", body:"halt body\n<!-- meta: dedup key=halt/X/Y -->"}
+]')"
+_eng150_a5b_id="$(jq -r '
+  [.[] | select(.body | contains("<!-- meta: dedup key=halt/X/Y"))]
+  | sort_by(.createdAt) | last | .id
+' <<<"$_eng150_a5b_fixture")"
+if [[ "$_eng150_a5b_id" == "c-legacy" ]]; then
+  pass_at "ENG-150 A-005b legacy-only fixture → recipe still returns the single legacy comment id"
+else
+  fail_at "ENG-150 A-005b legacy-only fixture" "got: $_eng150_a5b_id"
+fi
+unset _eng150_a5_fixture _eng150_a5_latest_id _eng150_a5b_fixture _eng150_a5b_id
+
+# A-006: add_comment called WITHOUT --sig → behaviour unchanged (no
+# dedup marker appended; lane fence + dispatch marker inject + hash
+# dedup all run).  Pins that --sig is opt-in.
+_eng150_capture_a6="$(mktemp -t eng150-a6.XXXXXX)"
+linear_query() {
+  local query="$1" variables="${2:-{\}}"
+  if [[ "$query" =~ commentCreate ]]; then
+    printf 'CREATE %s\n' "$(jq -r '.body' <<<"$variables")" >> "$_eng150_capture_a6"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
+  fi
+  jq -cn '{data:{issue:{comments:{nodes:[]}}}}'
+}
+: > "$_eng150_capture_a6"
+PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=ENG-X-d0007 PIPELINE_STAGE=implementing \
+  add_comment ENG-X --body "no sig" >/dev/null 2>&1
+_eng150_a6_body="$(cat "$_eng150_capture_a6")"
+if ! grep -qF '<!-- meta: dedup key=' <<<"$_eng150_a6_body" \
+   && grep -qF '<!-- meta: dispatch id=ENG-X-d0007 stage=implementing -->' <<<"$_eng150_a6_body"; then
+  pass_at "ENG-150 A-006 --sig opt-in → no dedup marker without --sig; dispatch marker still injected"
+else
+  fail_at "ENG-150 A-006 --sig opt-in" "captured: $_eng150_a6_body"
+fi
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+rm -f "$_eng150_capture_a6"
+
+# A-007: sig-content validation (D-007) — newline / `-->` in --sig
+# rejected with stderr containing `illegal characters`.  Use subshell
+# isolation because `die` calls `exit` and would kill the test shell
+# when add_comment is sourced (not called via cmdsub).
+_eng150_a7_stderr="$(mktemp -t eng150-a7.XXXXXX)"
+_eng150_a7_rc=0
+( PIPELINE_DRY_RUN=1 add_comment ENG-X --sig $'halt/implementing/\nENG-X' --body "x" >/dev/null 2>"$_eng150_a7_stderr" ) \
+  || _eng150_a7_rc=$?
+if [[ "$_eng150_a7_rc" -ne 0 ]] && grep -qF 'illegal characters' "$_eng150_a7_stderr"; then
+  pass_at "ENG-150 A-007 newline in --sig → die with 'illegal characters'"
+else
+  fail_at "ENG-150 A-007 newline in --sig" "rc=$_eng150_a7_rc stderr=$(cat "$_eng150_a7_stderr")"
+fi
+: > "$_eng150_a7_stderr"
+_eng150_a7_rc=0
+( PIPELINE_DRY_RUN=1 add_comment ENG-X --sig 'halt/--><script>' --body "x" >/dev/null 2>"$_eng150_a7_stderr" ) \
+  || _eng150_a7_rc=$?
+if [[ "$_eng150_a7_rc" -ne 0 ]] && grep -qF 'illegal characters' "$_eng150_a7_stderr"; then
+  pass_at "ENG-150 A-007 '-->' in --sig → die with 'illegal characters'"
+else
+  fail_at "ENG-150 A-007 '-->' in --sig" "rc=$_eng150_a7_rc stderr=$(cat "$_eng150_a7_stderr")"
+fi
+rm -f "$_eng150_a7_stderr"
+unset _eng150_a7_rc
+
+# B-LEG: legacy single-comment shape under sig `last-review-state/ENG-X`
+# (no /d<NNNN> suffix) — the existing read_review_state jq pipeline still
+# finds it (back-compat for in-flight issues).  Pins D-006 read path.
+_eng150_bleg_fixture="$(jq -cn '[
+  {createdAt:"2026-01-01T00:00:00Z",
+   body:"<!-- pipeline-state: last-review-state -->\n{\"sha\":\"abc\"}\n\n<!-- meta: dedup key=last-review-state/ENG-X -->"}
+]')"
+_eng150_bleg_pick="$(jq -r '
+  [.[] | select(.body | contains("<!-- meta: dedup key=last-review-state/ENG-X"))]
+  | sort_by(.createdAt) | last | .body
+' <<<"$_eng150_bleg_fixture")"
+if grep -qF '{"sha":"abc"}' <<<"$_eng150_bleg_pick"; then
+  pass_at "ENG-150 B-LEG legacy single-comment shape under review-state sig → recipe returns body verbatim"
+else
+  fail_at "ENG-150 B-LEG legacy review-state read path" "got: $_eng150_bleg_pick"
+fi
+unset _eng150_bleg_fixture _eng150_bleg_pick
+
+# A-008: forensic grep — the deleted symbols MUST be absent from
+# production bin/*.sh + AGENT_PROMPTS.md + CLAUDE.md.  Mechanically pins
+# AC #1.  Patterns use `[_]` / `[-]` so this file's literal grep pattern
+# does not self-match (a future grep for the bare literal in *.sh would
+# see brackets here and skip the line).
+_eng150_a8_root="$SCRIPT_DIR_REAL/.."
+_eng150_a8_pat='add[-]or[-]update[-]comment\|add[_]or[_]update[_]comment'
+_eng150_a8_hits="$(grep -rln \
+  "$_eng150_a8_pat" \
+  "$_eng150_a8_root"/bin/*.sh \
+  "$_eng150_a8_root/AGENT_PROMPTS.md" \
+  "$_eng150_a8_root/CLAUDE.md" \
+  2>/dev/null | grep -v -- '-test\.sh$' | grep -v 'docs/' || true)"
+if [[ -z "$_eng150_a8_hits" ]]; then
+  pass_at "ENG-150 A-008 forensic: zero hits for retired symbol in production bin/ + AGENT_PROMPTS.md + CLAUDE.md"
+else
+  fail_at "ENG-150 A-008 forensic regression" "hits: $_eng150_a8_hits"
+fi
+unset _eng150_a8_root _eng150_a8_pat _eng150_a8_hits
+
+# A-009: bin/linear-test.sh itself must NOT contain the retired symbol
+# in literal form (only paraphrased references survive in the deletion
+# comments above).  Pins the prose mop-up so F-4's pass criterion holds.
+# Grep pattern uses `[_]` so the assertion does not self-match.
+_eng150_a9_self="$SCRIPT_DIR_REAL/linear-test.sh"
+_eng150_a9_pat='add[_]or[_]update[_]comment'
+if grep -q "$_eng150_a9_pat" "$_eng150_a9_self"; then
+  fail_at "ENG-150 A-009 self-grep: bin/linear-test.sh still contains the retired symbol literal" \
+    "see grep -n on the retired add-comment-upsert symbol"
+else
+  pass_at "ENG-150 A-009 self-grep: bin/linear-test.sh carries zero retired-symbol literals"
+fi
+unset _eng150_a9_self _eng150_a9_pat
+
+# Restore originals so subsequent tests inherit a pristine env.
+rm -f "$_eng150_log"
+unset -f log linear_query _resolve_issue_uuid 2>/dev/null || true
+[[ -n "$_eng150_orig_log" ]] && eval "$_eng150_orig_log"
+[[ -n "$_eng150_orig_linear_query" ]] && eval "$_eng150_orig_linear_query"
+[[ -n "$_eng150_orig_resolve_uuid" ]] && eval "$_eng150_orig_resolve_uuid"
+export PIPELINE_DRY_RUN="$_eng150_orig_dry_run"
+SCRIPT_DIR="$_eng150_orig_script_dir"
+unset _eng150_orig_linear_query _eng150_orig_resolve_uuid _eng150_orig_log \
+      _eng150_orig_dry_run _eng150_orig_script_dir _eng150_log \
+      _eng150_a001 _eng150_a002 \
+      _eng150_a3_create_count _eng150_a3_update_count \
+      _eng150_a4_create_count \
+      _eng150_a6_body
 
 # ─── ENG-110: agent-lane auto-injection ───────────────────────────────
 # Pin the contract that PIPELINE_WRITER=agent does not short-circuit
@@ -1687,15 +1327,12 @@ fi
 rm -f "$_eng110_al_log"
 unset _eng110_al_log _eng110_al_orig_log _eng110_al_orig_resolve
 
-# ─── ENG-110: add_comment source-pin parity (mirror L4-int) ───────────
-# Case 87-L4-int pinned inject-before-dedup ordering in
-# add_or_update_comment via source-text grep (lines 967-979). The
-# symmetric refactor risk in add_comment is inject-before-
-# PIPELINE_DRY_RUN-short-circuit: a future change that moves
-# _inject_dispatch_marker AFTER the `if [[ "${PIPELINE_DRY_RUN:-0}"
-# == "1" ]]` branch would silently false-pass under
-# PIPELINE_DRY_RUN=1 (the function returns 0 before the inject runs).
-# Source-pin closes that gap.
+# ─── ENG-110: add_comment source-pin (inject-before-dry-run) ──────────
+# Pin the inject-before-PIPELINE_DRY_RUN-short-circuit ordering: a
+# future change that moves _inject_dispatch_marker AFTER the
+# `if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]` branch would silently
+# false-pass under PIPELINE_DRY_RUN=1 (the function returns 0 before
+# the inject runs).  Source-pin closes that gap.
 printf '\n--- ENG-110: add_comment source-pin parity ---\n'
 _eng110_sp_src="$SCRIPT_DIR_REAL/linear.sh"
 _eng110_sp_block="$(awk '/^add_comment\(\)/,/^}/' "$_eng110_sp_src")"
@@ -1757,18 +1394,14 @@ fi
 unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
 unset _eng87qa_quoted_body _eng87qa_out _eng87qa_d8_count _eng87qa_d7_count
 
-# QA-4 (foreign-dispatch update via add_or_update_comment).
-# add_or_update_comment finds an in-flight comment under the same
-# `meta: dedup key=...` and updates it with a new body. If the existing
-# comment carries a *prior* dispatch's `meta: dispatch id=` marker (the
-# dedup-found comment was originally posted under d0006), invoking
-# add_or_update_comment now under d0009 with a fresh body will:
-#   - inject d0009 marker into the new body (current dispatch's stamp)
-#   - the orchestrator-side update code path sends the current body
-# The test pins that the NEW body posted carries the CURRENT dispatch's
-# marker, not the prior one's. (Pre-fix bodies that quoted the OLD
-# dispatch id mid-text would have skipped injection — but a clean new
-# body posts cleanly under the current id.)
+# QA-4 (current-id injection on fresh body under new dispatch_id).
+# Pin: a clean body invoked under a NEW PIPELINE_DISPATCH_ID stamps
+# with the current id only (no prior-id leak from prose).  Pre-ENG-150
+# this case was framed against the retired upsert path's lookup finding
+# an in-flight comment with a stale id-marker; post-ENG-150 the
+# append-only write has no in-flight lookup, but the injector contract
+# (current-id-specific idempotency from _inject_dispatch_marker line 56)
+# is unchanged.
 PIPELINE_DISPATCH_ID="ENG-87QA-d0009" \
 PIPELINE_STAGE="qa" \
 _eng87qa4_clean_body="status update — dispatch context changed since last apply"
@@ -1806,85 +1439,13 @@ fi
 unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
 unset _eng87qa5_body _eng87qa5_out _eng87qa5_count
 
-# ─── ENG-87 review-iter-7 Critical 4: reapplied audit + dispatch-id strip ──
-# ENG-63's add_or_update_comment byte-equal-modulo-marker arm strips
-# `<!-- meta: reapplied at=… -->` lines before comparing existing vs
-# new. Post-ENG-87, every comment body now ends with
-# `<!-- meta: dispatch id=ENG-N-d<NNNN> stage=… -->` (auto-injected at
-# `_inject_dispatch_marker`). Two re-applies of the same logical halt
-# body across two different dispatches now carry different dispatch
-# markers → existing_norm != new_norm → byte-equal arm never fires → no
-# reapplied footer ever appears → metrics.sh comment-reapplied stays at
-# zero per re-apply post-cutover. ENG-63's audit signal is silently
-# regressed for every halt re-apply. Operator runbook (recovery.md §4)
-# instructs grepping `<!-- meta: reapplied at=` to find the latest
-# re-apply moment; that signal is now invisible.
-#
-# Fix: extend strip_re to remove BOTH `reapplied at=` and `dispatch id=`
-# lines so byte-equal-modulo-meta-noise normalisation works across
-# dispatch-id rotation.
-printf '\n--- ENG-87 review-iter-7 Critical 4: reapplied + dispatch-id strip ---\n'
-
-# Re-establish the linear_query stub + capture file used by the ENG-63
-# block above (which restored the originals at line ~752). Mirrors the
-# pattern from line 530-550.
-_iter7_l7_capture="$(mktemp -t eng87-l7-capture.XXXXXX)"
-_iter7_l7_canned_existing_body=""
-_iter7_l7_canned_existing_id="cmt-mock-l7"
-_iter7_l7_orig_linear_query="$(declare -f linear_query 2>/dev/null || true)"
-_iter7_l7_orig_resolve_uuid="$(declare -f _resolve_issue_uuid 2>/dev/null || true)"
-_iter7_l7_orig_dry_run="${PIPELINE_DRY_RUN-1}"
-_iter7_l7_orig_script_dir="$SCRIPT_DIR"
-SCRIPT_DIR="$SCRIPT_DIR_REAL"
-_resolve_issue_uuid() { printf 'uuid-mock'; }
-linear_query() {
-  local query="$1" variables="${2:-{\}}"
-  if [[ "$query" =~ commentUpdate ]]; then
-    jq -r '.body' <<<"$variables" >> "$_iter7_l7_capture"
-    printf '{"data":{"commentUpdate":{"success":true}}}\n'
-    return 0
-  fi
-  if [[ "$query" =~ commentCreate ]]; then
-    jq -r '.body' <<<"$variables" >> "$_iter7_l7_capture"
-    printf '{"data":{"commentCreate":{"success":true}}}\n'
-    return 0
-  fi
-  jq -cn --arg id "$_iter7_l7_canned_existing_id" --arg body "$_iter7_l7_canned_existing_body" \
-    '{data:{issue:{comments:{nodes:[{id:$id,body:$body}]}}}}'
-}
-export PIPELINE_DRY_RUN=0
-
-# Case 87-L7-reapplied-audit: same byte body across two dispatches → footer.
-# Stub returns existing body whose body BYTES match the caller body BYTES
-# in everything except the trailing dispatch-id marker (auto-injected by
-# the prior dispatch). Post-fix: strip both noise lines → norms equal →
-# byte-equal arm fires → reapplied footer appended.
-: > "$_iter7_l7_capture"
-_iter7_l7_canned_existing_body=$'Halt body line 1\nHalt body line 2\n\n<!-- meta: dedup key=halt/reviewing/ENG-87L7 -->\n<!-- meta: dispatch id=ENG-87L7-d0007 stage=reviewing -->'
-PIPELINE_DISPATCH_ID="ENG-87L7-d0008" \
-PIPELINE_STAGE="reviewing" \
-add_or_update_comment "halt/reviewing/ENG-87L7" ENG-87L7 \
-  --body $'Halt body line 1\nHalt body line 2\n\n<!-- meta: dedup key=halt/reviewing/ENG-87L7 -->' \
-  >/dev/null 2>&1
-if grep -qE '^<!-- meta: reapplied at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z -->$' "$_iter7_l7_capture"; then
-  pass_at "ENG-87 L7 reapplied-audit: same body across dispatches → reapplied footer appended"
-else
-  fail_at "ENG-87 L7 reapplied-audit: footer appended" \
-    "captured: $(cat "$_iter7_l7_capture") — strip_re must remove both 'reapplied at=' AND 'dispatch id=' lines so byte-equal arm fires across dispatch_id rotation"
-fi
-unset PIPELINE_DISPATCH_ID PIPELINE_STAGE
-
-# Restore originals before continuing (the L8 case below reads
-# _inject_dispatch_marker directly, no stub needed).
-rm -f "$_iter7_l7_capture"
-unset -f linear_query _resolve_issue_uuid 2>/dev/null || true
-[[ -n "$_iter7_l7_orig_linear_query" ]] && eval "$_iter7_l7_orig_linear_query"
-[[ -n "$_iter7_l7_orig_resolve_uuid" ]] && eval "$_iter7_l7_orig_resolve_uuid"
-export PIPELINE_DRY_RUN="$_iter7_l7_orig_dry_run"
-SCRIPT_DIR="$_iter7_l7_orig_script_dir"
-unset _iter7_l7_capture _iter7_l7_canned_existing_body _iter7_l7_canned_existing_id \
-      _iter7_l7_orig_linear_query _iter7_l7_orig_resolve_uuid \
-      _iter7_l7_orig_dry_run _iter7_l7_orig_script_dir
+# Case 87-L7 reapplied-audit deleted in ENG-150: exercised the retired
+# upsert lane's byte-equal-modulo-meta-noise arm under dispatch_id
+# rotation (retired in ENG-150).  Append-only writes have no reapply
+# path so the audit signal does not need to survive id-rotation — every
+# halt re-fire appears as a fresh chronological comment with its own
+# createdAt and a dispatch-suffixed `<!-- meta: dedup key=... -->`
+# marker (see ENG-150 A-003).
 
 # Case 87-L8-idempotency-current-id: a body carrying a STALE dispatch
 # marker (from a prior dispatch) should NOT short-circuit injection of
