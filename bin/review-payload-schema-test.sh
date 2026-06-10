@@ -287,5 +287,193 @@ else
   fail_at "T12: unknown dimension warning" "stderr should contain 'warning' and 'future_concern', got: $stderr_out"
 fi
 
+printf '\n--- QA adversarial tests (ENG-119) ---\n'
+
+# ─── QA1: sha: null (explicit null, not absent) → rc=37 ──────────────
+# jq // fires on null, so sha_val becomes "MISSING"; sha_type becomes "null".
+# Line 169 fires on MISSING sentinel → rc=37.
+cat > "$FIXTURE_DIR/qa1.json" <<'EOF'
+{
+  "review_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": null,
+  "verdict": "approve",
+  "dimensions": {
+    "correctness":     { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "testing":         { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "maintainability": { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "scope":           { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] }
+  }
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa1.json" >/dev/null 2>&1 || rc=$?
+(( rc == 37 )) \
+  && pass_at "QA1: sha: null (explicit null) → exit 37" \
+  || fail_at "QA1: sha: null" "expected rc=37, got rc=$rc"
+
+# ─── QA2: dimensions: {} (empty object) → rc=37 ──────────────────────
+# All 4 required keys absent; first missing key (correctness) trips rc=37.
+cat > "$FIXTURE_DIR/qa2.json" <<'EOF'
+{
+  "review_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": "deadbeef",
+  "verdict": "approve",
+  "dimensions": {}
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa2.json" >/dev/null 2>&1 || rc=$?
+(( rc == 37 )) \
+  && pass_at "QA2: dimensions: {} (empty object) → exit 37" \
+  || fail_at "QA2: dimensions: {}" "expected rc=37, got rc=$rc"
+
+# ─── QA3: dispatch_id with 5-digit counter → rc=0 ────────────────────
+# Validates the + (not {4}) quantifier in ^ENG-[0-9]+-d[0-9]+$
+# so d10000 and beyond are legal.
+f="$(write_valid_fixture qa3.json ENG-1 ENG-1-d10000)"
+rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-1 --dispatch-id ENG-1-d10000 >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "QA3: dispatch_id ENG-1-d10000 (5-digit counter) → exit 0" \
+  || fail_at "QA3: 5-digit dispatch counter" "expected rc=0, got rc=$rc"
+
+# ─── QA4: verdict = "refused" (unlisted enum) → rc=37 ────────────────
+# Supplements T7 (which tests score enum); verdict enum is a distinct gate.
+cat > "$FIXTURE_DIR/qa4.json" <<'EOF'
+{
+  "review_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": "deadbeef",
+  "verdict": "refused",
+  "dimensions": {
+    "correctness":     { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "testing":         { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "maintainability": { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "scope":           { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] }
+  }
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa4.json" >/dev/null 2>&1 || rc=$?
+(( rc == 37 )) \
+  && pass_at "QA4: verdict=\"refused\" (unlisted enum) → exit 37" \
+  || fail_at "QA4: unlisted verdict enum" "expected rc=37, got rc=$rc"
+
+# ─── QA5: thresholds_missed absent (thresholds_met present) → rc=37 ──
+# Asymmetric with T9 (which tests thresholds_met type); this ensures
+# the missing-field path for thresholds_missed is exercised separately.
+cat > "$FIXTURE_DIR/qa5.json" <<'EOF'
+{
+  "review_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": "deadbeef",
+  "verdict": "approve",
+  "dimensions": {
+    "correctness":     { "score": "pass", "rationale": "ok", "thresholds_met": [] },
+    "testing":         { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "maintainability": { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "scope":           { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] }
+  }
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa5.json" >/dev/null 2>&1 || rc=$?
+(( rc == 37 )) \
+  && pass_at "QA5: thresholds_missed absent (thresholds_met present) → exit 37" \
+  || fail_at "QA5: thresholds_missed absent" "expected rc=37, got rc=$rc"
+
+# ─── QA6: dimensions: null (explicit null object) → rc=37 ────────────
+# dims_type → "null"; "null" != "object" → rc=37.
+cat > "$FIXTURE_DIR/qa6.json" <<'EOF'
+{
+  "review_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": "deadbeef",
+  "verdict": "approve",
+  "dimensions": null
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa6.json" >/dev/null 2>&1 || rc=$?
+(( rc == 37 )) \
+  && pass_at "QA6: dimensions: null (explicit null) → exit 37" \
+  || fail_at "QA6: dimensions: null" "expected rc=37, got rc=$rc"
+
+# ─── QA-N1: review_schema_version: 1.0 (float) → rc=0 ───────────────
+# INTENTIONAL behavior: jq `== 1` evaluates true for 1.0 (no int/float
+# distinction in JSON/jq). Float 1.0 is accepted as schema-v1. Document
+# here to pin this as a known-valid path, not a gap.
+cat > "$FIXTURE_DIR/qa-n1.json" <<'EOF'
+{
+  "review_schema_version": 1.0,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": "deadbeef",
+  "verdict": "approve",
+  "dimensions": {
+    "correctness":     { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "testing":         { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "maintainability": { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "scope":           { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] }
+  }
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa-n1.json" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "QA-N1: review_schema_version: 1.0 (float) → exit 0 (jq int/float parity; intentional)" \
+  || fail_at "QA-N1: float schema version" "expected rc=0 (jq parity), got rc=$rc"
+
+# ─── QA-N3: known-optional dimension with invalid score → rc=0 ───────
+# INTENTIONAL behavior: per design, only the 4 required dimensions are
+# validated; optional dims (security, performance, api_contract, premise)
+# are known to the schema but their content is NOT validated in schema-v1.
+# This is expected — optional dims are for future ENG-118 reporting only.
+cat > "$FIXTURE_DIR/qa-n3.json" <<'EOF'
+{
+  "review_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": "deadbeef",
+  "verdict": "approve",
+  "dimensions": {
+    "correctness":     { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "testing":         { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "maintainability": { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "scope":           { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "security":        { "score": "broken_value", "rationale": "bad" }
+  }
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa-n3.json" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "QA-N3: optional dimension (security) with invalid score → exit 0 (v1: optional dims not validated; intentional)" \
+  || fail_at "QA-N3: optional dimension with invalid score" "expected rc=0 (optional dims not validated), got rc=$rc"
+
+# ─── QA-N4: rationale = "MISSING" string literal → rc=37 (known quirk)─
+# KNOWN LIMITATION: the "MISSING" string is the jq-// sentinel the
+# validator uses for absent fields. A legitimate rationale of literally
+# "MISSING" trips the absent-field guard. Machine-generated payloads
+# will not produce this string; documented here to pin the behavior.
+cat > "$FIXTURE_DIR/qa-n4.json" <<'EOF'
+{
+  "review_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "sha": "deadbeef",
+  "verdict": "approve",
+  "dimensions": {
+    "correctness":     { "score": "pass", "rationale": "MISSING", "thresholds_met": [], "thresholds_missed": [] },
+    "testing":         { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "maintainability": { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] },
+    "scope":           { "score": "pass", "rationale": "ok", "thresholds_met": [], "thresholds_missed": [] }
+  }
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/qa-n4.json" >/dev/null 2>&1 || rc=$?
+(( rc == 37 )) \
+  && pass_at "QA-N4: rationale=\"MISSING\" string literal → exit 37 (jq sentinel collision; known quirk — machine-generated payloads never emit this string)" \
+  || fail_at "QA-N4: sentinel collision" "expected rc=37 (known quirk), got rc=$rc"
+
 printf '\nreview-payload-schema-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
