@@ -332,6 +332,9 @@ failure_outcome_for_exit() {
     33) printf 'plan-contract-malformed' ;;
     34) printf 'plan-contract-incomplete' ;;
     35) printf 'plan-contract-missing' ;;
+    36) printf 'review-payload-malformed' ;;
+    37) printf 'review-payload-incomplete' ;;
+    38) printf 'review-payload-missing' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
