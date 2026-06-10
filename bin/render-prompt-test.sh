@@ -1200,6 +1200,33 @@ else
     "leaked token: $_eng156_w3_leak, contents=$(cat "$eng156_w3_sidecar" 2>/dev/null)"
 fi
 
+# Case 156-W4: plan_json `[[ -f $_pj_path ]]` guard with the file ABSENT.
+# Pre-creating `$sandbox/eng156/plan.json` in W1 made W1's 6-line count
+# assertion load-bearing on that side-effect. Exercise the false arm
+# here: bind _RENDER_PLAN_FILE to a path whose sibling .json does NOT
+# exist; expect the sidecar to omit the plan_json line (5 lines total
+# when the other five path-shaped resolvers are bound).
+eng156_w4_sidecar="$sandbox/eng156-w4.tsv"
+mkdir -p "$sandbox/eng156-w4"
+# Deliberately do NOT touch the sibling .json.
+rm -f "$sandbox/eng156-w4/plan.json"
+run_resolver_body '
+  _RENDER_BRAINSTORM_FILE="docs/brainstorms/eng-156-foo.md"
+  _RENDER_PLAN_FILE="'"$sandbox/eng156-w4/plan.md"'"
+  _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-156W4/stage-summary-implementing.md"
+  _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
+  _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W4/progress.md"
+  _write_rendered_paths_sidecar "'"$eng156_w4_sidecar"'"
+' 2>/dev/null
+_eng156_w4_lines="$(wc -l <"$eng156_w4_sidecar" 2>/dev/null | awk '{print $1}')"
+if [[ "$_eng156_w4_lines" == "5" ]] \
+  && ! grep -qE '^plan_json'$'\t' "$eng156_w4_sidecar"; then
+  pass_at "ENG-156 W4: plan_json line omitted when sibling .json file absent (5 lines remain)"
+else
+  fail_at "ENG-156 W4: plan_json absent-guard" \
+    "lines=$_eng156_w4_lines, contents=$(cat "$eng156_w4_sidecar" 2>/dev/null)"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
