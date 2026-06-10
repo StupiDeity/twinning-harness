@@ -1,342 +1,433 @@
 #!/usr/bin/env bash
-# ENG-81 scenario reproducer — replays the 2026-05-14 15:54 UTC ledger incident
-# against current code. Canonical regression fixture for the ENG-104 ledger
-# contract family.
+# ENG-154 — canonical regression fixture for the ENG-81 incident timeline.
 #
-# Incident (2026-05-14 ~15:54 UTC): within ~30 s, (1) an agent self-posted a
-# "verdict pass" via add_comment, (2) the orchestrator bumped a counter via
-# add_comment, then (3) the orchestrator re-emitted a halt verdict via
-# add_or_update_comment whose commentUpdate dedup-updated a prior halt comment
-# from ~3 h upstream. commentUpdate preserves createdAt, so the canonical halt
-# comment appeared hours upstream in Linear's top-down feed, invisible to
-# anyone scanning from the bottom (most-recent) end.
+# Incident summary (2026-05-14, all UTC):
+#   15:54:04  agent self-claim PASS  (lane=agent, body opens
+#             `<!-- pipeline: verdict result=pass stage=implementing -->`)
+#   15:54:26  orchestrator counter bump
+#             (`<!-- meta: metric name=implement_rejection -->
+#             Counter bumped by guards.sh.`)
+#   15:54:32  orchestrator halt verdict
+#             (`<!-- pipeline: verdict result=halt reason=agent-blocked --> …`)
+#             — in the historical incident this body was dedup-updated
+#             onto a 12:24:00 halt slot via add-or-update-comment, pinning
+#             createdAt hours upstream in the chronological feed.
 #
-# Dependency lifecycle (D-009) — source-text grep auto-un-skips each P1 block
-# when the corresponding ticket ships; no fixture rewrite needed:
+# Dependency tickets whose acceptance criteria this fixture enforces:
+#   ENG-150 — append-only ledger (add-or-update-comment removed)
+#   ENG-151 — human-readable header line on every body
+#   ENG-152 — agent vs orchestrator verdict marker split
+#             (`stage-completion-claim` + `author=orchestrator`)
+#   ENG-153 — `guards.sh::bump --reason` + threshold disclosure
 #
-#   ENG-110  dispatch-id stamp           SHIPPED  (un-skips P0-4)
-#   ENG-111  breadcrumb on dedup         SHIPPED  (un-skips P0-3b)
-#   <header-line-ticket-id-TBD>          PENDING  (un-skips P1-header)
-#   <verdict-split-ticket-id-TBD>        PENDING  (un-skips P1-verdict-split)
-#   <guards-reason+threshold-ticket-TBD> PENDING  (un-skips P1-reason-threshold)
-set -euo pipefail
+# As each dependency ticket lands, its `_dep_<N>_landed` shape detector
+# below will start returning 0 and the corresponding assertion un-skips.
+# Do NOT remove the skip arm — leave it as the dependency-detector
+# contract: when a sibling refactor silently reverts the fix, the
+# detector flips back to 1 and the fixture marks the assertion as
+# SKIP-with-reason rather than reporting a green test against a
+# regressed code path.
 
+set -euo pipefail
 SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ─── Scaffold ────────────────────────────────────────────────────────────────
-_TS="$(mktemp -d -t eng81r.XXXXXX)"
-trap 'rm -rf "$_TS"' EXIT
+export PIPELINE_DRY_RUN=1
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 
-_STUBS="$_TS/stubs"
-mkdir -p "$_STUBS" "$_TS/state/test/metrics" \
-         "$_TS/target/.pipeline-config/schemas"
+# ─── Temp dirs ──────────────────────────────────────────────────────────
+_TEST_TARGET_DIR="$(mktemp -d)"
+_TEST_STUB_DIR="$(mktemp -d)"
 
-cat > "$_TS/target/.pipeline-config/config.json" <<'JSON'
-{
-  "linear": {
-    "team_id": "TEAM1",
-    "project_id": "PROJ1",
-    "native_states": {"in_review": "S1", "done": "S2", "active": "S3"},
-    "workflow_stages": [
-      "brainstorming","planning","implementing","ui",
-      "reviewing","qa","building","released"
-    ],
-    "stage_label_prefix": "stage:"
-  },
-  "orchestrator": {},
-  "human_checkpoints": {"require_human_on_threshold": {}},
-  "project": {"slug": "test"}
+_test_assert_temp_path() {
+  case "$1" in
+    /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*) return 0 ;;
+    *) printf 'REFUSING: path %q is not a platform temp dir\n' "$1" >&2; exit 99 ;;
+  esac
 }
-JSON
-printf '{"labels":{},"states":{}}' \
-  > "$_TS/target/.pipeline-config/schemas/linear-ids.json"
+_test_assert_temp_path "$_TEST_TARGET_DIR"
+_test_assert_temp_path "$_TEST_STUB_DIR"
 
-# Stub metrics.sh so add_or_update_comment's internal || true calls succeed
-printf '#!/usr/bin/env bash\nexit 0\n' > "$_STUBS/metrics.sh"
-chmod +x "$_STUBS/metrics.sh"
+_test_safe_rm() {
+  local path="$1"
+  case "$path" in
+    /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*)
+      rm -rf "$path" ;;
+    *)
+      printf 'SAFETY: trap refusing rm -rf %q (not a temp dir)\n' "$path" >&2 ;;
+  esac
+}
+trap '_test_safe_rm "$_TEST_STUB_DIR"; _test_safe_rm "$_TEST_TARGET_DIR"' EXIT
 
-export TARGET_REPO="$_TS/target"
-export HARNESS_STATE_DIR="$_TS/state"
-export PROJECT_SLUG="test"
-export PIPELINE_DRY_RUN=0
-export LINEAR_API_KEY="test-mock-key"
-export PIPELINE_DISPATCH_ID="ENG-81R-d0001"
-export PIPELINE_STAGE="implementing"
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
+# ─── Minimal target-repo scaffold ────────────────────────────────────────
+export TARGET_REPO="$_TEST_TARGET_DIR"
+mkdir -p "$TARGET_REPO/.pipeline-config/schemas"
 
-# ─── Source linear.sh ────────────────────────────────────────────────────────
-# shellcheck disable=SC1091
+jq -n '{
+  project: { slug: "test-slug" },
+  linear: {
+    team_id: "team-test",
+    project_id: "proj-test",
+    stage_label_prefix: "stage:",
+    native_states: { inbox: "Todo", active: "In Progress", done: "Done" },
+    workflow_stages: ["brainstorming","planning","implementing","ui","reviewing","qa","building","released"]
+  },
+  orchestrator: { paused: false, max_concurrent_features: 2, alert_on_halted_over: 5 }
+}' > "$TARGET_REPO/.pipeline-config/config.json"
+
+jq -n '{
+  labels: {
+    "stage:implementing": "uuid-stage-implementing",
+    "pipeline:halted":    "uuid-pipeline-halted"
+  },
+  states: {}
+}' > "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json"
+
+HARNESS_STATE_DIR="$_TEST_STUB_DIR/state"
+export HARNESS_STATE_DIR
+PROJECT_STATE_DIR="${HARNESS_STATE_DIR}/${PROJECT_SLUG}"
+export PROJECT_STATE_DIR
+mkdir -p "$PROJECT_STATE_DIR/metrics"
+: > "$PROJECT_STATE_DIR/metrics/events.jsonl"
+
+# ─── Source linear.sh ────────────────────────────────────────────────────
+# shellcheck source=linear.sh
 source "$SCRIPT_DIR_REAL/linear.sh"
 
-# Override SCRIPT_DIR so internal `bash "$SCRIPT_DIR/metrics.sh"` calls use stub
-SCRIPT_DIR="$_STUBS"
+# Override SCRIPT_DIR inside linear.sh to point to our stub dir so any
+# `bash "$SCRIPT_DIR/..."` calls inside the sourced functions hit stubs.
+# The dependency-shape detectors below intentionally read from
+# $SCRIPT_DIR_REAL (the on-disk bin/ dir), NOT from $SCRIPT_DIR.
+SCRIPT_DIR="$_TEST_STUB_DIR"
 
-# Stub _resolve_issue_uuid — avoids real Linear API roundtrip
-_resolve_issue_uuid() { printf 'UUID-MOCK-ENG81R'; }
+# ─── Assertion helpers (mirror bin/linear-test.sh:91-92) ────────────────
+PASS=0; FAIL=0; SKIP=0
+fail_at() { printf '  FAIL %s\n      %s\n' "$1" "$2" >&2; FAIL=$((FAIL+1)); }
+pass_at() { printf '  PASS %s\n' "$1"; PASS=$((PASS+1)); }
+skip_at() { printf '  SKIP %s (%s)\n' "$1" "$2"; SKIP=$((SKIP+1)); }
 
-# ─── In-memory comment store ─────────────────────────────────────────────────
-_STORE="$_TS/comment-store.json"
-_ENG81R_CREATE_SEQ=0   # monotonic counter: drives both comment IDs and createdAt suffix
+# ─── Dependency-shape detectors (ENG-150..153) ──────────────────────────
+# Each returns 0 when the dependency has shipped, 1 otherwise. Consumed
+# as booleans by `if _dep_15N_landed; then ...; fi`. Each detector
+# reads from $SCRIPT_DIR_REAL (the live on-disk bin/ directory), so the
+# detector flips automatically the next time the test runs after the
+# sibling ticket merges.
 
-_eng81r_reset_store() {
-  printf '{"comments":[]}' > "$_STORE"
-  _ENG81R_CREATE_SEQ=0
+# ENG-150 lands when `add-or-update-comment` is no longer a subcommand
+# in main(). Today the case arm at bin/linear.sh:768 reads
+#   `add-or-update-comment) add_or_update_comment "$@" ;;`
+_dep_150_landed() {
+  ! grep -qE '^\s*add-or-update-comment\)' "$SCRIPT_DIR_REAL/linear.sh"
 }
 
-_store_add_create() {
-  local body="$1"
-  _ENG81R_CREATE_SEQ=$(( _ENG81R_CREATE_SEQ + 1 ))
-  local id ts tmp
-  id="ENG81R-$(printf '%03d' "$_ENG81R_CREATE_SEQ")"
-  ts="$(date -u +%Y-%m-%dT%H:%M:%S).$(printf '%03d' "$_ENG81R_CREATE_SEQ")Z"
-  tmp="$(jq --arg id "$id" --arg body "$body" --arg ts "$ts" \
-    '.comments += [{"id":$id,"body":$body,"createdAt":$ts}]' "$_STORE")"
-  printf '%s' "$tmp" > "$_STORE"
+# ENG-151 lands when bin/linear.sh defines a `_render_event_header` helper.
+_dep_151_landed() {
+  grep -qE '^_render_event_header\(\)' "$SCRIPT_DIR_REAL/linear.sh"
 }
 
-_store_update_by_id() {
-  local id="$1" body="$2" tmp
-  tmp="$(jq --arg id "$id" --arg body "$body" \
-    '.comments |= map(if .id == $id then .body = $body else . end)' "$_STORE")"
-  printf '%s' "$tmp" > "$_STORE"
+# ENG-152 lands when bin/pipeline-events.json registers a
+# `stage-completion-claim` event (the agent/orchestrator verdict split).
+_dep_152_landed() {
+  jq -e '.events | has("stage-completion-claim")' \
+    "$SCRIPT_DIR_REAL/pipeline-events.json" >/dev/null 2>&1
 }
 
-_store_preseed_halt() {
-  local issue="$1" tmp
-  # Pre-seeded halt from ~3 h upstream (the ENG-81 bug precondition).
-  # Hard-coded historical timestamp; seq counter intentionally NOT incremented.
-  local old_body="Agent blocked — scope leak detected
-<!-- meta: dedup key=halt/implementing/${issue} -->
-<!-- meta: dispatch id=ENG-81R-d0000 stage=implementing -->"
-  tmp="$(jq --arg id "HALT-PRE-001" --arg body "$old_body" \
-    --arg ts "2026-05-14T12:54:00.001Z" \
-    '.comments += [{"id":$id,"body":$body,"createdAt":$ts}]' "$_STORE")"
-  printf '%s' "$tmp" > "$_STORE"
+# ENG-153 lands when guards.sh::bump accepts --reason as a case arm.
+# Structural grep targets `--reason)` as a bash case arm (indented); does
+# NOT match docstrings or prose comments that merely mention "--reason".
+_dep_153_landed() {
+  grep -qE '^\s+--reason\)' "$SCRIPT_DIR_REAL/guards.sh"
 }
 
-# ─── linear_query stub ───────────────────────────────────────────────────────
+# ─── Fixture comment store + linear_query override ──────────────────────
+# Place the capture file INSIDE $_TEST_TARGET_DIR so the existing EXIT
+# trap cleans it up via _test_safe_rm; a `mktemp -t` path lives at
+# $TMPDIR outside the trap's reach.
+_store_file="$_TEST_TARGET_DIR/eng-81-store.json"
+printf '[]\n' > "$_store_file"
+
+# Running tally of commentUpdate invocations across ALL test cases.
+# Consulted by C-150 to prove the in-place-rewrite path was not triggered
+# when ENG-150 ships.
+_COMMENT_UPDATE_COUNT=0
+
+# Override _resolve_issue_uuid post-source so add_comment skips its real
+# Linear lookup and just returns a mock UUID.
+_resolve_issue_uuid() { printf 'uuid-eng-81'; }
+
+# Override linear_query post-source. Pattern-match on the GraphQL string:
+#   - commentCreate: append a new node (id, body, createdAt) to the store
+#     using the test-fixture-controlled $_FIXTURE_INJECT_CREATED_AT.
+#   - commentUpdate: rewrite the matching node's body in place (the
+#     pre-ENG-150 add-or-update-comment shape; never invoked by this
+#     fixture's timeline, but defined so an accidental reintroduction
+#     of the in-place rewrite path is observable in the store).
+#   - comments(first: …): return the store contents in the canonical
+#     {data:{issue:{comments:{nodes:[…]}}}} shape; add_comment uses this
+#     for its last-10 dedup hash check (skipped for `<!-- pipeline: …`
+#     marker bodies per bin/linear.sh:528).
+#   - else: return a mocked issue payload so any incidental get_issue
+#     call still succeeds.
 linear_query() {
-  local query="${1:-}" vars="${2:-}"
+  local query="$1" variables="${2:-{\}}"
   if [[ "$query" =~ commentCreate ]]; then
-    local body
-    body="$(jq -r '.body' <<<"$vars")"
-    _store_add_create "$body"
-    printf '{"data":{"commentCreate":{"success":true}}}'
-  elif [[ "$query" =~ commentUpdate ]]; then
-    local id body
-    id="$(jq -r '.id' <<<"$vars")"
-    body="$(jq -r '.body' <<<"$vars")"
-    _store_update_by_id "$id" "$body"
-    printf '{"data":{"commentUpdate":{"success":true}}}'
-  else
-    # fetch query (dedup check or existing-id lookup): return store in Linear shape
-    jq -c '{data:{issue:{comments:{nodes:[.comments[]|{id,body,url:""}]}}}}' \
-      "$_STORE"
+    local body ts seq
+    body="$(jq -r '.body' <<<"$variables")"
+    ts="${_FIXTURE_INJECT_CREATED_AT:-2026-05-14T15:54:00Z}"
+    seq="$(jq 'length' "$_store_file")"
+    jq --arg b "$body" --arg t "$ts" --arg id "cmt-$seq" \
+      '. + [{id:$id, body:$b, createdAt:$t}]' "$_store_file" \
+      > "$_store_file.tmp" && mv "$_store_file.tmp" "$_store_file"
+    printf '{"data":{"commentCreate":{"success":true}}}\n'
+    return 0
   fi
-}
-
-# ─── Feature-flag probes (D-005) ─────────────────────────────────────────────
-# Each probe is a source-text grep — self-maintaining when the dep ticket lands.
-
-_probe_header_line_supported() {
-  grep -qE '^\*\*[a-z]+\*\*.*author=' "$SCRIPT_DIR_REAL/run-stage.sh" 2>/dev/null
-}
-_probe_completion_claim_marker() {
-  grep -qF 'stage-completion-claim' "$SCRIPT_DIR_REAL/pipeline-events.json" 2>/dev/null
-}
-_probe_verdict_split_supported() {
-  _probe_completion_claim_marker
-}
-_probe_author_attribute() {
-  grep -qE 'author=(orchestrator|agent|classify)' \
-    "$SCRIPT_DIR_REAL/pipeline.sh" 2>/dev/null
-}
-_probe_guards_reason() {
-  grep -qE 'reason=[a-z_]+ threshold=' "$SCRIPT_DIR_REAL/guards.sh" 2>/dev/null
-}
-
-# ─── Result accumulators ─────────────────────────────────────────────────────
-_PASS=0 _FAIL=0 _SKIP=0
-
-pass_at() { _PASS=$(( _PASS + 1 )); printf '  PASS %s\n' "$1"; }
-fail_at() { _FAIL=$(( _FAIL + 1 )); printf '  FAIL %s\n' "$1"; }
-skip_at() { _SKIP=$(( _SKIP + 1 )); printf '  SKIP %s\n' "$1"; }
-
-assert_eq() {
-  local label="$1" got="$2" want="$3"
-  if [[ "$got" == "$want" ]]; then pass_at "$label"
-  else
-    fail_at "$label"
-    printf '    got:  %s\n' "$got"
-    printf '    want: %s\n' "$want"
+  if [[ "$query" =~ commentUpdate ]]; then
+    local id new_body
+    id="$(jq -r '.id' <<<"$variables")"
+    new_body="$(jq -r '.body' <<<"$variables")"
+    jq --arg id "$id" --arg b "$new_body" \
+      'map(if .id == $id then .body = $b else . end)' \
+      "$_store_file" > "$_store_file.tmp" && mv "$_store_file.tmp" "$_store_file"
+    _COMMENT_UPDATE_COUNT=$((_COMMENT_UPDATE_COUNT + 1))
+    printf '{"data":{"commentUpdate":{"success":true}}}\n'
+    return 0
   fi
-}
-
-assert_contains() {
-  local label="$1" haystack="$2" needle="$3"
-  if [[ "$haystack" == *"$needle"* ]]; then pass_at "$label"
-  else
-    fail_at "$label"
-    printf '    missing in body: %s\n' "$needle"
+  if [[ "$query" =~ comments\(first: ]]; then
+    local arr
+    arr="$(cat "$_store_file")"
+    jq -cn --argjson nodes "$arr" '{data:{issue:{comments:{nodes:$nodes}}}}'
+    return 0
   fi
+  printf '{"data":{"issue":{"id":"uuid-eng-81","identifier":"ENG-81","title":"mock","state":{"id":"s","name":"In Progress"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
 }
 
-# ─── Timeline driver ─────────────────────────────────────────────────────────
-replay_timeline() {
-  local issue="$1" preseed="${2:-0}"
-  _eng81r_reset_store
-  if [[ "$preseed" == "1" ]]; then
-    _store_preseed_halt "$issue"
-  fi
+# Flip out of dry-run so add_comment's mutation path is reachable.
+export PIPELINE_DRY_RUN=0
 
-  # Call-1: agent posts verdict PASS via add_comment.
-  # Body carries <!-- pipeline: --> marker → bypasses hash-dedup path.
-  PIPELINE_WRITER=agent
-  add_comment "$issue" --body "PASS — implementing done
-<!-- pipeline: verdict result=pass stage=implementing -->"
+# ─── Replay the 15:54 timeline ──────────────────────────────────────────
+export PIPELINE_DISPATCH_ID="ENG-81-d0007"
+export PIPELINE_STAGE="implementing"
 
-  # Call-2: orchestrator bumps counter via add_comment (pipeline marker).
-  PIPELINE_WRITER=orchestrator
-  add_comment "$issue" --body "Advancing implementing counter.
-<!-- pipeline: counter bump=1 stage=implementing -->"
+# Diagnostic: surface detector verdict at runtime so a reader of the
+# test output knows which gates are open. Printed BEFORE the
+# timeline-replay so an early failure is still attributable.
+printf '\n--- ENG-150 (landed=%s) ---\n' "$(_dep_150_landed && echo yes || echo no)"
+printf -- '--- ENG-151 (landed=%s) ---\n' "$(_dep_151_landed && echo yes || echo no)"
+printf -- '--- ENG-152 (landed=%s) ---\n' "$(_dep_152_landed && echo yes || echo no)"
+printf -- '--- ENG-153 (landed=%s) ---\n\n' "$(_dep_153_landed && echo yes || echo no)"
 
-  # Call-3: orchestrator re-emits halt via add_or_update_comment (sig-dedup path).
-  # In R-2 this updates HALT-PRE-001 in place, preserving its createdAt — the bug.
-  PIPELINE_WRITER=orchestrator
-  add_or_update_comment \
-    "halt/implementing/${issue}" "$issue" \
-    --body "Agent blocked — scope leak detected"
-}
+# Comment 1: agent self-claim (PASS) at 15:54:04Z.
+PIPELINE_WRITER=agent _FIXTURE_INJECT_CREATED_AT="2026-05-14T15:54:04Z" \
+  add_comment "ENG-81" --body \
+    "<!-- pipeline: verdict result=pass stage=implementing -->" >/dev/null 2>&1
 
-# ─── R-1: clean store (no preseed) ───────────────────────────────────────────
-printf '\nR-1: clean store (no preseed)\n'
+# Comment 2: orchestrator counter bump at 15:54:26Z (current shape;
+# ENG-153 will widen this body to include Reason + Trips at).
+PIPELINE_WRITER=orchestrator _FIXTURE_INJECT_CREATED_AT="2026-05-14T15:54:26Z" \
+  add_comment "ENG-81" --body \
+    "<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh." \
+  >/dev/null 2>&1
 
-replay_timeline "ENG-154" 0
+# Comment 3: orchestrator halt verdict at 15:54:32Z. In the historical
+# incident this body was dedup-updated onto the morning's 12:24:00 halt
+# slot via add-or-update-comment; the fixture deliberately uses
+# add-comment here so under CURRENT code the result is three append-only
+# comments. (Once ENG-150 lands, add-or-update-comment is removed
+# entirely; the fixture already reflects that target state.)
+PIPELINE_WRITER=orchestrator _FIXTURE_INJECT_CREATED_AT="2026-05-14T15:54:32Z" \
+  add_comment "ENG-81" --body \
+    $'<!-- pipeline: verdict result=halt reason=agent-blocked --> SEVERE scope violation on learned-rules/harness/project-profile.md.\nRecorded at: 2026-05-14T15:54:32Z' \
+  >/dev/null 2>&1
 
-# P0-1: three calls produced three distinct commentCreate store entries
-_r1_count="$(jq '.comments | length' "$_STORE")"
-assert_eq "R-1/P0-1: store has 3 entries (3 commentCreate)" "$_r1_count" "3"
+# ─── R-1: Always-on invariants (today's green path) ────────────────────
 
-# P0-2: createdAt values are strictly monotonically increasing
-_r1_orig_ts="$(jq -r '[.comments[].createdAt] | join(",")' "$_STORE")"
-_r1_sort_ts="$(jq -r '[.comments[].createdAt] | sort | join(",")' "$_STORE")"
-assert_eq "R-1/P0-2: createdAt strictly increasing" "$_r1_orig_ts" "$_r1_sort_ts"
-
-# P0-4: every body carries the dispatch-id marker (ENG-110 SHIPPED)
-_r1_no_marker="$(jq -r \
-  '[.comments[] |
-    select(.body | contains("<!-- meta: dispatch id=ENG-81R-d0001 stage=implementing -->") | not)
-    | .id] | join(",")' "$_STORE")"
-assert_eq "R-1/P0-4: all bodies carry dispatch marker (ENG-110)" \
-  "$_r1_no_marker" ""
-
-# P1-header (probe-gated): when header-line ticket ships, completion claim
-# carries a typed author= header line
-if _probe_header_line_supported; then
-  fail_at "R-1/P1-header: probe true but assertion not yet written (<header-line-ticket-id-TBD>)"
+# C-001: store contains exactly three append-only comments — no in-place
+# rewrite leaked through commentUpdate.
+count="$(jq 'length' "$_store_file")"
+if [[ "$count" == "3" ]]; then
+  pass_at "C-001 store contains exactly 3 comments"
 else
-  skip_at "R-1/P1-header: <header-line-ticket-id-TBD> not yet shipped"
+  fail_at "C-001 store contains exactly 3 comments" "got $count"
 fi
 
-# P1-verdict-split (probe-gated): when verdict-split ticket ships, the agent
-# verdict is a separate commentCreate with a distinct sig
-if _probe_verdict_split_supported; then
-  fail_at "R-1/P1-verdict-split: probe true but assertion not yet written (<verdict-split-ticket-id-TBD>)"
+# C-002: createdAt order matches dispatch order. Lexicographic compare is
+# well-defined on ISO-8601 Z strings.
+ts_ordered="$(jq -r '[.[].createdAt] | (sort == .) | tostring' "$_store_file")"
+if [[ "$ts_ordered" == "true" ]]; then
+  pass_at "C-002 createdAt ascending order matches dispatch order"
 else
-  skip_at "R-1/P1-verdict-split: <verdict-split-ticket-id-TBD> not yet shipped"
+  fail_at "C-002 createdAt ascending order matches dispatch order" \
+    "store=$(cat "$_store_file")"
 fi
 
-# P1-reason-threshold (probe-gated): when guards-reason+threshold ticket ships,
-# halt body carries reason=<token> threshold=<n>
-if _probe_guards_reason; then
-  _r1_halt_body="$(jq -r \
-    '[.comments[] | select(.body | contains("<!-- meta: dedup key=halt/implementing/ENG-154"))]
-     | last | .body' "$_STORE")"
-  if [[ "$_r1_halt_body" =~ reason=[a-z_]+\ threshold=[0-9]+ ]]; then
-    pass_at "R-1/P1-reason-threshold: halt body has reason+threshold"
+# C-003: every body carries the ENG-110 dispatch marker. Trailing space
+# in the contains() probe avoids prefix-collision (e.g. id=ENG-81-d100
+# vs id=ENG-81-d10), mirroring _inject_dispatch_marker's own idempotency
+# check at bin/linear.sh:71.
+missing="$(jq -r '[.[] | select(.body | contains("<!-- meta: dispatch id=ENG-81-d0007 ") | not)] | length' "$_store_file")"
+if [[ "$missing" == "0" ]]; then
+  pass_at "C-003 every body carries <!-- meta: dispatch id=ENG-81-d0007 stage=... -->"
+else
+  fail_at "C-003 every body carries dispatch marker" \
+    "missing=$missing store=$(cat "$_store_file")"
+fi
+
+# C-003b: OFF state — PIPELINE_DISPATCH_ID="" → dispatch marker absent.
+# Tests the chokepoint's guard; complements C-003's ON-state check.
+_r1_len="$(jq 'length' "$_store_file")"
+PIPELINE_DISPATCH_ID="" PIPELINE_WRITER=orchestrator PIPELINE_STAGE=implementing \
+  add_comment "ENG-81" --body \
+    "<!-- meta: metric name=implement_rejection --> Off-state probe." \
+  >/dev/null 2>&1
+_off_body="$(jq -r '.[-1].body' "$_store_file")"
+if ! grep -qF '<!-- meta: dispatch id=' <<<"$_off_body"; then
+  pass_at "C-003b PIPELINE_DISPATCH_ID empty: dispatch marker absent from body"
+else
+  fail_at "C-003b dispatch marker absent when PIPELINE_DISPATCH_ID is empty" \
+    "body=$_off_body"
+fi
+# Restore store to R-1 state (remove the off-state probe entry).
+jq ".[0:$_r1_len]" "$_store_file" > "$_store_file.tmp" && mv "$_store_file.tmp" "$_store_file"
+
+# ─── R-2: pre-seeded prior halt (ENG-81 bug observation) ────────────────
+#
+# D-003 mandates two test cases: R-1 (clean store) and R-2 (pre-seeded).
+# R-2 exercises the historical ENG-81 failure mode: add_or_update_comment
+# rewrites the halt comment in-place (commentUpdate), preserving the
+# pre-seed's createdAt from 3h earlier. Today this is the BUG — the
+# operator's top-down scan sees the halt pinned hours upstream.
+# When ENG-150 ships (removes add_or_update_comment), call-3 is skipped
+# and C-R2 is marked SKIP (bug trigger moot).
+
+printf '\n--- ENG-154 R-2: pre-seeded prior halt (bug observation) ---\n'
+printf -- '--- ENG-150 (landed=%s) ---\n\n' "$(_dep_150_landed && echo yes || echo no)"
+
+# Reset to clean slate for R-2.
+printf '[]\n' > "$_store_file"
+
+# Pre-seed a halt comment timestamped 3h before the incident timeline.
+# Written directly to the store (bypassing add_comment) to inject a
+# controlled createdAt. Body carries the sig marker so add_or_update_comment
+# finds it via the dedup-key lookup at bin/linear.sh:624.
+jq \
+  --arg id "cmt-preseed" \
+  --arg ts "2026-05-14T12:24:00Z" \
+  --arg b $'SEVERE — scope violation (morning halt).\n\n<!-- meta: dedup key=halt/implementing/ENG-81 -->' \
+  '. + [{id:$id, body:$b, createdAt:$ts}]' \
+  "$_store_file" > "$_store_file.tmp" && mv "$_store_file.tmp" "$_store_file"
+
+# Restore PIPELINE_DISPATCH_ID to the timeline value (C-003b set it to "").
+export PIPELINE_DISPATCH_ID="ENG-81-d0007"
+
+# Calls 1 and 2: append-only, same as R-1.
+PIPELINE_WRITER=agent _FIXTURE_INJECT_CREATED_AT="2026-05-14T15:54:04Z" \
+  add_comment "ENG-81" --body \
+    "<!-- pipeline: verdict result=pass stage=implementing -->" >/dev/null 2>&1
+PIPELINE_WRITER=orchestrator _FIXTURE_INJECT_CREATED_AT="2026-05-14T15:54:26Z" \
+  add_comment "ENG-81" --body \
+    "<!-- meta: metric name=implement_rejection --> Counter bumped by guards.sh." \
+  >/dev/null 2>&1
+
+# Call 3: add_or_update_comment triggers the historical bug — in-place
+# rewrite against the preseed's id, preserving createdAt=12:24:00Z.
+# Skipped when ENG-150 ships (add_or_update_comment removed entirely).
+if ! _dep_150_landed; then
+  PIPELINE_WRITER=orchestrator _FIXTURE_INJECT_CREATED_AT="2026-05-14T15:54:32Z" \
+    add_or_update_comment "halt/implementing/ENG-81" "ENG-81" --body \
+      $'<!-- pipeline: verdict result=halt reason=agent-blocked --> SEVERE scope violation.\nRecorded at: 2026-05-14T15:54:32Z' \
+    >/dev/null 2>&1
+fi
+
+# C-R2: assert the bug is observable today — the preseed entry's createdAt
+# is preserved across the in-place halt rewrite (pinned 3h upstream).
+if _dep_150_landed; then
+  skip_at "C-R2 R-2 bug observation" \
+    "ENG-150 landed: add_or_update_comment removed; in-place rewrite path moot"
+else
+  _r2_preseed_ts="$(jq -r '.[0].createdAt' "$_store_file")"
+  _r2_preseed_body="$(jq -r '.[0].body' "$_store_file")"
+  if [[ "$_r2_preseed_ts" == "2026-05-14T12:24:00Z" ]] \
+     && grep -qF 'result=halt' <<<"$_r2_preseed_body"; then
+    pass_at "C-R2 R-2 bug-observation: add_or_update_comment preserved pre-seed createdAt across in-place halt rewrite"
   else
-    fail_at "R-1/P1-reason-threshold: halt body missing reason+threshold"
-    printf '    halt body: %s\n' "${_r1_halt_body:0:120}"
+    fail_at "C-R2 R-2 preseed createdAt" \
+      "got=$_r2_preseed_ts expected=2026-05-14T12:24:00Z body=$_r2_preseed_body"
   fi
-else
-  skip_at "R-1/P1-reason-threshold: <guards-reason+threshold-ticket-TBD> not yet shipped"
 fi
 
-# ─── R-2: preseed (prior halt 3 h upstream — ENG-81 bug observation) ─────────
-printf '\nR-2: preseed (prior halt 3h upstream)\n'
+# ─── Dependency-gated invariants ────────────────────────────────────────
 
-replay_timeline "ENG-154" 1
-
-# P0-1b: store has 4 entries: preseed + 3 commentCreate (agent, counter, breadcrumb)
-_r2_count="$(jq '.comments | length' "$_STORE")"
-assert_eq "R-2/P0-1b: store has 4 entries (preseed + 3 creates)" "$_r2_count" "4"
-
-# P0-3a (ENG-81 bug observation): commentUpdate preserves createdAt — the
-# canonical halt comment appears hours upstream in Linear's top-down feed
-_r2_preseed_ts="$(jq -r \
-  '.comments[] | select(.id == "HALT-PRE-001") | .createdAt' "$_STORE")"
-assert_eq "R-2/P0-3a: HALT-PRE-001 createdAt preserved (ENG-81 bug)" \
-  "$_r2_preseed_ts" "2026-05-14T12:54:00.001Z"
-
-# P0-3b (ENG-111 SHIPPED): breadcrumb comment posted as a fresh commentCreate,
-# making the re-emission visible at the bottom of the top-down feed
-_r2_breadcrumb_count="$(jq \
-  '[.comments[] | select(.body | contains("<!-- meta: breadcrumb sig=halt/implementing/ENG-154"))]
-   | length' "$_STORE")"
-if [[ "$_r2_breadcrumb_count" -ge 1 ]]; then
-  pass_at "R-2/P0-3b: breadcrumb comment posted (ENG-111)"
-else
-  fail_at "R-2/P0-3b: expected ENG-111 breadcrumb comment; none found"
-fi
-
-# P0-4b: all comments (including updated HALT-PRE-001) carry current dispatch marker
-_r2_no_marker="$(jq -r \
-  '[.comments[] |
-    select(.body | contains("<!-- meta: dispatch id=ENG-81R-d0001 stage=implementing -->") | not)
-    | .id] | join(",")' "$_STORE")"
-assert_eq "R-2/P0-4b: all bodies carry dispatch marker (ENG-110)" \
-  "$_r2_no_marker" ""
-
-# P1-verdict-split (probe-gated): when verdict-split ships, halt should be a
-# NEW commentCreate rather than a commentUpdate on HALT-PRE-001
-if _probe_verdict_split_supported; then
-  _r2_new_halt="$(jq \
-    '[.comments[] |
-      select(.body | contains("<!-- meta: dedup key=halt/implementing/ENG-154")) |
-      select(.id != "HALT-PRE-001") |
-      select(.createdAt > "2026-05-14T12:54:00.001Z")] | length' "$_STORE")"
-  if [[ "$_r2_new_halt" -ge 1 ]]; then
-    pass_at "R-2/P1-verdict-split: halt is fresh commentCreate (bug fixed)"
+# ENG-150 (append-only ledger / no in-place rewrite). When ENG-150 ships
+# and add_or_update_comment is removed, the entire R-1+R-2 timeline must
+# produce zero commentUpdate calls. _COMMENT_UPDATE_COUNT was incremented
+# by the stub's commentUpdate arm on each in-place rewrite; R-2's call-3
+# is skipped when dep_150_landed, so the count stays 0.
+if _dep_150_landed; then
+  if [[ "$_COMMENT_UPDATE_COUNT" == "0" ]]; then
+    pass_at "C-150 ENG-150 landed: 0 commentUpdate calls — append-only ledger confirmed"
   else
-    fail_at "R-2/P1-verdict-split: expected fresh halt CREATE; HALT-PRE-001 still canonical"
-  fi
-else
-  skip_at "R-2/P1-verdict-split: <verdict-split-ticket-id-TBD> not yet shipped"
-fi
-
-# P1-reason-threshold: same probe as R-1, same body-content assertion
-if _probe_guards_reason; then
-  _r2_halt_body="$(jq -r \
-    '[.comments[] | select(.id == "HALT-PRE-001") | .body] | first' "$_STORE")"
-  if [[ "$_r2_halt_body" =~ reason=[a-z_]+\ threshold=[0-9]+ ]]; then
-    pass_at "R-2/P1-reason-threshold: halt body has reason+threshold"
-  else
-    fail_at "R-2/P1-reason-threshold: halt body missing reason+threshold"
-    printf '    halt body: %s\n' "${_r2_halt_body:0:120}"
+    fail_at "C-150 commentUpdate count" \
+      "expected 0, got $_COMMENT_UPDATE_COUNT (add_or_update_comment still active)"
   fi
 else
-  skip_at "R-2/P1-reason-threshold: <guards-reason+threshold-ticket-TBD> not yet shipped"
+  skip_at "C-150 ENG-150 not yet landed" \
+    "add-or-update-comment still present at bin/linear.sh::main"
 fi
 
-# ─── P2: audit dump (ENG_81R_AUDIT=1) ────────────────────────────────────────
-if [[ "${ENG_81R_AUDIT:-0}" == "1" ]]; then
-  printf '\nP2 (audit): store state after R-2\n'
-  jq '.' "$_STORE"
+# ENG-151 (human-readable header line). Each body opens with the
+# canonical `[ENG-81 · implementing · ENG-81-d0007 · <iso-ts> · <actor>]`.
+if _dep_151_landed; then
+  header_re='\[ENG-81 · implementing · ENG-81-d0007 · 2026-05-14T15:54:[0-9]{2}Z · (agent|orchestrator)\]'
+  bad="$(jq -r --arg re "$header_re" \
+    '[.[] | select(.body | test($re; "x") | not)] | length' "$_store_file")"
+  if [[ "$bad" == "0" ]]; then
+    pass_at "C-151 every body opens with canonical header line"
+  else
+    fail_at "C-151 header line" "$bad of 3 bodies missing header"
+  fi
+else
+  skip_at "C-151 header line not yet wired" \
+    "ENG-151 in flight at stage:implementing"
 fi
 
-# ─── Results ─────────────────────────────────────────────────────────────────
-printf '\nRESULTS: %d passed, %d failed, %d skipped\n' "$_PASS" "$_FAIL" "$_SKIP"
-[[ "$_FAIL" == "0" ]] || exit 1
-exit 0
+# ENG-152 (agent/orchestrator verdict-split). Agent self-claim carries
+# `pipeline: stage-completion-claim`; orchestrator halt verdict carries
+# `pipeline: verdict ... author=orchestrator`.
+if _dep_152_landed; then
+  claim_ok="$(jq -r '.[0].body | test("pipeline: stage-completion-claim") | tostring' "$_store_file")"
+  halt_ok="$(jq -r '.[2].body | test("pipeline: verdict result=halt.*author=orchestrator") | tostring' "$_store_file")"
+  if [[ "$claim_ok" == "true" && "$halt_ok" == "true" ]]; then
+    pass_at "C-152 agent self-claim + orchestrator verdict markers split"
+  else
+    fail_at "C-152 verdict-split markers" "claim_ok=$claim_ok halt_ok=$halt_ok"
+  fi
+else
+  skip_at "C-152 verdict-split markers not yet wired" \
+    "ENG-152 in flight at stage:implementing (currently halted)"
+fi
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi
+# ENG-153 (guards.sh --reason + threshold). The counter-bump body
+# carries an explicit `Reason:` clause and a `Trips at: <count>/<n>`
+# threshold disclosure.
+if _dep_153_landed; then
+  counter="$(jq -r '.[1].body' "$_store_file")"
+  if grep -qE 'Reason:' <<<"$counter" \
+     && grep -qE 'Trips at: [0-9]+/[0-9]+' <<<"$counter"; then
+    pass_at "C-153 counter-bump body carries Reason: + Trips at: threshold"
+  else
+    fail_at "C-153 counter body" "got: $counter"
+  fi
+else
+  skip_at "C-153 counter Reason+threshold not yet wired" \
+    "ENG-153 in review at stage:reviewing"
+fi
+
+# ─── Summary ────────────────────────────────────────────────────────────
+printf '\n--- summary ---\n'
+printf '  PASS=%s  FAIL=%s  SKIP=%s\n' "$PASS" "$FAIL" "$SKIP"
+if (( FAIL > 0 )); then
+  printf 'FAIL summary: %s test(s) failed\n' "$FAIL" >&2
+  exit 1
+fi
+printf 'OK\n'
