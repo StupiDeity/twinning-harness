@@ -1560,11 +1560,13 @@ fi
 # markers (classifier returns hold/advanceable=true). The Pass 4U held
 # arm invokes verdict_handler against the stubbed Linear API, logs, and
 # falls through without dispatching; held_count stays at 2 = max_concurrent.
-# `_picker_build_pool`'s `held_count < max_concurrent` cap-guard
-# suppresses the wait_recallable + inbox arms. Final: idle
-# "max-concurrent-reached". The wait issue must NOT be recalled.
-# Without this pin, dropping the cap-guard inside _picker_build_pool
-# would over-allocate the dispatcher and starve the held-but-stuck path.
+# ENG-178 UPDATE: wait_recallable assembly is no longer gated on
+# held_count<max_concurrent, so ENG-WAIT-QA-CAP-3 (building, predicate-ready
+# with entry_conditions=proceed) enters the pool and wins the sort
+# (stage_index=6 > planning stage_index=2). The single dispatch goes to the
+# building wait, not idle. This is the correct ENG-178 behavior: a higher-stage
+# predicate-ready wait outranks lower-stage held issues even when all K slots
+# are held. The inbox arm remains gated (lossless cost optimization).
 reset_fixtures
 write_label_fixture "stage:planning" \
   "ENG-WAIT-QA-CAP-1|In Progress|1|stage:planning,pipeline:halted" \
@@ -1581,17 +1583,14 @@ write_comments_fixture "ENG-WAIT-QA-CAP-3" \
 out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 reason="$(jq -r '.reason // ""' <<<"$out")"
-# `idle` emits `{"issue_id":null,"stage":null,"reason":"<idle-reason>"}`.
-# A wait re-pickup (Pass 4U wait_recallable arm) would emit a real
-# dispatch with a non-null issue_id and a `wait re-pickup` reason.
-# Assert: issue_id is null AND the reason starts with
-# "max-concurrent-reached" — proving the picker's cap-guard suppressed
-# the wait + inbox arms and the final idle path took over.
-if [[ "$issue_id" == "null" && "$reason" == max-concurrent-reached* ]]; then
+# ENG-178: the building wait is predicate-ready (entry_conditions=proceed default);
+# it outranks the two planning helds in the unified sort (stage_index=6 > 2).
+# Assert: issue_id is ENG-WAIT-QA-CAP-3 and reason matches stage:building.
+if [[ "$issue_id" == "ENG-WAIT-QA-CAP-3" && "$reason" == *"stage:building"* ]]; then
   pass_at "QA adversarial (ENG-85): unified picker respects cap when held_count >= max_concurrent"
 else
   fail_at "QA adversarial (ENG-85): unified-picker cap safety" \
-    "got issue_id=$issue_id reason=$reason (want issue_id=null + max-concurrent-reached) full=$out"
+    "got issue_id=$issue_id reason=$reason (want ENG-WAIT-QA-CAP-3 / *stage:building*) full=$out"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2237,6 +2236,64 @@ if (( unknown_rc != 0 )) && [[ "$err" == *"unknown flag"*"--mx"* ]]; then
   pass_at "AC-MAX-K-UNKNOWN-FLAG: --mx dies (rc=$unknown_rc) with 'unknown flag --mx'"
 else
   fail_at "AC-MAX-K-UNKNOWN-FLAG" "expected rc!=0 and 'unknown flag --mx' in stderr, got rc=$unknown_rc err=$err"
+fi
+
+# ─── AC-PICK-STARVE-1 (ENG-178): held-full does NOT starve a higher-stage
+#     predicate-ready wait. Two helds fill both slots (held_count=2=cap);
+#     a predicate-ready building wait must still win the single dispatch
+#     (building idx=6 > planning idx=2), even though the helds are higher
+#     PRIORITY (Urgent vs Normal) — stage dominates the sort key.
+#     Pre-ENG-178 the held_count<max_concurrent gate excluded the wait from
+#     the pool entirely, so a planning held was dispatched and the approved
+#     build starved (the 2026-06-10 ENG-154/ENG-119 incident). AC-WAIT-2
+#     only covers held_count=1 (gate open), so it never exercised this path.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed
+write_label_fixture "stage:planning" \
+  "ENG-STARVE-H1|In Progress|1|stage:planning" \
+  "ENG-STARVE-H2|In Progress|1|stage:planning"
+write_label_fixture "stage:building" "ENG-STARVE-W|In Progress|3|stage:building"
+write_comments_fixture "ENG-STARVE-W" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-06-10T06:30:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-06-10T06:39:00Z'
+out="$(main 2>/dev/null || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+reason="$(jq -r '.reason // ""' <<<"$out")"
+if [[ "$issue_id" == "ENG-STARVE-W" && "$reason" == *"stage:building"* ]]; then
+  pass_at "AC-PICK-STARVE-1 (ENG-178): held-full does not starve higher-stage ready wait"
+else
+  fail_at "AC-PICK-STARVE-1 (ENG-178): held-full wait starvation" \
+    "got issue_id=$issue_id reason=$reason (want ENG-STARVE-W / *stage:building*) full=$out"
+fi
+
+# ─── AC-PICK-STARVE-2 (ENG-178): with the gate split, a held-full tick
+#     still runs the wait predicate check and EXCLUDES a not-ready wait,
+#     logging "skipped (predicate not ready)". A planning held is
+#     dispatched instead. Confirms the predicate gate is preserved by the
+#     fix AND that the log line — entirely absent pre-ENG-178 because the
+#     gate skipped wait assembly when held was full — now fires.
+#     NB: _picker_predicate_ready treats only `skip:*` (with colon) as
+#     not-ready; a bare `skip` hits the fail-open catch-all.
+reset_fixtures
+export ENTRY_CONDITIONS_STUB_OUTPUT="skip:awaiting-approval"
+write_label_fixture "stage:planning" \
+  "ENG-STARVE2-H1|In Progress|1|stage:planning" \
+  "ENG-STARVE2-H2|In Progress|1|stage:planning"
+write_label_fixture "stage:building" "ENG-STARVE2-W|In Progress|3|stage:building"
+write_comments_fixture "ENG-STARVE2-W" \
+  '<!-- pipeline: transition from=implementing to=building -->|2026-06-10T06:30:00Z' \
+  '<!-- pipeline: verdict result=wait reason=awaiting-approval -->|2026-06-10T06:39:00Z'
+err="$STUB_DIR/starve2-stderr.log"
+out="$(main 2>"$err" || true)"
+issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
+skipped_logged=0
+grep -qE 'picker: wait_recallable ENG-STARVE2-W skipped \(predicate not ready\)' "$err" && skipped_logged=1
+export ENTRY_CONDITIONS_STUB_OUTPUT=proceed   # restore default (defensive; no later case depends on it)
+if [[ "$issue_id" == ENG-STARVE2-H* ]] && (( skipped_logged == 1 )); then
+  pass_at "AC-PICK-STARVE-2 (ENG-178): not-ready wait excluded + logged; held dispatched"
+else
+  fail_at "AC-PICK-STARVE-2 (ENG-178): predicate-not-ready exclusion" \
+    "got issue_id=$issue_id skipped_logged=$skipped_logged full=$out"
 fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
