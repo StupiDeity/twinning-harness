@@ -45,21 +45,6 @@ case "\${1:-}" in
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
     ;;
-  add-comment)
-    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
-    sig=""; body=""
-    while (( \$# > 0 )); do
-      case "\$1" in
-        --sig)    sig="\$2";              shift 2 ;;
-        --sig=*)  sig="\${1#--sig=}";     shift   ;;
-        --body)   body="\$2";             shift 2 ;;
-        --body=*) body="\${1#--body=}";   shift   ;;
-        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
-      esac
-    done
-    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
-      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
-    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
