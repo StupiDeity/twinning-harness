@@ -340,8 +340,9 @@ fi
 # arm invokes verdict_handler (a no-op against the stubbed Linear API)
 # and falls through without dispatching; held_count stays at 2 =
 # max_concurrent; _picker_build_pool's `held_count < max_concurrent`
-# guard suppresses wait + inbox enrolment and the final idle path
-# emits "max-concurrent-reached".
+# guard suppresses inbox enrolment (post-ENG-178 wait enrolment is no
+# longer gated, but this fixture has no wait candidates) and the final
+# idle path emits "max-concurrent-reached".
 reset_fixtures
 write_label_fixture "stage:planning" \
   "ENG-6001|In Progress|3|Bug,stage:planning,pipeline:halted" \
@@ -1563,7 +1564,7 @@ fi
 # ENG-178 UPDATE: wait_recallable assembly is no longer gated on
 # held_count<max_concurrent, so ENG-WAIT-QA-CAP-3 (building, predicate-ready
 # with entry_conditions=proceed) enters the pool and wins the sort
-# (stage_index=6 > planning stage_index=2). The single dispatch goes to the
+# (stage_index=6 > planning stage_index=1). The single dispatch goes to the
 # building wait, not idle. This is the correct ENG-178 behavior: a higher-stage
 # predicate-ready wait outranks lower-stage held issues even when all K slots
 # are held. The inbox arm remains gated (lossless cost optimization).
@@ -1584,10 +1585,10 @@ out="$(main 2>/dev/null || true)"
 issue_id="$(jq -r '.issue_id // "null"' <<<"$out")"
 reason="$(jq -r '.reason // ""' <<<"$out")"
 # ENG-178: the building wait is predicate-ready (entry_conditions=proceed default);
-# it outranks the two planning helds in the unified sort (stage_index=6 > 2).
+# it outranks the two planning helds in the unified sort (stage_index=6 > 1).
 # Assert: issue_id is ENG-WAIT-QA-CAP-3 and reason matches stage:building.
 if [[ "$issue_id" == "ENG-WAIT-QA-CAP-3" && "$reason" == *"stage:building"* ]]; then
-  pass_at "QA adversarial (ENG-85): unified picker respects cap when held_count >= max_concurrent"
+  pass_at "QA adversarial (ENG-85): building wait wins despite held_count >= max_concurrent (ENG-178)"
 else
   fail_at "QA adversarial (ENG-85): unified-picker cap safety" \
     "got issue_id=$issue_id reason=$reason (want ENG-WAIT-QA-CAP-3 / *stage:building*) full=$out"
@@ -2241,7 +2242,7 @@ fi
 # ─── AC-PICK-STARVE-1 (ENG-178): held-full does NOT starve a higher-stage
 #     predicate-ready wait. Two helds fill both slots (held_count=2=cap);
 #     a predicate-ready building wait must still win the single dispatch
-#     (building idx=6 > planning idx=2), even though the helds are higher
+#     (building idx=6 > planning idx=1), even though the helds are higher
 #     PRIORITY (Urgent vs Normal) — stage dominates the sort key.
 #     Pre-ENG-178 the held_count<max_concurrent gate excluded the wait from
 #     the pool entirely, so a planning held was dispatched and the approved

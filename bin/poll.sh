@@ -444,8 +444,13 @@ _picker_predicate_ready() {
 # Cap discipline:
 #   - held items always included (they are already counted in
 #     held_count; their fifo_ts is the gather projection's updatedAt).
-#   - wait_recallable + inbox cap-guarded by held_count <
-#     max_concurrent. Mirrors today's pre-ENG-91 Pass 5/6 cap guards.
+#   - wait_recallable always included (ENG-178) — gated only on
+#     _picker_predicate_ready, NOT on held_count. A ready higher-stage
+#     wait must be able to outrank a lower-stage held.
+#   - inbox cap-guarded by held_count < max_concurrent — a LOSSLESS cost
+#     optimization (inbox stage_index=-1 can never outrank K helds), not a
+#     correctness gate. Per-tick dispatch is capped downstream by main()'s
+#     top-K (_max_decisions) truncation.
 #
 # Wait_recallable items are gated on _picker_predicate_ready before
 # entering the pool (ENG-91 D-003). When the predicate evaluates skip,
