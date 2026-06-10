@@ -6696,7 +6696,7 @@ fi
 if grep -q '^EVENT=sandbox_denial$' "$STUB_DIR/metrics.capture" \
   && grep -qF 'count=2' "$STUB_DIR/metrics.capture" \
   && grep -qF 'signatures=bash-classifier,sandbox-path' "$STUB_DIR/metrics.capture" \
-  && grep -qF 'outcome=detected' "$STUB_DIR/metrics.capture" \
+  && grep -qF 'OUTCOME=detected' "$STUB_DIR/metrics.capture" \
   && grep -qF 'claude_version=1.0.93' "$STUB_DIR/metrics.capture"; then
   pass_at "ENG-156 B: events.jsonl row carries count=2, deduped signatures, claude_version"
 else
@@ -6818,7 +6818,7 @@ _emit_sandbox_denial_metric ENG-156E implementing 2>/dev/null || _eng156_e_rc=$?
 CONFIG="$_eng156_orig_config"
 if (( _eng156_e_rc == 0 )) \
   && grep -q '^EVENT=sandbox_denial$' "$STUB_DIR/metrics.capture" \
-  && grep -qF 'outcome=detected' "$STUB_DIR/metrics.capture"; then
+  && grep -qF 'OUTCOME=detected' "$STUB_DIR/metrics.capture"; then
   pass_at "ENG-156 E: Phase B incidental probe → rc=0, outcome=detected (Phase A preserved)"
 else
   fail_at "ENG-156 E: Phase B no-match" \
@@ -6846,7 +6846,7 @@ _emit_sandbox_denial_metric ENG-156F implementing 2>/dev/null || _eng156_f_rc=$?
 CONFIG="$_eng156_orig_config"
 if (( _eng156_f_rc == 0 )) \
   && grep -q '^EVENT=sandbox_denial$' "$STUB_DIR/metrics.capture" \
-  && grep -qF 'outcome=detected' "$STUB_DIR/metrics.capture"; then
+  && grep -qF 'OUTCOME=detected' "$STUB_DIR/metrics.capture"; then
   pass_at "ENG-156 F: Phase B flag default (unset) → rc=0 even on matching denial"
 else
   fail_at "ENG-156 F: Phase B default-off" \
