@@ -1,0 +1,85 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-154",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "New bin/eng-81-reproducer-test.sh exists and opens with a header docblock documenting the 2026-05-14 15:54 UTC ENG-81 incident, the three-comment timeline (15:54:04 agent claim, 15:54:26 counter bump, 15:54:32 halt verdict), and the four dependency tickets (ENG-150/151/152/153) whose acceptance criteria the test enforces.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/eng-81-reproducer-test.sh" },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "2026-05-14T15:54:04Z", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "2026-05-14T15:54:26Z", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "2026-05-14T15:54:32Z", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "ENG-150", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "ENG-151", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "ENG-152", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "ENG-153", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "The fixture defines four dependency-shape detectors (_dep_150_landed, _dep_151_landed, _dep_152_landed, _dep_153_landed) that consult the live bin/*.sh and bin/pipeline-events.json shapes (NOT docstring text).",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "^_dep_150_landed\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "^_dep_151_landed\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "^_dep_152_landed\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "^_dep_153_landed\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "add-or-update-comment", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "_render_event_header", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "stage-completion-claim", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "The fixture stubs the Linear store via a linear_query override that appends commentCreate mutations to a JSON-array temp file with a fixture-controlled createdAt, and replays the three comments through bin/linear.sh::add_comment under PIPELINE_DISPATCH_ID=ENG-81-d0007 PIPELINE_STAGE=implementing with the three documented WRITER lanes (agent/orchestrator/orchestrator).",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "commentCreate", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "_FIXTURE_INJECT_CREATED_AT", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "PIPELINE_DISPATCH_ID=\"ENG-81-d0007\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "PIPELINE_WRITER=agent", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "PIPELINE_WRITER=orchestrator", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "implement_rejection", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "The fixture asserts three always-on invariants (C-001 three comments, C-002 chronological order, C-003 every body carries the dispatch marker) and gates four dependency-pending assertions (C-150 append-only, C-151 header line, C-152 verdict-split markers, C-153 counter Reason+threshold) behind their shape detectors.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "C-001", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "C-002", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "C-003", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "C-150", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "C-151", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "C-152", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "C-153", "expect_match": true },
+        { "kind": "grep", "path": "bin/eng-81-reproducer-test.sh", "pattern": "skip_at", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "learned-rules/harness/project-profile.md::## Build & test gates Test command appends bin/eng-81-reproducer-test.sh; ## Tool allowlist implementing and qa sections each gain an explicit Bash(bash bin/eng-81-reproducer-test.sh:*) entry.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "bash bin/eng-81-reproducer-test.sh", "expect_match": true },
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "Bash\\(bash bin/eng-81-reproducer-test\\.sh:\\*\\)", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-6",
+      "summary": "Full gate suite green against the new test file: the reproducer itself passes (3 always-on PASS + 4 dependency SKIP today), the profile-allowlist closure test passes, and the pre-commit hook accepts the new file via its bin/*-test.sh glob.",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash bin/eng-81-reproducer-test.sh", "expect_exit": 0, "expect_stdout_match": "PASS=3" },
+        { "kind": "smoke", "command": "bash bin/profile-allowlist-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/linear-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-7",
+      "summary": "Plan + sibling JSON committed together on the feature branch as chore(pipeline): plan for ENG-154.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "docs/plans/2026-06-09-eng-154-tests-eng-81-scenario-reproducer-fixture-replay-2026-05-14-15-54-utc-timeline-against-current-code.md" },
+        { "kind": "file_exists", "path": "docs/plans/2026-06-09-eng-154-tests-eng-81-scenario-reproducer-fixture-replay-2026-05-14-15-54-utc-timeline-against-current-code.json" }
+      ]
+    }
+  ]
+}
