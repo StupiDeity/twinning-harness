@@ -365,9 +365,11 @@ contains 'eng76_build_carries_slack_bin' \
   'Bash(bash bin/slack.sh:*)' "$build_tools"
 
 # Negative: stages that don't invoke these utilities should NOT have
-# them granted — least-privilege defense (e.g. brainstorm/plan/implement/ui
+# them granted — least-privilege defense (e.g. brainstorm/plan/ui
 # don't bump counters or post Slack).
-for stg in brainstorming planning implementing ui; do
+# Note: implementing gains metrics.sh in ENG-120 (within-stage iteration
+# loop emits impl_iteration events) — intentionally excluded from this loop.
+for stg in brainstorming planning ui; do
   tools="$(CONFIG="$cfg" allowed_tools_for "$stg")"
   notcontains "eng76_${stg}_no_guards" 'Bash(bash bin/guards.sh:*)' "$tools"
   notcontains "eng76_${stg}_no_slack"  'Bash(bash bin/slack.sh:*)'  "$tools"

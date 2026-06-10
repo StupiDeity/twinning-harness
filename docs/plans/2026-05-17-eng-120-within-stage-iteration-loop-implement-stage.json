@@ -1,0 +1,62 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-120",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "AGENT_PROMPTS.md §3 (Implementation Agent — Backend) carries a 'Within-stage iteration loop' block: bounded N=3 inner-iteration cap, pass-criteria sourced from {plan_json} with fallback to profile gate-suite + zero-P0 self-review, per-iteration impl_iteration metric emission, and verdict halt --reason iteration-exhausted on exhaustion.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Within-stage iteration loop", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "up to 3 iterations", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "bash bin/metrics.sh impl_iteration", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "pass_criteria", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "no plan.json — falling back to prose plan", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "iteration-exhausted", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/dispatch.sh::allowed_tools_for grants the implementing stage Bash(bash .pipeline/bin/metrics.sh:*) AND Bash(bash bin/metrics.sh:*) via the dual-path pattern already used for linear.sh / pipeline.sh in the same arm.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "implementing\\)[[:space:]]+base=.*Bash\\(bash \\.pipeline/bin/metrics\\.sh:\\*\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "implementing\\)[[:space:]]+base=.*Bash\\(bash bin/metrics\\.sh:\\*\\)", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/agent-prompts-content-test.sh asserts §3 contains the iteration-loop block: heading literal, cap literal 3, metric chokepoint literal, pass_criteria token, fallback marker, and verdict-halt reason. Existing §3 assertions stay green.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "Within-stage iteration loop", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "impl_iteration", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "ENG-120", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/agent-prompts-content-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "bin/dispatch-test.sh asserts the implementing stage carries BOTH metrics.sh path variants (.pipeline/bin/metrics.sh + bin/metrics.sh) — mirrors the existing dual-path assertion for linear.sh.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "Bash\\(bash bin/metrics\\.sh:\\*\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-test.sh", "pattern": "Bash\\(bash \\.pipeline/bin/metrics\\.sh:\\*\\)", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/dispatch-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "bin/metrics-test.sh asserts the free-form impl_iteration event lands a well-formed JSONL row with the expected fields (event/outcome/notes carrying iteration ordinal).",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/metrics-test.sh", "pattern": "impl_iteration", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/metrics-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-6",
+      "summary": "Existing gate suite remains green post-change: the full pre-commit-equivalent shell-test surface listed in the project profile's Build & test gates section passes.",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash bin/render-prompt-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/verdict-handler-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}
