@@ -1172,21 +1172,31 @@ else
 fi
 
 # Case 156-W3: non-path-shaped resolvers MUST NOT be written.
+# Negation list covers every non-path resolver enumerated in PROMPT_RESOLVERS
+# (bin/render-prompt.sh:41-58): issue_id, issue_id_lower, issue_title,
+# issue_description, date, slug, branch_name, dispatch_id, review_findings,
+# qa_findings. Bind the matching _RENDER_* values too so the negation is
+# non-vacuous — if the writer ever started persisting any of them, the
+# value would be present and grep would catch it. Brainstorm §D-004's
+# closed-allowlist contract is the load-bearing invariant.
 eng156_w3_sidecar="$sandbox/eng156-w3.tsv"
 run_resolver_body '
   _RENDER_ISSUE_ID="ENG-156W3"
   _RENDER_ISSUE_ID_LOWER="eng-156w3"
   _RENDER_TITLE="Adversarial title"
+  _RENDER_ISSUE_DESCRIPTION="long-form description"
   _RENDER_DATE="2026-06-10"
   _RENDER_SLUG="test-slug"
   _RENDER_BRANCH_NAME="feat/eng-156w3-foo"
   _RENDER_DISPATCH_ID="ENG-156W3-d0001"
+  _RENDER_REVIEW_FINDINGS="(prior review findings text)"
+  _RENDER_QA_FINDINGS="(prior qa findings text)"
   _RENDER_BRAINSTORM_FILE="docs/brainstorms/eng-156w3.md"
   _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W3/progress.md"
   _write_rendered_paths_sidecar "'"$eng156_w3_sidecar"'"
 ' 2>/dev/null
 _eng156_w3_ok=1
-for tok in issue_id issue_id_lower issue_title date slug branch_name dispatch_id; do
+for tok in issue_id issue_id_lower issue_title issue_description date slug branch_name dispatch_id review_findings qa_findings; do
   if grep -qE "^${tok}"$'\t' "$eng156_w3_sidecar"; then
     _eng156_w3_ok=0
     _eng156_w3_leak="$tok"
@@ -1194,7 +1204,7 @@ for tok in issue_id issue_id_lower issue_title date slug branch_name dispatch_id
   fi
 done
 if (( _eng156_w3_ok == 1 )); then
-  pass_at "ENG-156 W3: non-path resolvers (issue_id, date, slug, branch_name, dispatch_id, ...) NOT written"
+  pass_at "ENG-156 W3: non-path resolvers (issue_id, issue_id_lower, issue_title, issue_description, date, slug, branch_name, dispatch_id, review_findings, qa_findings) NOT written"
 else
   fail_at "ENG-156 W3: non-path leak" \
     "leaked token: $_eng156_w3_leak, contents=$(cat "$eng156_w3_sidecar" 2>/dev/null)"

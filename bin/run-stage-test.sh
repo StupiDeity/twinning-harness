@@ -6716,6 +6716,19 @@ else
   fail_at "ENG-156 B: paths attribution" \
     "expected /etc/hosts in paths (boundary-anchored), capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
 fi
+# Bash-classifier branch: `bash bin/secret-probe-lint.sh` has no file_path,
+# so _resolve_plan_json's tool_use_id → (file_path // command) map falls
+# back to the trailing whitespace-delimited token of the command (the
+# `split(" ") | last` heuristic at run-stage.sh:1120). A regression
+# breaking that branch would not be caught by the /etc/hosts assertion
+# above (different code path). OQ-6 calls bash-classifier attribution out
+# as best-effort that Phase B match + status.sh rely on.
+if grep -qE 'paths=([^=]*,)?bin/secret-probe-lint\.sh([ ,]|$)' "$STUB_DIR/metrics.capture"; then
+  pass_at "ENG-156 B: paths attribution captures bin/secret-probe-lint.sh via bash-classifier trailing-token heuristic"
+else
+  fail_at "ENG-156 B: bash-classifier path attribution" \
+    "expected bin/secret-probe-lint.sh in paths (boundary-anchored), capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
+fi
 
 # Case 156-B-bis: `claude --version` fork fails (non-zero exit / missing CLI)
 # → `claude_version=unknown` fallback. Pins Failure-Mode → Test-Map row 13.
