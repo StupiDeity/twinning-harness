@@ -444,8 +444,13 @@ _picker_predicate_ready() {
 # Cap discipline:
 #   - held items always included (they are already counted in
 #     held_count; their fifo_ts is the gather projection's updatedAt).
-#   - wait_recallable + inbox cap-guarded by held_count <
-#     max_concurrent. Mirrors today's pre-ENG-91 Pass 5/6 cap guards.
+#   - wait_recallable always included (ENG-178) — gated only on
+#     _picker_predicate_ready, NOT on held_count. A ready higher-stage
+#     wait must be able to outrank a lower-stage held.
+#   - inbox cap-guarded by held_count < max_concurrent — a LOSSLESS cost
+#     optimization (inbox stage_index=-1 can never outrank K helds), not a
+#     correctness gate. Per-tick dispatch is capped downstream by main()'s
+#     top-K (_max_decisions) truncation.
 #
 # Wait_recallable items are gated on _picker_predicate_ready before
 # entering the pool (ENG-91 D-003). When the predicate evaluates skip,
@@ -467,29 +472,46 @@ _picker_build_pool() {
     ]' <<<"$classified")"
 
   local wait_pool='[]' inbox_pool='[]'
-  if (( held_count < max_concurrent )); then
-    local wait_candidates wn wi=0
-    wait_candidates="$(jq -c '
-      [.[]
-       | select(.slot == "vacate" and (.wait_recallable // false) == true)
-      ]' <<<"$classified")"
-    wn="$(jq 'length' <<<"$wait_candidates")"
-    while (( wi < wn )); do
-      local wc wid wstage_label wstage_arg
-      wc="$(jq -c ".[$wi]" <<<"$wait_candidates")"
-      wid="$(jq -r '.identifier'  <<<"$wc")"
-      wstage_label="$(jq -r '.stage_label' <<<"$wc")"
-      wstage_arg="$(stage_arg_for_label "$wstage_label")"
-      if _picker_predicate_ready "$wid" "$wstage_arg"; then
-        local wc_aug
-        wc_aug="$(jq -c '. + {picker_source:"wait_recallable", fifo_ts:(.wait_progress_ts // "")}' <<<"$wc")"
-        wait_pool="$(jq -nc --argjson p "$wait_pool" --argjson x "$wc_aug" '$p + [$x]')"
-      else
-        log "picker: wait_recallable $wid skipped (predicate not ready)"
-      fi
-      wi=$((wi+1))
-    done
 
+  # ENG-178: wait_recallable candidates ALWAYS compete — they are NOT
+  # gated on held_count<max_concurrent. A predicate-ready higher-stage
+  # wait (e.g. an approved build awaiting merge) must be able to outrank a
+  # lower-stage held; the prior gate excluded the whole wait class from
+  # the pool whenever K issues were held, and the unified sort cannot
+  # promote a candidate that was never assembled. The per-tick dispatch
+  # cap is still enforced downstream by main()'s top-K (_max_decisions)
+  # truncation, and the predicate filter below still drops not-ready waits.
+  local wait_candidates wn wi=0
+  wait_candidates="$(jq -c '
+    [.[]
+     | select(.slot == "vacate" and (.wait_recallable // false) == true)
+    ]' <<<"$classified")"
+  wn="$(jq 'length' <<<"$wait_candidates")"
+  while (( wi < wn )); do
+    local wc wid wstage_label wstage_arg
+    wc="$(jq -c ".[$wi]" <<<"$wait_candidates")"
+    wid="$(jq -r '.identifier'  <<<"$wc")"
+    wstage_label="$(jq -r '.stage_label' <<<"$wc")"
+    wstage_arg="$(stage_arg_for_label "$wstage_label")"
+    if _picker_predicate_ready "$wid" "$wstage_arg"; then
+      local wc_aug
+      wc_aug="$(jq -c '. + {picker_source:"wait_recallable", fifo_ts:(.wait_progress_ts // "")}' <<<"$wc")"
+      wait_pool="$(jq -nc --argjson p "$wait_pool" --argjson x "$wc_aug" '$p + [$x]')"
+    else
+      log "picker: wait_recallable $wid skipped (predicate not ready)"
+    fi
+    wi=$((wi+1))
+  done
+
+  # ENG-178: inbox assembly STAYS gated on held_count<max_concurrent, but
+  # this is a lossless COST optimization, not a correctness gate. Inbox
+  # candidates carry stage_index=-1, strictly below every stage, so they
+  # can never outrank K held issues; skipping the list-issues-in-state
+  # network call when held is full changes no dispatch outcome. The WIP
+  # cap on inbox admission is still enforced by the unified sort + top-K
+  # (inbox wins a slot only when fewer than K higher-stage workable
+  # candidates exist).
+  if (( held_count < max_concurrent )); then
     local inbox_state
     inbox_state="$(config_get '.linear.native_states.inbox')"
     # `|| printf '[]'` rescues a list-issues-in-state failure (Linear API
