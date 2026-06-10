@@ -113,6 +113,26 @@ read_back="$(read_review_state ENG-503 2>/dev/null || printf '')"
   && ok "case-4 read returns empty when no comment exists" \
   || nope "case-4 empty" "got: $read_back"
 
+# ─── Case 5: append-only fixture — multiple last-review-state comments
+# across dispatches with distinct createdAt timestamps. Pins ENG-150's
+# claim that read_review_state's existing sort_by(.createdAt)|last is
+# correct against the new append-only ledger shape (no commentUpdate
+# rewrites; each update_review_state call lands a fresh comment). The
+# stub used in cases 2/3 stamps a single createdAt, so this case writes
+# the fixture directly to exercise the multi-comment sort path.
+jq -cn '[
+  {id:"c1", createdAt:"2026-05-01T10:00:00Z",
+   body:"<!-- pipeline-state: last-review-state -->\n{\"sha\":\"older\"}\n\n<!-- meta: dedup key=last-review-state/ENG-504/d0001 -->"},
+  {id:"c2", createdAt:"2026-05-02T10:00:00Z",
+   body:"<!-- pipeline-state: last-review-state -->\n{\"sha\":\"middle\"}\n\n<!-- meta: dedup key=last-review-state/ENG-504/d0002 -->"},
+  {id:"c3", createdAt:"2026-05-03T10:00:00Z",
+   body:"<!-- pipeline-state: last-review-state -->\n{\"sha\":\"newest\"}\n\n<!-- meta: dedup key=last-review-state/ENG-504/d0003 -->"}
+]' > "$COMMENTS_FIXTURE"
+read_back="$(read_review_state ENG-504)"
+[[ "$(jq -r '.sha' <<<"$read_back")" == "newest" ]] \
+  && ok "case-5 append-only: read picks latest-by-createdAt across 3 comments" \
+  || nope "case-5 latest-by-createdAt" "got: $(jq -r '.sha' <<<"$read_back")"
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

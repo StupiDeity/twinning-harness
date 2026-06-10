@@ -1073,6 +1073,9 @@ _eng150_capture_a3="$(mktemp -t eng150-a3.XXXXXX)"
 _resolve_issue_uuid() { printf 'uuid-mock-a3'; }
 linear_query() {
   local query="$1" variables="${2:-{\}}"
+  # commentUpdate arm is a tripwire: post-ENG-150 the chokepoint must
+  # NEVER emit commentUpdate. Any UPDATE row in $_eng150_capture_a3
+  # fails the AC #2 (append-only) assertion below.
   if [[ "$query" =~ commentUpdate ]]; then
     printf 'UPDATE %s\n' "$(jq -r '.body' <<<"$variables")" >> "$_eng150_capture_a3"
     printf '{"data":{"commentUpdate":{"success":true}}}\n'
@@ -1105,9 +1108,15 @@ rm -f "$_eng150_capture_a3"
 # A-004: same dispatch retries with BYTE-IDENTICAL body and same sig →
 # TWO commentCreate calls (hash dedup skipped on --sig per Task 1's
 # D-007 rule).
+export PIPELINE_DRY_RUN=0  # explicit — do not inherit from A-003 (ENG-150 review nit)
 _eng150_capture_a4="$(mktemp -t eng150-a4.XXXXXX)"
 linear_query() {
   local query="$1" variables="${2:-{\}}"
+  # commentUpdate arm is a tripwire: post-ENG-150 the chokepoint must
+  # NEVER emit commentUpdate. The byte-identical-body path below would
+  # historically have routed through commentUpdate (hash dedup); D-007's
+  # --sig skip makes it route through commentCreate instead. Any UPDATE
+  # row here would silently mask a regression.
   if [[ "$query" =~ commentUpdate ]]; then
     printf 'UPDATE %s\n' "$(jq -r '.body' <<<"$variables")" >> "$_eng150_capture_a4"
     printf '{"data":{"commentUpdate":{"success":true}}}\n'
@@ -1176,9 +1185,12 @@ else
 fi
 unset _eng150_a5_fixture _eng150_a5_latest_id _eng150_a5b_fixture _eng150_a5b_id
 
-# A-006: add_comment called WITHOUT --sig → behaviour unchanged (no
-# dedup marker appended; lane fence + dispatch marker inject + hash
-# dedup all run).  Pins that --sig is opt-in.
+# A-006: add_comment called WITHOUT --sig → no dedup marker appended,
+# dispatch marker still injected.  Pins that --sig is opt-in for the
+# append-only ledger.  Hash dedup is not exercised here (the stub
+# fixture returns empty nodes, so the dedup branch could not fire
+# regardless); A-004 covers the --sig hash-dedup-skip path.
+export PIPELINE_DRY_RUN=0  # explicit — do not inherit from A-003 (ENG-150 review nit)
 _eng150_capture_a6="$(mktemp -t eng150-a6.XXXXXX)"
 linear_query() {
   local query="$1" variables="${2:-{\}}"
@@ -1257,7 +1269,7 @@ _eng150_a8_hits="$(grep -rln \
   "$_eng150_a8_root"/bin/*.sh \
   "$_eng150_a8_root/AGENT_PROMPTS.md" \
   "$_eng150_a8_root/CLAUDE.md" \
-  2>/dev/null | grep -v -- '-test\.sh$' | grep -v 'docs/' || true)"
+  2>/dev/null | grep -v -- '-test\.sh$' || true)"
 if [[ -z "$_eng150_a8_hits" ]]; then
   pass_at "ENG-150 A-008 forensic: zero hits for retired symbol in production bin/ + AGENT_PROMPTS.md + CLAUDE.md"
 else
