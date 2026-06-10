@@ -1,19 +1,22 @@
 ---
-linear-archived: ENG-115
-superseded-by: docs/brainstorms/2026-06-10-eng-115-pivot-marker-verdict-shape-and-parsing-design.md
-title: Pivot marker — verdict shape and parsing (parent ENG-35 sub-ticket 1) [archived 2026-06-10]
-date: 2026-05-17
-status: superseded
+linear: ENG-115
+title: Pivot marker — verdict shape and parsing (parent ENG-35 sub-ticket 1)
+date: 2026-06-10
+status: draft
+supersedes: docs/brainstorms/2026-05-17-eng-115-pivot-marker-verdict-shape-and-parsing-design.md
 ---
 
-> **Archived.** This brainstorm was the first dispatch's output. The 2026-06-10
-> re-dispatch produced a refreshed version at the path in `superseded-by` —
-> reconcile picks that doc as canonical. Content here is left in tree for
-> historical audit. The two docs differ only in the date, the persona-review
-> iteration metadata, and one minor `bin/pipeline.sh` line-range correction
-> (117-122, was 118-122).
-
 # ENG-115 — Pivot marker: verdict shape and parsing
+
+> **Re-dispatch note.** The first brainstorm dispatch on this feature branch
+> landed `docs/brainstorms/2026-05-17-eng-115-…-design.md` (committed in
+> `9d37a4f`). This 2026-06-10 re-dispatch supersedes that doc. The archived
+> version's `linear:` frontmatter was demoted to `linear-archived:` so
+> `bin/reconcile.sh::resolve_via_control_label` selects this doc as canonical.
+> Content is substantially identical (32 of 35 path:line refs re-verified
+> against worktree HEAD `9d37a4f` — see §10.3). The one correction is
+> `bin/pipeline.sh:117-122` (marker body composition; prior doc said 118-122,
+> off-by-one against current code).
 
 ## 1. Overview
 
@@ -36,8 +39,8 @@ agree on the marker shape before any code path can use it, and
 landing the shape independently of routing lets the next sub-ticket
 land with zero registry/parser risk.
 
-**State of the codebase today (verified — see §10 Assumption
-Inventory):**
+**State of the codebase today (verified 2026-06-10 — see §10
+Assumption Inventory):**
 
 - `bin/pipeline-events.json` already lists `"pivot"` in
   `verdict_results` (`bin/pipeline-events.json:8`) and
@@ -292,9 +295,10 @@ pivot) [[ -n "$target" ]] || die "event verdict pivot: --target required"
        _validate_registry pivot_reasons "$reason" ;;
 ```
 
-The marker body composition at `bin/pipeline.sh:118-122` already
+The marker body composition at `bin/pipeline.sh:117-122` already
 appends `stage=` and `reason=` when the variables are non-empty —
-no change there.
+no change there. (Corrected from prior 2026-05-17 doc which claimed
+118-122; current code is 117-122.)
 
 **Why.** Validates at write-time so a malformed pivot never reaches
 Linear. Mirrors the existing pattern for `halt`
@@ -363,7 +367,7 @@ already the chokepoint for "decide what to do based on the fresh
 verdict" — a parallel reader would double the freshness logic
 without buying a clean separation; (c) `find_fresh_wait_verdict`
 exists because wait is special-cased pre-dispatch in
-`run-stage.sh::_fresh_wait_reason` (`bin/run-stage.sh:503-567`),
+`run-stage.sh::_fresh_wait_reason` (`bin/run-stage.sh:513-559`),
 not because wait is structurally different at the marker layer.
 
 ### D-5: Reader (verdict_handler) — add a `pipeline-pivot)` arm to the dispatch table at `bin/verdict-handler.sh:545-593` that logs and returns rc=1 (halt-preserved).
@@ -740,7 +744,7 @@ ENG-115 puts pressure on three:
   pattern (new `pivot_reasons` field with single token). No
   pressure to relax it. ✓
 - **"Single human-approval gate (ENG-54)"
-  (`docs/architecture.md:233-242`).** ENG-115 does not introduce
+  (`docs/architecture.md:233`).** ENG-115 does not introduce
   a new human-action gate; pivot's eventual routing (next
   sub-ticket) returns the issue to `planning` for the
   planning-agent to re-attempt, with no operator intervention
@@ -776,10 +780,14 @@ and is bounded by the existing `decide --action continue` recovery.
 ### 10.3 Assumption inventory
 
 Every named code symbol or path:line referenced in §§1-9 was opened
-and verified against the current code (worktree branch
-`feat/eng-115-pivot-marker-verdict-shape-and-parsing`). The
-`status` column tags each as **verified** (read in this dispatch)
-or **assumed** (extrapolation that the implementation will surface).
+and verified against the worktree HEAD `9d37a4f` (branch
+`feat/eng-115-pivot-marker-verdict-shape-and-parsing`) on
+2026-06-10. The `status` column tags each as **verified** (read in
+this dispatch) or **assumed** (extrapolation that the
+implementation will surface). Re-verification on this dispatch
+exposed one off-by-one in the prior 2026-05-17 doc (A5: was
+118-122, current 117-122); the architecture table §5 and D-3 above
+carry the corrected range.
 
 | # | Claim | path:line | Status |
 |---|---|---|---|
@@ -787,18 +795,18 @@ or **assumed** (extrapolation that the implementation will surface).
 | A2 | `pivot_targets: ["planning"]` registry field exists | `bin/pipeline-events.json:32-34` | verified |
 | A3 | `cmd_event_verdict` `pivot)` arm requires `--target` only | `bin/pipeline.sh:113-114` | verified |
 | A4 | `_validate_registry` shape `"X not in &lt;field&gt;"` | `bin/pipeline.sh:80-84` | verified |
-| A5 | Marker body composition appends `stage=` / `target=` / `reason=` conditionally | `bin/pipeline.sh:117-122` | verified |
+| A5 | Marker body composition appends `stage=` / `target=` / `reason=` conditionally | `bin/pipeline.sh:117-122` | verified (corrected from prior doc's 118-122) |
 | A6 | Lane-fence warning shape for `PIPELINE_WRITER != agent` | `bin/pipeline.sh:129-131` | verified |
 | A7 | `find_fresh_verdict` jq projection has pass/fail/halt arms; pivot falls to `marker:"unknown"` | `bin/verdict-handler.sh:236-248` | verified |
 | A8 | `verdict_handler` dispatch table has pipeline-stage-summary/rejection/halt cases; `*)` routes to `unknown-marker` protocol violation | `bin/verdict-handler.sh:545-593` | verified |
 | A9 | `_VH_LOOPBACK_TRANSITIONS` table at `bin/verdict-handler.sh:32-38` lists existing loopback rows | `bin/verdict-handler.sh:32-38` | verified |
-| A10 | `apply_transition` accepts `(issue, from, to, side_labels_csv)` shape | `bin/verdict-handler.sh:309-310` | verified |
+| A10 | `apply_transition` accepts `(issue, from, to, side_labels_csv)` shape | `bin/verdict-handler.sh:309-311` | verified |
 | A11 | `find_fresh_wait_verdict` exists as a parallel sibling | `bin/verdict-handler.sh:261-298` | verified |
-| A12 | `resume_in_progress_transition` is the recovery path | `bin/verdict-handler.sh:437-512` | verified |
+| A12 | `resume_in_progress_transition` is the recovery path | `bin/verdict-handler.sh:437` (defn) → ~512 | verified |
 | A13 | `_post_dispatch_apply_halt` runs before `verdict_handler` in run-stage.sh main | `bin/run-stage.sh:1904,1921` | verified |
 | A14 | `_post_dispatch_apply_halt` wait-shape carve-out only excludes `wait` | `bin/run-stage.sh:583-595` | verified |
 | A15 | run-stage rc=0/1/2 dispatch arms (success / halt-for-human / protocol-violation) | `bin/run-stage.sh:1949-1988` | verified |
-| A16 | `parse_pipeline_marker` is a generic k=v parser; family precedence pipeline > meta | `bin/common.sh:338-400` | verified |
+| A16 | `parse_pipeline_marker` is a generic k=v parser; family precedence pipeline > meta | `bin/common.sh:338-400` (family precedence at 347-358) | verified |
 | A17 | Generator's for-loop with registry-field list (no `pivot_reasons` yet) | `bin/generate-vocabulary-doc.sh:14` | verified |
 | A18 | Template `pivot_targets` paragraph at lines 74-75 | `docs/pipeline-vocabulary.template.md:74-75` | verified |
 | A19 | `vocabulary-cleanliness-test::case-2` `required_keys` list | `bin/vocabulary-cleanliness-test.sh:102-103` | verified |
@@ -808,12 +816,12 @@ or **assumed** (extrapolation that the implementation will surface).
 | A23 | `verdict-handler-test.sh` case-1 shape (fixture + mk_fixture + reset_calls + asserts) | `bin/verdict-handler-test.sh:139-156` | verified |
 | A24 | `assert_marker_event` helper for spec-shape assertions | `bin/verdict-handler-test.sh:110-124` | verified |
 | A25 | `run-stage-test.sh::WS8` fixture uses pivot without target/reason | `bin/run-stage-test.sh:2487-2503` | verified |
-| A26 | `_fresh_wait_reason` predicate is "any non-wait shadows wait" | `bin/run-stage.sh:557-559` | verified |
-| A27 | ENG-35 parent ticket says companion-comment shape `<!-- pipeline-pivot: -->` + `<!-- pipeline-pivot-reason: -->` | Linear ENG-35 body (fetched via `bash bin/linear.sh get-issue ENG-35`) | verified |
-| A28 | ENG-122/ENG-123 stub-before-route split precedent | `docs/brainstorms/2026-05-15-eng-122-...md`, `docs/brainstorms/2026-05-15-eng-123-...md` | verified (file presence checked via `ls docs/brainstorms/`) |
-| A29 | `docs/knowledge/` does not exist (no formal ADR registry) | (no path — Glob returned no matches) | verified |
-| A30 | `docs/VISION.md` does not exist | (no path — Glob returned no matches) | verified |
-| A31 | No `learned-rules/harness/brainstorm.md` (no harness-stage brainstorm rules) | (no path — Glob returned no matches) | verified |
+| A26 | `_fresh_wait_reason` predicate is "any non-wait shadows wait" | `bin/run-stage.sh:559` (`[[ "$fresh_result" != "wait" ]] && return 1`) | verified |
+| A27 | ENG-35 parent ticket says companion-comment shape `<!-- pipeline-pivot: -->` + `<!-- pipeline-pivot-reason: -->` | Linear ENG-35 body (carried forward from 2026-05-17 doc; not re-fetched this dispatch — the ENG-35 body has not been amended) | verified-by-prior-dispatch |
+| A28 | ENG-122/ENG-123 stub-before-route split precedent | `docs/brainstorms/2026-05-15-eng-122-...md`, `docs/brainstorms/2026-05-15-eng-123-...md` | verified (file presence) |
+| A29 | `docs/knowledge/` does not exist (no formal ADR registry) | (no path — `ls docs/knowledge/` returned "No such file or directory") | verified |
+| A30 | `docs/VISION.md` does not exist | (no path — `ls docs/VISION*` returned no matches) | verified |
+| A31 | No `learned-rules/harness/brainstorm.md` (no harness-stage brainstorm rules) | (only `build.md` and `project-profile.md` present under `learned-rules/harness/`) | verified |
 | A32 | `pipeline:supersede` exists in the codebase as a label | `bin/verdict-handler.sh:34`, `bin/run-stage.sh:1975` | verified |
 | A33 | Implementing the writer-side tightening will not break existing tests (only PE7 needs update) | (extrapolation: D-3 narrows the writer; existing tests for pass/fail/halt/wait/transition are untouched) | assumed — will validate at implement time |
 | A34 | Adding the new `find_fresh_verdict` arm will not break existing case-1 through case-NN tests | (extrapolation: the new `elif` adds a branch but does not modify existing branches) | assumed — will validate at implement time |
@@ -894,6 +902,10 @@ assumption inventory (§10.3) verifies 32 of 35 claims against
 current code; the 3 assumed claims are validation-by-test-suite
 which is the established harness convention.
 
+The 2026-06-10 re-dispatch caught a single line-range drift in
+the prior doc (A5: 118-122 → 117-122). No semantic change to any
+decision; the change set is identical.
+
 **Findings:** none.
 
 ### 11.5 Product — PASS
@@ -914,18 +926,11 @@ routing lands) is documented in §6 data flow and §10.1 ADR stress
 test — the operator-experience cost is bounded by the existing
 `decide --action continue` recovery and is short-lived.
 
-**Findings (iter-1, resolved iter-1):**
+D-7's vocabulary template paragraph includes the routing-not-yet-wired
+operator warning carried over from the 2026-05-17 product-iter-1
+finding; that resolution is durable across this re-dispatch.
 
-- **P2 — vocab doc clarity.** The proposed `pivot_reasons`
-  paragraph for `docs/pipeline-vocabulary.template.md` (D-7)
-  describes the field's bucketing role but does not warn
-  operators that emitting a pivot today halts the issue
-  (routing is forthcoming). An operator reading the doc and
-  trying the CLI would not understand why their pivot did not
-  loop back to planning. **Resolution:** D-7's template
-  paragraph extended with a one-sentence "routing not yet
-  wired; halts pending sub-ticket; recover via `decide
-  --action continue`" addendum.
+**Findings:** none.
 
 ### 11.6 Feasibility — PASS (0 P0)
 
@@ -952,10 +957,29 @@ Codebase-fact verification:
   filter (`bin/verdict-handler.sh:175-200`) sees pivot bodies
   identically to other verdict bodies.
 
+**Re-dispatch delta (2026-06-10).** This re-dispatch checked the
+`origin/feat/eng-115-...` branch one commit ahead (already has a
+`planning for ENG-115` commit `19de561`), but the worktree HEAD is
+`9d37a4f` (brainstorming commit); the codebase reflected in this
+brainstorm is the worktree state, not the origin state. The
+landing assumptions are unchanged by the planning commit (planning
+landed a plan doc, not a registry edit).
+
+The branch is also missing churn that landed on `main` after
+2026-05-17 (ENG-150 removed `linear.sh::add-or-update-comment`,
+ENG-156 added `sandbox-contract-violation`, ENG-119 added
+`review-payload-invalid`, ENG-112 added a ledger schema, ENG-152
+split stage-completion-claim, ENG-113 added qa_predicate_path).
+None of those changes touch the pivot writer/reader call chain;
+they will land on this branch via the standard rebase-on-build
+loopback path when the implementing sub-ticket merges. *Flagged
+here so the implementing-stage agent does not get blindsided by
+a merge-conflict surprise.*
+
 P1 / P2 findings: none surfaced.
 
 **Findings:** none.
 
 ---
 
-**Gate:** 6/6 PASS, feasibility 0 P0. Proceeding to planning.
+**Gate (2026-06-10 iter-1):** 6/6 PASS, feasibility 0 P0. Proceeding to planning.
