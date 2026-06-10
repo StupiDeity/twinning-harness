@@ -1,0 +1,198 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-113",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Land bin/verify-qa.sh runner CLI + JSON predicate contract; QA agent emits qa-predicate-<ident>.json at dispatch start; malformed/incomplete/missing predicates halt via qa-predicate-invalid (exit codes 36/37/38).",
+      "pass_criteria": [
+        {
+          "kind": "file_exists",
+          "path": "bin/verify-qa.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/verify-qa-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^qa_predicate_path\\(\\) \\{",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^_validate_pass_criterion\\(\\) \\{",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "36\\) printf 'qa-predicate-malformed'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "37\\) printf 'qa-predicate-incomplete'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "38\\) printf 'qa-predicate-missing'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "export -f .*qa_predicate_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "export -f .*_validate_pass_criterion",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "qa_predicate_path=_resolve_qa_predicate_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "^_resolve_qa_predicate_path\\(\\) \\{",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_QA_PREDICATE_PATH=\"\\$\\(qa_predicate_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "qa-predicate-invalid",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/dispatch.sh",
+          "pattern": "Bash\\(bash bin/verify-qa\\.sh:\\*\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/dispatch.sh",
+          "pattern": "Bash\\(bash \\.pipeline/bin/verify-qa\\.sh:\\*\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Emit verification predicate",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{qa_predicate_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "Case O",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "qa-predicate-ENG-",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-113",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "Emit verification predicate",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "bash bin/verify-qa-test\\.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "Bash\\(bash bin/verify-qa-test\\.sh:\\*\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/plans/2026-06-10-eng-113-qa-split-extract-verification-predicate-from-prompt-body.md"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/verify-qa-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/plan-schema-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-rc0-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/dispatch-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/common-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/profile-allowlist-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
