@@ -40,9 +40,9 @@ are implicit and not declared here.
   - `Bash(bash bin/entry-conditions-test.sh:*)`
   - `Bash(bash bin/halt-sprawl-adversarial-test.sh:*)`
   - `Bash(bash bin/halt-sprawl-test.sh:*)`
-  - `Bash(bash bin/install-launchd-test.sh:*)`
   - `Bash(bash bin/init-sh-validator-adversarial-test.sh:*)`
   - `Bash(bash bin/init-sh-validator-test.sh:*)`
+  - `Bash(bash bin/install-launchd-test.sh:*)`
   - `Bash(bash bin/linear-test.sh:*)`
   - `Bash(bash bin/metrics-test.sh:*)`
   - `Bash(bash bin/mutex-test.sh:*)`
@@ -89,9 +89,9 @@ are implicit and not declared here.
   - `Bash(bash bin/entry-conditions-test.sh:*)`
   - `Bash(bash bin/halt-sprawl-adversarial-test.sh:*)`
   - `Bash(bash bin/halt-sprawl-test.sh:*)`
-  - `Bash(bash bin/install-launchd-test.sh:*)`
   - `Bash(bash bin/init-sh-validator-adversarial-test.sh:*)`
   - `Bash(bash bin/init-sh-validator-test.sh:*)`
+  - `Bash(bash bin/install-launchd-test.sh:*)`
   - `Bash(bash bin/linear-test.sh:*)`
   - `Bash(bash bin/metrics-test.sh:*)`
   - `Bash(bash bin/mutex-test.sh:*)`
