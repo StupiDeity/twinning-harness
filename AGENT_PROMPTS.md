@@ -628,7 +628,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
   - **product** — plan actually delivers what the Linear issue asked for, in language
     the user would recognise. Flag plans that solve an adjacent technical problem.
 
-## Completion checklist (ordered — do every step in order, and do NOT exit before step 7)
+## Completion checklist (ordered — do every step in order, and do NOT exit before step 8)
 
 1. **Write the plan doc** at `docs/plans/{date}-{issue_id_lower}-{slug}.md` with required YAML frontmatter
    (`linear`, `date`, `topic`). The `{issue_id_lower}` token in the basename mirrors the §2 directive
