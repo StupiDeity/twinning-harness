@@ -4770,6 +4770,169 @@ else
   fail_at "ENG-179 INT-U: unexpected halt comment" "capture=$(cat "$CAPTURE_FILE")"
 fi
 
+# ─── ENG-179 QA adversarial tests ───────────────────────────────────────────────
+# Tests NOT in the plan's Failure Mode → Test Map. Added by QA agent.
+
+# QA-ADV-1: multiple .md files committed in HEAD — tail -1 picks the latest;
+# the schema validator's issue_id check re-asserts ident ownership.
+printf '\n--- ENG-179 QA-ADV-1: multiple committed .md files → picks latest, rc=0 ---\n'
+reset_capture
+ENG179ADV1_WT="$(issue_dir ENG-17911)/worktree"
+rm -rf "$ENG179ADV1_WT"
+mkdir -p "$ENG179ADV1_WT/docs/plans"
+( cd "$ENG179ADV1_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+_ENG179_YESTERDAY="$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)"
+printf 'older plan\n' \
+  > "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.md"
+_eng122_write_valid_json \
+  "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.json" "ENG-17911"
+printf 'newer plan\n' \
+  > "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.md"
+_eng122_write_valid_json \
+  "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.json" "ENG-17911"
+( cd "$ENG179ADV1_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "two plan versions for ENG-17911" ) >/dev/null 2>&1
+_eng179adv1_rc=0
+_validate_plan_contract ENG-17911 2>/dev/null || _eng179adv1_rc=$?
+(( _eng179adv1_rc == 0 )) \
+  && pass_at "ENG-179 QA-ADV-1: multiple committed plans → picks latest, rc=0" \
+  || fail_at "ENG-179 QA-ADV-1: multiple committed plans" "expected rc=0, got rc=$_eng179adv1_rc"
+
+# QA-ADV-2: plan for a DIFFERENT ident in HEAD — ident boundary guard.
+# ENG-17912 plan should NOT match ENG-17913's validator call.
+printf '\n--- ENG-179 QA-ADV-2: wrong-ident plan in HEAD → rc=35 ---\n'
+reset_capture
+ENG179ADV2_WT="$(issue_dir ENG-17913)/worktree"
+rm -rf "$ENG179ADV2_WT"
+mkdir -p "$ENG179ADV2_WT/docs/plans"
+( cd "$ENG179ADV2_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+printf 'wrong ident plan\n' \
+  > "$ENG179ADV2_WT/docs/plans/${_ENG122_TODAY}-eng-17912-test.md"
+_eng122_write_valid_json \
+  "$ENG179ADV2_WT/docs/plans/${_ENG122_TODAY}-eng-17912-test.json" "ENG-17912"
+( cd "$ENG179ADV2_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for wrong ident ENG-17912" ) >/dev/null 2>&1
+_eng179adv2_rc=0
+_validate_plan_contract ENG-17913 2>/dev/null || _eng179adv2_rc=$?
+(( _eng179adv2_rc == 35 )) \
+  && pass_at "ENG-179 QA-ADV-2: wrong-ident plan → rc=35 (ident boundary)" \
+  || fail_at "ENG-179 QA-ADV-2: wrong-ident plan" "expected rc=35, got rc=$_eng179adv2_rc"
+
+# QA-ADV-3: plan .md with no ISO-date prefix in HEAD → rc=35.
+# Filename like "eng-17914-test.md" lacks required [0-9]{4}-[0-9]{2}-[0-9]{2}- prefix.
+printf '\n--- ENG-179 QA-ADV-3: plan .md without ISO-date prefix → rc=35 ---\n'
+reset_capture
+ENG179ADV3_WT="$(issue_dir ENG-17914)/worktree"
+rm -rf "$ENG179ADV3_WT"
+mkdir -p "$ENG179ADV3_WT/docs/plans"
+( cd "$ENG179ADV3_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+printf 'no date prefix plan\n' \
+  > "$ENG179ADV3_WT/docs/plans/eng-17914-test.md"
+_eng122_write_valid_json \
+  "$ENG179ADV3_WT/docs/plans/eng-17914-test.json" "ENG-17914"
+( cd "$ENG179ADV3_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan without date prefix for ENG-17914" ) >/dev/null 2>&1
+_eng179adv3_rc=0
+_validate_plan_contract ENG-17914 2>/dev/null || _eng179adv3_rc=$?
+(( _eng179adv3_rc == 35 )) \
+  && pass_at "ENG-179 QA-ADV-3: no-ISO-date prefix → rc=35" \
+  || fail_at "ENG-179 QA-ADV-3: no-ISO-date prefix" "expected rc=35, got rc=$_eng179adv3_rc"
+
+# QA-ADV-4: .json in HEAD but .md NOT committed → rc=35.
+# Reversed-missing case: only the sibling .json is committed, no .md.
+# The primary .md search must fail and halt before reaching the .json check.
+printf '\n--- ENG-179 QA-ADV-4: only .json committed (no .md) → rc=35 ---\n'
+reset_capture
+ENG179ADV4_WT="$(issue_dir ENG-17915)/worktree"
+rm -rf "$ENG179ADV4_WT"
+mkdir -p "$ENG179ADV4_WT/docs/plans"
+( cd "$ENG179ADV4_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+# Only commit the .json; deliberately omit the .md
+_eng122_write_valid_json \
+  "$ENG179ADV4_WT/docs/plans/${_ENG122_TODAY}-eng-17915-test.json" "ENG-17915"
+( cd "$ENG179ADV4_WT" \
+  && git add "docs/plans/${_ENG122_TODAY}-eng-17915-test.json" \
+  && git commit --quiet -m "only json, no md" ) >/dev/null 2>&1
+_eng179adv4_rc=0
+_validate_plan_contract ENG-17915 2>/dev/null || _eng179adv4_rc=$?
+(( _eng179adv4_rc == 35 )) \
+  && pass_at "ENG-179 QA-ADV-4: only .json (no .md) in HEAD → rc=35" \
+  || fail_at "ENG-179 QA-ADV-4: only .json in HEAD" "expected rc=35, got rc=$_eng179adv4_rc"
+if grep -qF 'Defect: plan-contract-missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-179 QA-ADV-4: halt comment carries Defect: plan-contract-missing"
+else
+  fail_at "ENG-179 QA-ADV-4: Defect: plan-contract-missing absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# QA-ADV-5: empty git repo (git init but NO commit, empty HEAD) → rc=35.
+# `git ls-tree -r HEAD` exits non-zero when HEAD doesn't exist; `2>/dev/null`
+# silences it; plan_md ends up empty → correct fail-safe halt. Untested prior.
+printf '\n--- ENG-179 QA-ADV-5: empty HEAD (no commits) → rc=35 fail-safe ---\n'
+reset_capture
+ENG179ADV5_WT="$(issue_dir ENG-17916)/worktree"
+rm -rf "$ENG179ADV5_WT"
+mkdir -p "$ENG179ADV5_WT/docs/plans"
+( cd "$ENG179ADV5_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t ) >/dev/null 2>&1
+# Deliberately no commit — HEAD does not exist (orphan state).
+printf 'stub plan\n' \
+  > "$ENG179ADV5_WT/docs/plans/${_ENG122_TODAY}-eng-17916-test.md"
+# File exists on disk but HEAD is empty → git ls-tree silently returns nothing.
+_eng179adv5_rc=0
+_validate_plan_contract ENG-17916 2>/dev/null || _eng179adv5_rc=$?
+(( _eng179adv5_rc == 35 )) \
+  && pass_at "ENG-179 QA-ADV-5: empty HEAD → rc=35 (fail-safe)" \
+  || fail_at "ENG-179 QA-ADV-5: empty HEAD" "expected rc=35, got rc=$_eng179adv5_rc"
+
+# QA-ADV-6: plan .md in a subdirectory of docs/plans/ → rc=35.
+# Pattern ^docs/plans/[0-9]{4}-... requires the date immediately after
+# docs/plans/; a subdir path like docs/plans/subdir/YYYY-... won't match.
+# Pin this so a future loosening of the pattern is caught.
+printf '\n--- ENG-179 QA-ADV-6: plan in docs/plans/subdir/ → rc=35 (pattern rejects) ---\n'
+reset_capture
+ENG179ADV6_WT="$(issue_dir ENG-17917)/worktree"
+rm -rf "$ENG179ADV6_WT"
+mkdir -p "$ENG179ADV6_WT/docs/plans/subdir"
+( cd "$ENG179ADV6_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+printf 'subdir plan\n' \
+  > "$ENG179ADV6_WT/docs/plans/subdir/${_ENG122_TODAY}-eng-17917-test.md"
+_eng122_write_valid_json \
+  "$ENG179ADV6_WT/docs/plans/subdir/${_ENG122_TODAY}-eng-17917-test.json" "ENG-17917"
+( cd "$ENG179ADV6_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan in subdir for ENG-17917" ) >/dev/null 2>&1
+_eng179adv6_rc=0
+_validate_plan_contract ENG-17917 2>/dev/null || _eng179adv6_rc=$?
+(( _eng179adv6_rc == 35 )) \
+  && pass_at "ENG-179 QA-ADV-6: plan in subdir → rc=35 (pattern rejects subdir paths)" \
+  || fail_at "ENG-179 QA-ADV-6: plan in subdir" "expected rc=35, got rc=$_eng179adv6_rc"
+
 # ─── ENG-119: _validate_review_payload integration tests (INT1-INT5 + INT_*) ────
 # TDD tests for the review-payload validator (Task 4 of ENG-119).
 # Source-and-stub: STUB_DIR/review-payload-schema.sh delegates to the real validator.
