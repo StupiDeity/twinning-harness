@@ -1091,6 +1091,19 @@ assert_eq "ENG-119 exit-37: review-payload-incomplete" \
 assert_eq "ENG-119 exit-38: review-payload-missing" \
   "review-payload-missing" "$(failure_outcome_for_exit 38)"
 
+# ─── ENG-113: failure_outcome_for_exit — exit codes 39/40/41 ──────────
+# Verifies that qa-predicate exit codes 39, 40, 41 are mapped in the
+# failure_outcome_for_exit table. ENG-113 was originally allocated to
+# 36/37/38 but ENG-119 merged first and claimed those slots; ENG-113
+# moved to the next free contiguous block (review finding, 2026-06-10).
+printf '\n--- ENG-113: failure_outcome_for_exit codes 39/40/41 ---\n'
+assert_eq "ENG-113 exit-39: qa-predicate-malformed" \
+  "qa-predicate-malformed" "$(failure_outcome_for_exit 39)"
+assert_eq "ENG-113 exit-40: qa-predicate-incomplete" \
+  "qa-predicate-incomplete" "$(failure_outcome_for_exit 40)"
+assert_eq "ENG-113 exit-41: qa-predicate-missing" \
+  "qa-predicate-missing" "$(failure_outcome_for_exit 41)"
+
 # ─── ENG-122 review Minor 1: _strip_code_blocks_and_spans tilde fences ──
 # _post_plan_contract_halt wraps agent-controlled output in ~~~ fences
 # (Linear renders tilde fences as code blocks). Without this guard a
