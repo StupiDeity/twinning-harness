@@ -556,6 +556,19 @@ else
        "literal 'NEWLY CREATED' or path 'learned-rules/<slug>/project-profile.md' missing from §2 — has the add-side rule been deleted or relocated?"
 fi
 
+# ─── ENG-157: §2 carries System-invariants section directive ──────────
+# Plan agent's required-sections list must enumerate "## System invariants"
+# AND the feasibility persona must carry the verified_by: resolution rule.
+# Pin both load-bearing literals so a future edit that deletes the rule
+# trips the gate.
+if printf '%s\n' "$s2" | grep -qF '## System invariants' && \
+   printf '%s\n' "$s2" | grep -qF 'verified_by:'; then
+  ok "§2 ENG-157: System-invariants directive present (heading + verified_by: token)"
+else
+  nope "§2 ENG-157: System-invariants directive present" \
+       "literal '## System invariants' or 'verified_by:' missing from §2 — has the directive been deleted or relocated?"
+fi
+
 # ─── ENG-50 / ENG-54: §5 invariants ───────────────────────────────────
 s5="$(section_body "## 5. Review Agent")"
 
