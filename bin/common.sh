@@ -298,7 +298,10 @@ assert_no_write_to_path() {
 # where <gate> ∈ {smoke, typecheck, lint, test}.
 validate_init_sh() {
   local path="$1"
-  [[ -f "$path" ]] || { printf 'init-sh-missing: %s\n' "$path"; return 41; }
+  if [[ ! -f "$path" ]]; then
+    printf 'init-sh-missing: %s\n' "$path"
+    return 41
+  fi
   if ! bash -n "$path" 2>/dev/null; then
     printf 'init-sh-malformed: bash -n failed for %s\n' "$path"
     return 39

@@ -332,30 +332,25 @@ _render_and_capture_stream() {
       return 29
     fi
   done
-  # ENG-106: filesystem detective — confirm the plan agent appended
-  # one well-formed progress.md H2 entry stamped with the current
-  # PIPELINE_DISPATCH_ID. Stage-gated to "planning" only (other stages
-  # have no contractual writer yet — see brainstorm OQ-3). Unlike the
-  # transcript-scan detectives above, this is a FILESYSTEM check
-  # (brainstorm D-005). Helper defined directly below this function;
-  # writes its diagnostic to $violation_file and returns 0 / 31.
+  # ENG-106 + ENG-125: filesystem detectives — plan agent must produce
+  # progress.md (ENG-106) and init.sh (ENG-125). Stage-gated to "planning"
+  # only (brainstorm OQ-3); other stages have no contractual writer yet.
+  # Both are FILESYSTEM checks (brainstorm D-005). Helpers defined directly
+  # below this function; each writes its diagnostic to $violation_file and
+  # returns 0 / typed rc (31 for progress-md, 39/40/41 for init.sh).
   #
   # M2 guard: skip if no result event so rc=124 (gtimeout) wins; with result
-  # event, missing progress.md is a real protocol violation — rc=31 is correct
-  # even when SIGKILL races post-result (agent completed its turn).
+  # event, a missing/malformed artifact is a real protocol violation — rc
+  # is correct even when SIGKILL races post-result (agent completed its turn).
+  #
+  # Ordering: progress.md detective runs FIRST and short-circuits; init.sh
+  # detective is never reached when both fail. Pinned end-to-end by
+  # bin/dispatch-test.sh::IS5.
   if [[ "$stage" == "planning" && -n "$last_result" ]]; then
     if ! _assert_progress_md_entry "$issue_dir" "$violation_file" "$stage"; then
       return 31
     fi
-  fi
-  # ENG-125: plan stage emits $issue_dir/init.sh. Same SIGKILL-vs-result
-  # discipline as progress-md detective above.
-  if [[ "$stage" == "planning" && -n "$last_result" ]]; then
-    local _isf_rc=0
-    _assert_init_sh_well_formed "$issue_dir" "$violation_file" "$stage" || _isf_rc=$?
-    if (( _isf_rc != 0 )); then
-      return "$_isf_rc"
-    fi
+    _assert_init_sh_well_formed "$issue_dir" "$violation_file" "$stage" || return $?
   fi
 }
 
