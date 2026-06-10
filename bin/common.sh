@@ -287,6 +287,32 @@ assert_no_write_to_path() {
   assert_no_tool_with_input_path "$transcript" "Write" "file_path" "$forbidden_path_suffix"
 }
 
+# ENG-125: validate $issue_dir/init.sh shape. Returns:
+#   0  — well-formed (file exists, bash -n clean, all 4 shape markers present)
+#   39 — malformed (file exists but bash -n fails)
+#   40 — incomplete (file exists, syntax-clean, but ≥1 shape marker absent)
+#   41 — missing  (no file at the given path)
+# Caller writes the rc-specific diagnostic to its violation_file;
+# this helper writes diagnostics to STDOUT (caller captures).
+# Shape markers: comments at column 0 of the form `# ─── <gate> ───`
+# where <gate> ∈ {smoke, typecheck, lint, test}.
+validate_init_sh() {
+  local path="$1"
+  [[ -f "$path" ]] || { printf 'init-sh-missing: %s\n' "$path"; return 41; }
+  if ! bash -n "$path" 2>/dev/null; then
+    printf 'init-sh-malformed: bash -n failed for %s\n' "$path"
+    return 39
+  fi
+  local gate
+  for gate in smoke typecheck lint test; do
+    if ! grep -Eq "^# ─── ${gate} ───$" "$path"; then
+      printf 'init-sh-incomplete: missing shape marker # ─── %s ───\n' "$gate"
+      return 40
+    fi
+  done
+  return 0
+}
+
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
@@ -335,6 +361,9 @@ failure_outcome_for_exit() {
     36) printf 'review-payload-malformed' ;;
     37) printf 'review-payload-incomplete' ;;
     38) printf 'review-payload-missing' ;;
+    39) printf 'init-sh-malformed' ;;
+    40) printf 'init-sh-incomplete' ;;
+    41) printf 'init-sh-missing' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
@@ -492,7 +521,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
