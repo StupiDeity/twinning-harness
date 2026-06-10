@@ -98,6 +98,17 @@ context that the generated list can't carry:
   `halt` instead.
 - **`pivot_targets`** — currently only `planning`. Used when an agent
   decides the plan itself was wrong; rare.
+- **`pivot_reasons`** — why an agent declared the plan is
+  structurally wrong. Currently only `plan-structural-defect`.
+  Mirrors the `halt_reasons` shape; the rare-and-bucketed
+  discipline applies (the retrospective surfaces pivot rates so
+  we can size when to grow the vocabulary). *Routing of pivot
+  markers (loopback to `stage:planning` with
+  `pipeline:supersede`) is not yet wired in ENG-115; the
+  verdict_handler logs the detection and halts the issue
+  pending the routing sub-ticket. Operator recovery is
+  `bash bin/pipeline.sh decide --action continue`, same as any
+  other halt.*
 - **`decision_actions`** — operator actions. `continue` is the
   catch-all resume; `approve` requires `--gate`; `abandon` is terminal.
 - **`decision_gates`** — `scope` (approve a scope-check rejection),
