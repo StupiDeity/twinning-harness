@@ -1,0 +1,116 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-125",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Plan-stage dispatch emits well-formed $issue_dir/init.sh; dispatch.sh detective halts on missing/malformed/incomplete with rc=39/40/41.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/init-sh-validator-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/init-sh-validator-adversarial-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/dispatch-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/common-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/init-sh-validator-test.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/init-sh-validator-adversarial-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^validate_init_sh\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "39\\) printf 'init-sh-malformed'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "40\\) printf 'init-sh-incomplete'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "41\\) printf 'init-sh-missing'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "validate_init_sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/dispatch.sh",
+          "pattern": "_assert_init_sh_well_formed",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "init_sh_path=_resolve_init_sh_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_INIT_SH_PATH",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{init_sh_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "bin/init-sh-validator-test.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "bin/init-sh-validator-adversarial-test.sh",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
