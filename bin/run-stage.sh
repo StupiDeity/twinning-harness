@@ -1161,18 +1161,28 @@ _emit_sandbox_denial_metric() {
   # newlines from "$x" so the per-denial-row count matches `wc -l`. A
   # future swap to `echo "$x"` would silently double-count on bash
   # versions that echo a trailing newline differently — keep printf.
+  # count is deduplicated symmetrically with signatures and paths so
+  # `count=N signatures=… paths=…` reads coherently to operators
+  # (count = distinct (sig, path) pairs, not raw row count).
   local count signatures paths
-  count="$(printf '%s\n' "$denials_tsv" | wc -l | awk '{print $1}')"
+  count="$(printf '%s\n' "$denials_tsv" | sort -u | wc -l | awk '{print $1}')"
   signatures="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '{print $1}' | sort -u | paste -sd, -)"
   paths="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '$2 != "" {print $2}' | sort -u | paste -sd, -)"
-  # Sanitise paths for the metric notes blob. paths is agent-controlled
-  # (denied paths come from the agent's tool_use); the metric notes line
-  # is space-separated `k=v` fields. A denied path containing an embedded
-  # space would split the notes fields and let `show_sandbox_denials`'s
-  # `capture("claude_version=…")` see a forged version. Replace spaces
-  # with underscores before interpolation. Brainstorm §D-002 flags paths
-  # as agent-controlled best-effort.
-  paths="${paths// /_}"
+  # Sanitise paths for the metric notes blob AND for the Phase B
+  # contract-match comparison below. paths is agent-controlled (denied
+  # paths come from the agent's tool_use); the metric notes line is
+  # space-separated `k=v` fields, so an embedded space or `=` inside a
+  # denied path would split the notes fields and let
+  # `show_sandbox_denials`'s `capture("claude_version=…")` see a forged
+  # version. Replace both characters with underscores before
+  # interpolation. Side-effect: the Phase B `*"$_val"*` test (~line
+  # 1191) compares the sanitised paths against the un-sanitised sidecar
+  # resolver value — any future resolver whose value contains a literal
+  # space or `=` would silently miss in Phase B while Phase A still
+  # records. Acceptable today (no path-shaped resolver emits such
+  # values); revisit if a new resolver does. Brainstorm §D-002 flags
+  # paths as agent-controlled best-effort.
+  paths="${paths//[ =]/_}"
 
   # Extract only the version token (first whitespace-delimited field).
   # `claude --version` emits e.g. `1.0.93 (Claude Code)` with an embedded
@@ -1198,24 +1208,22 @@ _emit_sandbox_denial_metric() {
   local matched_token="" matched_path=""
   local rp="${d}/.rendered-paths-${stage}"
   if (( phase_b_enabled )) && [[ -s "$rp" ]] && [[ -n "$paths" ]]; then
-    # paths is a comma-separated set; iterate denied paths against
-    # each resolved-path line. First match wins. `_val` is per-loop
-    # scoped via `IFS=$'\t' read -r _tok _val` and intentionally not
-    # declared at this outer scope so reader doesn't assume shared state.
-    local _dp _tok
-    while IFS=, read -ra _denied; do
-      for _dp in "${_denied[@]}"; do
-        [[ -n "$_dp" ]] || continue
-        while IFS=$'\t' read -r _tok _val; do
-          [[ -n "$_val" ]] || continue
-          if [[ "$_dp" == *"$_val"* ]]; then
-            matched_token="$_tok"
-            matched_path="$_dp"
-            break 3
-          fi
-        done < "$rp"
-      done
-    done <<< "$paths"
+    # paths is a comma-separated single-line set. Split into an array
+    # once via here-string, then iterate denied paths against each
+    # resolved-path line. First match wins.
+    local _dp _denied _tok _val
+    IFS=, read -ra _denied <<< "$paths"
+    for _dp in "${_denied[@]}"; do
+      [[ -n "$_dp" ]] || continue
+      while IFS=$'\t' read -r _tok _val; do
+        [[ -n "$_val" ]] || continue
+        if [[ "$_dp" == *"$_val"* ]]; then
+          matched_token="$_tok"
+          matched_path="$_dp"
+          break 2
+        fi
+      done < "$rp"
+    done
   fi
 
   if [[ -n "$matched_token" ]]; then
@@ -1230,8 +1238,10 @@ _emit_sandbox_denial_metric() {
     || log "[sandbox-denial] metric emit failed for $ident/$stage"
 
   if [[ -n "$matched_token" ]]; then
-    # Phase B halt path. Sidecar carries the unsanitised matched_path
-    # (operator-read only; never parsed by parse_pipeline_marker).
+    # Phase B halt path. Sidecar carries matched_path drawn from the
+    # space/`=` sanitised `paths` set (operator-read only; never parsed
+    # by parse_pipeline_marker) — the original attacker bytes survive
+    # in the raw `.envelope-transcript-<stage>` for forensic recovery.
     # Linear comment body uses ONLY $matched_token (closed enumeration
     # from PROMPT_RESOLVERS path-shaped allowlist) and orchestrator-
     # generated $ident / $PIPELINE_DISPATCH_ID. Matches ENG-87
