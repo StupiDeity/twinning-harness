@@ -3387,33 +3387,62 @@ if [[ "$_IS_HELPER_PRESENT" == "1" ]]; then
     fail_at "IS4" "rc=$rc_is4 violation=$(cat "$IS4_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
   fi
 
-  # IS5 — ORDER pin: when BOTH progress.md AND init.sh are absent, the
-  # progress.md detective (Task ENG-106) runs FIRST inside
-  # _render_and_capture_stream and short-circuits with rc=31. The init.sh
-  # detective is never reached. We verify this by calling the progress.md
-  # detective first (mirroring _render_and_capture_stream's order); it
-  # returns 31 and the caller never invokes _assert_init_sh_well_formed.
-  IS5_DIR="$_TEST_STUB_DIR/IS5"; mkdir -p "$IS5_DIR"
-  export PIPELINE_DISPATCH_ID="ENG-T-IS5-d0001"
-  rm -f "$IS5_DIR/progress.md" "$IS5_DIR/init.sh" "$IS5_DIR/.transcript-violation-planning"
-  _assert_progress_md_entry "$IS5_DIR" "$IS5_DIR/.transcript-violation-planning" "planning" \
-    && rc_is5=0 || rc_is5=$?
-  if [[ "$rc_is5" == "31" ]]; then
-    pass_at "IS5: progress.md detective wins the race when both are missing (rc=31 before rc=41)"
+  # IS5 — ORDER pin (BEHAVIORAL): drive _render_and_capture_stream end-to-end
+  # with stage=planning, NO progress.md, NO init.sh, and a result event so the
+  # planning detectives' last_result gate fires. The progress.md detective sits
+  # FIRST inside _render_and_capture_stream and short-circuits with rc=31; the
+  # init.sh detective is never reached. Pin both the rc and the diagnostic so
+  # a future refactor that swaps the two detective slots' order trips this test.
+  # AT2 (bin/dispatch-test.sh:1729) is the renderer-end-to-end template.
+  if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+    IS5_DIR="$_TEST_STUB_DIR/IS5"; mkdir -p "$IS5_DIR"
+    export PIPELINE_DISPATCH_ID="ENG-T-IS5-d0001"
+    rm -f "$IS5_DIR/progress.md" "$IS5_DIR/init.sh" "$IS5_DIR/.transcript-violation-planning"
+    _is5_usage="$IS5_DIR/usage-planning.json"
+    rc_is5=0
+    _render_and_capture_stream "$_is5_usage" "$IS5_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_is5=$?
+{"type":"system","subtype":"init","session_id":"is5sess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+    if [[ "$rc_is5" == "31" ]] \
+       && grep -q "progress.md missing" "$IS5_DIR/.transcript-violation-planning"; then
+      pass_at "IS5: both missing → progress.md detective wins (rc=31 + 'progress.md missing' diagnostic; ordering pinned)"
+    else
+      fail_at "IS5" "rc=$rc_is5 (expected 31) violation=$(cat "$IS5_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+    fi
   else
-    fail_at "IS5" "rc=$rc_is5 (expected 31 — progress-md detective ordering pin)"
+    fail_at "IS5 precondition: _render_and_capture_stream defined" "function not found"
   fi
 
-  # IS6 — structural pin: dispatch.sh source contains a planning-gated `if`
-  # block that calls BOTH _assert_progress_md_entry AND
-  # _assert_init_sh_well_formed. Guards against a future refactor accidentally
-  # dropping the planning gate or the init.sh detective.
-  if grep -q '"planning".*last_result\|last_result.*"planning"' "$SCRIPT_DIR/dispatch.sh" \
-     && grep -q '_assert_progress_md_entry' "$SCRIPT_DIR/dispatch.sh" \
-     && grep -q '_assert_init_sh_well_formed' "$SCRIPT_DIR/dispatch.sh"; then
-    pass_at "IS6: dispatch.sh stage-gates BOTH detectives on planning + last_result"
+  # IS6 — non-planning gate pin (BEHAVIORAL): drive _render_and_capture_stream
+  # with stage=implementing and NO init.sh. The planning-gated init.sh detective
+  # MUST NOT fire — renderer returns rc=0 and writes no
+  # .transcript-violation-planning sidecar. Subsumes both the "Detective fires
+  # only on planning stage" Failure Mode row's positive case AND the legacy
+  # structural grep — a refactor deleting the `stage == "planning"` guard
+  # would cause rc=41 here, tripping the test.
+  if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+    IS6_DIR="$_TEST_STUB_DIR/IS6"; mkdir -p "$IS6_DIR"
+    export PIPELINE_DISPATCH_ID="ENG-T-IS6-d0001"
+    rm -f "$IS6_DIR/init.sh" "$IS6_DIR/progress.md" \
+          "$IS6_DIR/.transcript-violation-planning" "$IS6_DIR/.transcript-violation-implementing"
+    _is6_usage="$IS6_DIR/usage-implementing.json"
+    rc_is6=0
+    # Clean transcript (no forbidden gh pr create — that would trigger rc=22
+    # via the implementing-stage gate at bin/dispatch.sh:173-182).
+    _render_and_capture_stream "$_is6_usage" "$IS6_DIR" "implementing" >/dev/null 2>&1 <<'NDJSON' || rc_is6=$?
+{"type":"system","subtype":"init","session_id":"is6sess","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"benign work"}]}}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+    if [[ "$rc_is6" == "0" ]] \
+       && [[ ! -f "$IS6_DIR/.transcript-violation-planning" ]]; then
+      pass_at "IS6: stage=implementing + missing init.sh → rc=0, no planning sidecar (init.sh detective gates only on planning)"
+    else
+      fail_at "IS6" "rc=$rc_is6 planning_sidecar=$([[ -f $IS6_DIR/.transcript-violation-planning ]] && echo y || echo n)"
+    fi
   else
-    fail_at "IS6" "dispatch.sh missing planning-gated invocation of both detectives"
+    fail_at "IS6 precondition: _render_and_capture_stream defined" "function not found"
   fi
 
   unset PIPELINE_DISPATCH_ID
