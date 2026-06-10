@@ -1080,6 +1080,17 @@ assert_eq "ENG-122 exit-34: plan-contract-incomplete" \
 assert_eq "ENG-122 exit-35: plan-contract-missing" \
   "plan-contract-missing" "$(failure_outcome_for_exit 35)"
 
+# ─── ENG-119: failure_outcome_for_exit — exit codes 36/37/38 ──────────
+# Verifies that review-payload exit codes 36, 37, 38 are mapped in the
+# failure_outcome_for_exit table.
+printf '\n--- ENG-119: failure_outcome_for_exit codes 36/37/38 ---\n'
+assert_eq "ENG-119 exit-36: review-payload-malformed" \
+  "review-payload-malformed" "$(failure_outcome_for_exit 36)"
+assert_eq "ENG-119 exit-37: review-payload-incomplete" \
+  "review-payload-incomplete" "$(failure_outcome_for_exit 37)"
+assert_eq "ENG-119 exit-38: review-payload-missing" \
+  "review-payload-missing" "$(failure_outcome_for_exit 38)"
+
 # ─── ENG-122 review Minor 1: _strip_code_blocks_and_spans tilde fences ──
 # _post_plan_contract_halt wraps agent-controlled output in ~~~ fences
 # (Linear renders tilde fences as code blocks). Without this guard a
