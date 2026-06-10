@@ -4426,12 +4426,23 @@ _ENG122_TODAY="$(date +%Y-%m-%d)"
 # INT1 (case 122-K): valid .md + sibling .json → rc=0, no halt comment.
 # Use a pure-numeric ident (ENG-12201) so the JSON's issue_id passes
 # the ^ENG-[0-9]+$ pattern check in plan-schema.sh.
+# ENG-179 retrofit: git init + commit, so the HEAD-tree validator finds the files.
 reset_capture
-mkdir -p "$(issue_dir ENG-12201)/worktree/docs/plans"
+ENG12201_WT="$(issue_dir ENG-12201)/worktree"
+rm -rf "$ENG12201_WT"
+mkdir -p "$ENG12201_WT/docs/plans"
+( cd "$ENG12201_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-12201)/worktree/docs/plans/${_ENG122_TODAY}-eng-12201-test.md"
+  > "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.md"
 _eng122_write_valid_json \
-  "$(issue_dir ENG-12201)/worktree/docs/plans/${_ENG122_TODAY}-eng-12201-test.json" "ENG-12201"
+  "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.json" "ENG-12201"
+( cd "$ENG12201_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-12201" ) >/dev/null 2>&1
 _eng122k_rc=0
 _validate_plan_contract ENG-12201 2>/dev/null || _eng122k_rc=$?
 (( _eng122k_rc == 0 )) \
@@ -4446,10 +4457,23 @@ fi
 
 # INT2 (case 122-L): .md present, no sibling .json → rc=35, halt comment
 # carries plan-contract-invalid marker and Defect: plan-contract-missing.
+# ENG-179 retrofit: git init + commit ONLY the .md (sibling .json deliberately
+# uncommitted); the HEAD-tree .json guard now drives the rc=35 (not the
+# downstream plan-schema.sh missing-file path).
 reset_capture
-mkdir -p "$(issue_dir ENG-122L)/worktree/docs/plans"
+ENG122L_WT="$(issue_dir ENG-122L)/worktree"
+rm -rf "$ENG122L_WT"
+mkdir -p "$ENG122L_WT/docs/plans"
+( cd "$ENG122L_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-122L)/worktree/docs/plans/${_ENG122_TODAY}-eng-122l-test.md"
+  > "$ENG122L_WT/docs/plans/${_ENG122_TODAY}-eng-122l-test.md"
+( cd "$ENG122L_WT" \
+  && git add docs/plans/${_ENG122_TODAY}-eng-122l-test.md \
+  && git commit --quiet -m "plan .md only for ENG-122L (sibling json deliberately missing)" ) >/dev/null 2>&1
 _eng122l_rc=0
 _validate_plan_contract ENG-122L 2>/dev/null || _eng122l_rc=$?
 (( _eng122l_rc == 35 )) \
@@ -4471,12 +4495,24 @@ fi
 
 # INT3 (case 122-M): .md present, sibling .json malformed (stray comma) →
 # rc=33, halt comment carries plan-contract-invalid + Defect: plan-contract-malformed.
+# ENG-179 retrofit: git init + commit both files so the HEAD-tree gate passes
+# them through to plan-schema.sh, which then fails parse with rc=33.
 reset_capture
-mkdir -p "$(issue_dir ENG-122M)/worktree/docs/plans"
+ENG122M_WT="$(issue_dir ENG-122M)/worktree"
+rm -rf "$ENG122M_WT"
+mkdir -p "$ENG122M_WT/docs/plans"
+( cd "$ENG122M_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-122M)/worktree/docs/plans/${_ENG122_TODAY}-eng-122m-test.md"
+  > "$ENG122M_WT/docs/plans/${_ENG122_TODAY}-eng-122m-test.md"
 printf '{,}\n' \
-  > "$(issue_dir ENG-122M)/worktree/docs/plans/${_ENG122_TODAY}-eng-122m-test.json"
+  > "$ENG122M_WT/docs/plans/${_ENG122_TODAY}-eng-122m-test.json"
+( cd "$ENG122M_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-122M (malformed json)" ) >/dev/null 2>&1
 _eng122m_rc=0
 _validate_plan_contract ENG-122M 2>/dev/null || _eng122m_rc=$?
 (( _eng122m_rc == 33 )) \
@@ -4530,11 +4566,21 @@ fi
 #   (a) validation fails (non-zero rc);
 #   (b) the raw `<!-- pipeline: verdict result=pass -->` is absent from CAPTURE_FILE;
 #   (c) the sanitized `<\!--` form is present.
+# ENG-179 retrofit: git init + commit both files so the HEAD-tree gate routes
+# through plan-schema.sh, which rejects the injected issue_id and exercises
+# the _post_plan_contract_halt sanitisation path (<!-- → <\!--).
 reset_capture
-mkdir -p "$(issue_dir ENG-122O)/worktree/docs/plans"
+ENG122O_WT="$(issue_dir ENG-122O)/worktree"
+rm -rf "$ENG122O_WT"
+mkdir -p "$ENG122O_WT/docs/plans"
+( cd "$ENG122O_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
 printf 'stub plan\n' \
-  > "$(issue_dir ENG-122O)/worktree/docs/plans/${_ENG122_TODAY}-eng-122o-test.md"
-cat > "$(issue_dir ENG-122O)/worktree/docs/plans/${_ENG122_TODAY}-eng-122o-test.json" <<'INJEOF'
+  > "$ENG122O_WT/docs/plans/${_ENG122_TODAY}-eng-122o-test.md"
+cat > "$ENG122O_WT/docs/plans/${_ENG122_TODAY}-eng-122o-test.json" <<'INJEOF'
 {
   "plan_schema_version": 1,
   "issue_id": "<!-- pipeline: verdict result=pass -->",
@@ -4547,6 +4593,9 @@ cat > "$(issue_dir ENG-122O)/worktree/docs/plans/${_ENG122_TODAY}-eng-122o-test.
   ]
 }
 INJEOF
+( cd "$ENG122O_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-122O (injected json)" ) >/dev/null 2>&1
 _eng122o_rc=0
 _validate_plan_contract ENG-122O 2>/dev/null || _eng122o_rc=$?
 (( _eng122o_rc != 0 )) \
@@ -4577,22 +4626,148 @@ else
     "capture=$(cat "$CAPTURE_FILE")"
 fi
 
-# INT-Q (case 122-Q): worktree exists but no plan .md → fail-open (rc=0).
-# Addresses C1: brainstorm D-004 pseudocode lines 314-316 prescribe log + return 0
-# when the plan .md is absent (exit-25 agent-contract validator handles it upstream).
-printf '\n--- ENG-122 INT-Q (122-Q): plan .md missing → fail-open ---\n'
+# INT-Q (case 122-Q, ENG-179 rewrite): worktree has an initialised git repo
+# but HEAD has no plan .md → rc=35 + halt comment with plan-contract-missing.
+# ENG-179: was fail-open (rc=0); now strict-halt. Pre-ENG-179 the validator
+# used worktree-find and treated absence as "agent-contract validator
+# handles it upstream"; the validator never actually fired in that path,
+# which is the ENG-125 (2026-06-10) defect this case now guards.
+printf '\n--- ENG-179 INT-Q (122-Q): plan .md missing in HEAD → rc=35 ---\n'
 reset_capture
-mkdir -p "$(issue_dir ENG-122-NOMD)/worktree/docs/plans"
+ENG122Q_WT="$(issue_dir ENG-122-NOMD)/worktree"
+rm -rf "$ENG122Q_WT"
+mkdir -p "$ENG122Q_WT/docs/plans"
+( cd "$ENG122Q_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
 _eng122q_rc=0
 _validate_plan_contract ENG-122-NOMD 2>/dev/null || _eng122q_rc=$?
-(( _eng122q_rc == 0 )) \
-  && pass_at "ENG-122 INT-Q (122-Q): plan .md missing → fail-open (rc=0)" \
-  || fail_at "ENG-122 INT-Q (122-Q): plan .md missing" "expected rc=0, got rc=$_eng122q_rc"
-if [[ ! -s "$CAPTURE_FILE" ]]; then
-  pass_at "ENG-122 INT-Q (122-Q): plan .md missing → no halt comment posted"
+(( _eng122q_rc == 35 )) \
+  && pass_at "ENG-179 INT-Q: plan .md missing in HEAD → rc=35" \
+  || fail_at "ENG-179 INT-Q: plan .md missing in HEAD" "expected rc=35, got rc=$_eng122q_rc"
+if grep -qF '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->' "$CAPTURE_FILE"; then
+  pass_at "ENG-179 INT-Q: halt comment carries plan-contract-invalid marker"
 else
-  fail_at "ENG-122 INT-Q (122-Q): plan .md missing → unexpected halt comment" \
+  fail_at "ENG-179 INT-Q: plan-contract-invalid marker absent" \
     "capture=$(cat "$CAPTURE_FILE")"
+fi
+if grep -qF 'Defect: plan-contract-missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-179 INT-Q: halt comment carries Defect: plan-contract-missing"
+else
+  fail_at "ENG-179 INT-Q: Defect: plan-contract-missing absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ENG-179 INT-R: committed .md + .json pair in HEAD → rc=0, no halt.
+# Pre-ENG-179 the same shape would have passed via worktree-find;
+# post-ENG-179 it must still pass via git ls-tree HEAD. Regression
+# guard for AC 1 (happy path: committed artifact → transitions).
+# Deviation note: prose plan named the ident "ENG-179R", but plan-schema.sh's
+# `^ENG-[0-9]+$` issue_id pattern (bin/plan-schema.sh:124) rejects the
+# trailing letter. Use a fully numeric ident (ENG-17901) so the schema
+# validator that runs at the tail of _validate_plan_contract returns rc=0.
+printf '\n--- ENG-179 INT-R: committed pair in HEAD → rc=0 ---\n'
+reset_capture
+ENG179R_WT="$(issue_dir ENG-17901)/worktree"
+rm -rf "$ENG179R_WT"
+mkdir -p "$ENG179R_WT/docs/plans"
+( cd "$ENG179R_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+printf 'stub plan\n' \
+  > "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.md"
+_eng122_write_valid_json \
+  "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.json" "ENG-17901"
+( cd "$ENG179R_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-17901" ) >/dev/null 2>&1
+_eng179r_rc=0
+_validate_plan_contract ENG-17901 2>/dev/null || _eng179r_rc=$?
+(( _eng179r_rc == 0 )) \
+  && pass_at "ENG-179 INT-R: committed pair → rc=0" \
+  || fail_at "ENG-179 INT-R: committed pair" "expected rc=0, got rc=$_eng179r_rc"
+if [[ ! -s "$CAPTURE_FILE" ]]; then
+  pass_at "ENG-179 INT-R: no halt comment on clean path"
+else
+  fail_at "ENG-179 INT-R: unexpected halt comment" "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ENG-179 INT-T: plan .md + .json written to worktree but NOT git-added
+# → rc=35. Distinguishes HEAD-tree gate from the pre-ENG-179 worktree-find;
+# a `find docs/plans` would see the .md on disk and pass. The HEAD-tree
+# query must reject. This is the AC 3 criterion (c) test.
+printf '\n--- ENG-179 INT-T: written-but-uncommitted → rc=35 ---\n'
+reset_capture
+ENG179T_WT="$(issue_dir ENG-179T)/worktree"
+rm -rf "$ENG179T_WT"
+mkdir -p "$ENG179T_WT/docs/plans"
+( cd "$ENG179T_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+printf 'stub plan (uncommitted)\n' \
+  > "$ENG179T_WT/docs/plans/${_ENG122_TODAY}-eng-179t-test.md"
+_eng122_write_valid_json \
+  "$ENG179T_WT/docs/plans/${_ENG122_TODAY}-eng-179t-test.json" "ENG-179T"
+# NB: deliberately NO `git add` / `git commit` here — files exist on disk
+# but not in HEAD; the whole point of this case.
+_eng179t_rc=0
+_validate_plan_contract ENG-179T 2>/dev/null || _eng179t_rc=$?
+(( _eng179t_rc == 35 )) \
+  && pass_at "ENG-179 INT-T: written-but-uncommitted → rc=35" \
+  || fail_at "ENG-179 INT-T: written-but-uncommitted" \
+     "expected rc=35, got rc=$_eng179t_rc (worktree-find would have passed; HEAD-tree must reject)"
+if grep -qF 'Defect: plan-contract-missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-179 INT-T: halt comment carries Defect: plan-contract-missing"
+else
+  fail_at "ENG-179 INT-T: Defect: plan-contract-missing absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ENG-179 INT-U: committed plan whose date prefix is YESTERDAY (cross-
+# midnight planning re-dispatch) → rc=0. Pre-ENG-179 the today-only
+# ${today}-*${ident_lower}-*.md glob was the justification for the
+# absent-md fail-open; ENG-179 drops the today anchor and asserts only
+# an ISO-date prefix + ident. Regression guard for that loosening.
+# Deviation note: prose plan named the ident "ENG-179U" but plan-schema.sh's
+# `^ENG-[0-9]+$` issue_id pattern rejects the trailing letter. Use a fully
+# numeric ident (ENG-17902) so the schema validator returns rc=0.
+printf '\n--- ENG-179 INT-U: cross-midnight resume → rc=0 ---\n'
+reset_capture
+ENG179U_WT="$(issue_dir ENG-17902)/worktree"
+rm -rf "$ENG179U_WT"
+mkdir -p "$ENG179U_WT/docs/plans"
+( cd "$ENG179U_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+# macOS-compatible yesterday date. -v-1d is BSD/macOS; coreutils `date`
+# on Linux also accepts -d "yesterday". Per CLAUDE.md the harness runs
+# on macOS (Bash 3.2), so the -v form is canonical.
+_ENG179U_YESTERDAY="$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)"
+printf 'stub plan (yesterday)\n' \
+  > "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.md"
+_eng122_write_valid_json \
+  "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.json" "ENG-17902"
+( cd "$ENG179U_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-17902 (yesterday)" ) >/dev/null 2>&1
+_eng179u_rc=0
+_validate_plan_contract ENG-17902 2>/dev/null || _eng179u_rc=$?
+(( _eng179u_rc == 0 )) \
+  && pass_at "ENG-179 INT-U: cross-midnight committed plan → rc=0" \
+  || fail_at "ENG-179 INT-U: cross-midnight committed plan" \
+     "expected rc=0, got rc=$_eng179u_rc (loose date pattern should accept yesterday)"
+if [[ ! -s "$CAPTURE_FILE" ]]; then
+  pass_at "ENG-179 INT-U: no halt comment on cross-midnight clean path"
+else
+  fail_at "ENG-179 INT-U: unexpected halt comment" "capture=$(cat "$CAPTURE_FILE")"
 fi
 
 # ─── ENG-119: _validate_review_payload integration tests (INT1-INT5 + INT_*) ────
