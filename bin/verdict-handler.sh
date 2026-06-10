@@ -243,6 +243,8 @@ find_fresh_verdict() {
         {marker:"pipeline-rejection", source_stage:"", target_stage:$e.target, reason:"", comment_id:$id, event:$e}
       elif $r == "halt" then
         {marker:"pipeline-halt", source_stage:"", target_stage:"", reason:$e.reason, comment_id:$id, event:$e}
+      elif $r == "pivot" then
+        {marker:"pipeline-pivot", source_stage:$e.stage, target_stage:$e.target, reason:$e.reason, comment_id:$id, event:$e}
       else
         {marker:"unknown", source_stage:"", target_stage:"", reason:"", comment_id:$id, event:$e}
       end')"
@@ -584,6 +586,16 @@ verdict_handler() {
       ;;
     pipeline-halt)
       log "verdict-handler: halt marker on $issue (reason=$(jq -r '.reason' <<<"$fresh")) — leaving halt intact"
+      return 1
+      ;;
+    pipeline-pivot)
+      # ENG-115: parsing-only stub. The next sub-ticket (ENG-NEXT) replaces
+      # this log+return body with `apply_transition "$issue" "$src" "$tgt"
+      # "pipeline:supersede"` mirroring the reviewing → brainstorming
+      # loopback row at _VH_LOOPBACK_TRANSITIONS line 34.
+      local pivot_reason
+      pivot_reason="$(jq -r '.reason' <<<"$fresh")"
+      log "verdict-handler: pivot-detected on $issue (source=$src → target=$tgt, reason=$pivot_reason) — routing deferred to ENG-NEXT"
       return 1
       ;;
     *)
