@@ -79,8 +79,26 @@ out="$(run_pipe event ENG-PE5 verdict fail --target planning)"
 out="$(run_pipe event ENG-PE6 verdict wait --reason awaiting-approval)"
 [[ "$out" == *"reason=awaiting-approval"* ]] && pass_at "PE6: verdict wait reason" || fail_at "PE6: verdict wait reason" "got: $out"
 
-out="$(run_pipe event ENG-PE7 verdict pivot --target planning)"
-[[ "$out" == *"result=pivot target=planning"* ]] && pass_at "PE7: verdict pivot target" || fail_at "PE7: verdict pivot target" "got: $out"
+# PE7: verdict pivot — full three-field body (target + stage + reason)
+out="$(run_pipe event ENG-PE7 verdict pivot --target planning --stage implementing --reason plan-structural-defect)"
+expect='<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect -->'
+[[ "$out" == *"$expect"* ]] && pass_at "PE7: verdict pivot full body" || fail_at "PE7: verdict pivot full body" "got: $out"
+
+# PE7a: pivot missing --reason
+out="$(run_pipe event ENG-PE7a verdict pivot --target planning --stage implementing 2>&1 || true)"
+[[ "$out" == *"--reason required"* ]] && pass_at "PE7a: pivot requires --reason" || fail_at "PE7a: pivot requires --reason" "got: $out"
+
+# PE7b: pivot bogus reason
+out="$(run_pipe event ENG-PE7b verdict pivot --target planning --stage implementing --reason bogus-reason 2>&1 || true)"
+[[ "$out" == *"not in pivot_reasons"* ]] && pass_at "PE7b: bogus pivot reason rejected" || fail_at "PE7b: bogus pivot reason rejected" "got: $out"
+
+# PE7c: pivot missing --stage
+out="$(run_pipe event ENG-PE7c verdict pivot --target planning --reason plan-structural-defect 2>&1 || true)"
+[[ "$out" == *"--stage required"* ]] && pass_at "PE7c: pivot requires --stage" || fail_at "PE7c: pivot requires --stage" "got: $out"
+
+# PE7d: pivot bogus stage
+out="$(run_pipe event ENG-PE7d verdict pivot --target planning --stage bogus-stage --reason plan-structural-defect 2>&1 || true)"
+[[ "$out" == *"not in stages"* ]] && pass_at "PE7d: bogus pivot stage rejected" || fail_at "PE7d: bogus pivot stage rejected" "got: $out"
 
 printf '\n--- bin/pipeline.sh: event transition ---\n'
 
