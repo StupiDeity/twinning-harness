@@ -1129,6 +1129,48 @@ _post_plan_contract_halt() {
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
 
+# ENG-119: review-payload validator. Filesystem detective — checks that
+# the review agent wrote a well-formed $issue_dir/verdict-review.json
+# with current dispatch_id. Returns 0=valid, 36=malformed, 37=incomplete,
+# 38=missing-file (caller halts).
+_validate_review_payload() {
+  local ident="$1"
+  local payload; payload="$(issue_dir "$ident")/verdict-review.json"
+  if [[ ! -f "$payload" ]]; then
+    _post_review_payload_halt "$ident" "review-payload-missing" \
+      "no verdict-review.json at $payload"
+    return 38
+  fi
+  local out rc=0
+  out="$(bash "$SCRIPT_DIR/review-payload-schema.sh" validate "$payload" \
+         --ident "$ident" --dispatch-id "${PIPELINE_DISPATCH_ID-}" 2>&1)" || rc=$?
+  case "$rc" in
+    0)  return 0 ;;
+    36) _post_review_payload_halt "$ident" "review-payload-malformed"  "$out" ; return 36 ;;
+    37) _post_review_payload_halt "$ident" "review-payload-incomplete" "$out" ; return 37 ;;
+    38) _post_review_payload_halt "$ident" "review-payload-missing"    "$out" ; return 38 ;;
+    *)  _post_review_payload_halt "$ident" "unexpected-rc" \
+          "validator returned unexpected rc=$rc; stdout: $out" ; return 36 ;;
+  esac
+}
+
+# Posts a halt comment for a review-payload violation. Mirrors
+# _post_plan_contract_halt sanitisation: <!-- → <\!-- + tilde-fence wrap
+# so agent-controlled diagnostic strings can't hijack the marker parser.
+# Per product persona P1-1 / P1-2: includes the absolute payload path
+# (so the operator can cat it at 3am without resolving issue_dir) AND
+# explicitly warns that --action continue erases hand-edits via
+# pre-clean (brainstorm Edge case 2).
+_post_review_payload_halt() {
+  local ident="$1" defect="$2" raw="$3"
+  local safe="${raw//<!--/<\\!--}"
+  local payload; payload="$(issue_dir "$ident")/verdict-review.json"
+  local body
+  body="$(printf '<!-- pipeline: verdict result=halt reason=review-payload-invalid -->\n\nReview-payload validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §11.' \
+    "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$payload" "$safe" "$ident" "$payload" "$ident")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+}
+
 # ENG-87 review M1+M2: dispatch_history.jsonl end-row trap. Plan §13.1.2
 # + §A-026 mandate two rows per dispatch (start + end). Pre-fix the end
 # row was only emitted on the success path (1 of 15 exit sites) and was
@@ -1889,6 +1931,24 @@ main() {
           classify_failure "$ident" "$stage" "skip-until-human-acts" \
             "plan-contract-invalid: $(failure_outcome_for_exit "$_plan_rc")" "$_plan_rc"
           exit "$_plan_rc"
+        fi
+        ;;
+    esac
+  fi
+
+  # ENG-119: review-payload validator. Post-dispatch; reviewing stage only.
+  # Halts with review-payload-invalid if $issue_dir/verdict-review.json is
+  # absent, malformed, or fails schema-v1 validation. Exit codes 36/37/38
+  # map to the failure_outcome_for_exit taxonomy entries added in Task 1.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      reviewing)
+        local _rev_rc=0
+        _validate_review_payload "$ident" || _rev_rc=$?
+        if (( _rev_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "review-payload-invalid: $(failure_outcome_for_exit "$_rev_rc")" "$_rev_rc"
+          exit "$_rev_rc"
         fi
         ;;
     esac
