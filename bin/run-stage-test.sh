@@ -7047,6 +7047,84 @@ else
 fi
 rm -f "$PROJECT_STATE_DIR/metrics/events.jsonl"
 
+# Case 156-I: QA adversarial — identical duplicate denials deduplicate to count=1.
+# Three distinct tool_use ids all produce the same (sandbox-path, /etc/hosts) row.
+# The `sort -u` in _emit_sandbox_denial_metric must collapse them to one row.
+# Pins the count-deduplication invariant in run-stage.sh ~line 1147 comment.
+reset_capture
+: > "$STUB_DIR/metrics.capture"
+mkdir -p "$(issue_dir ENG-156I)"
+{
+  for _156i in 1 2 3; do
+    _eng156_ndjson_tool_use_file "tu_${_156i}" "Read" "/etc/hosts"
+    _eng156_ndjson_tool_result_str "tu_${_156i}" "true" \
+      "Error: /etc/hosts may only list files in the allowed working directories"
+  done
+} > "$(issue_dir ENG-156I)/.envelope-transcript-implementing"
+_eng156_i_rc=0
+_emit_sandbox_denial_metric ENG-156I implementing 2>/dev/null || _eng156_i_rc=$?
+if (( _eng156_i_rc == 0 )) \
+  && grep -qF 'count=1' "$STUB_DIR/metrics.capture"; then
+  pass_at "ENG-156 I (QA adversarial): 3 identical (sig,path) denials deduplicate to count=1"
+else
+  fail_at "ENG-156 I (QA adversarial): duplicate deduplication" \
+    "expected count=1, rc=$_eng156_i_rc, capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
+fi
+
+# Case 156-J2: QA adversarial — zero-byte .rendered-paths-<stage> → Phase B skipped.
+# `[[ -s "$rp" ]]` returns false for an empty file even when Phase B flag is on.
+# A denial that would match if the file had content must NOT trigger rc=29.
+reset_capture
+: > "$STUB_DIR/metrics.capture"
+mkdir -p "$(issue_dir ENG-156J2)"
+_eng156_j2_cfg="$STUB_DIR/eng156j2-config.json"
+printf '%s\n' '{"orchestrator":{"sandbox_contract_halt":true}}' > "$_eng156_j2_cfg"
+_eng156_orig_config_j2="$CONFIG"
+CONFIG="$_eng156_j2_cfg"
+{
+  _eng156_ndjson_tool_use_file "tu_1" "Write" "/Users/rajat/progress.md"
+  _eng156_ndjson_tool_result_str "tu_1" "true" \
+    "Error: may only list files in the allowed working directories"
+} > "$(issue_dir ENG-156J2)/.envelope-transcript-implementing"
+: > "$(issue_dir ENG-156J2)/.rendered-paths-implementing"
+_eng156_j2_rc=0
+_emit_sandbox_denial_metric ENG-156J2 implementing 2>/dev/null || _eng156_j2_rc=$?
+CONFIG="$_eng156_orig_config_j2"
+if (( _eng156_j2_rc == 0 )) \
+  && grep -qF 'OUTCOME=detected' "$STUB_DIR/metrics.capture"; then
+  pass_at "ENG-156 J2 (QA adversarial): zero-byte .rendered-paths sidecar → Phase B skipped, rc=0"
+else
+  fail_at "ENG-156 J2 (QA adversarial): empty rendered-paths [[ -s ]] guard" \
+    "expected rc=0 OUTCOME=detected, got rc=$_eng156_j2_rc, capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
+fi
+
+# Case 156-L: QA adversarial — show_sandbox_denials excludes rows older than 7 days.
+# Pins the `ts >= $cutoff` filter in status.sh::show_sandbox_denials. An 8-day-old
+# sandbox_denial row must produce "(no sandbox_denial events in last 7d)", not a bucket line.
+_eng156_l_old_ts="$(date -u -v-8d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$PROJECT_STATE_DIR/metrics/events.jsonl" <<JSON
+{"ts":"$_eng156_l_old_ts","event":"sandbox_denial","issue_id":"ENG-T","stage":"implementing","outcome":"detected","duration_ms":0,"notes":"count=1 signatures=sandbox-path paths=/etc/hosts claude_version=9.9.99"}
+JSON
+_eng156_l_out="$(
+  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    show_sandbox_denials 2>/dev/null
+  ' 2>/dev/null || true
+)"
+rm -f "$PROJECT_STATE_DIR/metrics/events.jsonl"
+if grep -qF '(no sandbox_denial events in last 7d)' <<<"$_eng156_l_out" \
+  && ! grep -qF '9.9.99' <<<"$_eng156_l_out"; then
+  pass_at "ENG-156 L (QA adversarial): 8-day-old row excluded from 7d window"
+else
+  fail_at "ENG-156 L (QA adversarial): 7d window cutoff" \
+    "expected no 9.9.99 in output, got: $_eng156_l_out"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
