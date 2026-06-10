@@ -380,6 +380,34 @@ show_resource_baseline() {
   fi
 }
 
+# ENG-156 D-005: aggregate events.jsonl::sandbox_denial rows over the last
+# 7 days, bucketed by claude_version × stage × signatures. Mirrors
+# show_resource_baseline's events.jsonl-reading shape. macOS-safe date
+# invocation (date -u -v-7d || date -u -d '7 days ago').
+show_sandbox_denials() {
+  section "Sandbox denials (last 7d, by claude_version + stage + signatures)"
+  local ev="$PROJECT_STATE_DIR/metrics/events.jsonl"
+  [[ -f "$ev" ]] || { printf '  %s(no events.jsonl)%s\n' "$C_DIM" "$C_RST"; return 0; }
+  local cutoff
+  cutoff="$(date -u -v-7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+  local lines
+  lines="$(jq -r --arg cutoff "$cutoff" '
+    select(.event == "sandbox_denial" and .ts >= $cutoff)
+    | (.notes // "") as $n
+    | (($n | capture("claude_version=(?<v>\\S+)"; "g")).v // "?") as $ver
+    | (($n | capture("signatures=(?<s>\\S+)"; "g")).s // "?") as $sigs
+    | [$ver, .stage, $sigs] | @tsv
+  ' "$ev" 2>/dev/null \
+  | sort | uniq -c | sort -rn \
+  | awk '{ printf "  %4s× v=%-15s stage=%-13s sigs=%s\n", $1, $2, $3, $4 }')"
+  if [[ -z "$lines" ]]; then
+    printf '  %s(no sandbox_denial events in last 7d)%s\n' "$C_DIM" "$C_RST"
+  else
+    printf '%s\n' "$lines"
+  fi
+}
+
 # ────────────────────────────────────────────────────────────────────────── main
 
 main() {
@@ -388,6 +416,7 @@ main() {
   show_active_issues         || true
   show_concurrent_dispatches || true
   show_resource_baseline     || true
+  show_sandbox_denials       || true
   show_cost_summary          || true
   show_metrics               || true
   show_markers               || true
