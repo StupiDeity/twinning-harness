@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
-# bin/plan-schema.sh — plan.json schema-v1 validator CLI (ENG-122).
+# bin/plan-schema.sh — plan.json schema-v1 validator CLI (ENG-122) +
+# plan.md System-invariants section validator (ENG-157).
 #
 # Usage:
 #   bash bin/plan-schema.sh validate <file> [--ident <ENG-N>]
+#   bash bin/plan-schema.sh validate-md <file>
 #
-# Exit codes:
+# Exit codes (validate — JSON):
 #   0  — valid schema-v1 document
 #   33 — malformed: JSON parse error or top-level not an object
 #   34 — incomplete: required field missing, wrong type, or unknown kind
 #   35 — missing-file: the JSON file does not exist at the given path
+#
+# Exit codes (validate-md — MD System-invariants section):
+#   0  — valid: `## System invariants` H2 section present with ≥1 bullet,
+#        every bullet carries a parseable `verified_by:` token of the form
+#        `<path>:<test-name>` OR `task:T<N>`.
+#   33 — malformed: token present but unparseable, OR no file argument.
+#        Diagnostic prefix `plan-md-malformed:`.
+#   34 — incomplete: H2 section missing, OR zero bullets in the section, OR
+#        bullet lacks any `verified_by:` reference. Prefix `plan-md-incomplete:`.
+#   35 — missing-file: the MD file does not exist. Prefix `plan-md-missing:`.
 #
 # Canonical schema-v1 shape (single source of truth):
 #
@@ -282,13 +294,116 @@ cmd_validate() {
   return 0
 }
 
+# cmd_validate_md <file> — MD-side validator (ENG-157).
+#
+# Enforces the `## System invariants` H2 section contract on plan markdowns:
+# the section must exist, contain ≥1 bullet, and every bullet on its first
+# line must carry a parseable `verified_by:` token of the form
+# `<path>:<test-name>` or `task:T<N>`.
+#
+# Implementation: single-pass awk over the file. We track three states —
+# outside any section, inside `## System invariants`, inside a different
+# H2 section — and on every `- ` line inside the target section we look
+# for a `verified_by:` token shape on that same line. Continuation lines
+# are NOT scanned in v1 (token-on-continuation is a documented deferral —
+# see Failure Mode → Test Map row "Token on continuation line" and the
+# T_adv_md_embedded_newline adversarial case). Heading match is strictly
+# the literal `## System invariants` (case-sensitive); typos route to
+# rc=34 via the missing-section path. The validator does NOT parse code
+# fences — a `verified_by:` token inside a backtick span on the bullet's
+# first line still counts as a hit. This is acceptable per D-001 §8.3.
+cmd_validate_md() {
+  local file="${1:-}"
+  if [[ -z "$file" ]]; then
+    printf 'plan-md-malformed: file argument required\n'
+    return 33
+  fi
+  if [[ ! -f "$file" ]]; then
+    printf 'plan-md-missing: file not found: %s\n' "$file"
+    return 35
+  fi
+
+  # Diagnostics + rc decided inside awk. Exit code surfaces via `awk_rc`
+  # using BSD awk's `exit <n>` semantics; stdout carries human-readable
+  # plan-md-{incomplete,malformed} lines (one per defect).
+  local awk_out awk_rc=0
+  awk_out="$(awk '
+    BEGIN {
+      in_section  = 0  # currently inside the "## System invariants" body
+      saw_section = 0  # the heading was seen at least once
+      bullet_count = 0
+      malformed_count = 0
+      incomplete_count = 0
+    }
+    # Section heading detection. Treats the literal "## System invariants"
+    # (allowing trailing whitespace) as the target heading; any other "## "
+    # line closes the section.
+    /^## System invariants[[:space:]]*$/ {
+      in_section  = 1
+      saw_section = 1
+      next
+    }
+    /^## / {
+      in_section = 0
+      next
+    }
+    # Bullets within the section. Match top-level "- " (no nesting in v1).
+    in_section && /^- / {
+      bullet_count++
+      # `<path>:<test-name>` shape: two non-space tokens separated by `:`,
+      # the path before `:` and the test name after. `task:T<N>` shape: the
+      # literal prefix `task:T` followed by ≥1 digit. The combined regex
+      # matches either form anywhere on the first line of the bullet.
+      if (match($0, /verified_by:[[:space:]]*([^[:space:]]+:[^[:space:]]+|task:T[0-9]+)/)) {
+        # parseable token — bullet OK
+        next
+      } else if (match($0, /verified_by:/)) {
+        # token present but neither shape matched
+        printf "plan-md-malformed: bullet %d \"verified_by: <token>\" matches neither <path>:<test> nor task:T<N>\n", bullet_count
+        malformed_count++
+      } else {
+        # no `verified_by:` reference on this line at all
+        printf "plan-md-incomplete: bullet %d (1-indexed) lacks parseable \"verified_by:\" reference\n", bullet_count
+        incomplete_count++
+      }
+    }
+    END {
+      if (!saw_section) {
+        print "plan-md-incomplete: required H2 section \"## System invariants\" missing"
+        exit 34
+      }
+      if (bullet_count == 0) {
+        print "plan-md-incomplete: \"## System invariants\" section has 0 bullets (expected >=1)"
+        exit 34
+      }
+      if (malformed_count > 0) {
+        # Malformed (token present but unparseable) takes precedence over
+        # missing-token incomplete when both occur in the same file.
+        exit 33
+      }
+      if (incomplete_count > 0) {
+        exit 34
+      }
+      exit 0
+    }
+  ' "$file")" || awk_rc=$?
+
+  if (( awk_rc != 0 )); then
+    printf '%s\n' "$awk_out"
+    return "$awk_rc"
+  fi
+  printf 'plan-md-contract-valid: %s\n' "$file"
+  return 0
+}
+
 main() {
   local subcmd="${1:-}"
   shift || true
   case "$subcmd" in
-    validate) cmd_validate "$@" ;;
+    validate)    cmd_validate "$@" ;;
+    validate-md) cmd_validate_md "$@" ;;
     *)
-      printf 'Usage: bash bin/plan-schema.sh validate <file> [--ident <ENG-N>]\n' >&2
+      printf 'Usage: bash bin/plan-schema.sh {validate <file> [--ident <ENG-N>] | validate-md <file>}\n' >&2
       exit 33
       ;;
   esac
