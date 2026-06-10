@@ -395,8 +395,8 @@ show_sandbox_denials() {
   lines="$(jq -r --arg cutoff "$cutoff" '
     select(.event == "sandbox_denial" and .ts >= $cutoff)
     | (.notes // "") as $n
-    | (($n | capture("claude_version=(?<v>\\S+)"; "g")).v // "?") as $ver
-    | (($n | capture("signatures=(?<s>\\S+)"; "g")).s // "?") as $sigs
+    | (($n | capture("claude_version=(?<v>\\S+)")?).v // "?") as $ver
+    | (($n | capture("signatures=(?<s>\\S+)")?).s // "?") as $sigs
     | [$ver, .stage, $sigs] | @tsv
   ' "$ev" 2>/dev/null \
   | sort | uniq -c | sort -rn \
