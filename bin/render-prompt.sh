@@ -89,6 +89,11 @@ AGENT_RUNTIME_TOKENS=' file pr_number '
 _write_rendered_paths_sidecar() {
   local sidecar_path="$1"
   [[ -n "$sidecar_path" ]] || return 0
+  # Enumerated explicitly so a new non-path resolver token added later
+  # cannot inadvertently leak into the contract surface — adding a
+  # path-shaped resolver requires a deliberate edit here. A future
+  # maintainer tempted to DRY this into a loop over PROMPT_RESOLVERS
+  # would break the closed-allowlist contract (brainstorm §D-004).
   {
     [[ -n "${_RENDER_BRAINSTORM_FILE:-}" ]] && printf 'brainstorm_file\t%s\n' "$_RENDER_BRAINSTORM_FILE"
     [[ -n "${_RENDER_PLAN_FILE:-}" ]]      && printf 'plan_file\t%s\n'      "$_RENDER_PLAN_FILE"
@@ -98,15 +103,17 @@ _write_rendered_paths_sidecar() {
     # plan_json's resolver `_resolve_plan_json` returns the FILE
     # CONTENTS, not the path — so we cannot reuse it here. The path
     # this sidecar is named after is `${_RENDER_PLAN_FILE%.md}.json`
-    # (the resolver derives the same way internally). Only write the
-    # line when the resolved file actually exists on disk; otherwise
-    # the detective would match denials against a non-existent
-    # contract surface.
+    # (the resolver derives the same way internally; assumes plan-file
+    # ends in `.md` — non-.md plans are not supported today). Only
+    # write the line when the resolved file actually exists on disk;
+    # otherwise the detective would match denials against a
+    # non-existent contract surface.
     if [[ -n "${_RENDER_PLAN_FILE:-}" ]]; then
       local _pj_path="${_RENDER_PLAN_FILE%.md}.json"
       [[ -f "$_pj_path" ]] && printf 'plan_json\t%s\n' "$_pj_path"
     fi
-  } > "$sidecar_path" 2>/dev/null || true
+  } > "$sidecar_path" 2>/dev/null \
+    || log "[render] sidecar write to $sidecar_path failed (Phase B detective will have no contract surface)"
 }
 
 lookup_section() {
