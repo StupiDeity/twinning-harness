@@ -102,6 +102,7 @@
         },
         "field_registry_by_arm": {
           "pivot": {
+            "target": "pivot_targets",
             "reason": "pivot_reasons"
           }
         },
