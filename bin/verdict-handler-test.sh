@@ -1328,7 +1328,9 @@ if [[ "$rc" == "1" ]] \
    && [[ "$log_output" == *"target=planning"* ]] \
    && [[ "$log_output" == *"reason=plan-structural-defect"* ]] \
    && ! calls_contains "add-or-update-comment protocol-violation/" \
-   && ! calls_contains "add-label ENG-911 stage:planning"; then
+   && ! calls_contains "add-label ENG-911 stage:planning" \
+   && ! calls_contains "remove-label ENG-911 stage:implementing" \
+   && ! calls_contains "add-comment ENG-911"; then
   pass_at "case-ENG-115-pivot-detected"
 else
   fail_at "case-ENG-115-pivot-detected" "rc=$rc log=$log_output calls=$(cat "$STUB_LOG")"
@@ -1339,6 +1341,7 @@ fi
 # shape: marker=pipeline-pivot, source_stage/target_stage/reason all set
 # from the registry-validated fields.
 reset_calls
+VH_CURRENT_LABELS=""
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline: transition from=planning to=implementing -->|2026-06-10T10:00:00.000Z" \
   "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect -->|2026-06-10T11:00:00.000Z")"

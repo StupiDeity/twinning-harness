@@ -159,9 +159,9 @@ fi
 # in the closed vocabulary so that `bash bin/pipeline.sh event ... verdict
 # pivot --reason plan-structural-defect` passes registry validation.
 if jq -e '.pivot_reasons | index("plan-structural-defect") != null' "$REG" >/dev/null 2>&1; then
-  pass_at "ENG-115 case-5: plan-structural-defect in pivot_reasons registry"
+  pass_at "case-5: plan-structural-defect in pivot_reasons registry"
 else
-  fail_at "ENG-115 case-5: plan-structural-defect in pivot_reasons registry" \
+  fail_at "case-5: plan-structural-defect in pivot_reasons registry" \
     "expected \"plan-structural-defect\" in .pivot_reasons array of $REG"
 fi
 

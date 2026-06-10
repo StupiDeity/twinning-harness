@@ -591,11 +591,9 @@ verdict_handler() {
     pipeline-pivot)
       # ENG-115: parsing-only stub. The next sub-ticket (ENG-NEXT) replaces
       # this log+return body with `apply_transition "$issue" "$src" "$tgt"
-      # "pipeline:supersede"` mirroring the reviewing → brainstorming
-      # loopback row at _VH_LOOPBACK_TRANSITIONS line 34.
-      local pivot_reason
-      pivot_reason="$(jq -r '.reason' <<<"$fresh")"
-      log "verdict-handler: pivot-detected on $issue (source=$src → target=$tgt, reason=$pivot_reason) — routing deferred to ENG-NEXT"
+      # "pipeline:supersede"` mirroring the `reviewing|brainstorming|pipeline:supersede`
+      # row in _VH_LOOPBACK_TRANSITIONS above.
+      log "verdict-handler: pivot-detected on $issue (source=$src → target=$tgt, reason=$(jq -r '.reason' <<<"$fresh")) — routing deferred to ENG-NEXT"
       return 1
       ;;
     *)
