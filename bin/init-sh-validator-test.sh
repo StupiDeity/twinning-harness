@@ -31,6 +31,9 @@ pass_at() { PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 fail_at() { FAIL=$((FAIL+1)); printf '  ❌ %s — %s\n' "$1" "$2" >&2; }
 
 FIXTURE_DIR="$(mktemp -d -t init-sh-validator-test.XXXXXX)"
+# Install cleanup trap BEFORE sourcing — if dispatch.sh sourcing dies
+# (e.g. common.sh missing) we still want FIXTURE_DIR removed.
+trap 'rm -rf "$FIXTURE_DIR"' EXIT
 export TARGET_REPO="$FIXTURE_DIR/target"
 mkdir -p "$TARGET_REPO/.pipeline-config"
 printf '{"project":{"slug":"test-slug"}}\n' > "$TARGET_REPO/.pipeline-config/config.json"
@@ -38,8 +41,6 @@ printf '{"project":{"slug":"test-slug"}}\n' > "$TARGET_REPO/.pipeline-config/con
 # Source dispatch.sh (which sources common.sh) to load both functions.
 # shellcheck source=dispatch.sh
 source "$SCRIPT_DIR/dispatch.sh"
-
-trap 'rm -rf "$FIXTURE_DIR"' EXIT
 
 # ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -100,12 +101,21 @@ rc=0; validate_init_sh "$INIT" >/dev/null 2>&1 || rc=$?
   && pass_at "T_malformed_bash_n: unbalanced quote → rc=39" \
   || fail_at "T_malformed_bash_n" "expected rc=39, got rc=$rc"
 
+# Tighter assertion shared across the four T_incomplete_missing_* cases:
+# match BOTH the literal 'init-sh-incomplete: missing shape marker' prefix
+# AND the gate-specific marker '# ─── <gate> ───'. The legacy form
+# `[[ "$out" == *"<gate>"* ]]` was too loose — the gate name appears in two
+# distinct places in the diagnostic (the prefix's "shape marker" sentence is
+# the same for every gate; only the marker glyph differs), so any output
+# containing the gate name passed even if the prefix had been mangled.
+
 # ─── T_incomplete_missing_smoke ─────────────────────────────────────
 INIT="$FIXTURE_DIR/t-no-smoke.sh"
 write_missing_marker "$INIT" smoke
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"smoke"* ]]; then
-  pass_at "T_incomplete_missing_smoke: → rc=40 + smoke diagnostic"
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
+  pass_at "T_incomplete_missing_smoke: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── smoke ───'"
 else
   fail_at "T_incomplete_missing_smoke" "rc=$rc out='$out'"
 fi
@@ -114,8 +124,9 @@ fi
 INIT="$FIXTURE_DIR/t-no-typecheck.sh"
 write_missing_marker "$INIT" typecheck
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"typecheck"* ]]; then
-  pass_at "T_incomplete_missing_typecheck: → rc=40 + typecheck diagnostic"
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── typecheck ───"* ]]; then
+  pass_at "T_incomplete_missing_typecheck: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── typecheck ───'"
 else
   fail_at "T_incomplete_missing_typecheck" "rc=$rc out='$out'"
 fi
@@ -124,8 +135,9 @@ fi
 INIT="$FIXTURE_DIR/t-no-lint.sh"
 write_missing_marker "$INIT" lint
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"lint"* ]]; then
-  pass_at "T_incomplete_missing_lint: → rc=40 + lint diagnostic"
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── lint ───"* ]]; then
+  pass_at "T_incomplete_missing_lint: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── lint ───'"
 else
   fail_at "T_incomplete_missing_lint" "rc=$rc out='$out'"
 fi
@@ -134,8 +146,9 @@ fi
 INIT="$FIXTURE_DIR/t-no-test.sh"
 write_missing_marker "$INIT" test
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"test"* ]]; then
-  pass_at "T_incomplete_missing_test: → rc=40 + test diagnostic"
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── test ───"* ]]; then
+  pass_at "T_incomplete_missing_test: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── test ───'"
 else
   fail_at "T_incomplete_missing_test" "rc=$rc out='$out'"
 fi
@@ -157,7 +170,8 @@ set -euo pipefail
 :
 EOF
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"smoke"* ]]; then
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
   pass_at "T_marker_at_indent_rejected: indented marker → rc=40 (column-0 anchor pins ^)"
 else
   fail_at "T_marker_at_indent_rejected" "rc=$rc out='$out'"
