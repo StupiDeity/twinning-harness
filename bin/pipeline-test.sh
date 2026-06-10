@@ -68,6 +68,11 @@ expect='<!-- pipeline: verdict result=halt reason=agent-blocked -->'
 out="$(run_pipe event ENG-PE3 verdict halt --reason bogus-reason 2>&1 || true)"
 [[ "$out" == *"not in halt_reasons"* ]] && pass_at "PE3: bogus halt reason rejected" || fail_at "PE3: bogus halt reason rejected" "got: $out"
 
+# ENG-156: sandbox-contract-violation is registry-valid.
+out="$(run_pipe event ENG-156T verdict halt --reason sandbox-contract-violation 2>&1 || true)"
+[[ "$out" != *"not in halt_reasons"* ]] && pass_at "ENG-156: sandbox-contract-violation accepted by registry" \
+  || fail_at "ENG-156: sandbox-contract-violation accepted by registry" "got: $out"
+
 # PE4: missing required field — pass without --stage
 out="$(run_pipe event ENG-PE4 verdict pass 2>&1 || true)"
 [[ "$out" == *"--stage required"* ]] && pass_at "PE4: pass requires --stage" || fail_at "PE4: pass requires --stage" "got: $out"
