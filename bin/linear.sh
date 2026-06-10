@@ -14,6 +14,10 @@
 #   linear.sh add-comment <ENG-n> --body <body>
 #   linear.sh add-comment <ENG-n> --body -                   # body from stdin (heredoc-friendly)
 #   linear.sh add-comment <ENG-n> --body-file <path>         # body from file
+#   linear.sh add-comment <ENG-n> --sig <cat>/<stage>/<issue> --body <body>
+#     # append-only ledger tag: chokepoint suffixes /d<NNNN> from
+#     # PIPELINE_DISPATCH_ID and appends <!-- meta: dedup key=… -->
+#     # for operator grep (ENG-150 D-006); hash dedup skipped on --sig.
 #   linear.sh refresh-cache
 #   linear.sh stage-of <ENG-n>   # prints current stage:* label name (or empty)
 #   linear.sh all-stage-labels <ENG-n>   # prints all stage:* labels space-separated (or empty)
@@ -793,10 +797,7 @@ add_comment() {
   # chokepoint's appended marker from becoming the SECOND such line on
   # the wire when an agent stage-summary quoted a fixture body), then
   # suffix with /d<NNNN> from PIPELINE_DISPATCH_ID and append the
-  # canonical dedup marker. dispatch_seq is empty when
-  # PIPELINE_DISPATCH_ID is unset (operator-manual / test-fixture
-  # path), producing the legacy suffix-less sig shape that the
-  # back-compat reader recipe (D-006) handles uniformly.
+  # canonical dedup marker.
   if [[ -n "$sig" ]]; then
     body="$(printf '%s' "$body" | sed -E '/^<!-- meta: dedup key=.* -->$/d')"
     local dispatch_seq=""
