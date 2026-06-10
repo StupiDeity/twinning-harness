@@ -369,7 +369,7 @@ post_completion_comment() {
   # `pipeline` and the event) is preserved.
   #
   # ENG-96: also strip `<!-- meta: dispatch id=... -->` lines. The
-  # chokepoint at bin/linear.sh::add_or_update_comment owns this marker
+  # chokepoint at bin/linear.sh::add_comment owns this marker
   # (auto-injects from PIPELINE_DISPATCH_ID); an agent-emitted marker —
   # whether a literal-placeholder `$PIPELINE_DISPATCH_ID` (the ENG-96
   # case), a stale prior-dispatch id, or a syntactically valid current id —
@@ -420,12 +420,14 @@ post_completion_comment() {
     comment_body="$(printf '%s\n\n%s%s%s' "$header" "$body" "$cost_footer" "$pr_tail")"
   fi
 
-  # Retry once on failure. add-or-update-comment appends the canonical sig itself.
-  if bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"; then
+  # Retry once on failure. add-comment --sig stamps the dispatch-
+  # suffixed dedup marker; each retry posts a fresh chronological
+  # comment if the first one didn't land.
+  if bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "$sig" --body "$comment_body"; then
     return 0
   fi
   sleep 5
-  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "$sig" --body "$comment_body"
 }
 
 # Push the current worktree branch to origin if HEAD is ahead of origin/<branch>.
@@ -661,7 +663,7 @@ _post_dispatch_check_worktree_head() {
 
   # Operator-visibility: post a non-halting Linear comment so an operator
   # skimming the issue thread sees the detach without grepping events.jsonl
-  # or per-stage transcripts. Sig-deduped via add-or-update-comment so
+  # or per-stage transcripts. Append-only via add-comment --sig so
   # re-fires on retry collapse to one comment per issue. ENG-71 m5 (review
   # iter-2): sig prefix `worktree-mutation/<issue>` is functionally named
   # (mirrors the existing `completion/<stage>/<issue>` and
@@ -677,9 +679,9 @@ _post_dispatch_check_worktree_head() {
   local _body
   _body="$(printf '<!-- meta: metric name=worktree-mutated-by-agent -->\n\nBuild agent left this worktree on `%s` (expected `%s`) post-dispatch. %s' \
     "$current_branch" "$expected_branch" "$_detach_status")"
-  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment \
-    "worktree-mutation/$ident" "$ident" "$_body" \
-    || log "linear.sh add-or-update-comment failed for worktree-mutation/$ident (non-blocking)"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
+    --sig "worktree-mutation/$ident" --body "$_body" \
+    || log "linear.sh add-comment failed for worktree-mutation/$ident (non-blocking)"
 }
 
 # Idempotent counter mutation + budget check for wait exits. All Linear writes

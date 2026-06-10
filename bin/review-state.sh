@@ -42,7 +42,7 @@ bootstrap_review_state() {
   [[ -n "$issue" ]] || die "bootstrap_review_state: issue id required"
   local body
   body="$(_rs_compose_body "")"
-  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "last-review-state/$issue" "$issue" "$body"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "last-review-state/$issue" --body "$body"
 }
 
 update_review_state() {
@@ -50,7 +50,7 @@ update_review_state() {
   [[ -n "$issue" ]] || die "update_review_state: issue id required"
   local body
   body="$(_rs_compose_body "$sha")"
-  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "last-review-state/$issue" "$issue" "$body"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "last-review-state/$issue" --body "$body"
 }
 
 read_review_state() {
