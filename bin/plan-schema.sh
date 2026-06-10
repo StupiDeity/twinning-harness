@@ -189,86 +189,14 @@ cmd_validate() {
     fi
 
     # ── Per-criterion validation ───────────────────────────────────
+    # ENG-113 D-007: per-criterion validation lifted into bin/common.sh::
+    # _validate_pass_criterion. Behavior-preserving — diagnostic prefix and
+    # rc=34 path identical (caller env var defaults to "plan-contract").
+    # The `--kinds smoke,file_exists,grep` gate keeps `http_get` (the new
+    # qa-predicate kind) out of plan-schema's allowed set.
     local ci
     for (( ci=0; ci<pc_len; ci++ )); do
-      local kind
-      kind="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].kind // "MISSING"' "$file")"
-      if [[ "$kind" == "MISSING" ]]; then
-        _emit_incomplete "features[$fi].pass_criteria[$ci].kind is required"
-        return 34
-      fi
-
-      case "$kind" in
-        smoke)
-          local cmd_val cmd_type exit_val exit_type
-          cmd_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].command | type' "$file")"
-          cmd_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].command // "MISSING"' "$file")"
-          if [[ "$cmd_val" == "MISSING" || "$cmd_type" != "string" || -z "$cmd_val" ]]; then
-            _emit_incomplete "features[$fi].pass_criteria[$ci] (smoke): command must be a non-empty string"
-            return 34
-          fi
-          exit_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].expect_exit | type' "$file")"
-          if [[ "$exit_type" != "number" ]]; then
-            _emit_incomplete "features[$fi].pass_criteria[$ci] (smoke): expect_exit must be an integer, got type=$exit_type"
-            return 34
-          fi
-          # Unknown fields for smoke criterion.
-          local smoke_unknown
-          smoke_unknown="$(jq -r --argjson i "$fi" --argjson j "$ci" \
-            '(.features[$i].pass_criteria[$j] | keys) - ["kind","command","expect_exit","expect_stdout_match"] | .[]' \
-            "$file" 2>/dev/null || true)"
-          while IFS= read -r uf; do
-            [[ -n "$uf" ]] && _warn_unknown "pass_criteria[smoke]" "$uf"
-          done <<< "$smoke_unknown"
-          ;;
-        file_exists)
-          local path_val path_type
-          path_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].path | type' "$file")"
-          path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].path // "MISSING"' "$file")"
-          if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
-            _emit_incomplete "features[$fi].pass_criteria[$ci] (file_exists): path must be a non-empty string"
-            return 34
-          fi
-          local fe_unknown
-          fe_unknown="$(jq -r --argjson i "$fi" --argjson j "$ci" \
-            '(.features[$i].pass_criteria[$j] | keys) - ["kind","path"] | .[]' \
-            "$file" 2>/dev/null || true)"
-          while IFS= read -r uf; do
-            [[ -n "$uf" ]] && _warn_unknown "pass_criteria[file_exists]" "$uf"
-          done <<< "$fe_unknown"
-          ;;
-        grep)
-          local path_val path_type pattern_val pattern_type em_type
-          path_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].path | type' "$file")"
-          path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].path // "MISSING"' "$file")"
-          if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
-            _emit_incomplete "features[$fi].pass_criteria[$ci] (grep): path must be a non-empty string"
-            return 34
-          fi
-          pattern_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].pattern | type' "$file")"
-          pattern_val="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].pattern // "MISSING"' "$file")"
-          if [[ "$pattern_val" == "MISSING" || "$pattern_type" != "string" || -z "$pattern_val" ]]; then
-            _emit_incomplete "features[$fi].pass_criteria[$ci] (grep): pattern must be a non-empty string"
-            return 34
-          fi
-          em_type="$(jq -r --argjson i "$fi" --argjson j "$ci" '.features[$i].pass_criteria[$j].expect_match | type' "$file")"
-          if [[ "$em_type" != "boolean" ]]; then
-            _emit_incomplete "features[$fi].pass_criteria[$ci] (grep): expect_match must be a boolean, got type=$em_type"
-            return 34
-          fi
-          local grep_unknown
-          grep_unknown="$(jq -r --argjson i "$fi" --argjson j "$ci" \
-            '(.features[$i].pass_criteria[$j] | keys) - ["kind","path","pattern","expect_match"] | .[]' \
-            "$file" 2>/dev/null || true)"
-          while IFS= read -r uf; do
-            [[ -n "$uf" ]] && _warn_unknown "pass_criteria[grep]" "$uf"
-          done <<< "$grep_unknown"
-          ;;
-        *)
-          _emit_incomplete "features[$fi].pass_criteria[$ci]: unknown kind \"$kind\" (allowed: smoke, file_exists, grep)"
-          return 34
-          ;;
-      esac
+      _validate_pass_criterion "$file" "$fi" "$ci" --kinds smoke,file_exists,grep || return $?
     done
 
     # Unknown fields per feature.

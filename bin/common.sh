@@ -80,6 +80,161 @@ progress_md_path() {
   [[ -n "$issue" ]] || die "progress_md_path: missing issue id"
   printf '%s/progress.md' "$(issue_dir "$issue")"
 }
+
+# ENG-113: per-issue qa-predicate JSON path. Mirrors progress_md_path;
+# consumed by bin/verify-qa.sh and the {qa_predicate_path} prompt resolver.
+# The file lives under $(issue_dir "$issue") — i.e. inside $PROJECT_STATE_DIR,
+# OUTSIDE the worktree (D-011 authority surface: verify-qa.sh asserts the
+# file path is anchored under $PROJECT_STATE_DIR before opening it).
+qa_predicate_path() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "qa_predicate_path: missing issue id"
+  printf '%s/qa-predicate-%s.json' "$(issue_dir "$issue")" "$issue"
+}
+
+# ENG-113 D-007: shared per-pass_criterion validator; lifted from
+# bin/plan-schema.sh:181-260. Callers: plan-schema.sh::cmd_validate
+# (plan.json) and verify-qa.sh::cmd_validate (qa-predicate JSON). The
+# --kinds CSV restricts the allowed kind set; plan-schema passes
+# "smoke,file_exists,grep"; verify-qa passes "smoke,file_exists,grep,http_get".
+# The `http_get` kind validates `url` (non-empty string), `expect_status`
+# (integer), and optional `expect_body_match` (string|null).
+# The `file_exists` and `grep` kinds additionally enforce D-013
+# path-traversal hardening: reject leading `/` and any `../` segment;
+# exempt `smoke` (commands run any binary) and `http_get` (URLs are
+# not filesystem paths). Returns rc=34 on any failure with a
+# `<caller>-incomplete:` diagnostic shape — _PASS_CRITERION_CALLER env
+# var controls the prefix (`plan-contract` default; verify-qa sets
+# `qa-predicate`).
+#
+# Usage: _validate_pass_criterion <file> <fi> <ci> [--kinds <csv>]
+#   <file>  — JSON file under inspection
+#   <fi>    — feature index for diagnostics (verify-qa passes 0)
+#   <ci>    — criterion index for diagnostics
+#   --kinds — CSV of allowed kinds (default: smoke,file_exists,grep)
+_validate_pass_criterion() {
+  local file="$1" fi="$2" ci="$3"
+  shift 3
+  local kinds_csv="smoke,file_exists,grep"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --kinds) kinds_csv="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  local caller="${_PASS_CRITERION_CALLER:-plan-contract}"
+  # jq path varies by caller: plan-schema indexes via features[fi].pass_criteria[ci];
+  # verify-qa uses a flat pass_criteria[ci] at top level. Discover the shape from
+  # the file: features[] present → nested; else flat.
+  local pc_jq=".features[\$i].pass_criteria[\$j]"
+  if ! jq -e '.features' "$file" >/dev/null 2>&1; then
+    pc_jq=".pass_criteria[\$j]"
+  fi
+  local kind
+  kind="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.kind // \"MISSING\"" "$file")"
+  if [[ "$kind" == "MISSING" ]]; then
+    printf '%s-incomplete: features[%s].pass_criteria[%s].kind is required\n' "$caller" "$fi" "$ci"
+    return 34
+  fi
+
+  # Enforce --kinds gate (rejects unknown kinds, AND rejects allowed kinds
+  # the caller did not enable — e.g. plan-schema rejects http_get).
+  local kind_allowed=0
+  local IFS_save="$IFS"; IFS=','
+  for allowed in $kinds_csv; do
+    [[ "$kind" == "$allowed" ]] && kind_allowed=1
+  done
+  IFS="$IFS_save"
+  if (( kind_allowed == 0 )); then
+    printf '%s-incomplete: features[%s].pass_criteria[%s]: unknown kind "%s" (allowed: %s)\n' \
+      "$caller" "$fi" "$ci" "$kind" "$kinds_csv"
+    return 34
+  fi
+
+  case "$kind" in
+    smoke)
+      local cmd_val cmd_type exit_type
+      cmd_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.command | type" "$file")"
+      cmd_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.command // \"MISSING\"" "$file")"
+      if [[ "$cmd_val" == "MISSING" || "$cmd_type" != "string" || -z "$cmd_val" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (smoke): command must be a non-empty string\n' "$caller" "$fi" "$ci"
+        return 34
+      fi
+      exit_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_exit | type" "$file")"
+      if [[ "$exit_type" != "number" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (smoke): expect_exit must be an integer, got type=%s\n' "$caller" "$fi" "$ci" "$exit_type"
+        return 34
+      fi
+      ;;
+    file_exists)
+      local path_val path_type
+      path_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path | type" "$file")"
+      path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path // \"MISSING\"" "$file")"
+      # D-013 traversal guard runs BEFORE the non-empty / type check so a
+      # `path: "/etc/passwd"` cannot slip past the type test (string + non-empty)
+      # before the worktree-relative gate fires.
+      if [[ "$path_val" == /* \
+            || "$path_val" == ../* \
+            || "$path_val" == */../* \
+            || "$path_val" == */.. ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (%s): path must be worktree-relative (no leading '\''/'\'' and no '\''..'\'' path-segment), got: %s\n' "$caller" "$fi" "$ci" "$kind" "$path_val"
+        return 34
+      fi
+      if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (file_exists): path must be a non-empty string\n' "$caller" "$fi" "$ci"
+        return 34
+      fi
+      ;;
+    grep)
+      local path_val path_type pattern_val pattern_type em_type
+      path_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path | type" "$file")"
+      path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path // \"MISSING\"" "$file")"
+      if [[ "$path_val" == /* \
+            || "$path_val" == ../* \
+            || "$path_val" == */../* \
+            || "$path_val" == */.. ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (%s): path must be worktree-relative (no leading '\''/'\'' and no '\''..'\'' path-segment), got: %s\n' "$caller" "$fi" "$ci" "$kind" "$path_val"
+        return 34
+      fi
+      if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (grep): path must be a non-empty string\n' "$caller" "$fi" "$ci"
+        return 34
+      fi
+      pattern_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.pattern | type" "$file")"
+      pattern_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.pattern // \"MISSING\"" "$file")"
+      if [[ "$pattern_val" == "MISSING" || "$pattern_type" != "string" || -z "$pattern_val" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (grep): pattern must be a non-empty string\n' "$caller" "$fi" "$ci"
+        return 34
+      fi
+      em_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_match | type" "$file")"
+      if [[ "$em_type" != "boolean" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (grep): expect_match must be a boolean, got type=%s\n' "$caller" "$fi" "$ci" "$em_type"
+        return 34
+      fi
+      ;;
+    http_get)
+      local url_val url_type es_type ebm_type
+      url_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.url | type" "$file")"
+      url_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.url // \"MISSING\"" "$file")"
+      if [[ "$url_val" == "MISSING" || "$url_type" != "string" || -z "$url_val" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (http_get): url must be a non-empty string\n' "$caller" "$fi" "$ci"
+        return 34
+      fi
+      es_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_status | type" "$file")"
+      if [[ "$es_type" != "number" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (http_get): expect_status must be an integer, got type=%s\n' "$caller" "$fi" "$ci" "$es_type"
+        return 34
+      fi
+      ebm_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_body_match | type" "$file")"
+      if [[ "$ebm_type" != "string" && "$ebm_type" != "null" ]]; then
+        printf '%s-incomplete: features[%s].pass_criteria[%s] (http_get): expect_body_match must be string or null, got type=%s\n' "$caller" "$fi" "$ci" "$ebm_type"
+        return 34
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # Compute a stable sha256 over the set of files that drive pipeline
 # behavior from the main dev dir. Intentionally excludes metrics/ and
 # learned-rules/ (churn every tick). Emits a single hex digest, no
@@ -385,6 +540,9 @@ failure_outcome_for_exit() {
     39) printf 'qa-payload-malformed' ;;
     40) printf 'qa-payload-incomplete' ;;
     41) printf 'qa-payload-missing' ;;
+    42) printf 'qa-predicate-malformed' ;;  # ENG-113
+    43) printf 'qa-predicate-incomplete' ;; # ENG-113
+    44) printf 'qa-predicate-missing' ;;    # ENG-113
     45) printf 'init-sh-malformed' ;;
     46) printf 'init-sh-incomplete' ;;
     47) printf 'init-sh-missing' ;;
@@ -545,7 +703,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
