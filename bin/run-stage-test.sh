@@ -6600,17 +6600,17 @@ unset _ac_sps_t0 _ac_sps_rc
 # a PROMPT_RESOLVERS-resolved path match.
 printf '\n--- ENG-156: _emit_sandbox_denial_metric ---\n'
 
-# Local metrics stub: tee writes to metrics.capture (sibling stubs in
-# this file already drop in their own; ENG-156 uses the same shape).
-if [[ ! -x "$STUB_DIR/metrics.sh" ]]; then
-  cat > "$STUB_DIR/metrics.sh" <<SH
+# Local metrics stub: tee writes to metrics.capture. Unconditional
+# overwrite — the sibling stub created by ENG-71 is byte-identical
+# today, but we own the test-isolation invariant here (CLAUDE.md
+# "Test isolation" — coupling on a stub created upstream is fragile).
+cat > "$STUB_DIR/metrics.sh" <<SH
 #!/usr/bin/env bash
 printf 'EVENT=%s\nIDENT=%s\nSTAGE=%s\nOUTCOME=%s\nNOTES=%s\n---\n' \
   "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" >> "$STUB_DIR/metrics.capture"
 exit 0
 SH
-  chmod +x "$STUB_DIR/metrics.sh"
-fi
+chmod +x "$STUB_DIR/metrics.sh"
 : > "$STUB_DIR/metrics.capture"
 
 # Stub `claude --version` via PATH precedence so the detective's
@@ -6661,6 +6661,7 @@ _eng156_ndjson_tool_result_arr() {
 }
 
 # Case 156-A: empty/missing sidecar → returns rc=0, no events.jsonl row.
+reset_capture
 : > "$STUB_DIR/metrics.capture"
 mkdir -p "$(issue_dir ENG-156A)"
 rm -f "$(issue_dir ENG-156A)/.envelope-transcript-implementing"
@@ -6676,6 +6677,7 @@ fi
 # Case 156-B: one sandbox-path denial + one bash-classifier denial →
 # rc=0, single events.jsonl row count=2 signatures=bash-classifier,sandbox-path
 # paths=<paths> outcome=detected. Mixed content shapes (string + array).
+reset_capture
 : > "$STUB_DIR/metrics.capture"
 mkdir -p "$(issue_dir ENG-156B)"
 {
@@ -6705,16 +6707,19 @@ else
 fi
 # Verify paths attribution: /etc/hosts came in via .input.file_path; the
 # bash command had no file_path so falls back to trailing token of cmd.
-if grep -qF 'paths=/etc/hosts' "$STUB_DIR/metrics.capture" \
-  || grep -qE 'paths=.*hosts' "$STUB_DIR/metrics.capture"; then
+# Anchor on the comma-separated boundary so /foo/.hosts.bak or ghosts
+# substrings cannot satisfy the assertion (plan Task 1 pins specific
+# path-attribution behavior).
+if grep -qE 'paths=(/etc/hosts|/etc/hosts,|[^=]*,/etc/hosts)([ ,]|$)' "$STUB_DIR/metrics.capture"; then
   pass_at "ENG-156 B: paths attribution captures /etc/hosts via tool_use.file_path"
 else
   fail_at "ENG-156 B: paths attribution" \
-    "expected /etc/hosts in paths, capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
+    "expected /etc/hosts in paths (boundary-anchored), capture: $(cat "$STUB_DIR/metrics.capture" 2>/dev/null)"
 fi
 
 # Case 156-B-bis: `claude --version` fork fails (non-zero exit / missing CLI)
 # → `claude_version=unknown` fallback. Pins Failure-Mode → Test-Map row 13.
+reset_capture
 : > "$STUB_DIR/metrics.capture"
 mkdir -p "$(issue_dir ENG-156Bx)"
 {
@@ -6748,6 +6753,7 @@ fi
 # NOT increment the count. Also pin the FILTER: a tool_result with
 # is_error:false carrying the sandbox-denial substring literally (e.g.,
 # from a docs/ file body) MUST be skipped — brainstorm OQ-8 adversarial.
+reset_capture
 : > "$STUB_DIR/metrics.capture"
 mkdir -p "$(issue_dir ENG-156C)"
 {
@@ -6903,6 +6909,80 @@ else
   fail_at "ENG-156 G: .rendered-paths clear" \
     "file still exists: $(issue_dir ENG-156G)/.rendered-paths-planning"
 fi
+
+# Case 156-H: bin/status.sh::show_sandbox_denials empty + non-empty branches.
+# Follows the status.sh-sourcing precedent at lines 760/958: drive the
+# section function via a child bash that sources status.sh fresh (avoids
+# polluting the parent test's SCRIPT_DIR / set -u state). The empty
+# branch prints `(no sandbox_denial events in last 7d)` in dim; the
+# non-empty branch renders a count× line with the version + stage + sigs.
+mkdir -p "$PROJECT_STATE_DIR/metrics"
+rm -f "$PROJECT_STATE_DIR/metrics/events.jsonl"
+# Empty: no events.jsonl at all → first guard returns with `(no events.jsonl)`.
+empty_no_file_out="$(
+  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    show_sandbox_denials 2>/dev/null
+  ' 2>/dev/null || true
+)"
+if grep -qF '(no events.jsonl)' <<<"$empty_no_file_out"; then
+  pass_at "ENG-156 H: show_sandbox_denials prints (no events.jsonl) when file absent"
+else
+  fail_at "ENG-156 H: show_sandbox_denials no-file branch" \
+    "expected (no events.jsonl), got: $empty_no_file_out"
+fi
+
+# Empty branch: events.jsonl exists but has no sandbox_denial rows in window.
+cat > "$PROJECT_STATE_DIR/metrics/events.jsonl" <<'JSON'
+{"ts":"2026-04-27T12:00:00Z","event":"stage-end","issue_id":"ENG-T","stage":"plan","outcome":"success","duration_ms":100,"notes":""}
+JSON
+empty_out="$(
+  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    show_sandbox_denials 2>/dev/null
+  ' 2>/dev/null || true
+)"
+if grep -qF '(no sandbox_denial events in last 7d)' <<<"$empty_out"; then
+  pass_at "ENG-156 H: show_sandbox_denials empty branch renders dim no-events line"
+else
+  fail_at "ENG-156 H: show_sandbox_denials empty branch" \
+    "expected (no sandbox_denial events in last 7d), got: $empty_out"
+fi
+
+# Non-empty branch: one sandbox_denial row in window → renders one count
+# line carrying version=1.0.93, stage=implementing, sigs=sandbox-path.
+# Use ISO-8601 "today" so cutoff -7d comparison sees the row in-window.
+today_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$PROJECT_STATE_DIR/metrics/events.jsonl" <<JSON
+{"ts":"$today_ts","event":"sandbox_denial","issue_id":"ENG-156H","stage":"implementing","outcome":"detected","duration_ms":0,"notes":"count=1 signatures=sandbox-path paths=/etc/hosts claude_version=1.0.93"}
+JSON
+nonempty_out="$(
+  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    show_sandbox_denials 2>/dev/null
+  ' 2>/dev/null || true
+)"
+if grep -qE 'v=1\.0\.93' <<<"$nonempty_out" \
+  && grep -qE 'stage=implementing' <<<"$nonempty_out" \
+  && grep -qE 'sigs=sandbox-path' <<<"$nonempty_out"; then
+  pass_at "ENG-156 H: show_sandbox_denials non-empty branch renders v=, stage=, sigs= bucket"
+else
+  fail_at "ENG-156 H: show_sandbox_denials non-empty branch" \
+    "expected v=1.0.93 + stage=implementing + sigs=sandbox-path, got: $nonempty_out"
+fi
+rm -f "$PROJECT_STATE_DIR/metrics/events.jsonl"
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
