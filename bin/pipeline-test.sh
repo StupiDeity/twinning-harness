@@ -100,6 +100,10 @@ out="$(run_pipe event ENG-PE7c verdict pivot --target planning --reason plan-str
 out="$(run_pipe event ENG-PE7d verdict pivot --target planning --stage bogus-stage --reason plan-structural-defect 2>&1 || true)"
 [[ "$out" == *"not in stages"* ]] && pass_at "PE7d: bogus pivot stage rejected" || fail_at "PE7d: bogus pivot stage rejected" "got: $out"
 
+# PE7e: pivot bogus target (value valid for fail_targets but not pivot_targets)
+out="$(run_pipe event ENG-PE7e verdict pivot --target implementing --stage implementing --reason plan-structural-defect 2>&1 || true)"
+[[ "$out" == *"not in pivot_targets"* ]] && pass_at "PE7e: bogus pivot target rejected" || fail_at "PE7e: bogus pivot target rejected" "got: $out"
+
 printf '\n--- bin/pipeline.sh: event transition ---\n'
 
 # PT1: valid transition — body uses two k=v pairs (from=X to=Y) per T2.6
