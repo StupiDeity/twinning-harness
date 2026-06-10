@@ -191,12 +191,18 @@ cmd_validate() {
     # ── Per-criterion validation ───────────────────────────────────
     # ENG-113 D-007: per-criterion validation lifted into bin/common.sh::
     # _validate_pass_criterion. Behavior-preserving — diagnostic prefix and
-    # rc=34 path identical (caller env var defaults to "plan-contract").
+    # rc=34 path identical (--caller plan-contract is the default).
     # The `--kinds smoke,file_exists,grep` gate keeps `http_get` (the new
-    # qa-predicate kind) out of plan-schema's allowed set.
+    # qa-predicate kind) out of plan-schema's allowed set; `--shape nested`
+    # is the default but is passed explicitly so the call-site documents
+    # plan-schema's `features[$i].pass_criteria[$j]` jq path shape.
     local ci
     for (( ci=0; ci<pc_len; ci++ )); do
-      _validate_pass_criterion "$file" "$fi" "$ci" --kinds smoke,file_exists,grep || return $?
+      _validate_pass_criterion "$file" "$fi" "$ci" \
+        --kinds smoke,file_exists,grep \
+        --caller plan-contract \
+        --shape nested \
+        || return $?
     done
 
     # Unknown fields per feature.
