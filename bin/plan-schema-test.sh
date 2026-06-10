@@ -404,5 +404,189 @@ rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/t_unicode.json" >/dev/null 2>&1 |
   && pass_at "T_unicode: UTF-8 summary with non-ASCII chars → exit 0 (jq handles Unicode)" \
   || fail_at "T_unicode: UTF-8 summary" "expected rc=0, got rc=$rc"
 
+# ─── ENG-157: T_validate_md_* — MD-side validator unit tests ──────────
+# Cover the `cmd_validate_md` sub-command which enforces the new
+# `## System invariants` H2 section + parseable `verified_by:` token
+# contract on plan markdowns. Each test follows the same pass_at/fail_at
+# pattern as T1-T18.
+
+printf '\n--- ENG-157: T_validate_md_* (cmd_validate_md) ---\n'
+
+# ─── T_validate_md_valid_single: one bullet with <path>:<test-name> → rc=0
+cat > "$FIXTURE_DIR/md_valid_single.md" <<'MDEOF'
+---
+linear: ENG-1
+---
+
+# stub
+
+## System invariants
+
+- foo verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_valid_single.md" 2>/dev/null)" || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_valid_single: one valid bullet → rc=0" \
+  || fail_at "T_validate_md_valid_single" "expected rc=0, got rc=$rc; out=$md_out"
+if [[ "$md_out" == *"plan-md-contract-valid:"* ]]; then
+  pass_at "T_validate_md_valid_single: stdout contains plan-md-contract-valid:"
+else
+  fail_at "T_validate_md_valid_single: missing valid marker" "out=$md_out"
+fi
+
+# ─── T_validate_md_valid_multi: three bullets, mix of token shapes → rc=0
+cat > "$FIXTURE_DIR/md_valid_multi.md" <<'MDEOF'
+# stub
+
+## System invariants
+
+- I-1: foo verified_by: bin/foo.sh:T_foo
+- I-2: bar verified_by: task:T2
+- I-3: baz verified_by: bin/baz-test.sh:T_baz_passes
+
+## Other section
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_valid_multi.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_valid_multi: 3 bullets, mixed token shapes → rc=0" \
+  || fail_at "T_validate_md_valid_multi" "expected rc=0, got rc=$rc"
+
+# ─── T_validate_md_missing_section: heading absent → rc=34
+cat > "$FIXTURE_DIR/md_missing_section.md" <<'MDEOF'
+# stub
+
+## Goal
+
+x
+
+## File Structure
+
+y
+MDEOF
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_missing_section.md" 2>/dev/null)" || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_missing_section: heading absent → rc=34" \
+  || fail_at "T_validate_md_missing_section" "expected rc=34, got rc=$rc"
+if [[ "$md_out" == *'plan-md-incomplete: required H2 section "## System invariants" missing'* ]]; then
+  pass_at "T_validate_md_missing_section: diagnostic names missing H2 section"
+else
+  fail_at "T_validate_md_missing_section: diagnostic shape" "out=$md_out"
+fi
+
+# Sub-case: a typo on the heading (lowercase 's', "Invariants" capital I) is
+# treated as "missing section" — the validator matches the literal heading only.
+cat > "$FIXTURE_DIR/md_heading_typo.md" <<'MDEOF'
+## system invariants
+
+- foo verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_heading_typo.md" >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_missing_section: lowercase typo → rc=34 (heading literal-match)" \
+  || fail_at "T_validate_md_missing_section (typo subcase)" "expected rc=34, got rc=$rc"
+
+# ─── T_validate_md_zero_bullets: heading present, no bullets → rc=34
+cat > "$FIXTURE_DIR/md_zero_bullets.md" <<'MDEOF'
+# stub
+
+## System invariants
+
+(no bullets — just prose.)
+
+## Next section
+MDEOF
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_zero_bullets.md" 2>/dev/null)" || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_zero_bullets: heading + 0 bullets → rc=34" \
+  || fail_at "T_validate_md_zero_bullets" "expected rc=34, got rc=$rc"
+if [[ "$md_out" == *'"## System invariants" section has 0 bullets'* ]]; then
+  pass_at "T_validate_md_zero_bullets: diagnostic names 0 bullets"
+else
+  fail_at "T_validate_md_zero_bullets: diagnostic shape" "out=$md_out"
+fi
+
+# ─── T_validate_md_missing_token: bullet lacks verified_by: → rc=34
+cat > "$FIXTURE_DIR/md_missing_token.md" <<'MDEOF'
+## System invariants
+
+- this bullet has no verified-by reference at all
+MDEOF
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_missing_token.md" 2>/dev/null)" || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_missing_token: bullet lacks verified_by: → rc=34" \
+  || fail_at "T_validate_md_missing_token" "expected rc=34, got rc=$rc"
+if [[ "$md_out" == *"bullet 1"* ]] && [[ "$md_out" == *'lacks parseable "verified_by:" reference'* ]]; then
+  pass_at "T_validate_md_missing_token: diagnostic carries bullet index + reference shape"
+else
+  fail_at "T_validate_md_missing_token: diagnostic shape" "out=$md_out"
+fi
+
+# ─── T_validate_md_malformed_token: gibberish_no_colon → rc=33
+cat > "$FIXTURE_DIR/md_malformed_token.md" <<'MDEOF'
+## System invariants
+
+- foo verified_by: gibberish_no_colon
+MDEOF
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_malformed_token.md" 2>/dev/null)" || rc=$?
+(( rc == 33 )) \
+  && pass_at "T_validate_md_malformed_token: unparseable token → rc=33" \
+  || fail_at "T_validate_md_malformed_token" "expected rc=33, got rc=$rc"
+if [[ "$md_out" == *"plan-md-malformed:"* ]]; then
+  pass_at "T_validate_md_malformed_token: diagnostic prefix is plan-md-malformed:"
+else
+  fail_at "T_validate_md_malformed_token: prefix" "out=$md_out"
+fi
+
+# ─── T_validate_md_no_arg: no positional file → rc=33
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md 2>/dev/null)" || rc=$?
+(( rc == 33 )) \
+  && pass_at "T_validate_md_no_arg: missing file argument → rc=33" \
+  || fail_at "T_validate_md_no_arg" "expected rc=33, got rc=$rc"
+if [[ "$md_out" == *"plan-md-malformed: file argument required"* ]]; then
+  pass_at "T_validate_md_no_arg: diagnostic says file argument required"
+else
+  fail_at "T_validate_md_no_arg: diagnostic shape" "out=$md_out"
+fi
+
+# ─── T_validate_md_missing_file: path does not exist → rc=35
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md "$FIXTURE_DIR/never_existed.md" 2>/dev/null)" || rc=$?
+(( rc == 35 )) \
+  && pass_at "T_validate_md_missing_file: path does not exist → rc=35" \
+  || fail_at "T_validate_md_missing_file" "expected rc=35, got rc=$rc"
+if [[ "$md_out" == *"plan-md-missing: file not found"* ]]; then
+  pass_at "T_validate_md_missing_file: diagnostic says file not found"
+else
+  fail_at "T_validate_md_missing_file: diagnostic shape" "out=$md_out"
+fi
+
+# ─── T_validate_md_bsd_awk_sanity: bullet with embedded TAB before verified_by:
+# Verifies I-4: BSD awk on macOS handles `[[:space:]]` for tab characters.
+# If BSD awk balks, the implementer falls back to `[ \t]` POSIX class.
+printf '## System invariants\n\n- foo\tverified_by: bin/foo.sh:T_foo\n' \
+  > "$FIXTURE_DIR/md_bsd_awk_sanity.md"
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_bsd_awk_sanity.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_bsd_awk_sanity: bullet w/ TAB before verified_by → rc=0 (BSD awk [[:space:]] OK)" \
+  || fail_at "T_validate_md_bsd_awk_sanity" "expected rc=0, got rc=$rc (BSD awk regex incompatibility?)"
+
+# ─── T_validate_md_large_fixture: 50 bullets → rc=0 (informational latency)
+{
+  printf '## System invariants\n\n'
+  for i in $(seq 1 50); do
+    printf -- '- I-%d: invariant %d verified_by: bin/test.sh:T_case_%d\n' "$i" "$i" "$i"
+  done
+} > "$FIXTURE_DIR/md_large_fixture.md"
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_large_fixture.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_large_fixture: 50-bullet plan → rc=0 (informational; A-017)" \
+  || fail_at "T_validate_md_large_fixture" "expected rc=0, got rc=$rc"
+
 printf '\nplan-schema-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

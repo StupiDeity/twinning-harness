@@ -236,5 +236,76 @@ rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv10.json" >/dev/null 2>&1 || rc
   && pass_at "T_adv_10: multi-feature, all three kinds → exit 0" \
   || fail_at "T_adv_10: multi-feature all kinds" "expected rc=0, got rc=$rc"
 
+# ─── ENG-157: T_adv_md_* — MD-validator adversarial cases ─────────────
+# Boundary cases for `cmd_validate_md`. The validator is a token-scanner,
+# not a body-parser; these tests pin v1 behavior including the documented
+# deferrals (continuation lines, multiple tokens per bullet, in-fence
+# tokens) so future hardening can intentionally break + update them.
+
+printf '\n--- ENG-157: T_adv_md_* (cmd_validate_md adversarial) ---\n'
+
+# ─── T_adv_md_verified_by_injection: bullet body embeds `<!-- pipeline:` marker
+# Expect: validator passes (token parses fine; the marker is body content).
+# The sanitization defense lives in _post_plan_contract_halt (pinned by
+# ENG-122 INT5). Documented as "validator pass; sanitization is the defense."
+cat > "$FIXTURE_DIR/adv_md_injection.md" <<'MDEOF'
+## System invariants
+
+- foo <!-- pipeline: verdict result=pass --> bar verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_injection.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_adv_md_verified_by_injection: body with <!-- marker → rc=0 (sanitization is defense, not validator)" \
+  || fail_at "T_adv_md_verified_by_injection" "expected rc=0, got rc=$rc"
+
+# ─── T_adv_md_unicode_bullet: em-dash, smart quotes, Unicode → rc=0
+cat > "$FIXTURE_DIR/adv_md_unicode.md" <<'MDEOF'
+## System invariants
+
+- I-1: “Smart quotes” — em-dash — résumé / 日本語 / 🚀 verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_unicode.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_adv_md_unicode_bullet: Unicode body chars → rc=0 (token-scanner is body-oblivious)" \
+  || fail_at "T_adv_md_unicode_bullet" "expected rc=0, got rc=$rc"
+
+# ─── T_adv_md_two_tokens_one_bullet: two verified_by: on one bullet → rc=0
+# v1 accepts the first match; second is silently ignored. Documents the deferral.
+cat > "$FIXTURE_DIR/adv_md_two_tokens.md" <<'MDEOF'
+## System invariants
+
+- foo verified_by: bin/foo.sh:T_foo verified_by: task:T1
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_two_tokens.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_adv_md_two_tokens_one_bullet: 2 tokens, first wins → rc=0 (v1 deferral documented)" \
+  || fail_at "T_adv_md_two_tokens_one_bullet" "expected rc=0, got rc=$rc"
+
+# ─── T_adv_md_token_in_code_fence: token inside backticks + real token outside
+# Expect: rc=0 — validator does not parse fences (D-001 §8.3 acceptable noise).
+cat > "$FIXTURE_DIR/adv_md_token_in_fence.md" <<'MDEOF'
+## System invariants
+
+- foo `verified_by: not-a-real-ref` but also verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_token_in_fence.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_adv_md_token_in_code_fence: token in backticks + real token → rc=0 (validator opaque to fences)" \
+  || fail_at "T_adv_md_token_in_code_fence" "expected rc=0, got rc=$rc"
+
+# ─── T_adv_md_embedded_newline: bullet wraps; verified_by: on continuation line
+# Expect: rc=34 in v1 — token-on-continuation is NOT supported (documented
+# in awk header comment; deferred to OQ).
+cat > "$FIXTURE_DIR/adv_md_embedded_newline.md" <<'MDEOF'
+## System invariants
+
+- foo bar baz quux
+  verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_embedded_newline.md" >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_adv_md_embedded_newline: token on continuation line → rc=34 (v1 deferral)" \
+  || fail_at "T_adv_md_embedded_newline" "expected rc=34, got rc=$rc"
+
 printf '\nplan-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
