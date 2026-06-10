@@ -1311,6 +1311,48 @@ else
 fi
 unset _iter7_m1_line _iter7_m1_lineno
 
+# ─── case-ENG-115-pivot-detected ─────────────────────────────────────
+# Fresh pivot verdict (full three-field body) after a transition.
+# verdict_handler dispatches the pipeline-pivot arm: logs and rc=1,
+# NO transition applied, NO protocol-violation comment posted.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect -->|2026-06-10T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+VH_CURRENT_LABELS="stage:implementing pipeline:halted"
+rc=0; log_output="$(verdict_handler "ENG-911" "implementing" 2>&1)" || rc=$?
+if [[ "$rc" == "1" ]] \
+   && [[ "$log_output" == *"pivot-detected"* ]] \
+   && [[ "$log_output" == *"source=implementing"* ]] \
+   && [[ "$log_output" == *"target=planning"* ]] \
+   && [[ "$log_output" == *"reason=plan-structural-defect"* ]] \
+   && ! calls_contains "add-or-update-comment protocol-violation/" \
+   && ! calls_contains "add-label ENG-911 stage:planning"; then
+  pass_at "case-ENG-115-pivot-detected"
+else
+  fail_at "case-ENG-115-pivot-detected" "rc=$rc log=$log_output calls=$(cat "$STUB_LOG")"
+fi
+
+# ─── case-ENG-115-pivot-find-fresh-projection ────────────────────────
+# Same fixture, direct find_fresh_verdict — assert the projected JSON
+# shape: marker=pipeline-pivot, source_stage/target_stage/reason all set
+# from the registry-validated fields.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect -->|2026-06-10T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+proj="$(find_fresh_verdict "ENG-912")"
+if [[ "$(jq -r '.marker' <<<"$proj")" == "pipeline-pivot" ]] \
+   && [[ "$(jq -r '.source_stage' <<<"$proj")" == "implementing" ]] \
+   && [[ "$(jq -r '.target_stage' <<<"$proj")" == "planning" ]] \
+   && [[ "$(jq -r '.reason' <<<"$proj")" == "plan-structural-defect" ]]; then
+  pass_at "case-ENG-115-pivot-find-fresh-projection"
+else
+  fail_at "case-ENG-115-pivot-find-fresh-projection" "proj=$proj"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
