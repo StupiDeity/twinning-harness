@@ -1279,6 +1279,19 @@ Exact case, exact punctuation, exact order. `N` is the integer count from
 the merged severity-tagged list. The line is auditable from the dispatch
 transcript and from the Linear `completion/reviewing/{issue_id}` summary.
 
+Dimension scoring payload (MANDATORY — ENG-119):
+After merging findings and emitting the count-tuple line, hold the
+per-dimension `score`/`rationale`/`thresholds_*[]` data in memory. You
+will Write this as JSON to `{verdict_review_path}` at the end of the
+Output sequence (see Output section below). Score mapping:
+  - `pass`   — no findings worse than `minor` for this dimension.
+  - `concern` — at least one `major` finding (no `critical`).
+  - `fail`   — at least one `critical` finding.
+`rationale` is one short prose line (≤200 chars, soft limit) summarising
+the finding count and severity. `thresholds_met[]` / `thresholds_missed[]`
+are free-text narrative arrays — NOT a closed vocabulary; ENG-118
+threshold-gating reads only `score` in v1.
+
 Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
 
 **Premise challenge:** Re-read the brainstorm's core decisions. Are they still sound
@@ -1440,6 +1453,25 @@ Output:
   this file — the orchestrator kept posting the iter-5 stale body to Linear,
   the implement agent kept reading the stale body, and no new feedback
   reached the next iteration. Do not repeat.
+- **Write the dimension-scoring payload** at `{verdict_review_path}` as
+  the LAST step BEFORE the verdict marker. Emit on all three Decision
+  paths (A premise-failure, B request-changes, C clean). Schema source-
+  of-truth: header comment in `bin/review-payload-schema.sh`. **Required
+  top-level fields:** `review_schema_version: 1`, `issue_id` (must equal
+  `{issue_id}`), `dispatch_id` (must equal `{dispatch_id}`), `sha` (the
+  PR HEAD SHA you reviewed against), `verdict` (`approve` on path C,
+  `request-changes` on path B, `premise-failure` on path A, `halt` if
+  you exit via agent-blocked). **Required dimensions** under `dimensions{}`:
+  `correctness`, `testing`, `maintainability`, `scope` — each carries
+  `score` ∈ {`pass`,`concern`,`fail`}, non-empty `rationale`,
+  `thresholds_met[]`, `thresholds_missed[]`. **Optional dimensions** (emit
+  only when the corresponding sub-agent fired or the path A trigger hit):
+  `security`, `performance`, `api_contract`, `premise`. Use the `Write`
+  tool with literal JSON content — do NOT shell-redirect via Bash, do
+  NOT post via Linear comment. The orchestrator validates this file
+  after dispatch; missing or malformed payload halts the dispatch with
+  `review-payload-invalid` (rc=36/37/38) and the operator must resume
+  via `bash bin/pipeline.sh decide {issue_id} --action continue`.
 - Verdict per Decision path (A premise-failure → fail to brainstorming,
   B changes-requested → fail to implementing, C clean → pass advancing to qa).
 - Do NOT submit a GitHub PR review in the APPROVED state or in the

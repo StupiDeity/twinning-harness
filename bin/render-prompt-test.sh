@@ -208,9 +208,10 @@ out="$(run_resolver_body '
   _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-87R1/stage-summary-implementing.md"
   _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
   _RENDER_DISPATCH_ID="ENG-87R1-d0042"
-  resolve_block_tokens "{issue_id} {issue_id_lower} {issue_title} {date} {slug} {branch_name} {dispatch_id}"
+  _RENDER_VERDICT_REVIEW_PATH="/tmp/state/ENG-87R1/verdict-review.json"
+  resolve_block_tokens "{issue_id} {issue_id_lower} {issue_title} {date} {slug} {branch_name} {dispatch_id} {verdict_review_path}"
 ' 2>&1)"
-expected="ENG-87R1 eng-87r1 Test title 2026-05-09 test-slug feat/eng-87r1-foo ENG-87R1-d0042"
+expected="ENG-87R1 eng-87r1 Test title 2026-05-09 test-slug feat/eng-87r1-foo ENG-87R1-d0042 /tmp/state/ENG-87R1/verdict-review.json"
 if [[ "$out" == "$expected" ]]; then
   pass_at "ENG-87 R1: every PROMPT_RESOLVERS token resolves cleanly"
 else
@@ -230,6 +231,21 @@ if [[ "$out_pmd" == "/tmp/test-state/ENG-106/progress.md" ]]; then
 else
   fail_at "ENG-106: {progress_md_path} token resolves" \
     "expected='/tmp/test-state/ENG-106/progress.md' got='$out_pmd'"
+fi
+
+# Case ENG-119: {verdict_review_path} token resolves from _RENDER_VERDICT_REVIEW_PATH.
+# Pins the resolver so a refactor that drops _RENDER_VERDICT_REVIEW_PATH or renames
+# the token breaks here rather than silently shipping a literal {verdict_review_path}
+# to the review agent.
+out_vrp="$(run_resolver_body '
+  _RENDER_VERDICT_REVIEW_PATH="/tmp/test-state/ENG-119/verdict-review.json"
+  resolve_block_tokens "{verdict_review_path}"
+' 2>&1)"
+if [[ "$out_vrp" == "/tmp/test-state/ENG-119/verdict-review.json" ]]; then
+  pass_at "ENG-119: {verdict_review_path} resolves from _RENDER_VERDICT_REVIEW_PATH"
+else
+  fail_at "ENG-119: {verdict_review_path} token resolves" \
+    "expected='/tmp/test-state/ENG-119/verdict-review.json' got='$out_vrp'"
 fi
 
 # Case 87-R2: unknown {token} dies with token name in message.
