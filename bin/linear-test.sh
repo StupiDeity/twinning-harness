@@ -1382,6 +1382,35 @@ else
 fi
 unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng151_h17_first_line _eng151_h17_second_line
 
+# QA-ADV-H020: _derive P3 BREADCRUMB path — body carries breadcrumb marker;
+# sig is empty so P1 does not fire; P3 captures the sig verbatim.
+_eng151_h020_et='' _eng151_h020_sm=''
+IFS=$'\t' read -r _eng151_h020_et _eng151_h020_sm \
+  < <(_derive_event_type_and_summary \
+        '<!-- meta: breadcrumb sig=halt/implementing/ENG-151T -->' '')
+if [[ "$_eng151_h020_et" == 'BREADCRUMB' \
+   && "$_eng151_h020_sm" == 're-emit of halt/implementing/ENG-151T' ]]; then
+  pass_at "ENG-151 QA-ADV-H020 P3 BREADCRUMB derivation → BREADCRUMB — re-emit of halt/implementing/ENG-151T"
+else
+  fail_at "ENG-151 QA-ADV-H020 P3 BREADCRUMB derivation → BREADCRUMB — re-emit of halt/implementing/ENG-151T" \
+    "got type='$_eng151_h020_et' summary='$_eng151_h020_sm'"
+fi
+unset _eng151_h020_et _eng151_h020_sm
+
+# QA-ADV-H021: _derive P3 FORENSIC path — body carries forensic marker.
+_eng151_h021_et='' _eng151_h021_sm=''
+IFS=$'\t' read -r _eng151_h021_et _eng151_h021_sm \
+  < <(_derive_event_type_and_summary \
+        '<!-- meta: forensic kind=cross-dispatch -->' '')
+if [[ "$_eng151_h021_et" == 'FORENSIC' \
+   && "$_eng151_h021_sm" == 'cross-dispatch' ]]; then
+  pass_at "ENG-151 QA-ADV-H021 P3 FORENSIC derivation → FORENSIC — cross-dispatch"
+else
+  fail_at "ENG-151 QA-ADV-H021 P3 FORENSIC derivation → FORENSIC — cross-dispatch" \
+    "got type='$_eng151_h021_et' summary='$_eng151_h021_sm'"
+fi
+unset _eng151_h021_et _eng151_h021_sm
+
 # Restore originals.
 rm -f "$_eng151_capture_file"
 unset -f linear_query _resolve_issue_uuid
