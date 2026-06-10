@@ -18,6 +18,9 @@
 #             33=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
 #             34=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
 #             35=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
+#             39=init-sh-malformed   (init.sh fails bash -n syntax check; ENG-125),
+#             40=init-sh-incomplete  (init.sh present + parses but missing shape marker; ENG-125),
+#             41=init-sh-missing     (no init.sh at $issue_dir/init.sh; ENG-125),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
