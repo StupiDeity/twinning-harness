@@ -308,6 +308,47 @@ else
     "missing=$missing store=$(cat "$_store_file")"
 fi
 
+# C-ADV-qa-1: C-003 checks only the id= prefix; assert the full closed-form
+# marker including `stage=implementing` so a regression where PIPELINE_STAGE
+# is unset produces `stage= ` (empty) instead — which C-003 passes silently
+# but would cause find_fresh_verdict's stage= parser to misread the comment.
+bad_stage="$(jq -r '[.[] | select(.body | contains("<!-- meta: dispatch id=ENG-81-d0007 stage=implementing -->") | not)] | length' "$_store_file")"
+if [[ "$bad_stage" == "0" ]]; then
+  pass_at "C-ADV-qa-1 every body carries full closed-form marker (stage=implementing)"
+else
+  fail_at "C-ADV-qa-1 full closed-form dispatch marker" \
+    "bad=$bad_stage (C-003 prefix ok but stage= field missing or wrong)"
+fi
+
+# C-ADV-qa-2: C-002 uses sort==. which passes for equal timestamps
+# (non-strict ascending). If _FIXTURE_INJECT_CREATED_AT silently collapses
+# to the default for two calls (e.g. export-scope bug), all entries get
+# the same timestamp, sort==. returns true, and C-002 gives a false green.
+# Assert strict uniqueness to close that gap.
+ts_unique="$(jq -r '[.[].createdAt] | unique | length' "$_store_file")"
+if [[ "$ts_unique" == "3" ]]; then
+  pass_at "C-ADV-qa-2 all three createdAt values are distinct (no timestamp collapse)"
+else
+  fail_at "C-ADV-qa-2 distinct timestamps" \
+    "unique_count=$ts_unique expected=3 (collapsed timestamps defeat C-002 ordering guarantee)"
+fi
+
+# C-ADV-qa-3: comment 2 (counter-bump) is a <!-- meta: --> body, NOT a
+# <!-- pipeline: --> body. The pipeline-marker bypass at bin/linear.sh:528
+# only fires for <!-- pipeline: --> and skips the hash-dedup path. If the
+# counter-bump body prefix were accidentally widened to start with
+# <!-- pipeline: -->, it would bypass dedup entirely — the test would
+# still pass (three comments land), but the dedup contract for metric
+# events would silently break. Assert the second store entry does not
+# start with the pipeline-marker prefix.
+comment2_prefix="$(jq -r '.[1].body | startswith("<!-- pipeline: ") | tostring' "$_store_file")"
+if [[ "$comment2_prefix" == "false" ]]; then
+  pass_at "C-ADV-qa-3 comment-2 (counter-bump) body not a pipeline-event marker (dedup path, not bypass)"
+else
+  fail_at "C-ADV-qa-3 counter-bump pipeline-prefix" \
+    "got: $(jq -r '.[1].body | split("\n") | .[0]' "$_store_file") — would bypass dedup if <!-- pipeline: --> prefix"
+fi
+
 # ─── C-006: dependency-detector anti-false-positive probes ──────────────
 # Failure Mode → Test Map row 6 (dependency-detector false-positive).
 # Each `_dep_15N_landed` shape detector reads $SCRIPT_DIR_REAL/<file> and
