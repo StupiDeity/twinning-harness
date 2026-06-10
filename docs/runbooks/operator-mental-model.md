@@ -133,28 +133,38 @@ jq -r '.orchestrator.paused' .pipeline-config/state.local.json
 
 Fix: `bash bin/reset-pipeline.sh` (clears both).
 
-## §3 — Comment dedup invisibility <a id="sig-dedup"></a>
+## §3 — Comment chronology (append-only ledger) <a id="sig-dedup"></a>
 
-**Linear comment dedup is sig-based.** Two writes with the same
-`<!-- meta: dedup key=X -->` marker collapse — the second writes UPDATES
-the first in place rather than creating a new comment. If the body is
-byte-equal-after-strip, ENG-63's footer-only re-apply path appends a fresh
-`<!-- meta: reapplied at=ISO -->` line; otherwise the body is replaced
-silently. Operators skimming Linear see the latest body but don't realize
-history was collapsed.
+Linear comments posted by the harness are append-only — each
+emission is a fresh comment with its own `createdAt`. The
+`<!-- meta: dedup key=<category>/<stage>/<issue>/d<NNNN> -->`
+marker tags the dispatch that emitted the comment. The pre-ENG-150
+"dedup-update rewrites chronology" failure mode is gone; ENG-63's
+`<!-- meta: reapplied at=… -->` footer and ENG-111's
+`<!-- meta: breadcrumb sig=… -->` breadcrumb survive on legacy
+comments only (back-compat readable, never written by post-cutover
+code).
 
-Spot it: every comment posted via the harness ends in
-`<!-- meta: dedup key=<sig> -->`. Search for the sig to find all collapses.
+Spot it (operator grep recipe — works for BOTH legacy and post-
+cutover comment shapes; prefix-match excludes the `-->` closing
+tag so the legacy `…ENG-N -->` AND post-cutover `…ENG-N/d0007 -->`
+both match):
 
 ```bash
-TARGET_REPO=/path/to/target bash bin/linear.sh query \
-  'query($id: String!) { issue(id: $id) { comments(first: 50) { nodes { body createdAt updatedAt } } } }' \
-  '{"id":"ENG-N"}' | jq -r '.data.issue.comments.nodes[] | select(.body | contains("<!-- meta: dedup key=")) | "[\(.createdAt[0:19]) → \(.updatedAt[0:19])] \(.body[0:80])"'
+TARGET_REPO=/path/to/target bash bin/linear.sh get-comments ENG-N \
+  | jq -r '.[] | select(.body | contains("<!-- meta: dedup key=halt/implementing/ENG-N"))
+               | "\(.createdAt) \(.body[0:120])"' \
+  | sort | tail -1
 ```
 
-A divergence between `createdAt` and `updatedAt` means the comment was
-re-applied at least once. Multiple `reapplied at=` footers in the body =
-multiple identical re-applies (each a no-op-content-wise).
+Halt fire-rate recovery: pre-ENG-150 the `<!-- meta: reapplied at=… -->`
+footer encoded "this halt re-fired N times". Post-cutover use:
+
+```bash
+TARGET_REPO=/path/to/target bash bin/linear.sh get-comments ENG-N \
+  | jq '[.[] | select(.body | contains("<!-- meta: dedup key=halt/implementing/ENG-N"))]
+        | { count: length, first: .[0].createdAt, last: .[-1].createdAt }'
+```
 
 **`PIPELINE_WRITER` env var lane-fences writes.** If you run
 `bash bin/linear.sh add-comment` from a shell without setting

@@ -697,10 +697,17 @@ and freshness contract" is the prompt-side defense.
 - `source "$SCRIPT_DIR/common.sh"` first. It enforces `TARGET_REPO` and exports
   canonical paths.
 - Use `log` / `die` / `require_env` / `require_bin` from common.sh.
-- Linear writes go through `bin/linear.sh` so dry-run + `meta: dedup`
-  (`add-or-update-comment <sig> <ident> <body>`) work uniformly. The function
-  emits `<!-- meta: dedup key=... -->` and looks up in-flight comments by both
-  new and legacy shapes.
+- Linear writes go through `bin/linear.sh add-comment`, which is
+  append-only — every emission produces a fresh chronological
+  comment. Callers needing a discoverability tag pass
+  `--sig <category>/<stage>/<issue>`; the chokepoint suffixes
+  `/d<NNNN>` (the dispatch sequence from `PIPELINE_DISPATCH_ID`)
+  and emits `<!-- meta: dedup key=… -->` on the body for operator
+  grep (legacy marker name; semantic is "ledger discoverability
+  tag", not deduplication). The pre-ENG-150 sig-based
+  commentUpdate API and its in-place rewrite behaviour were retired
+  (see docs/runbooks/operator-mental-model.md §3 for the operator
+  grep recipe).
 - Metric writes go through `bin/metrics.sh` (lands in `events.jsonl`).
 - Per-stage allowed tool lists are centralized in
   `dispatch.sh::allowed_tools_for`. New stages must add a case there.

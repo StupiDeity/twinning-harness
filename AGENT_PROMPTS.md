@@ -31,18 +31,18 @@
 
 ## Pipeline comment dedup convention
 
-**Comment dedup (ENG-15):** Use `.pipeline/bin/linear.sh add-or-update-comment <sig> <ident> --body - <<'EOF' ... EOF` (heredoc piped via stdin; ENG-55) for any comment that is a logical "latest state" update — TDD-evidence, completion-checklist, progress notes. The `<sig>` is `tdd-evidence/<stage>/<issue>` for TDD-evidence, `completion/<stage>/<issue>` for completion-checklist, and should follow the pattern `<class>/<stage>/<issue>` for new classes. Ad-hoc one-shot comments may continue to use `add-comment` — the hash-dedup safety net suppresses exact-content duplicates automatically. Multi-line bodies MUST go through stdin (`--body -`) — do NOT write scratch `.md` files at the worktree root (they leak into `partition_dirty_paths` and cannot be `rm`'d, since no stage allow-lists `Bash(rm:*)`).
+**Comment ledger (ENG-15, ENG-150):** Use `.pipeline/bin/linear.sh add-comment <ident> --sig <category>/<stage>/<issue> --body - <<'EOF' ... EOF` (heredoc piped via stdin; ENG-55) for any comment that is a logical "latest state" update — TDD-evidence, completion-checklist, progress notes. The `<sig>` shape is `tdd-evidence/<stage>/<issue>` for TDD-evidence, `completion/<stage>/<issue>` for completion-checklist, and should follow the pattern `<class>/<stage>/<issue>` for new classes. The chokepoint suffixes `/d<NNNN>` (from `PIPELINE_DISPATCH_ID`) and appends `<!-- meta: dedup key=<full-sig> -->` for operator grep. **Every emission appends a fresh chronological comment** — there is no in-place update path. Ad-hoc one-shot comments may continue to use `add-comment` without `--sig`; the hash-dedup safety net still suppresses exact-content duplicates on that no-sig path. Multi-line bodies MUST go through stdin (`--body -`) — do NOT write scratch `.md` files at the worktree root (they leak into `partition_dirty_paths` and cannot be `rm`'d, since no stage allow-lists `Bash(rm:*)`).
 
-**Retry with the same sig — never mutate (ENG-57).** `add-or-update-comment` is idempotent: if a comment with the given sig already exists, the body is overwritten in place; no new comment is created. If a post appears to have failed (no confirmation echoed in tool output, transient error, etc.), **retry with the exact same sig**. Do NOT escape the sig with `-v2`, `-v3`, `-trial`, `-retry`, or any other suffix variant — those mutations defeat dedup and produce permanent duplicate comments on the Linear thread (Linear has no comment-delete mechanism, so the litter accumulates forever). ENG-44's dogfood produced 6 such mutated-sig duplicates on a single ticket; do not reproduce that pattern.
+**Retry with the same sig — never mutate (ENG-57, ENG-150).** Post-ENG-150 `add-comment --sig` is append-only: each emission posts a fresh chronological comment carrying `<!-- meta: dedup key=<sig>/d<NNNN> -->` for operator grep. If a post appears to have failed (no confirmation echoed in tool output, transient error, etc.), **retry with the exact same sig**. Do NOT escape the sig with `-v2`, `-v3`, `-trial`, `-retry`, or any other suffix variant — those mutations defeat the operator's prefix-match recipe (and a successful first post followed by a mutated-sig retry still leaves two comments on the thread). Linear has no comment-delete mechanism, so the litter accumulates forever. ENG-44's dogfood produced 6 such mutated-sig duplicates on a single ticket; do not reproduce that pattern.
 
 **Marker shapes — only two families exist (ENG-60).** Every HTML-comment marker you emit MUST be one of:
 
 - `<!-- pipeline: <event> [k=v]... -->` — verdicts/decisions/transitions (post via `bash bin/pipeline.sh event ...`, never hand-crafted; see the Verdict-marker protocol section below).
 - `<!-- meta: <kind> [k=v]... -->` — bookkeeping (`dedup`, `metric`). Only `dedup` is agent-emitted: `<!-- meta: dedup key=<class>/<stage>/<issue> -->`, written into the stage-summary file's first line.
 
-The legacy hyphenated shapes — `<!-- pipeline-stage-summary: ... -->`, `<!-- pipeline-rejection: ... -->`, `<!-- pipeline-halt: ... -->`, `<!-- pipeline-wait: ... -->`, `<!-- pipeline-decision: ... -->`, `<!-- pipeline-sig: ... -->`, `<!-- pipeline-metric: ... -->`, `<!-- pipeline-transition: ... -->` — are **REMOVED**. `bin/linear.sh::add_or_update_comment` has a lane-fence (PR #44) that **rejects any comment body containing a legacy `<!-- pipeline-<word>: ... -->` marker** with rc=14, and the orchestrator strips them defensively from your stage summary as a last resort. Do not emit them. If your training memory recalls these shapes, override it: the new vocabulary is the only one the harness reads or writes. ENG-64 implementing halted on 2026-05-05 because the agent prefixed the stage-summary file with both shapes — only emit the `<!-- meta: dedup ... -->` form.
+The legacy hyphenated shapes — `<!-- pipeline-stage-summary: ... -->`, `<!-- pipeline-rejection: ... -->`, `<!-- pipeline-halt: ... -->`, `<!-- pipeline-wait: ... -->`, `<!-- pipeline-decision: ... -->`, `<!-- pipeline-sig: ... -->`, `<!-- pipeline-metric: ... -->`, `<!-- pipeline-transition: ... -->` — are **REMOVED**. `bin/linear.sh::add_comment` has a lane-fence (PR #44) that **rejects any comment body containing a legacy `<!-- pipeline-<word>: ... -->` marker** with rc=14, and the orchestrator strips them defensively from your stage summary as a last resort. Do not emit them. If your training memory recalls these shapes, override it: the new vocabulary is the only one the harness reads or writes. ENG-64 implementing halted on 2026-05-05 because the agent prefixed the stage-summary file with both shapes — only emit the `<!-- meta: dedup ... -->` form.
 
-**Header line (ENG-151).** Every `add-comment` / `add-or-update-comment` you post is auto-prepended with `[<ident> · <stage> · <dispatch-id-tail> · <iso-ts> · <actor>]` by the chokepoint, followed by a derived `<EVENT-TYPE> — <summary>` line (the event-type is derived from the body's pipeline/meta marker or the sig). You do NOT manage these lines — the chokepoint owns them. Do NOT emit your own bracketed `[ENG-N · …]` first line; the chokepoint's agent-lane detective REJECTS hand-rolled headers with rc=14 (`legacy-marker-write`). If `PIPELINE_DISPATCH_ID` or `PIPELINE_STAGE` is missing in an agent-lane invocation, the chokepoint exits rc=15 (`header-missing-inputs`). Both are configured by `bin/dispatch.sh::main` before your subshell starts; you do not set them yourself.
+**Header line (ENG-151).** Every `add-comment` you post is auto-prepended with `[<ident> · <stage> · <dispatch-id-tail> · <iso-ts> · <actor>]` by the chokepoint, followed by a derived `<EVENT-TYPE> — <summary>` line (the event-type is derived from the body's pipeline/meta marker or the `--sig` value). You do NOT manage these lines — the chokepoint owns them. Do NOT emit your own bracketed `[ENG-N · …]` first line; the chokepoint's agent-lane detective REJECTS hand-rolled headers with rc=14 (`legacy-marker-write`). If `PIPELINE_DISPATCH_ID` or `PIPELINE_STAGE` is missing in an agent-lane invocation, the chokepoint exits rc=15 (`header-missing-inputs`). Both are configured by `bin/dispatch.sh::main` before your subshell starts; you do not set them yourself.
 
 ---
 
@@ -92,7 +92,8 @@ Hard rules:
 **Freshness rule:** the Verdict Handler considers only markers newer than the
 most recent `<!-- pipeline: transition ... -->` comment, and picks the latest
 verdict-shaped marker among those. Verdict comments are append-only — use
-`linear.sh add-comment`, NOT `add-or-update-comment`.
+`linear.sh add-comment` (no `--sig` for verdict markers; the pipeline-marker
+body content carries the discoverability tag).
 
 ### Label vocabulary — lane-aware write matrix (ENG-41)
 
@@ -222,9 +223,9 @@ below. The slot list is additive to this contract — always follow the contract
 ```
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **Do NOT prepend env-var assignments** (e.g. `PIPELINE_WRITER=agent`, `LINEAR_API_KEY=...`) **to your `bash bin/...` invocations** — the sandbox allowlist matcher anchors on the FIRST token of the command line, and an env-var assignment is not `bash`, so the `Bash(bash bin/pipeline.sh:*)` / `Bash(bash bin/linear.sh:*)` patterns fail to match. The orchestrator already exports `PIPELINE_WRITER=agent` into your dispatch via `bin/dispatch.sh::main`; the prefix is redundant AND unmatchable. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-comment --sig` appears to have failed, retry with the same sig — never mutate it (ENG-57, ENG-150).** Post-ENG-150 `add-comment --sig` is append-only: same sig + new body posts a fresh chronological comment carrying the dispatch-suffixed `<!-- meta: dedup key=… -->` marker. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat the operator's prefix-match recipe and produce permanent stray comments. **Do NOT prepend env-var assignments** (e.g. `PIPELINE_WRITER=agent`, `LINEAR_API_KEY=...`) **to your `bash bin/...` invocations** — the sandbox allowlist matcher anchors on the FIRST token of the command line, and an env-var assignment is not `bash`, so the `Bash(bash bin/pipeline.sh:*)` / `Bash(bash bin/linear.sh:*)` patterns fail to match. The orchestrator already exports `PIPELINE_WRITER=agent` into your dispatch via `bin/dispatch.sh::main`; the prefix is redundant AND unmatchable. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
-**Dispatch identifier and freshness contract (ENG-87):** **Contract:** Every Linear comment your dispatch authors MUST carry the auto-injected `<!-- meta: dispatch id=... stage=... -->` marker on the wire. Because `bash bin/linear.sh` is the only allow-listed Linear write path and the chokepoint injects the marker unconditionally when `PIPELINE_DISPATCH_ID` is set, you get the marker automatically — no agent action required. A post-dispatch detective halts the dispatch with `dispatch-envelope-violation` if any transcript-visible bypass attempt is found (see Rules 1-3 below). The orchestrator allocates a per-dispatch identifier `{dispatch_id}` of the form `ENG-N-d<NNNN>` (monotonic per issue) before invoking your `claude -p` subprocess. It is rendered into your prompt via `render-prompt.sh` and exported as `PIPELINE_DISPATCH_ID` so every `bash bin/linear.sh add-comment` or `add-or-update-comment` call you make auto-stamps a `<!-- meta: dispatch id={dispatch_id} stage=<your stage> -->` marker on the comment body. You do NOT manage this marker; the chokepoint owns it. Rules: (1) **Do NOT manually emit `<!-- meta: dispatch id=... -->` markers** — the chokepoint at `bin/linear.sh::add_comment` / `add_or_update_comment` auto-injects them when `PIPELINE_DISPATCH_ID` is set; manual emission is a contract violation, the injector is idempotent and silently de-duplicates, but the convention is "the chokepoint owns this marker." (2) **Do NOT post Linear comments via `mcp__plugin_linear_*` or `curl https://api.linear.app`** — both forms bypass the auto-injection; the post-dispatch envelope validator scans your transcript and halts with `verdict halt --reason dispatch-envelope-violation` (exit 29) on either invocation. (3) **Do NOT read the `dispatch_id` of a previous cycle to "carry forward" any state** — each dispatch is a fresh slate; loopback inputs come from the SOURCE stage's stage-summary file (which the orchestrator preserves; YOUR stage-summary file is cleared at THIS dispatch's start, so re-emitting it via `Write` with full content is mandatory — see the per-stage Output bullets and the §5 ENG-71/ENG-77 precedent).
+**Dispatch identifier and freshness contract (ENG-87):** **Contract:** Every Linear comment your dispatch authors MUST carry the auto-injected `<!-- meta: dispatch id=... stage=... -->` marker on the wire. Because `bash bin/linear.sh` is the only allow-listed Linear write path and the chokepoint injects the marker unconditionally when `PIPELINE_DISPATCH_ID` is set, you get the marker automatically — no agent action required. A post-dispatch detective halts the dispatch with `dispatch-envelope-violation` if any transcript-visible bypass attempt is found (see Rules 1-3 below). The orchestrator allocates a per-dispatch identifier `{dispatch_id}` of the form `ENG-N-d<NNNN>` (monotonic per issue) before invoking your `claude -p` subprocess. It is rendered into your prompt via `render-prompt.sh` and exported as `PIPELINE_DISPATCH_ID` so every `bash bin/linear.sh add-comment` call you make auto-stamps a `<!-- meta: dispatch id={dispatch_id} stage=<your stage> -->` marker on the comment body. You do NOT manage this marker; the chokepoint owns it. Rules: (1) **Do NOT manually emit `<!-- meta: dispatch id=... -->` markers** — the chokepoint at `bin/linear.sh::add_comment` auto-injects them when `PIPELINE_DISPATCH_ID` is set; manual emission is a contract violation, the injector is idempotent and silently de-duplicates, but the convention is "the chokepoint owns this marker." (2) **Do NOT post Linear comments via `mcp__plugin_linear_*` or `curl https://api.linear.app`** — both forms bypass the auto-injection; the post-dispatch envelope validator scans your transcript and halts with `verdict halt --reason dispatch-envelope-violation` (exit 29) on either invocation. (3) **Do NOT read the `dispatch_id` of a previous cycle to "carry forward" any state** — each dispatch is a fresh slate; loopback inputs come from the SOURCE stage's stage-summary file (which the orchestrator preserves; YOUR stage-summary file is cleared at THIS dispatch's start, so re-emitting it via `Write` with full content is mandatory — see the per-stage Output bullets and the §5 ENG-71/ENG-77 precedent).
 
 **Stage summary file — overwrite-on-every-dispatch contract (ENG-77/ENG-71):** Every per-stage Output section instructs you to write the stage summary file at `{stage_summary_path}` as the LAST step. **MANDATORY — overwrite on every dispatch.** Use `Write` with the full report content; do not read-then-conditionally-skip. The orchestrator reads this file verbatim and posts it as the Linear `completion/<stage>/{issue_id}` summary; a stale file means stale Linear posts and stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised the ENG-71 (May 2026) review-loop incident: any stage-summary file going unwritten on a re-dispatch is a structural staleness hazard, not just a §5 problem. Per-stage bullets retain the file path + slot list (artifact link, TL;DR, status, notes); the overwrite contract here is the single source of truth — do not re-state it in §§1-7.
 
@@ -342,9 +343,9 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    brainstorm doc itself (under an "## Persona review" section) — that's the durable
    record. The Linear comment is the headline, not the audit trail.
 
-   Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" …` yourself —
+   Do NOT call `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "completion/brainstorm/{issue_id}" …` yourself —
    that path is now orchestrator-owned. Exception-path markers (`meta: metric name=contract_gap`,
-   etc.) continue to use `linear.sh add-comment` as before.
+   etc.) continue to use `linear.sh add-comment` (without `--sig`) as before.
 6. **Post the verdict marker** (MANDATORY). Before exiting, post exactly ONE
    additional append-only comment carrying the verdict for your outcome:
 
@@ -360,9 +361,11 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
      scope-violation | protocol-violation | dispatch-timeout | pr-opened-too-early
 
    `bin/pipeline.sh event` validates the token against the registry and posts the
-   comment via `linear.sh add-comment` (append-only). Do NOT hand-craft marker
-   bodies or use `add-or-update-comment` for verdicts. Do NOT touch `pipeline:halted`
-   — orchestrator applies it after dispatch (ENG-56).
+   comment via `linear.sh add-comment` (append-only; pipeline-marker bodies bypass
+   hash dedup so retries land as fresh chronological comments). Do NOT hand-craft
+   marker bodies or use `linear.sh add-comment --sig` for verdicts — verdict markers
+   ride in the body itself. Do NOT touch `pipeline:halted` — orchestrator applies it
+   after dispatch (ENG-56).
 ```
 
 ## 2. Plan Agent
@@ -664,7 +667,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    - Escalate tag: `<!-- meta: metric name=plan_escalate -->` if step 3 hit iteration 3.
 
    Full persona verdicts and finding lists stay in the plan doc itself. Do NOT call
-   `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …`
+   `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "completion/plan/{issue_id}" …`
    yourself — that path is orchestrator-owned.
 7. **Post the verdict marker** (MANDATORY). Post exactly ONE additional
    append-only comment carrying the verdict for your outcome:
@@ -993,7 +996,7 @@ Post a single Linear comment on {issue_id} containing:
   - Test-file changes vs source-file changes, as `+<N> test / +<M> src` lines.
   - Each plan task ticked with its commit SHAs or explicit deviation.
   - `api-contract` verification summary (per-command drift check: pass/fail).
-Post via `bash .pipeline/bin/linear.sh add-or-update-comment "tdd-evidence/implement/{issue_id}" {issue_id} --body - <<'EOF'` … `EOF` (heredoc piped via stdin; ENG-55).
+Post via `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "tdd-evidence/implement/{issue_id}" --body - <<'EOF'` … `EOF` (heredoc piped via stdin; ENG-55). Post-ENG-150 each emission is append-only; a TDD-evidence checkpoint produces a fresh chronological comment carrying `<!-- meta: dedup key=tdd-evidence/implement/{issue_id}/d<NNNN> -->` for operator grep.
 
 Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
@@ -1166,7 +1169,7 @@ Output:
   Full per-component checklist scores and the second-reviewer verdict go into the
   stage-summary file's Notes section, not this comment. (The orchestrator constructs
   the PR body from these stage summaries.)
-- Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" …` yourself.
+- Do NOT call `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "completion/ui/{issue_id}" …` yourself.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 - **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting
   the verdict marker. Use `Edit` with append-via-anchor (or
@@ -1401,8 +1404,8 @@ escape hatch and is not gated by the count predicate.
        Body contains severity-prefixed, "path/to/file.ext:LINE"-anchored
        findings per the comment-quality rubric (item 1 reworded — see below).
      - Post Linear consolidated review summary via stdin heredoc (ENG-55):
-         bash .pipeline/bin/linear.sh add-or-update-comment \
-           "completion/reviewing/{issue_id}" {issue_id} --body - <<'EOF'
+         bash .pipeline/bin/linear.sh add-comment \
+           "{issue_id}" --sig "completion/reviewing/{issue_id}" --body - <<'EOF'
          <body>
          EOF
        Body mirrors the gh pr review summary plus persona verdicts and
@@ -1419,7 +1422,7 @@ escape hatch and is not gated by the count predicate.
        Summary: "Reviewed commit {sha[:8]}. N personas: PASS. 0 critical,
        0 major." Plus any minor/nit observations as severity-prefixed
        bullets.
-     - Post Linear consolidated review summary via add-or-update-comment
+     - Post Linear consolidated review summary via `add-comment --sig`
        with sig `completion/reviewing/{issue_id}`.
      - Write the stage summary file at `{stage_summary_path}` per the Stage
        summary comment format contract.
@@ -1442,7 +1445,7 @@ Output:
   (severity-prefixed, path:line-anchored in body, with concrete suggestion +
   "why" rationale).
 - Consolidated Linear review summary as a `completion/reviewing/{issue_id}`
-  add-or-update-comment.
+  `add-comment --sig` post.
 - Stage-summary file at {stage_summary_path} (per the Stage summary comment
   format contract). Overwrite-on-every-dispatch contract per §0; orchestrator
   posts it to Linear as `completion/reviewing/{issue_id}`. If your findings
