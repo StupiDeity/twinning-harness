@@ -4427,6 +4427,10 @@ _ENG122_TODAY="$(date +%Y-%m-%d)"
 # Use a pure-numeric ident (ENG-12201) so the JSON's issue_id passes
 # the ^ENG-[0-9]+$ pattern check in plan-schema.sh.
 # ENG-179 retrofit: git init + commit, so the HEAD-tree validator finds the files.
+# ENG-157: .md fixture now carries a valid `## System invariants` section with
+# one bullet + parseable verified_by: token so it satisfies the new MD-side
+# validator on the JSON-clean path (without this the JSON-clean arm falls into
+# cmd_validate_md → rc=34 / plan-md-incomplete).
 reset_capture
 ENG12201_WT="$(issue_dir ENG-12201)/worktree"
 rm -rf "$ENG12201_WT"
@@ -4436,8 +4440,13 @@ mkdir -p "$ENG12201_WT/docs/plans"
   && git config user.email t@t \
   && git config user.name t \
   && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
-printf 'stub plan\n' \
-  > "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.md"
+cat > "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.md" <<'MDEOF'
+stub plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.json" "ENG-12201"
 ( cd "$ENG12201_WT" \
@@ -4940,12 +4949,20 @@ _validate_plan_contract ENG-17917 2>/dev/null || _eng179adv6_rc=$?
 # returns rc=34. The halt comment MUST carry the existing
 # `plan-contract-invalid` marker (reused) AND the new `plan-md-incomplete`
 # Defect prefix (discriminates from JSON-side defects). Reuses ENG-122's
-# STUB_DIR/plan-schema.sh shim and _eng122_write_valid_json helper —
-# no new harness needed.
+# STUB_DIR/plan-schema.sh shim and _eng122_write_valid_json helper.
+# ENG-179 retrofit: git init + commit both files so the HEAD-tree gate
+# routes through to plan-schema.sh validate and then to validate-md.
 printf '\n--- ENG-157 INT6: missing System-invariants section ---\n'
 reset_capture
-mkdir -p "$(issue_dir ENG-15706)/worktree/docs/plans"
-cat > "$(issue_dir ENG-15706)/worktree/docs/plans/${_ENG122_TODAY}-eng-15706-test.md" <<'MDEOF'
+ENG15706_WT="$(issue_dir ENG-15706)/worktree"
+rm -rf "$ENG15706_WT"
+mkdir -p "$ENG15706_WT/docs/plans"
+( cd "$ENG15706_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+cat > "$ENG15706_WT/docs/plans/${_ENG122_TODAY}-eng-15706-test.md" <<'MDEOF'
 ---
 linear: ENG-15706
 date: 2026-06-10
@@ -4965,7 +4982,10 @@ none.
 none.
 MDEOF
 _eng122_write_valid_json \
-  "$(issue_dir ENG-15706)/worktree/docs/plans/${_ENG122_TODAY}-eng-15706-test.json" "ENG-15706"
+  "$ENG15706_WT/docs/plans/${_ENG122_TODAY}-eng-15706-test.json" "ENG-15706"
+( cd "$ENG15706_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-15706 (missing System-invariants)" ) >/dev/null 2>&1
 _eng157_int6_rc=0
 _validate_plan_contract ENG-15706 2>/dev/null || _eng157_int6_rc=$?
 (( _eng157_int6_rc == 34 )) \

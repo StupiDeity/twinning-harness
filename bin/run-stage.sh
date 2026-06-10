@@ -1134,7 +1134,24 @@ _validate_plan_contract() {
   schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
     --ident "$ident")" || schema_rc=$?
   case "$schema_rc" in
-    0)  return 0 ;;
+    0)
+      # ENG-157: JSON-clean → run MD-side validator on the sibling .md.
+      # Reuses the rc=33/34/35 taxonomy with a `plan-md-*` defect prefix
+      # (D-003) so operator triage can discriminate JSON- vs MD-side
+      # failures. _post_plan_contract_halt's <!-- → <\!-- sanitisation
+      # (verified by I-3 / ENG-122 INT5) covers the new strings unchanged.
+      # Short-circuit ordering pinned by I-5 / ENG-157 INT6.
+      local md_out md_rc=0
+      md_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate-md "$wt/$plan_md")" || md_rc=$?
+      case "$md_rc" in
+        0)  return 0 ;;
+        33) _post_plan_contract_halt "$ident" "plan-md-malformed"  "$md_out" ; return 33 ;;
+        34) _post_plan_contract_halt "$ident" "plan-md-incomplete" "$md_out" ; return 34 ;;
+        35) _post_plan_contract_halt "$ident" "plan-md-missing"    "$md_out" ; return 35 ;;
+        *)  _post_plan_contract_halt "$ident" "unexpected-md-rc" \
+              "md-validator returned unexpected rc=$md_rc; stdout: $md_out" ; return 33 ;;
+      esac
+      ;;
     33) _post_plan_contract_halt "$ident" "plan-contract-malformed"  "$schema_out" ; return 33 ;;
     34) _post_plan_contract_halt "$ident" "plan-contract-incomplete" "$schema_out" ; return 34 ;;
     35) _post_plan_contract_halt "$ident" "plan-contract-missing"    "$schema_out" ; return 35 ;;
