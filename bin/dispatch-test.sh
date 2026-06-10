@@ -1744,6 +1744,21 @@ cat > "$ISSUE_DIR/progress.md" <<'MD'
 
 - AT2 test entry satisfying the progress.md detective
 MD
+# ENG-125: AT2 runs planning stage; provide a well-formed init.sh so the
+# init.sh detective (planning-gated) passes. AT2 tests the gh-pr-create
+# cross-stage gate, not the init.sh detective.
+cat > "$ISSUE_DIR/init.sh" <<'INIT'
+#!/usr/bin/env bash
+set -euo pipefail
+# ─── smoke ───
+:
+# ─── typecheck ───
+:
+# ─── lint ───
+:
+# ─── test ───
+:
+INIT
 
 at2_rc=0
 _render_and_capture_stream "$USAGE_AT2" "$ISSUE_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || at2_rc=$?
@@ -1759,7 +1774,7 @@ if [[ "$at2_rc" == "0" ]] \
 else
   fail_at "AT2 cross-stage gating" "rc=$at2_rc viol_impl=$([[ -f $VIOLATION_AT2_IMPL ]] && echo y || echo n) viol_plan=$([[ -f $VIOLATION_AT2_PLAN ]] && echo y || echo n)"
 fi
-rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN" "$ISSUE_DIR/progress.md"
+rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN" "$ISSUE_DIR/progress.md" "$ISSUE_DIR/init.sh"
 unset PIPELINE_DISPATCH_ID
 
 # ─── AT3: renderer pre-cleans stale sidecar from prior crashed dispatch ───
@@ -3280,6 +3295,128 @@ MD
   # Cleanup PIPELINE_DISPATCH_ID/PIPELINE_ISSUE_ID exports so later tests
   # don't see them.
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+fi
+
+# ─── ENG-125 IS1–IS6: init.sh detective fixtures ─────────────────────────────
+# Each fixture invokes _assert_init_sh_well_formed directly. Mirrors the
+# PG1–PG6 progress.md detective block above. IS5 pins ORDER (progress-md
+# detective runs BEFORE init.sh detective); IS6 is a structural pin that
+# both detectives sit inside a planning-gated `if` block.
+printf '\n--- ENG-125 IS1-IS6: init.sh detective fixtures ---\n'
+
+_IS_HELPER_PRESENT=1
+if ! declare -f _assert_init_sh_well_formed >/dev/null 2>&1; then
+  fail_at "precondition: _assert_init_sh_well_formed defined in dispatch.sh" \
+          "function not found after sourcing — ENG-125 Task 4 implementation missing"
+  _IS_HELPER_PRESENT=0
+fi
+
+# Helper: write a well-formed init.sh fixture to the given path.
+_is_write_well_formed() {
+  cat > "$1" <<'EOF'
+#!/usr/bin/env bash
+# ENG-125: per-issue init.sh.
+set -euo pipefail
+
+# ─── smoke ───
+:
+
+# ─── typecheck ───
+:
+
+# ─── lint ───
+:
+
+# ─── test ───
+:
+EOF
+}
+
+if [[ "$_IS_HELPER_PRESENT" == "1" ]]; then
+  # IS1 — well-formed → rc=0, no violation
+  IS1_DIR="$_TEST_STUB_DIR/IS1"; mkdir -p "$IS1_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS1-d0001"
+  _is_write_well_formed "$IS1_DIR/init.sh"
+  rm -f "$IS1_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS1_DIR" "$IS1_DIR/.transcript-violation-planning" "planning" \
+    && rc_is1=0 || rc_is1=$?
+  if [[ "$rc_is1" == "0" && ! -s "$IS1_DIR/.transcript-violation-planning" ]]; then
+    pass_at "IS1: well-formed init.sh → rc=0, no violation"
+  else
+    fail_at "IS1" "rc=$rc_is1 violation=$(cat "$IS1_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS2 — file missing → rc=41, "init-sh-missing"
+  IS2_DIR="$_TEST_STUB_DIR/IS2"; mkdir -p "$IS2_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS2-d0001"
+  rm -f "$IS2_DIR/init.sh" "$IS2_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS2_DIR" "$IS2_DIR/.transcript-violation-planning" "planning" \
+    && rc_is2=0 || rc_is2=$?
+  if [[ "$rc_is2" == "41" ]] && grep -q "init-sh-missing" "$IS2_DIR/.transcript-violation-planning"; then
+    pass_at "IS2: init.sh missing → rc=41 + 'init-sh-missing' diagnostic"
+  else
+    fail_at "IS2" "rc=$rc_is2 violation=$(cat "$IS2_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS3 — malformed (bash -n fails) → rc=39, "init-sh-malformed"
+  IS3_DIR="$_TEST_STUB_DIR/IS3"; mkdir -p "$IS3_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS3-d0001"
+  printf '#!/usr/bin/env bash\necho "unterminated\n' > "$IS3_DIR/init.sh"
+  rm -f "$IS3_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS3_DIR" "$IS3_DIR/.transcript-violation-planning" "planning" \
+    && rc_is3=0 || rc_is3=$?
+  if [[ "$rc_is3" == "39" ]] && grep -q "init-sh-malformed" "$IS3_DIR/.transcript-violation-planning"; then
+    pass_at "IS3: malformed (bash -n fails) → rc=39 + 'init-sh-malformed'"
+  else
+    fail_at "IS3" "rc=$rc_is3 violation=$(cat "$IS3_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS4 — incomplete (missing typecheck marker) → rc=40, "init-sh-incomplete"
+  IS4_DIR="$_TEST_STUB_DIR/IS4"; mkdir -p "$IS4_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS4-d0001"
+  _is_write_well_formed "$IS4_DIR/init.sh"
+  # Strip the typecheck marker.
+  sed -i.bak 's|^# ─── typecheck ───$|# (removed)|' "$IS4_DIR/init.sh"
+  rm -f "$IS4_DIR/init.sh.bak"
+  rm -f "$IS4_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS4_DIR" "$IS4_DIR/.transcript-violation-planning" "planning" \
+    && rc_is4=0 || rc_is4=$?
+  if [[ "$rc_is4" == "40" ]] && grep -q "init-sh-incomplete" "$IS4_DIR/.transcript-violation-planning"; then
+    pass_at "IS4: incomplete (no typecheck marker) → rc=40 + 'init-sh-incomplete'"
+  else
+    fail_at "IS4" "rc=$rc_is4 violation=$(cat "$IS4_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS5 — ORDER pin: when BOTH progress.md AND init.sh are absent, the
+  # progress.md detective (Task ENG-106) runs FIRST inside
+  # _render_and_capture_stream and short-circuits with rc=31. The init.sh
+  # detective is never reached. We verify this by calling the progress.md
+  # detective first (mirroring _render_and_capture_stream's order); it
+  # returns 31 and the caller never invokes _assert_init_sh_well_formed.
+  IS5_DIR="$_TEST_STUB_DIR/IS5"; mkdir -p "$IS5_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS5-d0001"
+  rm -f "$IS5_DIR/progress.md" "$IS5_DIR/init.sh" "$IS5_DIR/.transcript-violation-planning"
+  _assert_progress_md_entry "$IS5_DIR" "$IS5_DIR/.transcript-violation-planning" "planning" \
+    && rc_is5=0 || rc_is5=$?
+  if [[ "$rc_is5" == "31" ]]; then
+    pass_at "IS5: progress.md detective wins the race when both are missing (rc=31 before rc=41)"
+  else
+    fail_at "IS5" "rc=$rc_is5 (expected 31 — progress-md detective ordering pin)"
+  fi
+
+  # IS6 — structural pin: dispatch.sh source contains a planning-gated `if`
+  # block that calls BOTH _assert_progress_md_entry AND
+  # _assert_init_sh_well_formed. Guards against a future refactor accidentally
+  # dropping the planning gate or the init.sh detective.
+  if grep -q '"planning".*last_result\|last_result.*"planning"' "$SCRIPT_DIR/dispatch.sh" \
+     && grep -q '_assert_progress_md_entry' "$SCRIPT_DIR/dispatch.sh" \
+     && grep -q '_assert_init_sh_well_formed' "$SCRIPT_DIR/dispatch.sh"; then
+    pass_at "IS6: dispatch.sh stage-gates BOTH detectives on planning + last_result"
+  else
+    fail_at "IS6" "dispatch.sh missing planning-gated invocation of both detectives"
+  fi
+
+  unset PIPELINE_DISPATCH_ID
 fi
 
 # ─── ENG-106 QA adversarial: progress.md detective edge cases ────────────────
