@@ -280,5 +280,46 @@ else
   fail_at "T_adv_ascii_em_dash" "rc=$rc out='$out'"
 fi
 
+# ─── T_adv_shebang_only_file ────────────────────────────────────────
+# A file with only a shebang (and possibly set -euo pipefail) but NO
+# shape markers → bash -n is clean (valid syntax) but all four markers
+# are absent → expected rc=40. This differs from the zero-byte test:
+# the file is non-empty and syntactically valid but structurally empty.
+# Pins that a structurally minimal but marker-free file takes the
+# "incomplete" path, not the "malformed" path.
+INIT="$FIXTURE_DIR/t-shebang-only.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' > "$INIT"
+rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
+if (( rc == 40 )) && [[ "$out" == *"init-sh-incomplete: missing shape marker"* ]]; then
+  pass_at "T_adv_shebang_only_file: shebang + set -e, no markers → rc=40 (incomplete, not malformed)"
+else
+  fail_at "T_adv_shebang_only_file" "rc=$rc out='$out'"
+fi
+
+# ─── T_adv_marker_reverse_order ─────────────────────────────────────
+# validate_init_sh loops over markers in order smoke→typecheck→lint→test.
+# It should NOT require file ordering — an init.sh with markers in
+# reverse order (test→lint→typecheck→smoke) must return rc=0.
+# This pins that the contract is PRESENCE of all 4 markers, not sequence.
+INIT="$FIXTURE_DIR/t-marker-reverse-order.sh"
+cat > "$INIT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# ─── test ───
+:
+# ─── lint ───
+:
+# ─── typecheck ───
+:
+# ─── smoke ───
+:
+EOF
+rc=0; validate_init_sh "$INIT" >/dev/null 2>&1 || rc=$?
+if (( rc == 0 )); then
+  pass_at "T_adv_marker_reverse_order: markers in reverse order → rc=0 (no ordering assertion)"
+else
+  fail_at "T_adv_marker_reverse_order" "rc=$rc (expected 0; ordering should not matter)"
+fi
+
 printf '\ninit-sh-validator-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

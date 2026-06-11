@@ -3718,6 +3718,65 @@ else
   fail_at "QA-ADV-IS precondition: validate_init_sh defined" "function not found"
 fi
 
+# ─── ENG-125 QA adversarial: full-chain rc=39/rc=40 propagation ──────────────
+# IS5b covers rc=41 through _render_and_capture_stream. QA-ADV-IS-C and
+# QA-ADV-IS-D cover the symmetric rc=39 (malformed) and rc=40 (incomplete)
+# paths with a valid progress.md entry — pinning that _assert_init_sh_well_formed
+# propagates non-41 codes back through _render_and_capture_stream.
+printf '\n--- ENG-125 QA adversarial: full-chain rc=39/40 propagation ---\n'
+
+if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+  # QA-ADV-IS-C: malformed init.sh (bash -n fails) + valid progress.md →
+  # _render_and_capture_stream must return rc=39 and write init-sh-malformed
+  # to violation_file. Symmetric with IS5b (rc=41).
+  QA_ISC_DIR="$_TEST_STUB_DIR/QA-ISC"; mkdir -p "$QA_ISC_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-ISC-d0001"
+  printf '## ENG-T-QA-ISC-d0001 - planning - 2026-01-01T00:00:00Z\n- step\n' \
+    > "$QA_ISC_DIR/progress.md"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n# ─── smoke ───\nif true; then\n  :\n' \
+    > "$QA_ISC_DIR/init.sh"  # unclosed if/then without fi → bash -n fails
+  rm -f "$QA_ISC_DIR/.transcript-violation-planning"
+  _isc_usage="$QA_ISC_DIR/usage-planning.json"
+  rc_qa_isc=0
+  _render_and_capture_stream "$_isc_usage" "$QA_ISC_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_qa_isc=$?
+{"type":"system","subtype":"init","session_id":"qaiscsess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+  if [[ "$rc_qa_isc" == "39" ]] \
+     && grep -q "init-sh-malformed" "$QA_ISC_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-IS-C: malformed init.sh + valid progress.md → rc=39 propagates from _render_and_capture_stream"
+  else
+    fail_at "QA-ADV-IS-C" "rc=$rc_qa_isc (expected 39) violation=$(cat "$QA_ISC_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # QA-ADV-IS-D: incomplete init.sh (missing lint marker) + valid progress.md →
+  # _render_and_capture_stream must return rc=40 and write init-sh-incomplete
+  # to violation_file.
+  QA_ISD_DIR="$_TEST_STUB_DIR/QA-ISD"; mkdir -p "$QA_ISD_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-ISD-d0001"
+  printf '## ENG-T-QA-ISD-d0001 - planning - 2026-01-01T00:00:00Z\n- step\n' \
+    > "$QA_ISD_DIR/progress.md"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n# ─── smoke ───\n:\n# ─── typecheck ───\n:\n# ─── test ───\n:\n' \
+    > "$QA_ISD_DIR/init.sh"  # lint marker absent
+  rm -f "$QA_ISD_DIR/.transcript-violation-planning"
+  _isd_usage="$QA_ISD_DIR/usage-planning.json"
+  rc_qa_isd=0
+  _render_and_capture_stream "$_isd_usage" "$QA_ISD_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_qa_isd=$?
+{"type":"system","subtype":"init","session_id":"qaisdsess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+  if [[ "$rc_qa_isd" == "40" ]] \
+     && grep -q "init-sh-incomplete" "$QA_ISD_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-IS-D: incomplete init.sh (missing lint) + valid progress.md → rc=40 propagates from _render_and_capture_stream"
+  else
+    fail_at "QA-ADV-IS-D" "rc=$rc_qa_isd (expected 40) violation=$(cat "$QA_ISD_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  unset PIPELINE_DISPATCH_ID
+else
+  fail_at "QA-ADV-IS-C/D precondition: _render_and_capture_stream defined" "function not found"
+fi
+
 # ─── ENG-146 — strip_state_preserve_alloc + stage-scoped detective ────
 # Two-fold coverage: (1) the shared helper in common.sh preserves
 # {seq, id, stage} on a state file with allocator fields, rm -f's on
