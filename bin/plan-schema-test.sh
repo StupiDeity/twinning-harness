@@ -475,8 +475,9 @@ else
   fail_at "T_validate_md_missing_section: diagnostic shape" "out=$md_out"
 fi
 
-# Sub-case: a typo on the heading (lowercase 's', "Invariants" capital I) is
-# treated as "missing section" — the validator matches the literal heading only.
+# Sub-cases: typos on the heading are treated as "missing section" — the
+# validator matches the literal heading only. Plan Failure Mode → Test Map
+# enumerates four typo shapes (capital `I`, singular, H3, lowercase `s`).
 cat > "$FIXTURE_DIR/md_heading_typo.md" <<'MDEOF'
 ## system invariants
 
@@ -486,6 +487,36 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_heading_typo.md" >/dev/null
 (( rc == 34 )) \
   && pass_at "T_validate_md_missing_section: lowercase typo → rc=34 (heading literal-match)" \
   || fail_at "T_validate_md_missing_section (typo subcase)" "expected rc=34, got rc=$rc"
+
+cat > "$FIXTURE_DIR/md_heading_typo_capital_i.md" <<'MDEOF'
+## System Invariants
+
+- foo verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_heading_typo_capital_i.md" >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_missing_section: capital-I typo → rc=34 (heading literal-match)" \
+  || fail_at "T_validate_md_missing_section (capital-I subcase)" "expected rc=34, got rc=$rc"
+
+cat > "$FIXTURE_DIR/md_heading_typo_singular.md" <<'MDEOF'
+## System invariant
+
+- foo verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_heading_typo_singular.md" >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_missing_section: singular typo → rc=34 (heading literal-match)" \
+  || fail_at "T_validate_md_missing_section (singular subcase)" "expected rc=34, got rc=$rc"
+
+cat > "$FIXTURE_DIR/md_heading_typo_h3.md" <<'MDEOF'
+### System invariants
+
+- foo verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_heading_typo_h3.md" >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_missing_section: H3 typo → rc=34 (heading literal-match)" \
+  || fail_at "T_validate_md_missing_section (H3 subcase)" "expected rc=34, got rc=$rc"
 
 # ─── T_validate_md_zero_bullets: heading present, no bullets → rc=34
 cat > "$FIXTURE_DIR/md_zero_bullets.md" <<'MDEOF'
