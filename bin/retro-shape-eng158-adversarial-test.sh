@@ -346,6 +346,64 @@ ARTIFACT_DIR="$(mktemp -d)"
 }
 
 # ---------------------------------------------------------------------------
+# Sub-agent finding #5: Shape A `(none)` sentinel actually reaches the
+# rendered prompt. The adv-shapeA-previous-period-path-accepted test
+# verifies rc=0 but does not assert the literal string `(none)` was
+# substituted. This test calls _render_prompt directly to check.
+# ---------------------------------------------------------------------------
+{
+  name="adv-shapeA-none-sentinel-survives-render"
+  source "$HARNESS_DIR/retro-shape-tool-denial-trends.sh" 2>/dev/null || true
+  HARNESS_ROOT="${HARNESS_DIR%/bin}"
+  _PERIOD_START_ISO="2026-06-01T00:00:00Z"
+  _PERIOD_END_ISO="2026-06-08T00:00:00Z"
+  _ARTIFACT_PATH="$ARTIFACT_DIR/adv-a-none-sentinel-artifact.md"
+  _PREVIOUS_PERIOD_PATH="(none)"
+  rendered_tmp="$(mktemp -t adv-shapeA-none-XXXXXX.md)"
+  rc=0
+  _render_prompt "$rendered_tmp" 2>/dev/null || rc=$?
+  found="$(grep -c '(none)' "$rendered_tmp" || true)"
+  rm -f "$rendered_tmp"
+  if (( rc == 0 )) && (( found >= 1 )); then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc found=$found — expected '(none)' in rendered prompt)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Sub-agent finding #1: Shape C — brace-delimited word in observed_version
+# trips _validate_no_unresolved_tokens. Documents known limitation: if
+# `claude --version` ever emits `{word}` (e.g. `claude-cli/1.0 {beta}`),
+# the rendered prompt contains `{beta}` which the extra-token scanner
+# misidentifies as an unresolved template token and the driver dies.
+# This test pins that die behavior explicitly so a future fix (e.g.
+# escaping version strings before substitution) updates this test.
+# ---------------------------------------------------------------------------
+{
+  name="adv-shapeC-brace-in-version-trips-validator"
+  source "$HARNESS_DIR/retro-shape-claude-version-drift.sh" 2>/dev/null || true
+  HARNESS_ROOT="${HARNESS_DIR%/bin}"
+  _capture_observed_version() { _OBSERVED_VERSION="claude-cli-1.0-{beta}"; }
+  _capture_expected_version() { _EXPECTED_VERSION="claude-cli-1.0"; }
+  artifact_path="$ARTIFACT_DIR/adv-c-brace.md"
+  rm -f "$artifact_path"
+  rc=0
+  msg="$(main \
+    --artifact-path "$artifact_path" \
+    --period-start-iso 2026-06-01T00:00:00Z \
+    --period-end-iso   2026-06-08T00:00:00Z \
+    2>&1)" || rc=$?
+  _capture_observed_version() { _OBSERVED_VERSION="claude-cli-test"; }
+  _capture_expected_version() { _EXPECTED_VERSION="claude-cli-test-expected"; }
+  if (( rc != 0 )) && printf '%s' "$msg" | grep -q "unresolved token"; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc — expected die on brace-in-version; msg=${msg})"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 rm -rf "$ARTIFACT_DIR"
