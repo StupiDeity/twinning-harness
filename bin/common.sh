@@ -294,25 +294,43 @@ assert_no_write_to_path() {
 #   41 — missing  (no file at the given path)
 # Caller writes the rc-specific diagnostic to its violation_file;
 # this helper writes diagnostics to STDOUT (caller captures).
-# Shape markers: comments at column 0 of the form `# ─── <gate> ───`
-# where <gate> ∈ {smoke, typecheck, lint, test}.
+# Shape markers: column-0 comments matching `^# ─── <gate> ───$` (see for-loop
+# below for the authoritative gate list).
 validate_init_sh() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
     printf 'init-sh-missing: %s\n' "$path"
     return 41
   fi
-  if ! bash -n "$path" 2>/dev/null; then
-    printf 'init-sh-malformed: bash -n failed for %s\n' "$path"
+  local bash_n_err
+  if ! bash_n_err="$(bash -n "$path" 2>&1)"; then
+    # Include bash -n stderr (line + parse error detail) so the operator
+    # triage doesn't have to re-run bash -n manually against the halted
+    # worktree's init.sh.
+    printf 'init-sh-malformed: bash -n failed for %s: %s\n' "$path" "$bash_n_err"
     return 39
   fi
-  local gate
+  # CRLF tolerance: an init.sh authored on Windows or via a CRLF-defaulting
+  # editor will end every marker line with `…─\r\n`. The `$`-anchor would
+  # otherwise reject `# ─── smoke ───\r` even though the marker is present
+  # byte-for-byte modulo trailing CR. Pre-normalise CR out of the matched
+  # stream rather than complicating the regex.
+  local normalized gate missing=()
+  normalized="$(tr -d '\r' < "$path")"
   for gate in smoke typecheck lint test; do
-    if ! grep -Eq "^# ─── ${gate} ───$" "$path"; then
-      printf 'init-sh-incomplete: missing shape marker # ─── %s ───\n' "$gate"
-      return 40
+    if ! grep -Eq "^# ─── ${gate} ───$" <<<"$normalized"; then
+      missing+=("# ─── ${gate} ───")
     fi
   done
+  if (( ${#missing[@]} > 0 )); then
+    # Collect-all-missing: pre-fix the validator short-circuited on the first
+    # missing gate, so an agent omitting all four markers got "missing smoke"
+    # → fixed smoke → next dispatch "missing typecheck" → and so on. Each
+    # iteration burned a ~5-10 minute plan dispatch on one marker at a time.
+    # Naming every missing marker in a single diagnostic collapses the loop.
+    printf 'init-sh-incomplete: missing shape marker %s\n' "${missing[*]}"
+    return 40
+  fi
   return 0
 }
 
