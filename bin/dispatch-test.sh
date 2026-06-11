@@ -3480,6 +3480,34 @@ NDJSON
   fi
   unset _RS_SH
 
+  # IS5b — behavioral: progress.md present (dispatch entry matched) + init.sh absent
+  # → _render_and_capture_stream returns rc=41 (init.sh detective fires after
+  # progress.md detective passes). Gap filled: IS5 tests "both missing → rc=31
+  # wins"; IS1-IS4 call _assert_init_sh_well_formed directly. IS5b is the only
+  # test driving the full chain with a PASSING progress.md detective followed by
+  # a FAILING init.sh detective through _render_and_capture_stream.
+  if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+    IS5b_DIR="$_TEST_STUB_DIR/IS5b"; mkdir -p "$IS5b_DIR"
+    export PIPELINE_DISPATCH_ID="ENG-T-IS5b-d0001"
+    printf '## ENG-T-IS5b-d0001 - planning - 2026-01-01T00:00:00Z\n- step\n' \
+      > "$IS5b_DIR/progress.md"
+    rm -f "$IS5b_DIR/init.sh" "$IS5b_DIR/.transcript-violation-planning"
+    _is5b_usage="$IS5b_DIR/usage-planning.json"
+    rc_is5b=0
+    _render_and_capture_stream "$_is5b_usage" "$IS5b_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_is5b=$?
+{"type":"system","subtype":"init","session_id":"is5bsess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+    if [[ "$rc_is5b" == "41" ]] \
+       && grep -q "init-sh-missing" "$IS5b_DIR/.transcript-violation-planning" 2>/dev/null; then
+      pass_at "IS5b: progress.md present (dispatch entry matched) + init.sh absent → rc=41 (init.sh detective fires)"
+    else
+      fail_at "IS5b" "rc=$rc_is5b (expected 41) violation=$(cat "$IS5b_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+    fi
+  else
+    fail_at "IS5b precondition: _render_and_capture_stream defined" "function not found"
+  fi
+
   unset PIPELINE_DISPATCH_ID
 fi
 
@@ -3656,6 +3684,38 @@ MD
   fi
 
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+fi
+
+# ─── ENG-125 QA adversarial: validate_init_sh boundary cases ─────────────────
+# Written by QA agent to cover boundary cases not in IS1-IS7 or the plan's FM map.
+# QA-ADV-IS-A pins that [[ -f ]] (not [[ -e ]]) is the guard — so a directory,
+# symlink, or device node all route to rc=41 rather than being passed to bash -n
+# or the grep loop.
+# QA-ADV-IS-B pins empty-string safety (defensive boundary; can't happen in prod
+# but documents the contract).
+printf '\n--- ENG-125 QA adversarial: validate_init_sh boundary cases ---\n'
+
+if declare -f validate_init_sh >/dev/null 2>&1; then
+  # QA-ADV-IS-A: directory path (not a regular file) → rc=41 (init-sh-missing).
+  rc_qa_is_a=0; out_qa_is_a=""
+  out_qa_is_a="$(validate_init_sh "/tmp" 2>&1)" || rc_qa_is_a=$?
+  if (( rc_qa_is_a == 41 )) && [[ "$out_qa_is_a" == *"init-sh-missing"* ]]; then
+    pass_at "QA-ADV-IS-A: directory path /tmp → rc=41 (init-sh-missing; [[ -f ]] rejects non-regular-file)"
+  else
+    fail_at "QA-ADV-IS-A" "rc=$rc_qa_is_a out='$out_qa_is_a'"
+  fi
+
+  # QA-ADV-IS-B: empty path string → rc=41 (init-sh-missing).
+  # [[ ! -f "" ]] is true in bash (empty filename is never a valid file).
+  rc_qa_is_b=0; out_qa_is_b=""
+  out_qa_is_b="$(validate_init_sh "" 2>&1)" || rc_qa_is_b=$?
+  if (( rc_qa_is_b == 41 )) && [[ "$out_qa_is_b" == *"init-sh-missing"* ]]; then
+    pass_at "QA-ADV-IS-B: empty path '' → rc=41 (init-sh-missing)"
+  else
+    fail_at "QA-ADV-IS-B" "rc=$rc_qa_is_b out='$out_qa_is_b'"
+  fi
+else
+  fail_at "QA-ADV-IS precondition: validate_init_sh defined" "function not found"
 fi
 
 # ─── ENG-146 — strip_state_preserve_alloc + stage-scoped detective ────
