@@ -31,13 +31,14 @@ source "$SCRIPT_DIR/dispatch.sh"
 
 printf '\n--- init-sh-validator-adversarial-test: ENG-125 ---\n'
 
-# ─── T_adv_hijack_marker_in_quoted_string ───────────────────────────
-# A quoted string containing `# ─── smoke ───` inside a heredoc body must
-# NOT count as a real marker. The matcher's `^…$` anchor requires the marker
-# line to BE the marker line at column 0 with no surrounding content.
-# Here we embed the lookalike line INSIDE a quoted command argument; the
-# real column-0 markers for typecheck/lint/test are present, smoke is NOT.
-INIT="$FIXTURE_DIR/t-hijack.sh"
+# ─── T_adv_marker_in_double_quoted_argument ─────────────────────────
+# The literal file line is `echo "# ─── smoke ───"` which begins with `e`,
+# so the `^#` anchor in validate_init_sh's grep rejects it. Renamed from
+# T_adv_hijack_marker_in_quoted_string ([nit]): the original name overstated
+# what the test exercised — quoted-string semantics are not relevant here;
+# the column-0 `^` anchor alone is the load-bearing matcher rejection. The
+# heredoc-body-at-column-0 case below pins the truly-quoted-string semantics.
+INIT="$FIXTURE_DIR/t-double-quoted-arg.sh"
 cat > "$INIT" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -49,17 +50,12 @@ echo "# ─── smoke ───"
 # ─── test ───
 :
 EOF
-# bash treats `echo "# ─── smoke ───"` as a single command; the literal "smoke"
-# marker text appears inside a double-quoted string. validate_init_sh's grep
-# regex `^# ─── smoke ───$` requires the COMPLETE LINE to be the marker; the
-# echo wrapper means the smoke-marker line in the file actually reads
-# `echo "# ─── smoke ───"` which does NOT match. So this fixture is missing
-# the smoke marker and should return rc=40.
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"smoke"* ]]; then
-  pass_at "T_adv_hijack_marker_in_quoted_string: echo-wrapped lookalike → rc=40 (no smoke)"
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
+  pass_at "T_adv_marker_in_double_quoted_argument: \`echo \"# ─── smoke ───\"\` (line starts with 'e') → rc=40 (^# anchor rejects)"
 else
-  fail_at "T_adv_hijack_marker_in_quoted_string" "rc=$rc out='$out'"
+  fail_at "T_adv_marker_in_double_quoted_argument" "rc=$rc out='$out'"
 fi
 
 # ─── T_adv_marker_with_trailing_whitespace ──────────────────────────
@@ -80,19 +76,21 @@ INIT="$FIXTURE_DIR/t-trailing-ws.sh"
   printf '%s\n' ':'
 } > "$INIT"
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"smoke"* ]]; then
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
   pass_at "T_adv_marker_with_trailing_whitespace: trailing spaces → rc=40 (\$-anchor pinned)"
 else
   fail_at "T_adv_marker_with_trailing_whitespace" "rc=$rc out='$out'"
 fi
 
 # ─── T_adv_zero_byte_file ───────────────────────────────────────────
-# Empty init.sh → bash -n is clean on empty input; first missing marker is
-# smoke; detective falls through to incomplete, not malformed.
+# Empty init.sh → bash -n is clean on empty input; ALL four markers are
+# missing; detective returns rc=40 with the collect-all-missing diagnostic.
 INIT="$FIXTURE_DIR/t-empty.sh"
 : > "$INIT"
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"smoke"* ]]; then
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
   pass_at "T_adv_zero_byte_file: empty file → rc=40 (incomplete, not malformed)"
 else
   fail_at "T_adv_zero_byte_file" "rc=$rc out='$out'"
@@ -139,10 +137,91 @@ COMMENT
 :
 EOF
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"smoke"* ]]; then
+if (( rc == 40 )) \
+   && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
   pass_at "T_adv_marker_inside_comment_block: heredoc-indented marker → rc=40 (column-0 anchor pinned)"
 else
   fail_at "T_adv_marker_inside_comment_block" "rc=$rc out='$out'"
+fi
+
+# ─── T_adv_marker_in_heredoc_body_at_col0 ───────────────────────────
+# Documented limitation: a `cat <<COMMENT` body line written at column 0 with
+# a marker glyph (e.g. `# ─── smoke ───`) WOULD match validate_init_sh's grep
+# anchor because grep operates on file content, not on bash's parse tree. Bash
+# treats the line as heredoc body, but the validator treats it as a real
+# marker — they disagree, and we choose the lossy-but-cheap path: shape match
+# via grep is sufficient. The Failure Mode → Test Map row "Marker hijack
+# inside quoted string" promises that an embedded `# ─── smoke ───` in a
+# heredoc body is treated as ABSENT — but only when the heredoc body line is
+# INDENTED (T_adv_marker_inside_comment_block above). At column 0, the
+# validator can't distinguish heredoc-body from real source line. Pin the
+# behavior so a future reader doesn't mistakenly assume otherwise.
+INIT="$FIXTURE_DIR/t-heredoc-col0.sh"
+cat > "$INIT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<COMMENT
+# ─── smoke ───
+COMMENT
+# ─── typecheck ───
+:
+# ─── lint ───
+:
+# ─── test ───
+:
+EOF
+rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
+if (( rc == 0 )); then
+  pass_at "T_adv_marker_in_heredoc_body_at_col0: col-0 marker in heredoc body counts as present (documented limitation; grep operates pre-parse)"
+else
+  fail_at "T_adv_marker_in_heredoc_body_at_col0" "rc=$rc out='$out' (expected rc=0 — documented limitation)"
+fi
+
+# ─── T_adv_crlf_line_endings ────────────────────────────────────────
+# CRLF line endings (e.g. `# ─── smoke ───\r\n`) must NOT fail the column-0
+# matcher with a misleading "missing shape marker" diagnostic. The `$`-anchor
+# would historically reject `…─\r`, even though the marker IS present
+# byte-for-byte. The validator pre-normalises CR before matching, so a CRLF
+# init.sh validates as well-formed regardless of authoring editor.
+INIT="$FIXTURE_DIR/t-crlf.sh"
+{
+  printf '%s\r\n' '#!/usr/bin/env bash'
+  printf '%s\r\n' 'set -euo pipefail'
+  printf '%s\r\n' '# ─── smoke ───'
+  printf '%s\r\n' ':'
+  printf '%s\r\n' '# ─── typecheck ───'
+  printf '%s\r\n' ':'
+  printf '%s\r\n' '# ─── lint ───'
+  printf '%s\r\n' ':'
+  printf '%s\r\n' '# ─── test ───'
+  printf '%s\r\n' ':'
+} > "$INIT"
+rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_adv_crlf_line_endings: CRLF endings → rc=0 (CR pre-normalised)" \
+  || fail_at "T_adv_crlf_line_endings" "rc=$rc out='$out'"
+
+# ─── T_adv_collect_all_missing ──────────────────────────────────────
+# An init.sh missing multiple markers should produce a single diagnostic
+# naming EVERY missing marker, not just the first. Pre-fix, the validator
+# short-circuited on the first missing gate; each plan dispatch wasted a
+# ~5-10 minute cycle iterating one marker at a time. Post-fix, the
+# diagnostic enumerates all four when all four are absent.
+INIT="$FIXTURE_DIR/t-all-missing.sh"
+cat > "$INIT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+:
+EOF
+rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
+if (( rc == 40 )) \
+   && [[ "$out" == *"# ─── smoke ───"* ]] \
+   && [[ "$out" == *"# ─── typecheck ───"* ]] \
+   && [[ "$out" == *"# ─── lint ───"* ]] \
+   && [[ "$out" == *"# ─── test ───"* ]]; then
+  pass_at "T_adv_collect_all_missing: all four markers absent → rc=40 + diagnostic names every missing marker"
+else
+  fail_at "T_adv_collect_all_missing" "rc=$rc out='$out'"
 fi
 
 # ─── T_adv_runs_cleanly_under_bash ──────────────────────────────────
