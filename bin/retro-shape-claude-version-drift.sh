@@ -28,6 +28,12 @@ _parse_args() {
       --period-end-iso)
         [[ -n "${2-}" ]] || die "shape: --period-end-iso requires a value"
         _PERIOD_END_ISO="$2"; shift 2 ;;
+      --previous-period-path)
+        # Coordinator (ENG-130) passes this to every shape. Shape C compares
+        # current claude --version against the checked-in pin file; period
+        # context is not consumed.
+        [[ -n "${2-}" ]] || die "shape: --previous-period-path requires a value"
+        shift 2 ;;
       *) die "shape: unknown argument: $1" ;;
     esac
   done

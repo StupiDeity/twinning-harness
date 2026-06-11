@@ -273,9 +273,9 @@ SCRIPT_DIR="$STUB_DIR"
   _render_prompt() {
     local rendered="$1"
     sed \
-      -e "s|{agent_prompts_md_path}|${_AGENT_PROMPTS_PATH}|g" \
-      -e "s|{dispatch_sh_path}|${_DISPATCH_SH_PATH}|g" \
-      -e "s|{render_prompt_sh_path}|${_RENDER_PROMPT_SH_PATH}|g" \
+      -e "s|{agent_prompts_md_path}|${HARNESS_ROOT}/AGENT_PROMPTS.md|g" \
+      -e "s|{dispatch_sh_path}|${HARNESS_ROOT}/bin/dispatch.sh|g" \
+      -e "s|{render_prompt_sh_path}|${HARNESS_ROOT}/bin/render-prompt.sh|g" \
       -e "s|{artifact_path}|${_ARTIFACT_PATH}|g" \
       "$BOGUS_TEMPLATE" > "$rendered"
   }

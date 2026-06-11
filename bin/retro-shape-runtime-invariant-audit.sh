@@ -14,9 +14,6 @@ source "$SCRIPT_DIR/common.sh"
 _ARTIFACT_PATH=""
 _PERIOD_START_ISO=""
 _PERIOD_END_ISO=""
-_AGENT_PROMPTS_PATH=""
-_DISPATCH_SH_PATH=""
-_RENDER_PROMPT_SH_PATH=""
 
 _parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -30,15 +27,11 @@ _parse_args() {
       --period-end-iso)
         [[ -n "${2-}" ]] || die "shape: --period-end-iso requires a value"
         _PERIOD_END_ISO="$2"; shift 2 ;;
-      --agent-prompts-path)
-        [[ -n "${2-}" ]] || die "shape: --agent-prompts-path requires a value"
-        _AGENT_PROMPTS_PATH="$2"; shift 2 ;;
-      --dispatch-sh-path)
-        [[ -n "${2-}" ]] || die "shape: --dispatch-sh-path requires a value"
-        _DISPATCH_SH_PATH="$2"; shift 2 ;;
-      --render-prompt-sh-path)
-        [[ -n "${2-}" ]] || die "shape: --render-prompt-sh-path requires a value"
-        _RENDER_PROMPT_SH_PATH="$2"; shift 2 ;;
+      --previous-period-path)
+        # Coordinator (ENG-130) passes this to every shape. Shape B is a
+        # current-tree audit; the value is intentionally ignored.
+        [[ -n "${2-}" ]] || die "shape: --previous-period-path requires a value"
+        shift 2 ;;
       *) die "shape: unknown argument: $1" ;;
     esac
   done
@@ -48,9 +41,6 @@ _parse_args() {
     || die "shape: --period-start-iso is required"
   [[ -n "$_PERIOD_END_ISO" ]] \
     || die "shape: --period-end-iso is required"
-  : "${_AGENT_PROMPTS_PATH:=$HARNESS_ROOT/AGENT_PROMPTS.md}"
-  : "${_DISPATCH_SH_PATH:=$HARNESS_ROOT/bin/dispatch.sh}"
-  : "${_RENDER_PROMPT_SH_PATH:=$HARNESS_ROOT/bin/render-prompt.sh}"
 }
 
 _render_prompt() {
@@ -58,9 +48,9 @@ _render_prompt() {
   local template="$HARNESS_ROOT/bin/retro-prompts/runtime-invariant-audit.md"
   [[ -f "$template" ]] || die "shape: prompt template not found: $template"
   sed \
-    -e "s|{agent_prompts_md_path}|${_AGENT_PROMPTS_PATH}|g" \
-    -e "s|{dispatch_sh_path}|${_DISPATCH_SH_PATH}|g" \
-    -e "s|{render_prompt_sh_path}|${_RENDER_PROMPT_SH_PATH}|g" \
+    -e "s|{agent_prompts_md_path}|${HARNESS_ROOT}/AGENT_PROMPTS.md|g" \
+    -e "s|{dispatch_sh_path}|${HARNESS_ROOT}/bin/dispatch.sh|g" \
+    -e "s|{render_prompt_sh_path}|${HARNESS_ROOT}/bin/render-prompt.sh|g" \
     -e "s|{artifact_path}|${_ARTIFACT_PATH}|g" \
     "$template" > "$rendered"
 }
