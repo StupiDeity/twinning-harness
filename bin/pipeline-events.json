@@ -19,7 +19,8 @@
     "dispatch-envelope-violation",
     "plan-contract-invalid",
     "review-payload-invalid",
-    "qa-payload-invalid"
+    "qa-payload-invalid",
+    "sandbox-contract-violation"
   ],
   "wait_reasons": [
     "awaiting-approval",

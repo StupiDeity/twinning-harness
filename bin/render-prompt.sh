@@ -77,6 +77,48 @@ verdict_review_path=_resolve_verdict_review_path
 # unambiguous (no prefix collisions across names like file / file_x).
 AGENT_RUNTIME_TOKENS=' file pr_number '
 
+# ENG-156 D-004: persist the map of path-shaped resolver tokens →
+# resolved values to $(issue_dir "$ident")/.rendered-paths-<stage>
+# so the post-dispatch detective in run-stage.sh can match denied
+# paths against the harness contract surface. Six resolvers are
+# path-shaped; non-path resolvers (issue_id, date, slug, etc.) are
+# excluded by enumeration. Output format: one `<token>\t<value>`
+# line per resolver that returned a non-empty value. Caller passes
+# the absolute target file path; we redirect with `>` so the prompt
+# stdout pipeline at main() is untouched.
+_write_rendered_paths_sidecar() {
+  local sidecar_path="$1"
+  [[ -n "$sidecar_path" ]] || return 0
+  # Enumerated explicitly so a new non-path resolver token added later
+  # cannot inadvertently leak into the contract surface — adding a
+  # path-shaped resolver requires a deliberate edit here. A future
+  # maintainer tempted to DRY this into a loop over PROMPT_RESOLVERS
+  # would break the closed-allowlist contract (brainstorm §D-004).
+  {
+    [[ -n "${_RENDER_BRAINSTORM_FILE:-}" ]] && printf 'brainstorm_file\t%s\n' "$_RENDER_BRAINSTORM_FILE"
+    [[ -n "${_RENDER_PLAN_FILE:-}" ]]      && printf 'plan_file\t%s\n'      "$_RENDER_PLAN_FILE"
+    [[ -n "${_RENDER_STAGE_SUMMARY_PATH:-}" ]] && printf 'stage_summary_path\t%s\n' "$_RENDER_STAGE_SUMMARY_PATH"
+    [[ -n "${_RENDER_LEARNED_RULES_DIR:-}" ]]  && printf 'learned_rules_dir\t%s\n'  "$_RENDER_LEARNED_RULES_DIR"
+    [[ -n "${_RENDER_PROGRESS_MD_PATH:-}" ]]   && printf 'progress_md_path\t%s\n'   "$_RENDER_PROGRESS_MD_PATH"
+    # plan_json's resolver `_resolve_plan_json` returns the FILE
+    # CONTENTS, not the path — so we cannot reuse it here. The path
+    # this sidecar is named after is `${_RENDER_PLAN_FILE%.md}.json`
+    # (the resolver derives the same way internally; assumes plan-file
+    # ends in `.md` — non-.md plans are not supported today). Emit the
+    # line whenever _RENDER_PLAN_FILE is set, regardless of whether
+    # the .json sibling exists on disk — the planning dispatch is the
+    # very dispatch that creates plan_json, so an `-f` guard here
+    # would always omit the line on the dispatch Phase B was designed
+    # to catch (sandbox denies the agent's Write to that path → file
+    # missing on disk → contract surface goes empty → Phase B no-op).
+    if [[ -n "${_RENDER_PLAN_FILE:-}" ]]; then
+      local _pj_path="${_RENDER_PLAN_FILE%.md}.json"
+      printf 'plan_json\t%s\n' "$_pj_path"
+    fi
+  } > "$sidecar_path" 2>/dev/null \
+    || log "[render] sidecar write to $sidecar_path failed (Phase B detective will have no contract surface)"
+}
+
 lookup_section() {
   local stage="$1"
   grep -E "^${stage}=" <<<"$STAGE_TO_SECTION" | head -1 | cut -d= -f2-
@@ -536,6 +578,12 @@ main() {
   # set _RENDER_DISPATCH_ID directly).
   _RENDER_DISPATCH_ID="${PIPELINE_DISPATCH_ID-}"
   _RENDER_STAGE="$stage"
+
+  # ENG-156 D-004: persist resolved path-shaped resolver values so the
+  # post-dispatch sandbox-denial detective can match denied paths
+  # against the harness contract surface. Best-effort — failures
+  # leave Phase B with no sidecar to read (falls through to Phase A).
+  _write_rendered_paths_sidecar "$(issue_dir "$issue_id")/.rendered-paths-${stage}"
 
   resolve_block_tokens "$block" | append_project_profile "$stage"
 }

@@ -927,6 +927,10 @@ _entry_conditions_gate() {
 # Generalises the wait-exit clear at lines 497-499 (build-only) to all
 # stages. Cleared:
 #   stage-summary-${stage}.md  (read by post_completion_comment)
+#   .rendered-paths-${stage}   (rewritten by render-prompt.sh at dispatch
+#                               render; clearing here avoids stale-from-
+#                               prior-attempt contamination on retry —
+#                               OQ-5)
 #   wait-${stage}.json         (overwritten by _handle_wait when the
 #                               agent emits a wait verdict; clearing
 #                               here ensures a fresh dispatch doesn't
@@ -943,6 +947,7 @@ _clear_current_stage_slots() {
   local d; d="$(issue_dir "$ident")"
   rm -f "$d/stage-summary-${stage}.md" 2>/dev/null || true
   rm -f "$d/wait-${stage}.json"        2>/dev/null || true
+  rm -f "$d/.rendered-paths-${stage}" 2>/dev/null || true
   # ENG-119: pre-clean verdict-review.json on reviewing-stage dispatch
   # start. Per-medium primitive (CLAUDE.md ENG-87) for the new agent-owned
   # writer file. Stage-gated to reviewing because the file is review-
@@ -1083,6 +1088,172 @@ _validate_dispatch_envelope() {
     body="$(printf '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->\n\nDispatch envelope violation on dispatch_id=%s stage=%s:\n\n```\n%s\n```\n\nThe agent bypassed bin/linear.sh (auto-injection chokepoint). Inspect: %s\n\n**Resume:** investigate the bypass, fix the agent prompt or tool-allowlist, then run `bash bin/pipeline.sh decide %s --action continue`.' \
       "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$viol_str_safe" "$sidecar" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+    return 29
+  fi
+  return 0
+}
+
+# ENG-156 D-001 (Phase A) + D-004 (Phase B): post-dispatch sandbox-denial
+# detective. Scans .envelope-transcript-<stage> for
+# `tool_result.is_error:true` rows matching a 2-entry signature table.
+# Phase A: always log-only — one events.jsonl row per dispatch when
+# denial count > 0. Phase B: when orchestrator.sandbox_contract_halt is
+# true AND a denied path matches a path resolved by PROMPT_RESOLVERS
+# (read from .rendered-paths-<stage>), promotes to rc=29 halt with
+# reason=sandbox-contract-violation. Mirror of _validate_dispatch_envelope
+# at a different axis (tool_result vs tool_use). Sidecar fail-open: missing
+# or empty file returns 0 silently (matches the envelope-validator's
+# `[[ -s "$sidecar" ]] || return 0` shape).
+# Returns: 0 (Phase A log-only) | 29 (Phase B halt on matched path).
+_emit_sandbox_denial_metric() {
+  # Force orchestrator-lane attribution for the metric + halt-comment write;
+  # PIPELINE_WRITER is otherwise set to agent by dispatch.sh's parent env
+  # and bin/linear.sh refuses orchestrator-namespace writes from the agent
+  # lane (ENG-49 trust-model).
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2"
+  local d; d="$(issue_dir "$ident")"
+  local sidecar="${d}/.envelope-transcript-${stage}"
+  [[ -s "$sidecar" ]] || return 0
+
+  # Walk the transcript twice via a single jq invocation:
+  #  Pass 1: build tool_use_id → (file_path // command-trailing-token) map.
+  #  Pass 2: for each user.tool_result with is_error==true, classify
+  #    content via the 2-entry signature table; emit one TSV row per
+  #    denial: <signature>\t<path>.
+  # Substring match (no regex compilation inside --arg-bound jq strings —
+  # awkward to test). Aggregation to count + comma-separated signatures
+  # + comma-separated paths happens in shell post-jq for clarity.
+  local denials_tsv
+  # tool_use ids are assumed unique per dispatch (claude allocates them
+  # sequentially via the streaming protocol); `from_entries` keeps LAST
+  # on duplicate keys. The path token via `split(" ") | last` is
+  # best-effort labelling for the metric — consumers MUST NOT rely on
+  # this being a real path (OQ-6 bash-classifier commands like
+  # `bash bin/secret-probe-lint.sh` resolve to the .sh basename).
+  denials_tsv="$(jq -Rrn '
+    [inputs | (fromjson? // empty)] as $events
+    | ($events
+      | map(select(.type == "assistant")
+            | .message.content[]?
+            | select(.type == "tool_use")
+            | {key: .id, value: (.input.file_path // (.input.command // "" | split(" ") | last // ""))})
+      | from_entries) as $tu_map
+    | $events[]
+    | select(.type == "user")
+    | .message.content[]?
+    | select(.type == "tool_result" and (.is_error == true))
+    | (.content // "" | if type == "array" then map(.text // "") | join(" ") else tostring end) as $body
+    | (if ($body | contains("may only list files in the allowed working directories")) then "sandbox-path"
+       elif ($body | contains("This command requires approval")) then "bash-classifier"
+       else "" end) as $sig
+    | select($sig != "")
+    | ($tu_map[.tool_use_id] // "") as $p
+    | "\($sig)\t\($p)"
+  ' "$sidecar" 2>/dev/null)" || {
+    log "[sandbox-denial] jq scan failed for $ident/$stage; assuming no denials"
+    denials_tsv=""
+  }
+
+  [[ -n "$denials_tsv" ]] || return 0
+  # `printf '%s\n' "$x" | wc -l` relies on $() stripping trailing
+  # newlines from "$x" so the per-denial-row count matches `wc -l`. A
+  # future swap to `echo "$x"` would silently double-count on bash
+  # versions that echo a trailing newline differently — keep printf.
+  # count is deduplicated symmetrically with signatures and paths so
+  # `count=N signatures=… paths=…` reads coherently to operators
+  # (count = distinct (sig, path) pairs, not raw row count).
+  local count signatures paths
+  count="$(printf '%s\n' "$denials_tsv" | sort -u | wc -l | awk '{print $1}')"
+  signatures="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '{print $1}' | sort -u | paste -sd, -)"
+  paths="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '$2 != "" {print $2}' | sort -u | paste -sd, -)"
+  # Sanitise paths for the metric notes blob AND for the Phase B
+  # contract-match comparison below. paths is agent-controlled (denied
+  # paths come from the agent's tool_use); the metric notes line is
+  # space-separated `k=v` fields, so an embedded space or `=` inside a
+  # denied path would split the notes fields and let
+  # `show_sandbox_denials`'s `capture("claude_version=…")` see a forged
+  # version. Replace both characters with underscores before
+  # interpolation. Side-effect: the Phase B `*"$_val"*` test (~line
+  # 1191) compares the sanitised paths against the un-sanitised sidecar
+  # resolver value — any future resolver whose value contains a literal
+  # space or `=` would silently miss in Phase B while Phase A still
+  # records. Acceptable today (no path-shaped resolver emits such
+  # values); revisit if a new resolver does. Brainstorm §D-002 flags
+  # paths as agent-controlled best-effort.
+  paths="${paths//[ =]/_}"
+
+  # Extract only the version token (first whitespace-delimited field).
+  # `claude --version` emits e.g. `1.0.93 (Claude Code)` with an embedded
+  # space + parenthesised suffix; without `awk '{print $1}'` the embedded
+  # space would split the metric notes' space-delimited fields and
+  # `show_sandbox_denials`'s `capture("claude_version=(?<v>\\S+)")` selector
+  # would silently truncate, leaking `(Claude` into the next pseudo-field.
+  local claude_version
+  claude_version="$(claude --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
+  [[ -n "$claude_version" ]] || claude_version="unknown"
+
+  # Phase B: read .rendered-paths-<stage> (if present) and check whether
+  # any denied path contains a resolved path-string. Gated on the
+  # orchestrator.sandbox_contract_halt config flag (default false).
+  local phase_b_enabled=0
+  if [[ -f "$CONFIG" ]]; then
+    local _cfg
+    _cfg="$(jq -r '.orchestrator.sandbox_contract_halt // false' "$CONFIG" 2>/dev/null || true)"
+    [[ "$_cfg" == "true" ]] && phase_b_enabled=1
+  fi
+
+  local outcome="detected"
+  local matched_token="" matched_path=""
+  local rp="${d}/.rendered-paths-${stage}"
+  if (( phase_b_enabled )) && [[ -s "$rp" ]] && [[ -n "$paths" ]]; then
+    # paths is a comma-separated single-line set. Split into an array
+    # once via here-string, then iterate denied paths against each
+    # resolved-path line. First match wins.
+    local _dp _denied _tok _val
+    IFS=, read -ra _denied <<< "$paths"
+    for _dp in "${_denied[@]}"; do
+      [[ -n "$_dp" ]] || continue
+      while IFS=$'\t' read -r _tok _val; do
+        [[ -n "$_val" ]] || continue
+        if [[ "$_dp" == *"$_val"* ]]; then
+          matched_token="$_tok"
+          matched_path="$_dp"
+          break 2
+        fi
+      done < "$rp"
+    done
+  fi
+
+  if [[ -n "$matched_token" ]]; then
+    outcome="contract-violation"
+  fi
+
+  # Always emit the metric row (Phase A behavior preserved even when
+  # Phase B fires — operator gets both the halt comment and the
+  # events.jsonl row for retrospective consumption).
+  bash "$SCRIPT_DIR/metrics.sh" sandbox_denial "$ident" "$stage" "$outcome" 0 \
+    "count=$count signatures=$signatures paths=$paths claude_version=$claude_version" \
+    || log "[sandbox-denial] metric emit failed for $ident/$stage"
+
+  if [[ -n "$matched_token" ]]; then
+    # Phase B halt path. Sidecar carries matched_path drawn from the
+    # space/`=` sanitised `paths` set (operator-read only; never parsed
+    # by parse_pipeline_marker) — the original attacker bytes survive
+    # in the raw `.envelope-transcript-<stage>` for forensic recovery.
+    # Linear comment body uses ONLY $matched_token (closed enumeration
+    # from PROMPT_RESOLVERS path-shaped allowlist) and orchestrator-
+    # generated $ident / $PIPELINE_DISPATCH_ID. Matches ENG-87
+    # review-iter-7 Critical 3 / ENG-155 D-004 sanitisation precedent.
+    printf 'sandbox-contract-violation: token=%s path=%s\n' \
+      "$matched_token" "$matched_path" \
+      > "${d}/.transcript-violation-${stage}"
+    local body
+    body="$(printf '<!-- pipeline: verdict result=halt reason=sandbox-contract-violation -->\n\nSandbox blocked agent write to a harness-contract path on dispatch_id=%s stage=%s.\n\nResolver token: `%s`\n\nThe orchestrator rendered this resolver value into the agent prompt and the sandbox denied the agent'\''s tool call against it. Inspect `%s/.transcript-violation-%s` for the denied path; expected fix is the project profile / `--add-dir` / tool-allowlist (NOT the agent prompt).\n\n**Resume:** fix the contract drift, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+      "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$matched_token" "$d" "$stage" "$ident")"
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" \
+      || log "[sandbox-denial] halt-comment post failed for $ident/$stage; rc=29 still emitted"
     return 29
   fi
   return 0
@@ -1988,6 +2159,18 @@ main() {
           # Pre-clean at dispatch.sh:102 ensures the next dispatch
           # cannot inherit a stale sidecar; cleanup on `--action
           # continue` is the operator's recovery path.
+          exit 29
+        fi
+        # ENG-156: Phase A detective (always log-only); Phase B halt
+        # when config flag is on AND a PROMPT_RESOLVERS path is denied.
+        local _sd_rc=0
+        _emit_sandbox_denial_metric "$ident" "$stage" || _sd_rc=$?
+        if (( _sd_rc == 29 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "sandbox-contract-violation: orchestrator rendered a path the sandbox denied (inspect $(issue_dir "$ident")/.transcript-violation-${stage})" 29
+          # ENG-87 review C3 precedent: preserve the envelope-transcript
+          # sidecar on the halt path for forensic review. The next clean
+          # dispatch's pre-clean removes it.
           exit 29
         fi
         rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
