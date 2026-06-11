@@ -104,40 +104,41 @@ qa_predicate_path() {
 # path-traversal hardening: reject leading `/` and any `..` path-segment;
 # exempt `smoke` (commands run any binary) and `http_get` (URLs are
 # not filesystem paths). Returns rc=34 on any failure with a
-# `<caller>-incomplete:` diagnostic shape; the `--caller <name>` flag
-# overrides the default `plan-contract` prefix (verify-qa passes
-# `qa-predicate`). The `--shape flat|nested` flag picks the jq index
-# expression — `nested` (default) is plan-schema's
-# `features[$i].pass_criteria[$j]`, `flat` is verify-qa's top-level
-# `pass_criteria[$j]`.
+# diagnostic shape. The helper writes the body of its diagnostic into the
+# `_VALIDATE_CRIT_DIAG` global on rc=34; the caller is responsible for
+# prepending its own `<contract>-incomplete:` prefix and emitting. M7
+# (review iter-2): the prior `--caller <name>` flag was YAGNI — the
+# helper only flipped a prefix string the caller already knows. The
+# `--shape flat|nested` flag picks the jq index expression — `nested`
+# (default) is plan-schema's `features[$i].pass_criteria[$j]`, `flat`
+# is verify-qa's top-level `pass_criteria[$j]`.
 #
-# Usage: _validate_pass_criterion <file> <fi> <ci> [--kinds <csv>] [--caller <name>] [--shape flat|nested]
+# Usage: _validate_pass_criterion <file> <fi> <ci> [--kinds <csv>] [--shape flat|nested]
 #   <file>  — JSON file under inspection
 #   <fi>    — feature index for diagnostics (verify-qa passes 0)
 #   <ci>    — criterion index for diagnostics
 #   --kinds  — CSV of allowed kinds (default: smoke,file_exists,grep)
-#   --caller — diagnostic prefix (default: plan-contract)
 #   --shape  — jq path shape: nested|flat (default: nested)
+#
+# On rc=34, the caller MUST read `$_VALIDATE_CRIT_DIAG` and format its
+# own diagnostic; the helper does NOT emit to stdout/stderr itself.
 _validate_pass_criterion() {
   local file="$1" fi="$2" ci="$3"
   shift 3
   local kinds_csv="smoke,file_exists,grep"
-  local caller="plan-contract"
   local shape="nested"
+  _VALIDATE_CRIT_DIAG=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --kinds)
-        [[ $# -ge 2 ]] || { printf '_validate_pass_criterion: --kinds requires a value\n' >&2; return 34; }
+        [[ $# -ge 2 ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --kinds requires a value"; return 34; }
         kinds_csv="$2"; shift 2 ;;
-      --caller)
-        [[ $# -ge 2 ]] || { printf '_validate_pass_criterion: --caller requires a value\n' >&2; return 34; }
-        caller="$2"; shift 2 ;;
       --shape)
-        [[ $# -ge 2 ]] || { printf '_validate_pass_criterion: --shape requires a value\n' >&2; return 34; }
+        [[ $# -ge 2 ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --shape requires a value"; return 34; }
         case "$2" in flat|nested) shape="$2" ;;
-                     *) printf '_validate_pass_criterion: --shape must be flat or nested, got %s\n' "$2" >&2; return 34 ;; esac
+                     *) _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --shape must be flat or nested, got $2"; return 34 ;; esac
         shift 2 ;;
-      *) printf '_validate_pass_criterion: unknown flag %s\n' "$1" >&2; return 34 ;;
+      *) _VALIDATE_CRIT_DIAG="_validate_pass_criterion: unknown flag $1"; return 34 ;;
     esac
   done
   local pc_jq
@@ -158,7 +159,7 @@ _validate_pass_criterion() {
   local kind
   kind="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.kind // \"MISSING\"" "$file")"
   if [[ "$kind" == "MISSING" ]]; then
-    printf '%s-incomplete: %s.kind is required\n' "$caller" "$loc"
+    _VALIDATE_CRIT_DIAG="$loc.kind is required"
     return 34
   fi
 
@@ -171,8 +172,7 @@ _validate_pass_criterion() {
   done
   IFS="$IFS_save"
   if (( kind_allowed == 0 )); then
-    printf '%s-incomplete: %s: unknown kind "%s" (allowed: %s)\n' \
-      "$caller" "$loc" "$kind" "$kinds_csv"
+    _VALIDATE_CRIT_DIAG="$loc: unknown kind \"$kind\" (allowed: $kinds_csv)"
     return 34
   fi
 
@@ -182,30 +182,30 @@ _validate_pass_criterion() {
       cmd_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.command | type" "$file")"
       cmd_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.command // \"MISSING\"" "$file")"
       if [[ "$cmd_val" == "MISSING" || "$cmd_type" != "string" || -z "$cmd_val" ]]; then
-        printf '%s-incomplete: %s (smoke): command must be a non-empty string\n' "$caller" "$loc"
+        _VALIDATE_CRIT_DIAG="$loc (smoke): command must be a non-empty string"
         return 34
       fi
       exit_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_exit | type" "$file")"
       if [[ "$exit_type" != "number" ]]; then
-        printf '%s-incomplete: %s (smoke): expect_exit must be an integer, got type=%s\n' "$caller" "$loc" "$exit_type"
+        _VALIDATE_CRIT_DIAG="$loc (smoke): expect_exit must be an integer, got type=$exit_type"
         return 34
       fi
       ;;
     file_exists)
-      _validate_relative_path "$file" "$fi" "$ci" "$pc_jq" "$caller" "$loc" "file_exists" || return 34
+      _validate_relative_path "$file" "$fi" "$ci" "$pc_jq" "$loc" "file_exists" || return 34
       ;;
     grep)
       local pattern_val pattern_type em_type
-      _validate_relative_path "$file" "$fi" "$ci" "$pc_jq" "$caller" "$loc" "grep" || return 34
+      _validate_relative_path "$file" "$fi" "$ci" "$pc_jq" "$loc" "grep" || return 34
       pattern_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.pattern | type" "$file")"
       pattern_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.pattern // \"MISSING\"" "$file")"
       if [[ "$pattern_val" == "MISSING" || "$pattern_type" != "string" || -z "$pattern_val" ]]; then
-        printf '%s-incomplete: %s (grep): pattern must be a non-empty string\n' "$caller" "$loc"
+        _VALIDATE_CRIT_DIAG="$loc (grep): pattern must be a non-empty string"
         return 34
       fi
       em_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_match | type" "$file")"
       if [[ "$em_type" != "boolean" ]]; then
-        printf '%s-incomplete: %s (grep): expect_match must be a boolean, got type=%s\n' "$caller" "$loc" "$em_type"
+        _VALIDATE_CRIT_DIAG="$loc (grep): expect_match must be a boolean, got type=$em_type"
         return 34
       fi
       ;;
@@ -214,7 +214,7 @@ _validate_pass_criterion() {
       url_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.url | type" "$file")"
       url_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.url // \"MISSING\"" "$file")"
       if [[ "$url_val" == "MISSING" || "$url_type" != "string" || -z "$url_val" ]]; then
-        printf '%s-incomplete: %s (http_get): url must be a non-empty string\n' "$caller" "$loc"
+        _VALIDATE_CRIT_DIAG="$loc (http_get): url must be a non-empty string"
         return 34
       fi
       # Restrict url scheme to http:// or https://. Blocks file://
@@ -223,22 +223,69 @@ _validate_pass_criterion() {
       # need a non-http scheme to land. https:// IS accepted so the
       # predicate stays usable against external services.
       if [[ ! "$url_val" =~ ^https?:// ]]; then
-        printf '%s-incomplete: %s (http_get): url must use http:// or https:// scheme, got: %s\n' "$caller" "$loc" "$url_val"
+        _VALIDATE_CRIT_DIAG="$loc (http_get): url must use http:// or https:// scheme, got: $url_val"
+        return 34
+      fi
+      # C4 (review iter-2): reject URLs whose host targets loopback,
+      # link-local, RFC1918, IMDS, or IPv6 ULA. Brainstorm threat model
+      # "no out-of-worktree access" is broader than scheme-only; the
+      # literal-string denylist catches every hostname-form SSRF target.
+      # DNS rebinding is not in scope (the agent runs in a single-user
+      # sandbox; an active DNS attacker is outside the threat model).
+      if _url_host_class_denied "$url_val"; then
+        _VALIDATE_CRIT_DIAG="$loc (http_get): url host is on the denylist (loopback / link-local / RFC1918 / IMDS / IPv6 ULA): $url_val"
         return 34
       fi
       es_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_status | type" "$file")"
       if [[ "$es_type" != "number" ]]; then
-        printf '%s-incomplete: %s (http_get): expect_status must be an integer, got type=%s\n' "$caller" "$loc" "$es_type"
+        _VALIDATE_CRIT_DIAG="$loc (http_get): expect_status must be an integer, got type=$es_type"
         return 34
       fi
       ebm_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_body_match | type" "$file")"
       if [[ "$ebm_type" != "string" && "$ebm_type" != "null" ]]; then
-        printf '%s-incomplete: %s (http_get): expect_body_match must be string or null, got type=%s\n' "$caller" "$loc" "$ebm_type"
+        _VALIDATE_CRIT_DIAG="$loc (http_get): expect_body_match must be string or null, got type=$ebm_type"
         return 34
       fi
       ;;
   esac
   return 0
+}
+
+# Extract the host from a URL and test it against the deny-by-default
+# host-class denylist (C4 — review iter-2). Returns 0 (denied) when the
+# host matches loopback / link-local / RFC1918 / IMDS / IPv6 ULA;
+# returns 1 otherwise. Operates on the URL's host string only; no DNS
+# resolution (which would add a dig dependency and DNS-rebinding race).
+_url_host_class_denied() {
+  local url="$1"
+  # Strip scheme.
+  local rest="${url#*://}"
+  # Strip userinfo (anything before final `@` in authority).
+  rest="${rest##*@}"
+  # Strip path/query/fragment (after first `/`, `?`, `#`).
+  local host="${rest%%/*}"
+  host="${host%%\?*}"
+  host="${host%%#*}"
+  # IPv6 form is [::1]:8080 — keep the inner address; strip brackets.
+  if [[ "$host" == \[*\]* ]]; then
+    host="${host%%\]*}"; host="${host#\[}"
+  else
+    # IPv4/hostname:port — strip the port.
+    host="${host%%:*}"
+  fi
+  # Lowercase for case-insensitive comparison.
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in
+    localhost|0.0.0.0) return 0 ;;
+    127.*) return 0 ;;
+    10.*) return 0 ;;
+    192.168.*) return 0 ;;
+    169.254.*) return 0 ;;
+    172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
+    ::1|::ffff:127.*) return 0 ;;
+    fe80:*|fc[0-9a-f][0-9a-f]:*|fd[0-9a-f][0-9a-f]:*) return 0 ;;
+  esac
+  return 1
 }
 
 # Internal helper: validate a `.path` field on a pass_criterion for the
@@ -254,23 +301,26 @@ _validate_pass_criterion() {
 # the obvious string-shape attacks; the executor's realpath check closes
 # the symlink-pivot vector.
 _validate_relative_path() {
-  local file="$1" fi="$2" ci="$3" pc_jq="$4" caller="$5" loc="$6" kind="$7"
+  local file="$1" fi="$2" ci="$3" pc_jq="$4" loc="$5" kind="$6"
   local path_val path_type
   path_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path | type" "$file")"
   path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path // \"MISSING\"" "$file")"
   # D-013 lexical traversal guard runs BEFORE the non-empty / type check
   # so `path: "/etc/passwd"` cannot slip past the type test (string +
   # non-empty) before the worktree-relative gate fires.
+  # M1 (review iter-2): include bare ".." — the prior pattern set
+  # missed `path: ".."` which previously slipped through and let
+  # _resolve_inside_anchor confirm parent-dir existence as an oracle.
   if [[ "$path_val" == /* \
+        || "$path_val" == .. \
         || "$path_val" == ../* \
         || "$path_val" == */../* \
         || "$path_val" == */.. ]]; then
-    printf '%s-incomplete: %s (%s): path must be worktree-relative (no leading '\''/'\'' and no '\''..'\'' path-segment), got: %s\n' \
-      "$caller" "$loc" "$kind" "$path_val"
+    _VALIDATE_CRIT_DIAG="$loc ($kind): path must be worktree-relative (no leading '/' and no '..' path-segment), got: $path_val"
     return 34
   fi
   if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
-    printf '%s-incomplete: %s (%s): path must be a non-empty string\n' "$caller" "$loc" "$kind"
+    _VALIDATE_CRIT_DIAG="$loc ($kind): path must be a non-empty string"
     return 34
   fi
   return 0
@@ -744,7 +794,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

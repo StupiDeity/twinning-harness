@@ -9,25 +9,30 @@
 #   authors the predicate inside a dispatched claude -p sandbox; the operator
 #   never types commands here. Treat smoke.command as agent-controlled but
 #   sandboxed (no envelope to Linear writes; no access outside worktree;
-#   60s wall-clock cap). DO NOT remove the gtimeout wrap or the bash -c
-#   isolation without a brainstorm decision.
+#   60s wall-clock cap). gtimeout is REQUIRED — absence dies (M3) rather
+#   than silently downgrading the wall-clock guarantee.
 #
-# --worktree fence (finding #15): when --worktree is passed, the value
-#   MUST be a subpath of TARGET_REPO (realpath-normalised). Bypassing the
-#   fence would let a malicious predicate pivot `file_exists` / `grep`
-#   authority into $PROJECT_STATE_DIR (where stage-summary, dispatch_history,
-#   issue-state.json live) and read those files as a byte-level oracle.
+# --worktree fence (C1 review iter-2):
+#   When --worktree is passed, the value MUST be a subpath of TARGET_REPO
+#   OR a subpath of $PROJECT_STATE_DIR (which is where per-issue worktrees
+#   live). Bypassing the fence would let a malicious predicate pivot
+#   `file_exists` / `grep` authority into arbitrary filesystem regions.
+#   When --worktree is OMITTED, and PIPELINE_ISSUE_ID is set, the
+#   per-issue worktree at $(issue_dir "$PIPELINE_ISSUE_ID")/worktree is
+#   auto-derived — this is the form AGENT_PROMPTS.md §6 invokes.
 #
 # Exit codes:
 #   0  — predicate schema valid; per-criterion JSONL report emitted on
 #        stdout regardless of how many criteria failed (caller reads the
 #        summary line to decide verdict per D-008/D-012).
-#   39 — malformed: JSON parse error / not an object / predicate file lives
-#        outside $PROJECT_STATE_DIR (D-011 authority surface).
+#   39 — malformed: JSON parse error / not an object / predicate file
+#        lives outside $PROJECT_STATE_DIR (D-011 authority surface) /
+#        file size > 64 KiB (M8 — DoS-meaningful byte cap).
 #   40 — incomplete: required field missing, wrong type, unknown kind,
-#        --ident mismatch, OR D-013 path-traversal violation in a
+#        --ident mismatch, D-013 path-traversal violation in a
 #        file_exists / grep criterion (lexical guard; the executor adds
-#        a realpath symlink-pivot guard).
+#        a realpath symlink-pivot guard via `realpath -m`), or C4
+#        host-class denylist hit on an http_get URL.
 #   41 — missing: predicate file does not exist at the given path.
 #
 # Canonical schema (qa_predicate_schema_version: 1):
@@ -40,7 +45,7 @@
 #     { "kind": "smoke",       "command": "<non-empty>", "expect_exit": 0, "expect_stdout_match": "<regex|null>" },
 #     { "kind": "file_exists", "path": "<worktree-relative; no leading '/'; no '..'>" },
 #     { "kind": "grep",        "path": "<worktree-relative>", "pattern": "<non-empty>", "expect_match": true },
-#     { "kind": "http_get",    "url": "<http(s):// only>", "expect_status": 200, "expect_body_match": "<regex|null>" }
+#     { "kind": "http_get",    "url": "<http(s):// only; no loopback/RFC1918/IMDS>", "expect_status": 200, "expect_body_match": "<regex|null>" }
 #   ]
 # }
 # ```
@@ -62,15 +67,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Predicate-size cap (finding #28): bound pass_criteria length so a
-# malicious or runaway predicate cannot DoS the executor.
-_QA_PREDICATE_MAX_CRITERIA=64
+# M8 (review iter-2): file-size cap at the authority phase. Replaces the
+# prior _QA_PREDICATE_MAX_CRITERIA cap, which didn't actually bound
+# wall-clock (64 × 60s smoke = 64 min, past the 30 min dispatch
+# watchdog). Bytes-per-parse is the cost that matters for DoS.
+_QA_PREDICATE_MAX_BYTES=65536
 
 # ─── Phase 1: parse argv ──────────────────────────────────────────────
-# Returns 0 with parsed values in CALLER_FILE/CALLER_IDENT/CALLER_WORKTREE
+# Returns 0 with parsed values in ARG_FILE/ARG_IDENT/ARG_WORKTREE
 # globals; emits diagnostics + returns 39 (malformed) on argv shape errors.
 _parse_validate_argv() {
-  CALLER_FILE=""; CALLER_IDENT=""; CALLER_WORKTREE=""
+  ARG_FILE=""; ARG_IDENT=""; ARG_WORKTREE=""
   local first=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -78,47 +85,58 @@ _parse_validate_argv() {
         if [[ $# -lt 2 ]]; then
           printf 'verify-qa.sh: --ident requires a value\n' >&2; return 39
         fi
-        CALLER_IDENT="$2"; shift 2 ;;
+        ARG_IDENT="$2"; shift 2 ;;
       --worktree)
         if [[ $# -lt 2 ]]; then
           printf 'verify-qa.sh: --worktree requires a value\n' >&2; return 39
         fi
-        CALLER_WORKTREE="$2"; shift 2 ;;
+        ARG_WORKTREE="$2"; shift 2 ;;
       --*)     printf 'verify-qa.sh: unknown flag %s\n' "$1" >&2; return 39 ;;
       *)
-        if (( first )); then CALLER_FILE="$1"; first=0
+        if (( first )); then ARG_FILE="$1"; first=0
         else printf 'verify-qa.sh: unexpected argument %s\n' "$1" >&2; return 39
         fi
         shift
         ;;
     esac
   done
-  [[ -n "$CALLER_FILE" ]] || { printf 'verify-qa.sh: validate: file argument required\n' >&2; return 39; }
+  [[ -n "$ARG_FILE" ]] || { printf 'verify-qa.sh: validate: file argument required\n' >&2; return 39; }
   return 0
 }
 
 # ─── Phase 2: authority surface (D-011) ──────────────────────────────
 # Predicate file must (a) exist (rc=41), (b) live under $PROJECT_STATE_DIR
-# realpath (rc=39). When the file's parent dir doesn't exist, fail closed —
-# do NOT degrade to lexical prefix match (finding #6: realpath check
-# fails-open when dirname doesn't exist).
+# realpath (rc=39), (c) be <= _QA_PREDICATE_MAX_BYTES bytes (rc=39, M8).
+# Splits the parent-realpath assignment so a failed cd properly trips
+# the `if !` (M2: the prior `if ! file_real="$(cd ... && pwd -P)/$(basename …)"`
+# rolled the last-command exit into basename — always 0 — and the error
+# was silently swallowed).
 _authority_check() {
   local file="$1"
   if [[ ! -f "$file" ]]; then
     printf 'qa-predicate-missing: file not found: %s\n' "$file"
     return 41
   fi
-  local dir
-  dir="$(dirname "$file")"
-  local file_real prefix_real
-  if ! file_real="$(cd "$dir" 2>/dev/null && pwd -P)/$(basename "$file")"; then
-    printf 'qa-predicate-malformed: cannot resolve realpath of predicate file: %s\n' "$file"
+  # M8: file-size cap at authority phase. Bounds memory/parse cost.
+  local size
+  size="$(wc -c < "$file" 2>/dev/null | tr -d ' ')"
+  if [[ -z "$size" ]] || (( size > _QA_PREDICATE_MAX_BYTES )); then
+    printf 'qa-predicate-malformed: predicate file size %s exceeds cap %s bytes\n' \
+      "${size:-unknown}" "$_QA_PREDICATE_MAX_BYTES"
     return 39
   fi
+  local dir parent_real
+  dir="$(dirname "$file")"
+  if ! parent_real="$(cd "$dir" 2>/dev/null && pwd -P)"; then
+    printf 'qa-predicate-malformed: cannot resolve realpath of predicate file parent: %s\n' "$dir"
+    return 39
+  fi
+  local file_real="$parent_real/$(basename "$file")"
   if [[ -z "${PROJECT_STATE_DIR:-}" || ! -d "${PROJECT_STATE_DIR:-}" ]]; then
     printf 'qa-predicate-malformed: $PROJECT_STATE_DIR is unset or not a directory: %s\n' "${PROJECT_STATE_DIR:-}"
     return 39
   fi
+  local prefix_real
   prefix_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
   if [[ "$file_real" != "$prefix_real"/* ]]; then
     printf 'qa-predicate-malformed: predicate file must live under $PROJECT_STATE_DIR; got %s\n' "$file"
@@ -127,16 +145,26 @@ _authority_check() {
   return 0
 }
 
-# ─── Phase 3: --worktree fence (finding #15) ─────────────────────────
-# Resolve --worktree to its realpath and assert it's a subpath of
-# TARGET_REPO. Bypassing this fence would let a predicate read
-# $PROJECT_STATE_DIR via file_exists / grep authority. Empty worktree =
-# fall back to TARGET_REPO (already inside the fence).
-# Returns 0 on success, 40 (incomplete) on fence violation.
+# ─── Phase 3: --worktree fence (C1 widened, review iter-2) ───────────
+# Accept-list for --worktree's realpath:
+#   - subpath of TARGET_REPO (original fence), OR
+#   - subpath of $PROJECT_STATE_DIR (per-issue worktrees live here).
+# When --worktree is empty, auto-derive from PIPELINE_ISSUE_ID
+# ($(issue_dir "$PIPELINE_ISSUE_ID")/worktree) — this is the shape
+# AGENT_PROMPTS.md §6 invokes (no --worktree flag).
+# Returns 0 with RESOLVED_WORKTREE populated, 40 on fence violation.
 _worktree_fence() {
   local worktree="$1"
   RESOLVED_WORKTREE=""
   if [[ -z "$worktree" ]]; then
+    # C1 auto-derive: PIPELINE_ISSUE_ID points at the per-issue worktree.
+    if [[ -n "${PIPELINE_ISSUE_ID:-}" ]]; then
+      local derived="$(issue_dir "$PIPELINE_ISSUE_ID")/worktree"
+      if [[ -d "$derived" ]]; then
+        RESOLVED_WORKTREE="$(cd "$derived" && pwd -P)"
+        return 0
+      fi
+    fi
     if [[ -n "${TARGET_REPO:-}" && -d "${TARGET_REPO:-}" ]]; then
       RESOLVED_WORKTREE="$(cd "$TARGET_REPO" && pwd -P)"
     else
@@ -148,16 +176,29 @@ _worktree_fence() {
     printf 'qa-predicate-incomplete: --worktree must be an existing directory, got: %s\n' "$worktree"
     return 40
   fi
-  local wt_real target_real
+  local wt_real
   wt_real="$(cd "$worktree" && pwd -P)"
-  if [[ -z "${TARGET_REPO:-}" || ! -d "${TARGET_REPO:-}" ]]; then
-    printf 'qa-predicate-incomplete: $TARGET_REPO unset or not a directory; cannot fence --worktree\n'
+  # C1: accept subpath of TARGET_REPO OR subpath of $PROJECT_STATE_DIR.
+  local target_real="" state_real=""
+  if [[ -n "${TARGET_REPO:-}" && -d "${TARGET_REPO:-}" ]]; then
+    target_real="$(cd "$TARGET_REPO" && pwd -P)"
+  fi
+  if [[ -n "${PROJECT_STATE_DIR:-}" && -d "${PROJECT_STATE_DIR:-}" ]]; then
+    state_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
+  fi
+  if [[ -z "$target_real" && -z "$state_real" ]]; then
+    printf 'qa-predicate-incomplete: neither $TARGET_REPO nor $PROJECT_STATE_DIR is set; cannot fence --worktree\n'
     return 40
   fi
-  target_real="$(cd "$TARGET_REPO" && pwd -P)"
-  # Accept exact match OR subpath: realpath equality or prefix + "/".
-  if [[ "$wt_real" != "$target_real" && "$wt_real" != "$target_real"/* ]]; then
-    printf 'qa-predicate-incomplete: --worktree must be a subpath of $TARGET_REPO (got %s; target %s)\n' "$wt_real" "$target_real"
+  local in_target=0 in_state=0
+  if [[ -n "$target_real" && ( "$wt_real" == "$target_real" || "$wt_real" == "$target_real"/* ) ]]; then
+    in_target=1
+  fi
+  if [[ -n "$state_real" && ( "$wt_real" == "$state_real" || "$wt_real" == "$state_real"/* ) ]]; then
+    in_state=1
+  fi
+  if (( in_target == 0 && in_state == 0 )); then
+    printf 'qa-predicate-incomplete: --worktree must be a subpath of $TARGET_REPO or $PROJECT_STATE_DIR (got %s)\n' "$wt_real"
     return 40
   fi
   RESOLVED_WORKTREE="$wt_real"
@@ -225,25 +266,19 @@ _validate_predicate_schema() {
     printf 'qa-predicate-incomplete: pass_criteria must contain at least 1 entry\n'
     return 40
   fi
-  if (( pc_len > _QA_PREDICATE_MAX_CRITERIA )); then
-    printf 'qa-predicate-incomplete: pass_criteria must contain at most %s entries (got %s)\n' "$_QA_PREDICATE_MAX_CRITERIA" "$pc_len"
-    return 40
-  fi
 
-  # Per-criterion schema validation via the shared helper.
-  # `--caller qa-predicate` flips the diagnostic prefix; `--shape flat`
-  # selects the top-level `pass_criteria[$j]` jq path (verify-qa's shape).
-  # The helper returns rc=34 on any per-criterion failure (plan-schema's
-  # internal incomplete code); translate to rc=40 (qa-predicate-incomplete)
-  # here so the verify-qa caller sees a stable contract independent of the
-  # shared helper's internal rc.
+  # Per-criterion schema validation via the shared helper. M7 (review
+  # iter-2): the helper sets $_VALIDATE_CRIT_DIAG on rc=34; this caller
+  # wraps with the `qa-predicate-incomplete:` prefix and returns rc=40
+  # (qa-predicate-incomplete) — independent of the helper's internal rc.
   local ci
   for (( ci=0; ci<pc_len; ci++ )); do
-    _validate_pass_criterion "$file" 0 "$ci" \
+    if ! _validate_pass_criterion "$file" 0 "$ci" \
       --kinds smoke,file_exists,grep,http_get \
-      --caller qa-predicate \
-      --shape flat \
-      || return 40
+      --shape flat; then
+      printf 'qa-predicate-incomplete: %s\n' "$_VALIDATE_CRIT_DIAG"
+      return 40
+    fi
   done
   PC_LEN="$pc_len"
   return 0
@@ -267,33 +302,25 @@ _execute_predicate() {
     kind="$(jq -r --argjson j "$ci" '.pass_criteria[$j].kind' "$file")"
     total=$((total+1))
     local pass=false detail=null
+    # The schema validator's --kinds gate makes any unrecognised kind
+    # unreachable here (C3): we don't need a `*)` fallthrough arm.
     case "$kind" in
       smoke)
-        _exec_smoke "$file" "$ci"
+        _exec_smoke "$file" "$ci" "$anchor_real"
         ;;
       file_exists)
-        _exec_file_exists "$file" "$ci" "$anchor" "$anchor_real"
+        _exec_file_exists "$file" "$ci" "$anchor_real"
         ;;
       grep)
-        _exec_grep "$file" "$ci" "$anchor" "$anchor_real"
+        _exec_grep "$file" "$ci" "$anchor_real"
         ;;
       http_get)
         _exec_http_get "$file" "$ci"
-        ;;
-      *)
-        # Defense-in-depth: schema validation already gates on the
-        # --kinds CSV, so an unknown kind here means a future code-path
-        # added the kind to the validator but forgot to wire the
-        # executor arm. Emit pass=false with a distinct diagnostic so
-        # the gap surfaces in QA's output (finding #14).
-        pass=false
-        detail="$(jq -nc --arg k "$kind" '"executor missing kind: " + $k')"
         ;;
     esac
     # _exec_* helpers set CRIT_PASS / CRIT_DETAIL; copy to local.
     pass="$CRIT_PASS"
     detail="$CRIT_DETAIL"
-    # Emit one JSONL line per criterion.
     if [[ "$pass" == "true" ]]; then
       passed_n=$((passed_n+1))
     else
@@ -321,22 +348,21 @@ _execute_predicate() {
 # the simplest robust hand-off.
 
 _exec_smoke() {
-  local file="$1" ci="$2"
+  local file="$1" ci="$2" anchor_real="$3"
   local cmd expect_exit expect_stdout_match
   cmd="$(jq -r --argjson j "$ci" '.pass_criteria[$j].command' "$file")"
   expect_exit="$(jq -r --argjson j "$ci" '.pass_criteria[$j].expect_exit' "$file")"
   expect_stdout_match="$(jq -r --argjson j "$ci" '.pass_criteria[$j].expect_stdout_match // null' "$file")"
-  # gtimeout 60s wall-clock cap (finding #7): smoke.command is
-  # agent-controlled. Falls back to plain `bash -c` if gtimeout is
-  # absent on the host (CLAUDE.md PATH section ships coreutils via
-  # Homebrew; absence is a launchd-host misconfig).
-  local out actual_exit=0 timeout_bin=""
-  if command -v gtimeout >/dev/null 2>&1; then timeout_bin="gtimeout 60"; fi
-  if [[ -n "$timeout_bin" ]]; then
-    out="$($timeout_bin bash -c "$cmd" 2>&1)" || actual_exit=$?
-  else
-    out="$(bash -c "$cmd" 2>&1)" || actual_exit=$?
-  fi
+  # M3 (review iter-2): gtimeout REQUIRED — silent fallback contradicts
+  # the file-header invariant. CLAUDE.md guarantees Homebrew coreutils on
+  # PATH for launchd; absence is a host misconfig the operator must fix.
+  command -v gtimeout >/dev/null 2>&1 \
+    || die "verify-qa.sh: gtimeout required (brew install coreutils); refusing to run smoke without wall-clock cap"
+  # M4 (review iter-2): smoke runs at the worktree anchor cwd, not
+  # the runner's PWD. Brainstorm D-011 promises "Commands execute with
+  # cwd = <worktree-from-flag-or-inferred>".
+  local out actual_exit=0
+  out="$( (cd "$anchor_real" 2>/dev/null && gtimeout 60 bash -c "$cmd") 2>&1)" || actual_exit=$?
   local exit_ok=false stdout_ok=true
   [[ "$actual_exit" == "$expect_exit" ]] && exit_ok=true
   if [[ "$expect_stdout_match" != "null" ]]; then
@@ -358,71 +384,59 @@ _exec_smoke() {
   fi
 }
 
+# macOS BSD realpath lacks -m (no canonicalisation of non-existent
+# paths). Homebrew coreutils ships `grealpath` (GNU) which has -m.
+# CLAUDE.md guarantees coreutils on PATH for launchd hosts. Prefer
+# grealpath when present; fall back to GNU `realpath -m` (Linux); die
+# if neither shape is available — the macOS BSD `realpath` would lie
+# about non-existent paths and we'd lose the symlink-pivot guard.
+_canonical_path() {
+  local p="$1"
+  if command -v grealpath >/dev/null 2>&1; then
+    grealpath -m -- "$p" 2>/dev/null
+    return $?
+  fi
+  if realpath -m -- "$p" >/dev/null 2>&1; then
+    realpath -m -- "$p" 2>/dev/null
+    return $?
+  fi
+  die "verify-qa.sh: grealpath required (brew install coreutils) to canonicalise paths with non-existent leaves"
+}
+
 # Resolve a worktree-relative path under the anchor, then assert the
-# realpath stays inside the anchor's realpath. Closes the symlink-pivot
-# vector (critical #4): a malicious predicate can drop
-# `<worktree>/leak -> /etc/passwd` and use `file_exists` / `grep` as a
-# byte-level exfiltration oracle. The lexical guard in
-# _validate_pass_criterion catches `path: "../escape"`; this run-time
-# realpath check catches symlinks the lexical guard cannot see.
-# Returns 0 with RESOLVED_PATH populated, 1 with diagnostic.
+# realpath stays inside the anchor's realpath. C2 + M6 (review iter-2):
+# replaces the prior 50-LOC hand-rolled walker (which resolved only ONE
+# symlink hop, leaving the two-hop chain bypass `a -> b -> /etc/passwd`
+# wide open) with `_canonical_path` (grealpath -m / realpath -m).
+# Both canonicalise the FULL symlink chain in one call.
+# Returns 0 with RESOLVED_PATH populated; returns 1 with RESOLVED_DIAGNOSTIC
+# populated on escape.
 _resolve_inside_anchor() {
-  local anchor="$1" anchor_real="$2" path="$3"
-  local candidate="$anchor/$path"
+  local anchor_real="$1" path="$2"
+  local candidate="$anchor_real/$path"
   RESOLVED_PATH=""
   RESOLVED_DIAGNOSTIC=""
-  # Resolve realpath even when the leaf doesn't exist yet (file_exists
-  # absent-path test): use `cd "$(dirname …)" && pwd -P` for the parent,
-  # then append the leaf basename.
-  local parent leaf real_parent
-  parent="$(dirname "$candidate")"
-  leaf="$(basename "$candidate")"
-  if ! real_parent="$(cd "$parent" 2>/dev/null && pwd -P)"; then
-    # Parent doesn't exist — caller (_exec_file_exists / _exec_grep) will
-    # report the missing path in its diagnostic; no escape vector here
-    # because the realpath couldn't traverse a symlink we can't enter.
-    RESOLVED_PATH="$candidate"
-    return 0
+  local canonical
+  canonical="$(_canonical_path "$candidate")"
+  if [[ -z "$canonical" ]]; then
+    RESOLVED_DIAGNOSTIC="realpath failed: $path"
+    return 1
   fi
-  local resolved="$real_parent/$leaf"
-  # The leaf itself may be a symlink: resolve via -P stat trick.
-  if [[ -L "$resolved" ]]; then
-    if ! resolved="$(cd "$(dirname "$resolved")" && pwd -P)/$leaf"; then
-      RESOLVED_DIAGNOSTIC="symlink resolution failed"
-      return 1
-    fi
-    # readlink the leaf and resolve relative to its dir.
-    local link_tgt
-    link_tgt="$(readlink "$resolved")"
-    if [[ "$link_tgt" == /* ]]; then
-      resolved="$link_tgt"
-    else
-      resolved="$real_parent/$link_tgt"
-    fi
-    # Canonicalise via subshell cd if the resolved leaf is a directory or
-    # the resolved leaf's parent exists.
-    local rp rl
-    rp="$(dirname "$resolved")"
-    rl="$(basename "$resolved")"
-    if [[ -d "$rp" ]]; then
-      resolved="$(cd "$rp" && pwd -P)/$rl"
-    fi
-  fi
-  # Anchor-realpath containment: resolved MUST equal anchor_real OR live
-  # under anchor_real + "/".
-  if [[ "$resolved" != "$anchor_real" && "$resolved" != "$anchor_real"/* ]]; then
+  # Containment check: canonical MUST equal anchor_real OR live under
+  # anchor_real + "/".
+  if [[ "$canonical" != "$anchor_real" && "$canonical" != "$anchor_real"/* ]]; then
     RESOLVED_DIAGNOSTIC="path escapes worktree via symlink: $path"
     return 1
   fi
-  RESOLVED_PATH="$resolved"
+  RESOLVED_PATH="$canonical"
   return 0
 }
 
 _exec_file_exists() {
-  local file="$1" ci="$2" anchor="$3" anchor_real="$4"
+  local file="$1" ci="$2" anchor_real="$3"
   local path
   path="$(jq -r --argjson j "$ci" '.pass_criteria[$j].path' "$file")"
-  if ! _resolve_inside_anchor "$anchor" "$anchor_real" "$path"; then
+  if ! _resolve_inside_anchor "$anchor_real" "$path"; then
     CRIT_PASS=false
     CRIT_DETAIL="$(jq -nc --arg d "$RESOLVED_DIAGNOSTIC" '$d')"
     return 0
@@ -436,12 +450,12 @@ _exec_file_exists() {
 }
 
 _exec_grep() {
-  local file="$1" ci="$2" anchor="$3" anchor_real="$4"
+  local file="$1" ci="$2" anchor_real="$3"
   local path pattern expect_match grep_rc=0
   path="$(jq -r --argjson j "$ci" '.pass_criteria[$j].path' "$file")"
   pattern="$(jq -r --argjson j "$ci" '.pass_criteria[$j].pattern' "$file")"
   expect_match="$(jq -r --argjson j "$ci" '.pass_criteria[$j].expect_match' "$file")"
-  if ! _resolve_inside_anchor "$anchor" "$anchor_real" "$path"; then
+  if ! _resolve_inside_anchor "$anchor_real" "$path"; then
     CRIT_PASS=false
     CRIT_DETAIL="$(jq -nc --arg d "$RESOLVED_DIAGNOSTIC" '$d')"
     return 0
@@ -449,6 +463,13 @@ _exec_grep() {
   if [[ ! -e "$RESOLVED_PATH" ]]; then
     CRIT_PASS=false
     CRIT_DETAIL="$(jq -nc --arg p "$RESOLVED_PATH" '"target missing: " + $p')"
+    return 0
+  fi
+  # m7 (review iter-2): grep against a directory exits rc=2, which the
+  # executor mislabeled as "regex compile error". Distinct diagnostic.
+  if [[ -d "$RESOLVED_PATH" ]]; then
+    CRIT_PASS=false
+    CRIT_DETAIL="$(jq -nc --arg p "$path" '"target is a directory (grep needs a file): " + $p')"
     return 0
   fi
   grep -Eq "$pattern" "$RESOLVED_PATH" || grep_rc=$?
@@ -466,44 +487,44 @@ _exec_grep() {
   fi
 }
 
+# M9 (review iter-2): single curl request that captures BOTH status AND
+# body in one round-trip. Prior shape did two requests (`-o /dev/null`
+# for status, then second request for body), which was a race against
+# load-balanced / A/B-tested servers. m8 (review iter-2): scheme +
+# host-class are gated at schema-validation; this executor trusts the
+# upstream validation.
 _exec_http_get() {
   local file="$1" ci="$2"
   local url expect_status expect_body_match code curl_rc=0
   url="$(jq -r --argjson j "$ci" '.pass_criteria[$j].url' "$file")"
   expect_status="$(jq -r --argjson j "$ci" '.pass_criteria[$j].expect_status' "$file")"
   expect_body_match="$(jq -r --argjson j "$ci" '.pass_criteria[$j].expect_body_match // null' "$file")"
-  # Defense-in-depth: validator already restricts scheme to http(s) at
-  # schema-validation time; re-check here so a future executor-only call
-  # path cannot bypass.
-  if [[ ! "$url" =~ ^https?:// ]]; then
-    CRIT_PASS=false
-    CRIT_DETAIL="$(jq -nc --arg u "$url" '"url scheme must be http(s): " + $u')"
+  local body_tmp
+  body_tmp="$(mktemp -t verify-qa-body.XXXXXX 2>/dev/null)"
+  if [[ -z "$body_tmp" ]]; then
+    CRIT_PASS=false; CRIT_DETAIL='"mktemp failed"'
     return 0
   fi
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)" || curl_rc=$?
+  code="$(curl -sS -o "$body_tmp" -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)" || curl_rc=$?
   if (( curl_rc != 0 )); then
+    rm -f "$body_tmp"
     CRIT_PASS=false; CRIT_DETAIL='"connection failed"'
     return 0
   fi
   if [[ "$code" != "$expect_status" ]]; then
+    rm -f "$body_tmp"
     CRIT_PASS=false
     CRIT_DETAIL="$(jq -nc --arg c "$code" --arg e "$expect_status" '"got " + $c + " (expected " + $e + ")"')"
     return 0
   fi
   if [[ "$expect_body_match" == "null" ]]; then
+    rm -f "$body_tmp"
     CRIT_PASS=true; CRIT_DETAIL=null
     return 0
   fi
-  # Body-match arm issues a single additional request (finding #21 noted
-  # the original two-request shape as a race surface; we still need ONE
-  # body request because the status-only call used `-o /dev/null`).
-  local body grep_rc=0
-  body="$(curl -sS --max-time 10 "$url" 2>/dev/null)" || curl_rc=$?
-  if (( curl_rc != 0 )); then
-    CRIT_PASS=false; CRIT_DETAIL='"body fetch failed"'
-    return 0
-  fi
-  printf '%s' "$body" | grep -Eq "$expect_body_match" || grep_rc=$?
+  local grep_rc=0
+  grep -Eq "$expect_body_match" "$body_tmp" || grep_rc=$?
+  rm -f "$body_tmp"
   if (( grep_rc == 2 )); then
     CRIT_PASS=false; CRIT_DETAIL='"expect_body_match: regex compile error"'
     return 0
@@ -517,16 +538,44 @@ _exec_http_get() {
 
 # ─── Orchestrator: cmd_validate ──────────────────────────────────────
 # Sequences phase 1 (argv) → phase 2 (authority) → phase 3 (worktree
-# fence) → phase 4 (schema) → phase 5 (executor). Each phase short-
-# circuits on failure; phase 5's per-criterion failures NEVER short-
-# circuit.
+# fence) → snapshot the predicate to a mktemp (M5 TOCTOU) → phase 4
+# (schema) → phase 5 (executor). Each phase short-circuits on failure;
+# phase 5's per-criterion failures NEVER short-circuit.
 cmd_validate() {
   _parse_validate_argv "$@" || return $?
-  _authority_check "$CALLER_FILE" || return $?
-  _worktree_fence "$CALLER_WORKTREE" || return $?
-  _validate_predicate_schema "$CALLER_FILE" "$CALLER_IDENT" || return $?
-  _execute_predicate "$CALLER_FILE" "$RESOLVED_WORKTREE" "$PC_LEN"
-  return 0
+  _authority_check "$ARG_FILE" || return $?
+  _worktree_fence "$ARG_WORKTREE" || return $?
+  # M5 (review iter-2): snapshot the predicate to a mktemp inside
+  # $PROJECT_STATE_DIR so schema validation and execution operate on
+  # the SAME bytes — closes a confused-deputy TOCTOU where a malicious
+  # smoke command could mutate the predicate file between validate and
+  # execute (the executor would then read different bytes than what
+  # the validator approved). Cleanup is explicit on every return path
+  # to avoid `trap … RETURN` quirks under `set -u`.
+  local snap_dir snap_file rc=0
+  snap_dir="$PROJECT_STATE_DIR/.verify-qa-snap"
+  mkdir -p "$snap_dir" 2>/dev/null || {
+    printf 'qa-predicate-malformed: cannot create snapshot dir under $PROJECT_STATE_DIR: %s\n' "$snap_dir"
+    return 39
+  }
+  snap_file="$(mktemp "$snap_dir/predicate.XXXXXX" 2>/dev/null)"
+  if [[ -z "$snap_file" ]]; then
+    printf 'qa-predicate-malformed: mktemp failed under %s\n' "$snap_dir"
+    return 39
+  fi
+  # Single-pass cp: the bytes the validator and executor see are
+  # whatever was on disk at this instant.
+  if ! cp -f "$ARG_FILE" "$snap_file" 2>/dev/null; then
+    rm -f "$snap_file"
+    printf 'qa-predicate-malformed: failed to snapshot predicate to %s\n' "$snap_file"
+    return 39
+  fi
+  _validate_predicate_schema "$snap_file" "$ARG_IDENT" || rc=$?
+  if (( rc == 0 )); then
+    _execute_predicate "$snap_file" "$RESOLVED_WORKTREE" "$PC_LEN" || rc=$?
+  fi
+  rm -f "$snap_file"
+  return "$rc"
 }
 
 main() {

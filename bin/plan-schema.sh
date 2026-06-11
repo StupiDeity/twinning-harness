@@ -190,8 +190,9 @@ cmd_validate() {
 
     # ── Per-criterion validation ───────────────────────────────────
     # ENG-113 D-007: per-criterion validation lifted into bin/common.sh::
-    # _validate_pass_criterion. Behavior-preserving — diagnostic prefix and
-    # rc=34 path identical (--caller plan-contract is the default).
+    # _validate_pass_criterion. M7 (review iter-2): the helper sets
+    # $_VALIDATE_CRIT_DIAG on rc=34; caller wraps with its own
+    # `<contract>-incomplete:` prefix.
     # The `--kinds smoke,file_exists,grep` gate keeps `http_get` (the new
     # qa-predicate kind) out of plan-schema's allowed set; `--shape nested`
     # is the default but is passed explicitly so the call-site documents
@@ -200,9 +201,8 @@ cmd_validate() {
     for (( ci=0; ci<pc_len; ci++ )); do
       _validate_pass_criterion "$file" "$fi" "$ci" \
         --kinds smoke,file_exists,grep \
-        --caller plan-contract \
         --shape nested \
-        || return $?
+        || { _emit_incomplete "$_VALIDATE_CRIT_DIAG"; return 34; }
     done
 
     # Unknown fields per feature.
