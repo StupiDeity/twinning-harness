@@ -280,14 +280,20 @@ SCRIPT_DIR="$STUB_DIR"
 }
 
 # ---------------------------------------------------------------------------
-# fixture-shapeC-version-file-absent: monkeypatch _capture_expected_version
-# to simulate the pin file being absent → rendered prompt carries (unpinned)
+# fixture-shapeC-no-pin-carve-out: when _capture_expected_version reports
+# (unpinned), the driver MUST short-circuit BEFORE dispatch and write the
+# carve-out body to the artifact with a `## Observation` header (review M5).
+# The original absent assertion only grepped for '(unpinned)' in the
+# rendered prompt, which the prompt template carries verbatim regardless
+# of substitution — the grep matched even when the driver dispatched on
+# the unsubstituted prompt (review M10). New assertions: (1) dispatch NOT
+# invoked, (2) artifact carries '## Observation' header, (3) artifact
+# carries the canonical carve-out body.
 # ---------------------------------------------------------------------------
 {
-  name="fixture-shapeC-version-file-absent"
+  name="fixture-shapeC-no-pin-carve-out"
   artifact_path="$ARTIFACT_DIR/fC2.md"
-  export SHAPE_TEST_ARTIFACT_PATH="$artifact_path"
-  rm -f "$RENDERED_PROMPT_COPY" "$DISPATCH_INVOKED"
+  rm -f "$RENDERED_PROMPT_COPY" "$DISPATCH_INVOKED" "$artifact_path"
   _write_dispatch_stub 0 yes
 
   original_capture_expected="$(declare -f _capture_expected_version)"
@@ -303,10 +309,55 @@ SCRIPT_DIR="$STUB_DIR"
   export PIPELINE_DRY_RUN=1
   eval "$original_capture_expected"
 
-  if [[ -f "$RENDERED_PROMPT_COPY" ]] && grep -qF '(unpinned)' "$RENDERED_PROMPT_COPY"; then
+  dispatch_called=$([[ -f "$DISPATCH_INVOKED" ]] && echo yes || echo no)
+  if (( rc == 0 )) \
+      && [[ "$dispatch_called" == "no" ]] \
+      && [[ -f "$artifact_path" ]] \
+      && grep -qF '## Observation' "$artifact_path" \
+      && grep -qF 'No expected version pinned' "$artifact_path"; then
     _pass "$name"
   else
-    _fail "$name (rc=$rc expected '(unpinned)' in rendered prompt)"
+    _fail "$name (rc=$rc dispatch_called=$dispatch_called; artifact=$(cat "$artifact_path" 2>/dev/null || echo MISSING))"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# fixture-shapeC-pin-file-real-read: exercise the actual _capture_expected_version
+# file-reading code path (head/sed trim). All prior shapeC fixtures
+# monkeypatched _capture_expected_version, leaving the driver's
+# head/sed/trim untested (review M9). Use the _PIN_FILE_PATH override
+# global to point the helper at a test-controlled fixture file containing
+# whitespace that the trim must strip.
+# ---------------------------------------------------------------------------
+{
+  name="fixture-shapeC-pin-file-real-read"
+  artifact_path="$ARTIFACT_DIR/fCreal.md"
+  export SHAPE_TEST_ARTIFACT_PATH="$artifact_path"
+  rm -f "$RENDERED_PROMPT_COPY" "$DISPATCH_INVOKED" "$artifact_path"
+  _write_dispatch_stub 0 yes
+
+  pin_file_tmp="$(mktemp -t claude-cli-version-XXXXXX)"
+  printf '  claude-cli-2.0.0-real-read  \n' > "$pin_file_tmp"
+  saved_pin_file_path="$_PIN_FILE_PATH"
+  _PIN_FILE_PATH="$pin_file_tmp"
+
+  unset PIPELINE_DRY_RUN
+  rc=0
+  main \
+    --artifact-path "$artifact_path" \
+    --period-start-iso 2026-05-08T00:00:00Z \
+    --period-end-iso   2026-05-15T00:00:00Z \
+    2>/dev/null || rc=$?
+  export PIPELINE_DRY_RUN=1
+  _PIN_FILE_PATH="$saved_pin_file_path"
+  rm -f "$pin_file_tmp"
+
+  if [[ -f "$RENDERED_PROMPT_COPY" ]] \
+      && grep -qF 'claude-cli-2.0.0-real-read' "$RENDERED_PROMPT_COPY" \
+      && ! grep -qE '  claude-cli-2.0.0-real-read  ' "$RENDERED_PROMPT_COPY"; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc — trimmed pin value not in rendered prompt, or whitespace not stripped)"
   fi
   export SHAPE_TEST_ARTIFACT_PATH=""
 }
