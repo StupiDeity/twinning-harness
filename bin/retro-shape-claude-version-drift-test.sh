@@ -293,7 +293,6 @@ SCRIPT_DIR="$STUB_DIR"
 # ---------------------------------------------------------------------------
 {
   name="fixture-shapeC-claude-binary-unavailable"
-  rm -f "$SHAPE_C_HARNESS_ROOT/.claude-cli-version"
   artifact_path="$ARTIFACT_DIR/fC3.md"
   export SHAPE_TEST_ARTIFACT_PATH="$artifact_path"
   rm -f "$RENDERED_PROMPT_COPY" "$DISPATCH_INVOKED"
