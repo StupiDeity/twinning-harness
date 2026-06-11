@@ -19,7 +19,6 @@ reviewing=5. Review Agent
 qa=6. QA Agent
 building=7. Build Agent
 released=8. Release Agent
-retrospective=9. Retrospective Agent (Scheduled)
 '
 
 # §0 holds rules delivered to every stage's prompt (Secret-handling, Tool
@@ -76,7 +75,7 @@ verdict_review_path=_resolve_verdict_review_path
 # Format: space-separated names with leading + trailing spaces so
 # `[[ "$AGENT_RUNTIME_TOKENS" == *" $name "* ]]` substring tests are
 # unambiguous (no prefix collisions across names like file / file_x).
-AGENT_RUNTIME_TOKENS=' file pr_number stage_failure_summary_path '
+AGENT_RUNTIME_TOKENS=' file pr_number '
 
 lookup_section() {
   local stage="$1"

@@ -48,8 +48,62 @@ _compute_retro_period() {
   printf '%s\n%s\n' "$start_iso" "$end_iso"
 }
 
+# ENG-130 D-002: hard-coded ordered shape registry. Order mirrors §1-§12
+# of the pre-ENG-130 AGENT_PROMPTS.md §9, which encoded the dependency
+# order chosen by humans (e.g., expiry decisions in §6 affect §10
+# budget counts; §3/§4 candidate harvesting before §7 bias audit).
+# Adding a shape: drop a new prompt body under bin/retro-prompts/, write
+# a driver + sibling test mirroring bin/retro-shape-stage-failure-summary.sh,
+# append the name here.
+SHAPES=(
+  stage-failure-summary
+  gotcha-recurrence
+  convention-drift
+  gotcha-promotion
+  human-override
+  expiry-verification
+  confirmation-bias-audit
+  recency-bias
+  survivorship-bias
+  knowledge-budget
+  pipeline-health-score
+  prompt-workflow-amendment
+)
+
+# ENG-130 D-009: find the most-recent prior retrospective directory
+# (lexically earlier than today's date) that contains the named shape's
+# artifact. Emits absolute path, or literal "(none)" if no prior
+# artifact exists. Lexical sort is correct because dirname format is
+# frozen at retrospective-YYYY-MM-DD (ISO-8601).
+_resolve_previous_period_artifact() {
+  local shape="$1" today="$2"
+  local most_recent
+  # Basename-anchored parse (ENG-130 review m1): split the path on `/`,
+  # take the last component, then strip the `retrospective-` prefix.
+  # An older `-F'/retrospective-'` split mis-attributed fields when an
+  # ancestor directory in PROJECT_STATE_DIR happened to contain
+  # `/retrospective-` itself.
+  most_recent="$(
+    find "$PROJECT_STATE_DIR" -maxdepth 1 -type d \
+      -name 'retrospective-*' 2>/dev/null \
+      | awk -v today="$today" '
+          { n = split($0, a, "/"); basename = a[n] }
+          basename ~ /^retrospective-/ {
+            date = substr(basename, length("retrospective-") + 1)
+            if (date != "" && date < today) print $0
+          }
+        ' \
+      | sort -r | head -1
+  )"
+  if [[ -n "$most_recent" && -f "$most_recent/${shape}.md" ]]; then
+    printf '%s' "$most_recent/${shape}.md"
+  else
+    printf '%s' '(none)'
+  fi
+}
+
 main() {
-  local today branch log_file prompt_file
+  local today branch log_file
   today="$(date -u +%Y-%m-%d)"
   branch="pipeline/retrospective-${today}"
   log_file="$PROJECT_STATE_DIR/logs/retrospective-$(date -u +%Y%m%dT%H%M%SZ).log"
@@ -76,62 +130,85 @@ main() {
     git -C "$TARGET_REPO" checkout -b "$branch" origin/main
   fi
 
-  # ENG-129: pre-compute stage-failure-summary as a shape artifact.
-  # The parent retrospective Reads the artifact (via the
-  # {stage_failure_summary_path} token interpolated into the §9 prompt
-  # below) and incorporates §1 verbatim. Shape failures HALT the
-  # retrospective for operator review — partial retrospectives are
-  # worse than re-running next week.
   local period_lines period_start_iso period_end_iso
   period_lines="$(_compute_retro_period)"
   period_start_iso="$(printf '%s' "$period_lines" | sed -n '1p')"
   period_end_iso="$(printf '%s' "$period_lines"   | sed -n '2p')"
+
   local shape_artifact_dir="$PROJECT_STATE_DIR/retrospective-${today}"
-  local stage_failure_summary_path="${shape_artifact_dir}/stage-failure-summary.md"
   mkdir -p "$shape_artifact_dir"
-  local shape_rc=0
-  bash "$SCRIPT_DIR/retro-shape-stage-failure-summary.sh" \
-    --artifact-path     "$stage_failure_summary_path" \
-    --period-start-iso  "$period_start_iso" \
-    --period-end-iso    "$period_end_iso" \
-    || shape_rc=$?
-  if (( shape_rc != 0 )); then
-    bash "$SCRIPT_DIR/slack.sh" error "Weekly retrospective shape stage-failure-summary failed (rc=$shape_rc)"
-    exit 20
-  fi
 
-  # Extract the retrospective block from AGENT_PROMPTS.md.
-  prompt_file="$(mktemp -t retrospective-prompt-XXXXXX)"
-  awk '
-    /^## 9\. Retrospective Agent/ { found=1; next }
-    found && /^```/ { fence++; if (fence == 1) next; if (fence == 2) exit }
-    found && fence == 1 { print }
-  ' "$HARNESS_ROOT/AGENT_PROMPTS.md" > "$prompt_file"
+  # ENG-130 D-005: per-shape failure semantics. Each shape is invoked
+  # in turn; rc != 0 is logged and the loop continues. Surviving shapes
+  # still contribute to the PR. After the loop, the coordinator opens
+  # exactly one PR iff `git diff --cached` shows tracked-file changes.
+  local -a succeeded_shapes=()
+  local -a failed_shapes=()
+  local -A shape_rcs=()  # bash 4.4+ (assoc array + set -u empty-array expansion); host runs bash 5 per CLAUDE.md
+  local shape artifact prev rc
 
-  # ENG-129: inject the shape artifact path into the §9 prompt so the
-  # parent Reads the pre-computed §1 instead of recomputing it.
-  sed -i.bak \
-    -e "s|{stage_failure_summary_path}|${stage_failure_summary_path}|g" \
-    "$prompt_file"
-  rm -f "${prompt_file}.bak"
+  for shape in "${SHAPES[@]}"; do
+    artifact="$shape_artifact_dir/${shape}.md"
+    prev="$(_resolve_previous_period_artifact "$shape" "$today")"
+    rc=0
+    bash "$SCRIPT_DIR/retro-shape-${shape}.sh" \
+      --artifact-path        "$artifact" \
+      --period-start-iso     "$period_start_iso" \
+      --period-end-iso       "$period_end_iso" \
+      --previous-period-path "$prev" \
+      || rc=$?
+    if (( rc == 0 )); then
+      succeeded_shapes+=("$shape")
+    else
+      failed_shapes+=("$shape")
+      shape_rcs[$shape]="$rc"
+      log "coordinator: shape '$shape' failed (rc=$rc); continuing with remaining shapes"
+    fi
+  done
 
-  log "retrospective: rendered prompt ($(wc -l < "$prompt_file") lines)"
+  # ENG-130 D-006: bash-side PR body composition. Mechanical
+  # concatenation under a `## Period` preamble + a `## Failed shapes`
+  # footer. Shape artifacts that are zero-byte are skipped (D-006
+  # `[[ -s ... ]]` guard).
+  local pr_body_path="$shape_artifact_dir/pr-body.md"
+  {
+    printf '## Period\n'
+    printf '%s → %s\n' "$period_start_iso" "$period_end_iso"
+    for shape in "${succeeded_shapes[@]}"; do
+      if [[ -s "$shape_artifact_dir/${shape}.md" ]]; then
+        printf '\n---\n\n'
+        cat "$shape_artifact_dir/${shape}.md"
+      fi
+    done
+    if (( ${#failed_shapes[@]} > 0 )); then
+      printf '\n---\n\n## Failed shapes\n\n'
+      for shape in "${failed_shapes[@]}"; do
+        # ENG-130 review n2: resolve the actual most-recent log file for
+        # this shape rather than emitting a literal `*.log` glob the
+        # operator has to expand by hand. Fall back to the logs/ dir hint
+        # when no log was produced (e.g., shape crashed before logging).
+        local resolved_log
+        resolved_log="$(ls -t "$PROJECT_STATE_DIR/logs/retro-shape-${shape}-"*.log 2>/dev/null | head -1)"
+        if [[ -n "$resolved_log" ]]; then
+          printf '- %s (rc=%s, log=%s)\n' \
+            "$shape" "${shape_rcs[$shape]}" "$resolved_log"
+        else
+          printf '- %s (rc=%s, log=%s/logs/)\n' \
+            "$shape" "${shape_rcs[$shape]}" "$PROJECT_STATE_DIR"
+        fi
+      done
+    fi
+  } > "$pr_body_path"
 
-  # Dispatch the agent. dispatch.sh uses the local `claude` subscription session
-  # when ANTHROPIC_API_KEY is unset; no API tokens burn against the subscription
-  # billing path.
-  if ! bash "$SCRIPT_DIR/dispatch.sh" retrospective "$prompt_file" "$log_file"; then
-    rm -f "$prompt_file"
-    bash "$SCRIPT_DIR/slack.sh" error "Weekly retrospective failed (log: $log_file)"
-    exit 20
-  fi
-  rm -f "$prompt_file"
-
-  # If the agent produced no changes, don't open a PR.
+  # If no shape produced tracked-file changes, don't open a PR.
   git -C "$TARGET_REPO" add -A
   if git -C "$TARGET_REPO" diff --cached --quiet; then
     log "retrospective: no changes proposed this week"
-    bash "$SCRIPT_DIR/slack.sh" info "Weekly retrospective: no changes proposed."
+    if (( ${#failed_shapes[@]} > 0 )); then
+      bash "$SCRIPT_DIR/slack.sh" error "Weekly retrospective: ${#failed_shapes[@]} of ${#SHAPES[@]} shapes failed: $(printf '%s,' "${failed_shapes[@]}" | sed 's/,$//'); no PR opened (no diff)."
+    else
+      bash "$SCRIPT_DIR/slack.sh" info "Weekly retrospective: no changes proposed."
+    fi
     git -C "$TARGET_REPO" checkout main
     git -C "$TARGET_REPO" branch -D "$branch" || true
     return 0
@@ -143,12 +220,19 @@ main() {
     commit -m "chore(pipeline): weekly retrospective ${today}"
   git -C "$TARGET_REPO" push -u origin "$branch"
 
-  gh pr create \
-    --title "chore(pipeline): weekly retrospective ${today}" \
-    --body "Automated weekly retrospective run. Proposed rule/convention/knowledge changes require CODEOWNERS review." \
-    --label "pipeline-retrospective"
+  if ! gh pr create \
+       --title "chore(pipeline): weekly retrospective ${today}" \
+       --body-file "$pr_body_path" \
+       --label "pipeline-retrospective"; then
+    bash "$SCRIPT_DIR/slack.sh" error "gh pr create failed; commit pushed to $branch but PR not opened"
+    exit 20
+  fi
 
-  bash "$SCRIPT_DIR/slack.sh" info "Weekly retrospective opened a PR for review."
+  if (( ${#failed_shapes[@]} > 0 )); then
+    bash "$SCRIPT_DIR/slack.sh" error "Weekly retrospective: PR opened with ${#succeeded_shapes[@]}/${#SHAPES[@]} shapes succeeded; ${#failed_shapes[@]} failed: $(printf '%s,' "${failed_shapes[@]}" | sed 's/,$//')."
+  else
+    bash "$SCRIPT_DIR/slack.sh" info "Weekly retrospective opened a PR for review."
+  fi
   git -C "$TARGET_REPO" checkout main
   log "retrospective: done"
 }
