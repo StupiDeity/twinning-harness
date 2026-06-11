@@ -1291,6 +1291,136 @@ else
 fi
 unset _eng150_a9_self _eng150_a9_pat
 
+# ─── ENG-150 QA adversarial: chokepoint boundary cases ────────────────
+# Cases not covered by A-001..A-009 / B-LEG but identified during QA
+# review of the reviewing-round findings (linear.sh:745, :746, :802,
+# :805).  All run under PIPELINE_DRY_RUN=1 (no GraphQL calls needed).
+printf '\n--- ENG-150 QA adversarial ---\n'
+
+# Q-ADV-001: --sig= (empty equals-sign form) extracts "" via
+# `"${1#--sig=}"`, falls through [[ -n "$sig" ]] unchanged, and
+# behaves as if --sig was never passed: no dedup marker appended, hash
+# dedup resumes normally.  Documents the caller-footgun gap at
+# linear.sh:728+745 — `--sig "$MY_VAR"` where $MY_VAR is empty
+# silently opts out of the ledger contract with no error.
+: > "$_eng150_log"
+PIPELINE_DRY_RUN=1 \
+  add_comment ENG-X --sig= --body "halt body" >/dev/null 2>&1
+_eng150_adv001="$(cat "$_eng150_log")"
+if ! grep -qF '<!-- meta: dedup key=' <<<"$_eng150_adv001"; then
+  pass_at "ENG-150 Q-ADV-001 --sig= (empty) → no dedup marker (documents known bypass gap at linear.sh:745)"
+else
+  fail_at "ENG-150 Q-ADV-001 --sig= (empty): expected NO dedup marker" \
+    "captured: $_eng150_adv001"
+fi
+unset PIPELINE_DRY_RUN _eng150_adv001
+
+# Q-ADV-002: PIPELINE_DISPATCH_ID without a -d<NNNN> suffix (malformed
+# env).  `${PIPELINE_DISPATCH_ID##*-}` strips the longest `*-` prefix,
+# extracting the last hyphen-delimited segment regardless of shape.
+# "ENG-150" → dispatch_seq="150"; dedup marker becomes
+# "halt/implementing/ENG-X/150" instead of the expected "…/d0007".
+# Documents the env-shape trust gap at linear.sh:805.
+: > "$_eng150_log"
+PIPELINE_DRY_RUN=1 \
+PIPELINE_DISPATCH_ID=ENG-150 \
+  add_comment ENG-X --sig "halt/implementing/ENG-X" --body "halt body" >/dev/null 2>&1
+_eng150_adv002="$(cat "$_eng150_log")"
+if grep -qF '<!-- meta: dedup key=halt/implementing/ENG-X/150 -->' <<<"$_eng150_adv002" \
+   && ! grep -qE 'dedup key=halt/implementing/ENG-X/d[0-9]' <<<"$_eng150_adv002"; then
+  pass_at "ENG-150 Q-ADV-002 malformed PIPELINE_DISPATCH_ID → non-d-prefix dispatch_seq in dedup marker (documents gap at linear.sh:805)"
+else
+  fail_at "ENG-150 Q-ADV-002 malformed PIPELINE_DISPATCH_ID" \
+    "captured: $_eng150_adv002"
+fi
+unset PIPELINE_DISPATCH_ID _eng150_adv002
+
+# Q-ADV-003: dedup marker embedded mid-line (surrounding text on the
+# same line) survives the defensive strip at line 802.  The sed pattern
+# `/^<!-- meta: dedup key=.* -->$/d` requires line isolation (anchored
+# `^…$`); a marker with surrounding text is left intact.  A second dedup
+# marker is then appended, producing two markers in the output.
+# Documents the line-anchored-regex gap at linear.sh:802 — both review
+# rounds flagged this same finding.
+: > "$_eng150_log"
+PIPELINE_DRY_RUN=1 \
+PIPELINE_DISPATCH_ID=ENG-X-d0007 \
+  add_comment ENG-X --sig "halt/implementing/ENG-X" \
+    --body "body text <!-- meta: dedup key=old/sig --> more" >/dev/null 2>&1
+_eng150_adv003="$(cat "$_eng150_log")"
+_eng150_adv003_count="$(printf '%s' "$_eng150_adv003" | grep -o '<!-- meta: dedup key=' | wc -l | tr -d ' ')"
+if [[ "$_eng150_adv003_count" -ge 2 ]]; then
+  pass_at "ENG-150 Q-ADV-003 mid-line dedup marker survives strip → double dedup markers (documents gap at linear.sh:802)"
+else
+  fail_at "ENG-150 Q-ADV-003 mid-line dedup marker not stripped" \
+    "expected >=2 dedup markers; got=$_eng150_adv003_count captured: $_eng150_adv003"
+fi
+unset PIPELINE_DISPATCH_ID _eng150_adv003 _eng150_adv003_count
+
+# Q-ADV-004: line-isolated dedup marker (its own complete line) IS
+# stripped before the new marker is appended — the happy-path of the
+# D-003+D-007a defensive strip.  A prior dispatch's canonical marker on
+# its own line is removed, leaving only the current dispatch's marker.
+: > "$_eng150_log"
+PIPELINE_DRY_RUN=1 \
+PIPELINE_DISPATCH_ID=ENG-X-d0008 \
+  add_comment ENG-X --sig "halt/implementing/ENG-X" \
+    --body $'halt body\n\n<!-- meta: dedup key=halt/implementing/ENG-X/d0007 -->' >/dev/null 2>&1
+_eng150_adv004="$(cat "$_eng150_log")"
+_eng150_adv004_count="$(printf '%s' "$_eng150_adv004" | grep -o '<!-- meta: dedup key=' | wc -l | tr -d ' ')"
+if [[ "$_eng150_adv004_count" -eq 1 ]] \
+   && grep -qF '<!-- meta: dedup key=halt/implementing/ENG-X/d0008 -->' <<<"$_eng150_adv004" \
+   && ! grep -qF '<!-- meta: dedup key=halt/implementing/ENG-X/d0007 -->' <<<"$_eng150_adv004"; then
+  pass_at "ENG-150 Q-ADV-004 line-isolated prior dedup marker stripped → only new dispatch marker present"
+else
+  fail_at "ENG-150 Q-ADV-004 line-isolated dedup strip" \
+    "count=$_eng150_adv004_count captured: $_eng150_adv004"
+fi
+unset PIPELINE_DISPATCH_ID _eng150_adv004 _eng150_adv004_count
+
+# Q-ADV-005: sig containing `<!--` (HTML comment opener without closer)
+# passes the validation gate at line 746, which only rejects `\n` and
+# `-->`.  The resulting dedup marker embeds a nested `<!--` inside the
+# outer HTML comment, producing malformed markup.  Documents the
+# defense-in-depth gap at linear.sh:746 (review finding: sig validation
+# misses `<!--` opener).
+: > "$_eng150_log"
+_eng150_adv005_rc=0
+PIPELINE_DRY_RUN=1 \
+PIPELINE_DISPATCH_ID=ENG-X-d0007 \
+  add_comment ENG-X --sig "halt/<!--nested/ENG-X" --body "body" >/dev/null 2>&1 \
+  || _eng150_adv005_rc=$?
+_eng150_adv005="$(cat "$_eng150_log")"
+if [[ "$_eng150_adv005_rc" -eq 0 ]] \
+   && grep -qF '<!-- meta: dedup key=halt/<!--nested/ENG-X' <<<"$_eng150_adv005"; then
+  pass_at "ENG-150 Q-ADV-005 sig with '<!--' passes validation and embeds nested opener (documents gap at linear.sh:746)"
+else
+  fail_at "ENG-150 Q-ADV-005 sig with '<!--'" \
+    "rc=$_eng150_adv005_rc; expected rc=0 + nested <!--; captured: $_eng150_adv005"
+fi
+unset PIPELINE_DISPATCH_ID _eng150_adv005 _eng150_adv005_rc
+
+# Q-ADV-006: --body - (stdin form) combined with --sig works correctly
+# regardless of arg order.  The arg-stripping loop at line 721-734
+# extracts --sig from the full arg list in one pass before passing the
+# remainder to _resolve_body_arg, so stdin piping is transparent to
+# --sig even when --body - precedes --sig in argv.
+: > "$_eng150_log"
+PIPELINE_DRY_RUN=1 \
+PIPELINE_DISPATCH_ID=ENG-X-d0007 \
+  add_comment ENG-X --body - --sig "halt/implementing/ENG-X" <<'STDIN_BODY' >/dev/null 2>&1
+stdin body text
+STDIN_BODY
+_eng150_adv006="$(cat "$_eng150_log")"
+if grep -qF '<!-- meta: dedup key=halt/implementing/ENG-X/d0007 -->' <<<"$_eng150_adv006" \
+   && grep -qF 'stdin body text' <<<"$_eng150_adv006"; then
+  pass_at "ENG-150 Q-ADV-006 --body - stdin + --sig → dedup marker appended and stdin content captured"
+else
+  fail_at "ENG-150 Q-ADV-006 --body - + --sig" \
+    "captured: $_eng150_adv006"
+fi
+unset PIPELINE_DISPATCH_ID _eng150_adv006
+
 # Restore originals so subsequent tests inherit a pristine env.
 rm -f "$_eng150_log"
 unset -f log linear_query _resolve_issue_uuid 2>/dev/null || true
@@ -1304,7 +1434,12 @@ unset _eng150_orig_linear_query _eng150_orig_resolve_uuid _eng150_orig_log \
       _eng150_a001 _eng150_a002 \
       _eng150_a3_create_count _eng150_a3_update_count \
       _eng150_a4_create_count \
-      _eng150_a6_body
+      _eng150_a6_body \
+      _eng150_adv001 _eng150_adv002 \
+      _eng150_adv003 _eng150_adv003_count \
+      _eng150_adv004 _eng150_adv004_count \
+      _eng150_adv005 _eng150_adv005_rc \
+      _eng150_adv006
 
 # ─── ENG-110: agent-lane auto-injection ───────────────────────────────
 # Pin the contract that PIPELINE_WRITER=agent does not short-circuit
