@@ -32,6 +32,7 @@ ARTIFACT_DIR="$(mktemp -d)"
   artifact_path="$ARTIFACT_DIR/adv-a-start.md"
   HARNESS_ROOT="$HARNESS_DIR" \
   source "$HARNESS_DIR/retro-shape-tool-denial-trends.sh" 2>/dev/null || true
+  HARNESS_ROOT="${HARNESS_DIR%/bin}"
   rc=0
   msg="$(main \
     --artifact-path "$artifact_path" \
@@ -90,6 +91,7 @@ ARTIFACT_DIR="$(mktemp -d)"
   name="adv-shapeB-missing-period-start-iso-dies"
   artifact_path="$ARTIFACT_DIR/adv-b-start.md"
   source "$HARNESS_DIR/retro-shape-runtime-invariant-audit.sh" 2>/dev/null || true
+  HARNESS_ROOT="${HARNESS_DIR%/bin}"
   rc=0
   msg="$(main \
     --artifact-path "$artifact_path" \
@@ -127,6 +129,7 @@ ARTIFACT_DIR="$(mktemp -d)"
   name="adv-shapeC-missing-period-start-iso-dies"
   artifact_path="$ARTIFACT_DIR/adv-c-start.md"
   source "$HARNESS_DIR/retro-shape-claude-version-drift.sh" 2>/dev/null || true
+  HARNESS_ROOT="${HARNESS_DIR%/bin}"
   # Monkeypatch captures to non-carve-out defaults (same pattern as main test file)
   _capture_observed_version() { _OBSERVED_VERSION="claude-cli-test"; }
   _capture_expected_version() { _EXPECTED_VERSION="claude-cli-test-expected"; }
