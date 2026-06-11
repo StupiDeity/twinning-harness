@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Tests for bin/verify-qa.sh (ENG-113).
 #
-# Covers V-1..V-12 — every documented exit code (0 / 39 / 40 / 41), every
+# Covers V-1..V-12 — every documented exit code (0 / 42 / 43 / 44), every
 # pass-criterion kind (smoke / file_exists / grep / http_get), the D-011
 # path-prefix authority surface, the D-013 path-traversal hardening, and
 # the --ident cross-check.
 #
 # Codes 36/37/38 are held by ENG-119 (review-payload-{malformed,
-# incomplete,missing}); ENG-113 (qa-predicate) lives at 39/40/41 to
-# avoid the collision that surfaced during the dff490c→72453cb rebase.
+# incomplete,missing}); codes 39/40/41 are held by ENG-117 (qa-payload-*);
+# ENG-113 (qa-predicate) lives at 42/43/44 — the gap was closed in review
+# iter-3 after the c6722bc rebase observed ENG-117 had taken 39/40/41.
 #
 # Pattern: source-and-stub (CLAUDE.md "How tests work"). Tests invoke
 # bin/verify-qa.sh via direct CLI call (matches production invocation by
@@ -81,26 +82,26 @@ EOF
 _summary_line() { printf '%s\n' "$1" | jq -c 'select(.summary == true)' 2>/dev/null; }
 _first_crit_line() { printf '%s\n' "$1" | jq -c 'select(.summary != true)' 2>/dev/null | head -1; }
 
-# ─── V-1: predicate file absent → rc=41 ──────────────────────────────
+# ─── V-1: predicate file absent → rc=44 ──────────────────────────────
 rc=0
 out="$(bash "$VERIFIER" validate "$FIXTURE_DIR/nonexistent.json" 2>&1)" || rc=$?
-if (( rc == 41 )) && [[ "$out" == *"qa-predicate-missing"* ]]; then
-  pass_at "V-1: missing file → exit 41 + stdout names qa-predicate-missing"
+if (( rc == 44 )) && [[ "$out" == *"qa-predicate-missing"* ]]; then
+  pass_at "V-1: missing file → exit 44 + stdout names qa-predicate-missing"
 else
-  fail_at "V-1: missing file" "expected rc=41 + 'qa-predicate-missing'; got rc=$rc, out=$out"
+  fail_at "V-1: missing file" "expected rc=44 + 'qa-predicate-missing'; got rc=$rc, out=$out"
 fi
 
-# ─── V-2: predicate file present, JSON parse error → rc=39 ──────────
+# ─── V-2: predicate file present, JSON parse error → rc=42 ──────────
 printf '{,}\n' > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" 2>&1)" || rc=$?
-if (( rc == 39 )) && [[ "$out" == *"qa-predicate-malformed"* ]]; then
-  pass_at "V-2: JSON parse error → exit 39 + stdout names qa-predicate-malformed"
+if (( rc == 42 )) && [[ "$out" == *"qa-predicate-malformed"* ]]; then
+  pass_at "V-2: JSON parse error → exit 42 + stdout names qa-predicate-malformed"
 else
-  fail_at "V-2: JSON parse error" "expected rc=39 + 'qa-predicate-malformed'; got rc=$rc, out=$out"
+  fail_at "V-2: JSON parse error" "expected rc=42 + 'qa-predicate-malformed'; got rc=$rc, out=$out"
 fi
 
-# ─── V-3: schema-incomplete (missing pass_criteria) → rc=40 ──────────
+# ─── V-3: schema-incomplete (missing pass_criteria) → rc=43 ──────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -109,10 +110,10 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"qa-predicate-incomplete"* ]]; then
-  pass_at "V-3: missing pass_criteria → exit 40 + stdout names qa-predicate-incomplete"
+if (( rc == 43 )) && [[ "$out" == *"qa-predicate-incomplete"* ]]; then
+  pass_at "V-3: missing pass_criteria → exit 43 + stdout names qa-predicate-incomplete"
 else
-  fail_at "V-3: missing pass_criteria" "expected rc=40 + 'qa-predicate-incomplete'; got rc=$rc, out=$out"
+  fail_at "V-3: missing pass_criteria" "expected rc=43 + 'qa-predicate-incomplete'; got rc=$rc, out=$out"
 fi
 
 # ─── V-4: valid, all pass → rc=0, summary failed=0 ──────────────────
@@ -273,17 +274,17 @@ else
   fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl-stub.log records max-time + URL; got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, stub_log=$(cat "$STUB_LOG")"
 fi
 
-# ─── V-9: --ident mismatch → rc=40 ──────────────────────────────────
+# ─── V-9: --ident mismatch → rc=43 ──────────────────────────────────
 f="$(write_valid_predicate qa-predicate-ENG-1.json ENG-1)"
 rc=0
 out="$(bash "$VERIFIER" validate "$f" --ident ENG-2 --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"qa-predicate-incomplete"* ]] && [[ "$out" == *"issue_id mismatch"* ]]; then
-  pass_at "V-9: --ident mismatch → exit 40 + stdout names issue_id mismatch"
+if (( rc == 43 )) && [[ "$out" == *"qa-predicate-incomplete"* ]] && [[ "$out" == *"issue_id mismatch"* ]]; then
+  pass_at "V-9: --ident mismatch → exit 43 + stdout names issue_id mismatch"
 else
-  fail_at "V-9: --ident mismatch" "expected rc=40 + 'issue_id mismatch'; got rc=$rc, out=$out"
+  fail_at "V-9: --ident mismatch" "expected rc=43 + 'issue_id mismatch'; got rc=$rc, out=$out"
 fi
 
-# ─── V-10: file_exists with ../ traversal → rc=40 ───────────────────
+# ─── V-10: file_exists with ../ traversal → rc=43 ───────────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -295,13 +296,13 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"path must be worktree-relative"* ]]; then
-  pass_at "V-10: file_exists with '../' → exit 40 + traversal diagnostic"
+if (( rc == 43 )) && [[ "$out" == *"path must be worktree-relative"* ]]; then
+  pass_at "V-10: file_exists with '../' → exit 43 + traversal diagnostic"
 else
-  fail_at "V-10: file_exists ../" "expected rc=40 + 'path must be worktree-relative'; got rc=$rc, out=$out"
+  fail_at "V-10: file_exists ../" "expected rc=43 + 'path must be worktree-relative'; got rc=$rc, out=$out"
 fi
 
-# ─── V-11: grep with absolute path → rc=40 ─────────────────────────
+# ─── V-11: grep with absolute path → rc=43 ─────────────────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -313,13 +314,13 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"path must be worktree-relative"* ]]; then
-  pass_at "V-11: grep absolute path → exit 40 + traversal diagnostic"
+if (( rc == 43 )) && [[ "$out" == *"path must be worktree-relative"* ]]; then
+  pass_at "V-11: grep absolute path → exit 43 + traversal diagnostic"
 else
-  fail_at "V-11: grep absolute path" "expected rc=40 + 'path must be worktree-relative'; got rc=$rc, out=$out"
+  fail_at "V-11: grep absolute path" "expected rc=43 + 'path must be worktree-relative'; got rc=$rc, out=$out"
 fi
 
-# ─── V-12: predicate file outside $PROJECT_STATE_DIR → rc=39 ────────
+# ─── V-12: predicate file outside $PROJECT_STATE_DIR → rc=42 ────────
 mkdir -p "$FIXTURE_DIR/escape"
 cat > "$FIXTURE_DIR/escape/qa-predicate-ENG-1.json" <<'EOF'
 {
@@ -332,13 +333,13 @@ cat > "$FIXTURE_DIR/escape/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$FIXTURE_DIR/escape/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 39 )) && [[ "$out" == *"predicate file must live under"* ]]; then
-  pass_at "V-12: predicate outside PROJECT_STATE_DIR → exit 39 + authority diagnostic"
+if (( rc == 42 )) && [[ "$out" == *"predicate file must live under"* ]]; then
+  pass_at "V-12: predicate outside PROJECT_STATE_DIR → exit 42 + authority diagnostic"
 else
-  fail_at "V-12: predicate outside PROJECT_STATE_DIR" "expected rc=39 + 'predicate file must live under'; got rc=$rc, out=$out"
+  fail_at "V-12: predicate outside PROJECT_STATE_DIR" "expected rc=42 + 'predicate file must live under'; got rc=$rc, out=$out"
 fi
 
-# ─── V-13: http_get with file:// scheme → rc=40 (critical #5) ──────
+# ─── V-13: http_get with file:// scheme → rc=43 (critical #5) ──────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -350,21 +351,21 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"url must use http:// or https:// scheme"* ]]; then
-  pass_at "V-13: http_get file:// → exit 40 + scheme diagnostic"
+if (( rc == 43 )) && [[ "$out" == *"url must use http:// or https:// scheme"* ]]; then
+  pass_at "V-13: http_get file:// → exit 43 + scheme diagnostic"
 else
-  fail_at "V-13: http_get file://" "expected rc=40 + 'url must use http:// or https:// scheme'; got rc=$rc, out=$out"
+  fail_at "V-13: http_get file://" "expected rc=43 + 'url must use http:// or https:// scheme'; got rc=$rc, out=$out"
 fi
 
-# ─── V-14: --worktree outside TARGET_REPO and PROJECT_STATE_DIR → rc=40
+# ─── V-14: --worktree outside TARGET_REPO and PROJECT_STATE_DIR → rc=43
 mkdir -p "$FIXTURE_DIR/elsewhere"
 f="$(write_valid_predicate qa-predicate-ENG-1.json ENG-1)"
 rc=0
 out="$(bash "$VERIFIER" validate "$f" --ident ENG-1 --worktree "$FIXTURE_DIR/elsewhere" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"must be a subpath of"* ]]; then
-  pass_at "V-14: --worktree outside fence accept-list → exit 40 + fence diagnostic"
+if (( rc == 43 )) && [[ "$out" == *"must be a subpath of"* ]]; then
+  pass_at "V-14: --worktree outside fence accept-list → exit 43 + fence diagnostic"
 else
-  fail_at "V-14: --worktree fence" "expected rc=40 + 'must be a subpath of'; got rc=$rc, out=$out"
+  fail_at "V-14: --worktree fence" "expected rc=43 + 'must be a subpath of'; got rc=$rc, out=$out"
 fi
 
 # ─── V-14b: --worktree under PROJECT_STATE_DIR/<ident>/worktree → accepted (C1)
@@ -426,7 +427,7 @@ else
 fi
 rm -f "$WT_DIR/leak"
 
-# ─── V-16: predicate file > 64 KiB → rc=39 (M8 file-size cap) ──────
+# ─── V-16: predicate file > 64 KiB → rc=42 (M8 file-size cap) ──────
 # M8 replaced the criteria-count cap (which did NOT bound wall-clock — 64×60s
 # smoke = 64 min, past the 30 min dispatch watchdog) with a byte-size cap at
 # the authority phase, which actually bounds memory/parse cost.
@@ -440,10 +441,10 @@ LARGE="$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
 size="$(wc -c < "$LARGE" | tr -d ' ')"
 rc=0
 out="$(bash "$VERIFIER" validate "$LARGE" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 39 )) && [[ "$out" == *"qa-predicate-malformed"* ]] && [[ "$out" == *"size"* ]]; then
-  pass_at "V-16: predicate > 64 KiB (got $size B) → exit 39 + size-cap diagnostic"
+if (( rc == 42 )) && [[ "$out" == *"qa-predicate-malformed"* ]] && [[ "$out" == *"size"* ]]; then
+  pass_at "V-16: predicate > 64 KiB (got $size B) → exit 42 + size-cap diagnostic"
 else
-  fail_at "V-16: predicate size cap" "expected rc=39 + 'size'; got rc=$rc, out=$out (size=$size)"
+  fail_at "V-16: predicate size cap" "expected rc=42 + 'size'; got rc=$rc, out=$out (size=$size)"
 fi
 
 # ─── V-17: summary line carries duration_s (not duration_ms) ───────
@@ -488,7 +489,7 @@ else
 fi
 rm -f "$WT_DIR/a_link" "$WT_DIR/b_target"
 
-# ─── V-23: bare '..' lexical guard → rc=40 (M1) ────────────────────
+# ─── V-23: bare '..' lexical guard → rc=43 (M1) ────────────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -500,13 +501,13 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"path must be worktree-relative"* ]]; then
-  pass_at "V-23: file_exists bare '..' → exit 40 (M1 lexical guard widened)"
+if (( rc == 43 )) && [[ "$out" == *"path must be worktree-relative"* ]]; then
+  pass_at "V-23: file_exists bare '..' → exit 43 (M1 lexical guard widened)"
 else
-  fail_at "V-23: bare '..'" "expected rc=40 + 'path must be worktree-relative'; got rc=$rc, out=$out"
+  fail_at "V-23: bare '..'" "expected rc=43 + 'path must be worktree-relative'; got rc=$rc, out=$out"
 fi
 
-# ─── V-24: http_get loopback host → rc=40 (C4 host-class denylist) ───
+# ─── V-24: http_get loopback host → rc=43 (C4 host-class denylist) ───
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -518,13 +519,13 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"host"* ]]; then
-  pass_at "V-24: http_get to 127.0.0.1 → exit 40 (C4 host-class denylist)"
+if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
+  pass_at "V-24: http_get to 127.0.0.1 → exit 43 (C4 host-class denylist)"
 else
-  fail_at "V-24: loopback denylist" "expected rc=40 + 'host' in diagnostic; got rc=$rc, out=$out"
+  fail_at "V-24: loopback denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
 fi
 
-# ─── V-25: http_get IMDS → rc=40 (C4 host-class denylist) ───────────
+# ─── V-25: http_get IMDS → rc=43 (C4 host-class denylist) ───────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -536,13 +537,13 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"host"* ]]; then
-  pass_at "V-25: http_get to 169.254.169.254 → exit 40 (C4 cloud-metadata denylist)"
+if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
+  pass_at "V-25: http_get to 169.254.169.254 → exit 43 (C4 cloud-metadata denylist)"
 else
-  fail_at "V-25: IMDS denylist" "expected rc=40 + 'host' in diagnostic; got rc=$rc, out=$out"
+  fail_at "V-25: IMDS denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
 fi
 
-# ─── V-26: http_get RFC1918 private → rc=40 (C4) ────────────────────
+# ─── V-26: http_get RFC1918 private → rc=43 (C4) ────────────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -554,10 +555,10 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"host"* ]]; then
-  pass_at "V-26: http_get to 10.0.0.1 → exit 40 (C4 RFC1918 denylist)"
+if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
+  pass_at "V-26: http_get to 10.0.0.1 → exit 43 (C4 RFC1918 denylist)"
 else
-  fail_at "V-26: RFC1918 denylist" "expected rc=40 + 'host' in diagnostic; got rc=$rc, out=$out"
+  fail_at "V-26: RFC1918 denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
 fi
 
 # ─── V-27: grep against a directory → distinct diagnostic (m7) ──────

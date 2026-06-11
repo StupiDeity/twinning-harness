@@ -21,19 +21,20 @@
 #   per-issue worktree at $(issue_dir "$PIPELINE_ISSUE_ID")/worktree is
 #   auto-derived — this is the form AGENT_PROMPTS.md §6 invokes.
 #
-# Exit codes:
+# Exit codes (ENG-113; shifted 39/40/41 → 42/43/44 in review iter-3 after
+# ENG-117 took 39/40/41 on origin/main):
 #   0  — predicate schema valid; per-criterion JSONL report emitted on
 #        stdout regardless of how many criteria failed (caller reads the
 #        summary line to decide verdict per D-008/D-012).
-#   39 — malformed: JSON parse error / not an object / predicate file
+#   42 — malformed: JSON parse error / not an object / predicate file
 #        lives outside $PROJECT_STATE_DIR (D-011 authority surface) /
 #        file size > 64 KiB (M8 — DoS-meaningful byte cap).
-#   40 — incomplete: required field missing, wrong type, unknown kind,
+#   43 — incomplete: required field missing, wrong type, unknown kind,
 #        --ident mismatch, D-013 path-traversal violation in a
 #        file_exists / grep criterion (lexical guard; the executor adds
 #        a realpath symlink-pivot guard via `realpath -m`), or C4
 #        host-class denylist hit on an http_get URL.
-#   41 — missing: predicate file does not exist at the given path.
+#   44 — missing: predicate file does not exist at the given path.
 #
 # Canonical schema (qa_predicate_schema_version: 1):
 #
@@ -75,7 +76,7 @@ _QA_PREDICATE_MAX_BYTES=65536
 
 # ─── Phase 1: parse argv ──────────────────────────────────────────────
 # Returns 0 with parsed values in ARG_FILE/ARG_IDENT/ARG_WORKTREE
-# globals; emits diagnostics + returns 39 (malformed) on argv shape errors.
+# globals; emits diagnostics + returns 42 (malformed) on argv shape errors.
 _parse_validate_argv() {
   ARG_FILE=""; ARG_IDENT=""; ARG_WORKTREE=""
   local first=1
@@ -83,30 +84,30 @@ _parse_validate_argv() {
     case "$1" in
       --ident)
         if [[ $# -lt 2 ]]; then
-          printf 'verify-qa.sh: --ident requires a value\n' >&2; return 39
+          printf 'verify-qa.sh: --ident requires a value\n' >&2; return 42
         fi
         ARG_IDENT="$2"; shift 2 ;;
       --worktree)
         if [[ $# -lt 2 ]]; then
-          printf 'verify-qa.sh: --worktree requires a value\n' >&2; return 39
+          printf 'verify-qa.sh: --worktree requires a value\n' >&2; return 42
         fi
         ARG_WORKTREE="$2"; shift 2 ;;
-      --*)     printf 'verify-qa.sh: unknown flag %s\n' "$1" >&2; return 39 ;;
+      --*)     printf 'verify-qa.sh: unknown flag %s\n' "$1" >&2; return 42 ;;
       *)
         if (( first )); then ARG_FILE="$1"; first=0
-        else printf 'verify-qa.sh: unexpected argument %s\n' "$1" >&2; return 39
+        else printf 'verify-qa.sh: unexpected argument %s\n' "$1" >&2; return 42
         fi
         shift
         ;;
     esac
   done
-  [[ -n "$ARG_FILE" ]] || { printf 'verify-qa.sh: validate: file argument required\n' >&2; return 39; }
+  [[ -n "$ARG_FILE" ]] || { printf 'verify-qa.sh: validate: file argument required\n' >&2; return 42; }
   return 0
 }
 
 # ─── Phase 2: authority surface (D-011) ──────────────────────────────
-# Predicate file must (a) exist (rc=41), (b) live under $PROJECT_STATE_DIR
-# realpath (rc=39), (c) be <= _QA_PREDICATE_MAX_BYTES bytes (rc=39, M8).
+# Predicate file must (a) exist (rc=44), (b) live under $PROJECT_STATE_DIR
+# realpath (rc=42), (c) be <= _QA_PREDICATE_MAX_BYTES bytes (rc=42, M8).
 # Splits the parent-realpath assignment so a failed cd properly trips
 # the `if !` (M2: the prior `if ! file_real="$(cd ... && pwd -P)/$(basename …)"`
 # rolled the last-command exit into basename — always 0 — and the error
@@ -115,7 +116,7 @@ _authority_check() {
   local file="$1"
   if [[ ! -f "$file" ]]; then
     printf 'qa-predicate-missing: file not found: %s\n' "$file"
-    return 41
+    return 44
   fi
   # M8: file-size cap at authority phase. Bounds memory/parse cost.
   local size
@@ -123,24 +124,24 @@ _authority_check() {
   if [[ -z "$size" ]] || (( size > _QA_PREDICATE_MAX_BYTES )); then
     printf 'qa-predicate-malformed: predicate file size %s exceeds cap %s bytes\n' \
       "${size:-unknown}" "$_QA_PREDICATE_MAX_BYTES"
-    return 39
+    return 42
   fi
   local dir parent_real
   dir="$(dirname "$file")"
   if ! parent_real="$(cd "$dir" 2>/dev/null && pwd -P)"; then
     printf 'qa-predicate-malformed: cannot resolve realpath of predicate file parent: %s\n' "$dir"
-    return 39
+    return 42
   fi
   local file_real="$parent_real/$(basename "$file")"
   if [[ -z "${PROJECT_STATE_DIR:-}" || ! -d "${PROJECT_STATE_DIR:-}" ]]; then
     printf 'qa-predicate-malformed: $PROJECT_STATE_DIR is unset or not a directory: %s\n' "${PROJECT_STATE_DIR:-}"
-    return 39
+    return 42
   fi
   local prefix_real
   prefix_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
   if [[ "$file_real" != "$prefix_real"/* ]]; then
     printf 'qa-predicate-malformed: predicate file must live under $PROJECT_STATE_DIR; got %s\n' "$file"
-    return 39
+    return 42
   fi
   return 0
 }
@@ -152,7 +153,7 @@ _authority_check() {
 # When --worktree is empty, auto-derive from PIPELINE_ISSUE_ID
 # ($(issue_dir "$PIPELINE_ISSUE_ID")/worktree) — this is the shape
 # AGENT_PROMPTS.md §6 invokes (no --worktree flag).
-# Returns 0 with RESOLVED_WORKTREE populated, 40 on fence violation.
+# Returns 0 with RESOLVED_WORKTREE populated, 43 on fence violation.
 _worktree_fence() {
   local worktree="$1"
   RESOLVED_WORKTREE=""
@@ -174,7 +175,7 @@ _worktree_fence() {
   fi
   if [[ ! -d "$worktree" ]]; then
     printf 'qa-predicate-incomplete: --worktree must be an existing directory, got: %s\n' "$worktree"
-    return 40
+    return 43
   fi
   local wt_real
   wt_real="$(cd "$worktree" && pwd -P)"
@@ -188,7 +189,7 @@ _worktree_fence() {
   fi
   if [[ -z "$target_real" && -z "$state_real" ]]; then
     printf 'qa-predicate-incomplete: neither $TARGET_REPO nor $PROJECT_STATE_DIR is set; cannot fence --worktree\n'
-    return 40
+    return 43
   fi
   local in_target=0 in_state=0
   if [[ -n "$target_real" && ( "$wt_real" == "$target_real" || "$wt_real" == "$target_real"/* ) ]]; then
@@ -199,27 +200,27 @@ _worktree_fence() {
   fi
   if (( in_target == 0 && in_state == 0 )); then
     printf 'qa-predicate-incomplete: --worktree must be a subpath of $TARGET_REPO or $PROJECT_STATE_DIR (got %s)\n' "$wt_real"
-    return 40
+    return 43
   fi
   RESOLVED_WORKTREE="$wt_real"
   return 0
 }
 
 # ─── Phase 4: schema validation ──────────────────────────────────────
-# Returns 0 with PC_LEN populated; or 39/40 on schema defects.
+# Returns 0 with PC_LEN populated; or 42/43 on schema defects.
 _validate_predicate_schema() {
   local file="$1" ident="$2"
   PC_LEN=0
-  # rc=39: JSON parse error or top-level not an object.
+  # rc=42: JSON parse error or top-level not an object.
   local jq_type_out jq_rc=0
   jq_type_out="$(jq -r 'type' "$file" 2>&1)" || jq_rc=$?
   if (( jq_rc != 0 )); then
     printf 'qa-predicate-malformed: JSON parse error: %s\n' "$jq_type_out"
-    return 39
+    return 42
   fi
   if [[ "$jq_type_out" != "object" ]]; then
     printf 'qa-predicate-malformed: top-level JSON is not an object (got: %s)\n' "$jq_type_out"
-    return 39
+    return 42
   fi
 
   # ── Required top-level fields ──────────────────────────────────────
@@ -227,15 +228,15 @@ _validate_predicate_schema() {
   ver="$(jq -r '.qa_predicate_schema_version // "MISSING"' "$file")"
   if [[ "$ver" == "MISSING" ]]; then
     printf 'qa-predicate-incomplete: missing required field: qa_predicate_schema_version\n'
-    return 40
+    return 43
   fi
   if ! jq -e '.qa_predicate_schema_version | type == "number"' "$file" >/dev/null 2>&1; then
     printf 'qa-predicate-incomplete: qa_predicate_schema_version must be an integer, got: %s\n' "$ver"
-    return 40
+    return 43
   fi
   if ! jq -e '.qa_predicate_schema_version == 1' "$file" >/dev/null 2>&1; then
     printf 'qa-predicate-incomplete: qa_predicate_schema_version must be 1, got: %s\n' "$ver"
-    return 40
+    return 43
   fi
 
   local issue_id_type issue_id_val
@@ -243,15 +244,15 @@ _validate_predicate_schema() {
   issue_id_val="$(jq -r '.issue_id // "MISSING"' "$file")"
   if [[ "$issue_id_val" == "MISSING" || "$issue_id_type" != "string" ]]; then
     printf 'qa-predicate-incomplete: issue_id must be a non-empty string (e.g. ENG-1), got type=%s\n' "$issue_id_type"
-    return 40
+    return 43
   fi
   if ! [[ "$issue_id_val" =~ ^ENG-[0-9]+$ ]]; then
     printf 'qa-predicate-incomplete: issue_id must match ^ENG-[0-9]+\$, got: %s\n' "$issue_id_val"
-    return 40
+    return 43
   fi
   if [[ -n "$ident" && "$issue_id_val" != "$ident" ]]; then
     printf 'qa-predicate-incomplete: issue_id mismatch: JSON has '\''%s'\'' but --ident '\''%s'\'' was passed (stale template?)\n' "$issue_id_val" "$ident"
-    return 40
+    return 43
   fi
 
   # pass_criteria must be an array with len >= 1.
@@ -260,16 +261,16 @@ _validate_predicate_schema() {
   pc_len="$(jq -r '.pass_criteria | length' "$file" 2>/dev/null || printf '0')"
   if [[ "$pc_type" != "array" ]]; then
     printf 'qa-predicate-incomplete: pass_criteria must be an array, got type=%s\n' "$pc_type"
-    return 40
+    return 43
   fi
   if (( pc_len == 0 )); then
     printf 'qa-predicate-incomplete: pass_criteria must contain at least 1 entry\n'
-    return 40
+    return 43
   fi
 
   # Per-criterion schema validation via the shared helper. M7 (review
   # iter-2): the helper sets $_VALIDATE_CRIT_DIAG on rc=34; this caller
-  # wraps with the `qa-predicate-incomplete:` prefix and returns rc=40
+  # wraps with the `qa-predicate-incomplete:` prefix and returns rc=43
   # (qa-predicate-incomplete) — independent of the helper's internal rc.
   local ci
   for (( ci=0; ci<pc_len; ci++ )); do
@@ -277,7 +278,7 @@ _validate_predicate_schema() {
       --kinds smoke,file_exists,grep,http_get \
       --shape flat; then
       printf 'qa-predicate-incomplete: %s\n' "$_VALIDATE_CRIT_DIAG"
-      return 40
+      return 43
     fi
   done
   PC_LEN="$pc_len"
@@ -556,19 +557,19 @@ cmd_validate() {
   snap_dir="$PROJECT_STATE_DIR/.verify-qa-snap"
   mkdir -p "$snap_dir" 2>/dev/null || {
     printf 'qa-predicate-malformed: cannot create snapshot dir under $PROJECT_STATE_DIR: %s\n' "$snap_dir"
-    return 39
+    return 42
   }
   snap_file="$(mktemp "$snap_dir/predicate.XXXXXX" 2>/dev/null)"
   if [[ -z "$snap_file" ]]; then
     printf 'qa-predicate-malformed: mktemp failed under %s\n' "$snap_dir"
-    return 39
+    return 42
   fi
   # Single-pass cp: the bytes the validator and executor see are
   # whatever was on disk at this instant.
   if ! cp -f "$ARG_FILE" "$snap_file" 2>/dev/null; then
     rm -f "$snap_file"
     printf 'qa-predicate-malformed: failed to snapshot predicate to %s\n' "$snap_file"
-    return 39
+    return 42
   fi
   _validate_predicate_schema "$snap_file" "$ARG_IDENT" || rc=$?
   if (( rc == 0 )); then
@@ -585,7 +586,7 @@ main() {
     validate) cmd_validate "$@" ;;
     *)
       printf 'Usage: bash bin/verify-qa.sh validate <file> [--ident <ENG-N>] [--worktree <path>]\n' >&2
-      exit 39
+      exit 42
       ;;
   esac
 }
