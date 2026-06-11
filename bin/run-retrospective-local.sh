@@ -78,11 +78,21 @@ SHAPES=(
 _resolve_previous_period_artifact() {
   local shape="$1" today="$2"
   local most_recent
+  # Basename-anchored parse (ENG-130 review m1): split the path on `/`,
+  # take the last component, then strip the `retrospective-` prefix.
+  # An older `-F'/retrospective-'` split mis-attributed fields when an
+  # ancestor directory in PROJECT_STATE_DIR happened to contain
+  # `/retrospective-` itself.
   most_recent="$(
     find "$PROJECT_STATE_DIR" -maxdepth 1 -type d \
       -name 'retrospective-*' 2>/dev/null \
-      | awk -F'/retrospective-' -v today="$today" \
-          '$2 != "" && $2 < today { print $0 }' \
+      | awk -v today="$today" '
+          { n = split($0, a, "/"); basename = a[n] }
+          basename ~ /^retrospective-/ {
+            date = substr(basename, length("retrospective-") + 1)
+            if (date != "" && date < today) print $0
+          }
+        ' \
       | sort -r | head -1
   )"
   if [[ -n "$most_recent" && -f "$most_recent/${shape}.md" ]]; then
@@ -134,7 +144,7 @@ main() {
   # exactly one PR iff `git diff --cached` shows tracked-file changes.
   local -a succeeded_shapes=()
   local -a failed_shapes=()
-  local -A shape_rcs=()  # bash 4+; harness host runs bash 5 per CLAUDE.md
+  local -A shape_rcs=()  # bash 4.4+ (assoc array + set -u empty-array expansion); host runs bash 5 per CLAUDE.md
   local shape artifact prev rc
 
   for shape in "${SHAPES[@]}"; do
@@ -173,8 +183,19 @@ main() {
     if (( ${#failed_shapes[@]} > 0 )); then
       printf '\n---\n\n## Failed shapes\n\n'
       for shape in "${failed_shapes[@]}"; do
-        printf '- %s (rc=%s, log=%s/logs/retro-shape-%s-*.log)\n' \
-          "$shape" "${shape_rcs[$shape]}" "$PROJECT_STATE_DIR" "$shape"
+        # ENG-130 review n2: resolve the actual most-recent log file for
+        # this shape rather than emitting a literal `*.log` glob the
+        # operator has to expand by hand. Fall back to the logs/ dir hint
+        # when no log was produced (e.g., shape crashed before logging).
+        local resolved_log
+        resolved_log="$(ls -t "$PROJECT_STATE_DIR/logs/retro-shape-${shape}-"*.log 2>/dev/null | head -1)"
+        if [[ -n "$resolved_log" ]]; then
+          printf '- %s (rc=%s, log=%s)\n' \
+            "$shape" "${shape_rcs[$shape]}" "$resolved_log"
+        else
+          printf '- %s (rc=%s, log=%s/logs/)\n' \
+            "$shape" "${shape_rcs[$shape]}" "$PROJECT_STATE_DIR"
+        fi
       done
     fi
   } > "$pr_body_path"
