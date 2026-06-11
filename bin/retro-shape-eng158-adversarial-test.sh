@@ -256,6 +256,96 @@ ARTIFACT_DIR="$(mktemp -d)"
 }
 
 # ---------------------------------------------------------------------------
+# QA-authored: Shape C carve-out fires before the dry-run branch
+# Sub-agent finding #1: the no-pin short-circuit in main() writes the
+# carve-out artifact and returns 0 before reaching the PIPELINE_DRY_RUN
+# check. So with DRY_RUN=1 + no pin file, the artifact is the real
+# carve-out text, NOT "[DRY_RUN placeholder]". Intentional design.
+# ---------------------------------------------------------------------------
+{
+  name="adv-shapeC-carveout-fires-before-dryrun"
+  artifact_path="$ARTIFACT_DIR/adv-c-carveout-dryrun.md"
+  rm -f "$artifact_path"
+  # PIPELINE_DRY_RUN=1 is already exported at file scope.
+  _capture_observed_version() { _OBSERVED_VERSION="claude-cli-1.0"; }
+  _capture_expected_version() { _EXPECTED_VERSION="(unpinned)"; }
+  rc=0
+  main \
+    --artifact-path "$artifact_path" \
+    --period-start-iso 2026-06-01T00:00:00Z \
+    --period-end-iso   2026-06-08T00:00:00Z \
+    2>/dev/null || rc=$?
+  _capture_observed_version() { _OBSERVED_VERSION="claude-cli-test"; }
+  _capture_expected_version() { _EXPECTED_VERSION="claude-cli-test-expected"; }
+  if (( rc == 0 )) \
+      && [[ -f "$artifact_path" ]] \
+      && grep -qF 'No expected version pinned' "$artifact_path" \
+      && ! grep -q '\[DRY_RUN placeholder\]' "$artifact_path"; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc artifact=$(cat "$artifact_path" 2>/dev/null || echo MISSING))"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# QA-authored: Shape B rejects --agent-prompts-path (not in _parse_args)
+# Sub-agent finding #7: plan Task 5 described optional path-override flags
+# (--agent-prompts-path, --dispatch-sh-path, --render-prompt-sh-path).
+# The implementation uses $HARNESS_ROOT defaults instead; passing those
+# flags hits the unknown-argument die(). Pins the design choice so a
+# future refactor knows these flags are absent and tests need updating.
+# ---------------------------------------------------------------------------
+{
+  name="adv-shapeB-unknown-flag-rejected"
+  artifact_path="$ARTIFACT_DIR/adv-b-unknown-flag.md"
+  source "$HARNESS_DIR/retro-shape-runtime-invariant-audit.sh" 2>/dev/null || true
+  HARNESS_ROOT="${HARNESS_DIR%/bin}"
+  rc=0
+  msg="$(main \
+    --artifact-path "$artifact_path" \
+    --period-start-iso 2026-06-01T00:00:00Z \
+    --period-end-iso   2026-06-08T00:00:00Z \
+    --agent-prompts-path /some/path \
+    2>&1)" || rc=$?
+  if (( rc != 0 )) && printf '%s' "$msg" | grep -q "unknown argument"; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc msg=${msg} — expected die on unknown argument)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# QA-authored: Shape C safe version string survives _render_prompt intact.
+# Pins that token substitution in the rendered prompt actually replaces
+# {observed_version} with the captured version string. Calls _render_prompt
+# directly to avoid dispatch; checks the rendered output rather than the
+# artifact. Pre-existing sed-delimiter-pipe vulnerability (a '|' in the
+# version string would corrupt the sed expression) is theoretical — in
+# practice claude --version never emits '|'. Noted as qa-pattern candidate.
+# ---------------------------------------------------------------------------
+{
+  name="adv-shapeC-safe-version-string-survives-render"
+  source "$HARNESS_DIR/retro-shape-claude-version-drift.sh" 2>/dev/null || true
+  HARNESS_ROOT="${HARNESS_DIR%/bin}"
+  safe_version="claude-cli-1.2.3-20260101"
+  _OBSERVED_VERSION="$safe_version"
+  _EXPECTED_VERSION="$safe_version"
+  _ARTIFACT_PATH="$ARTIFACT_DIR/adv-c-render-artifact.md"
+  rendered_tmp="$(mktemp -t adv-shapeC-render-XXXXXX.md)"
+  rc=0
+  _render_prompt "$rendered_tmp" 2>/dev/null || rc=$?
+  found_version="$(grep -o "$safe_version" "$rendered_tmp" | head -1 || true)"
+  rm -f "$rendered_tmp"
+  _capture_observed_version() { _OBSERVED_VERSION="claude-cli-test"; }
+  _capture_expected_version() { _EXPECTED_VERSION="claude-cli-test-expected"; }
+  if (( rc == 0 )) && [[ "$found_version" == "$safe_version" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc found='${found_version:-EMPTY}' expected '$safe_version')"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 rm -rf "$ARTIFACT_DIR"
