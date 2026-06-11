@@ -18,6 +18,9 @@
 #             33=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
 #             34=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
 #             35=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
+#             39=qa-payload-malformed (verdict-qa.json fails jq parse; ENG-117),
+#             40=qa-payload-incomplete (verdict-qa.json parses but missing required field; ENG-117),
+#             41=qa-payload-missing (no verdict-qa.json post-qa-dispatch; ENG-117),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
