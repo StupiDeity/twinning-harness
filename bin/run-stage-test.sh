@@ -4575,6 +4575,10 @@ _ENG122_TODAY="$(date +%Y-%m-%d)"
 # Use a pure-numeric ident (ENG-12201) so the JSON's issue_id passes
 # the ^ENG-[0-9]+$ pattern check in plan-schema.sh.
 # ENG-179 retrofit: git init + commit, so the HEAD-tree validator finds the files.
+# ENG-157: .md fixture now carries a valid `## System invariants` section with
+# one bullet + parseable verified_by: token so it satisfies the new MD-side
+# validator on the JSON-clean path (without this the JSON-clean arm falls into
+# cmd_validate_md → rc=34 / plan-md-incomplete).
 reset_capture
 ENG12201_WT="$(issue_dir ENG-12201)/worktree"
 rm -rf "$ENG12201_WT"
@@ -4584,8 +4588,13 @@ mkdir -p "$ENG12201_WT/docs/plans"
   && git config user.email t@t \
   && git config user.name t \
   && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
-printf 'stub plan\n' \
-  > "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.md"
+cat > "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.md" <<'MDEOF'
+stub plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG12201_WT/docs/plans/${_ENG122_TODAY}-eng-12201-test.json" "ENG-12201"
 ( cd "$ENG12201_WT" \
@@ -4826,8 +4835,16 @@ mkdir -p "$ENG179R_WT/docs/plans"
   && git config user.email t@t \
   && git config user.name t \
   && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
-printf 'stub plan\n' \
-  > "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.md"
+# ENG-157 retrofit: stub plan needs a `## System invariants` section with
+# one bullet + parseable verified_by: token so the MD validator (which now
+# runs after JSON-clean per the ENG-157 splice) returns rc=0.
+cat > "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.md" <<'MDEOF'
+stub plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.json" "ENG-17901"
 ( cd "$ENG179R_WT" \
@@ -4899,8 +4916,14 @@ mkdir -p "$ENG179U_WT/docs/plans"
 # on Linux also accepts -d "yesterday". Per CLAUDE.md the harness runs
 # on macOS (Bash 3.2), so the -v form is canonical.
 _ENG179U_YESTERDAY="$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)"
-printf 'stub plan (yesterday)\n' \
-  > "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.md"
+# ENG-157 retrofit: same System-invariants stub as INT-R.
+cat > "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.md" <<'MDEOF'
+stub plan (yesterday)
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.json" "ENG-17902"
 ( cd "$ENG179U_WT" \
@@ -4934,12 +4957,25 @@ mkdir -p "$ENG179ADV1_WT/docs/plans"
   && git config user.name t \
   && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
 _ENG179_YESTERDAY="$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)"
-printf 'older plan\n' \
-  > "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.md"
+# ENG-157 retrofit: each .md needs a `## System invariants` section so the
+# new MD validator (which runs after JSON-clean) returns rc=0. tail -1 picks
+# the newer plan, so the validator runs against eng-17911-new.md.
+cat > "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.md" <<'MDEOF'
+older plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.json" "ENG-17911"
-printf 'newer plan\n' \
-  > "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.md"
+cat > "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.md" <<'MDEOF'
+newer plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.json" "ENG-17911"
 ( cd "$ENG179ADV1_WT" \
@@ -5080,6 +5116,178 @@ _validate_plan_contract ENG-17917 2>/dev/null || _eng179adv6_rc=$?
 (( _eng179adv6_rc == 35 )) \
   && pass_at "ENG-179 QA-ADV-6: plan in subdir → rc=35 (pattern rejects subdir paths)" \
   || fail_at "ENG-179 QA-ADV-6: plan in subdir" "expected rc=35, got rc=$_eng179adv6_rc"
+
+# ─── ENG-157 INT6: plan .md missing "## System invariants" → rc=34 ──────────
+# Exercises the JSON-clean / MD-incomplete short-circuit (I-5): a valid
+# sibling .json so the JSON validator passes; an MD body deliberately
+# omitting the `## System invariants` H2 section so the MD validator
+# returns rc=34. The halt comment MUST carry the existing
+# `plan-contract-invalid` marker (reused) AND the new `plan-md-incomplete`
+# Defect prefix (discriminates from JSON-side defects). Reuses ENG-122's
+# STUB_DIR/plan-schema.sh shim and _eng122_write_valid_json helper.
+# ENG-179 retrofit: git init + commit both files so the HEAD-tree gate
+# routes through to plan-schema.sh validate and then to validate-md.
+printf '\n--- ENG-157 INT6: missing System-invariants section ---\n'
+reset_capture
+ENG15706_WT="$(issue_dir ENG-15706)/worktree"
+rm -rf "$ENG15706_WT"
+mkdir -p "$ENG15706_WT/docs/plans"
+( cd "$ENG15706_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+cat > "$ENG15706_WT/docs/plans/${_ENG122_TODAY}-eng-15706-test.md" <<'MDEOF'
+---
+linear: ENG-15706
+date: 2026-06-10
+topic: int6 fixture
+---
+
+## Goal
+
+stub.
+
+## Assumption Inventory
+
+none.
+
+## File Structure
+
+none.
+MDEOF
+_eng122_write_valid_json \
+  "$ENG15706_WT/docs/plans/${_ENG122_TODAY}-eng-15706-test.json" "ENG-15706"
+( cd "$ENG15706_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-15706 (missing System-invariants)" ) >/dev/null 2>&1
+_eng157_int6_rc=0
+_validate_plan_contract ENG-15706 2>/dev/null || _eng157_int6_rc=$?
+(( _eng157_int6_rc == 34 )) \
+  && pass_at "ENG-157 INT6: missing System-invariants section → rc=34" \
+  || fail_at "ENG-157 INT6: missing section" "expected rc=34, got rc=$_eng157_int6_rc"
+if grep -qF '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->' \
+    "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6: halt comment carries plan-contract-invalid marker"
+else
+  fail_at "ENG-157 INT6: plan-contract-invalid marker absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+if grep -qF -- '- Defect: plan-md-incomplete' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6: halt comment carries Defect: plan-md-incomplete prefix"
+else
+  fail_at "ENG-157 INT6: Defect: plan-md-incomplete prefix absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+# Validator stdout sits inside the ~~~ fence on the line below "Defect: ..." —
+# pin the diagnostic text itself so a regression that flips the MD-validator
+# to a wrong diagnostic shape (e.g. "zero bullets" when the section is in
+# fact absent) is caught even though the defect-name prefix still matches.
+if grep -qF 'plan-md-incomplete: required H2 section "## System invariants" missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6: halt comment carries validator's missing-section diagnostic verbatim"
+else
+  fail_at "ENG-157 INT6: missing-section diagnostic absent from halt body" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ─── ENG-157 INT6b: validate-md rc=35 arm in _validate_plan_contract ─────────
+# Sub-agent finding: the rc=35 branch (run-stage.sh:1150) fires when
+# validate-md reports plan-md-missing. This requires a plan .md committed to
+# HEAD (passes git ls-tree check at :1113) and a valid .json on the filesystem
+# (passes the JSON validator), but the .md absent from the filesystem so that
+# validate-md fires rc=35. Expected: rc=35, halt comment carries plan-md-missing.
+printf '\n--- ENG-157 INT6b: validate-md rc=35 arm (plan-md-missing) ---\n'
+reset_capture
+ENG15707_WT="$(issue_dir ENG-15707)/worktree"
+rm -rf "$ENG15707_WT"
+mkdir -p "$ENG15707_WT/docs/plans"
+( cd "$ENG15707_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+_INT6B_MD="$ENG15707_WT/docs/plans/${_ENG122_TODAY}-eng-15707-test.md"
+_INT6B_JSON="$ENG15707_WT/docs/plans/${_ENG122_TODAY}-eng-15707-test.json"
+cat > "$_INT6B_MD" <<'MDEOF'
+---
+linear: ENG-15707
+date: 2026-06-10
+topic: int6b fixture
+---
+
+## Goal
+
+stub.
+
+## System invariants
+
+- I-1: present verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
+_eng122_write_valid_json "$_INT6B_JSON" "ENG-15707"
+( cd "$ENG15707_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-15707 (int6b)" ) >/dev/null 2>&1
+# Now remove the .md so validate-md fires rc=35 while git ls-tree still finds it.
+# The .json stays on the filesystem so the JSON validator passes first.
+rm "$_INT6B_MD"
+_eng157_int6b_rc=0
+_validate_plan_contract ENG-15707 2>/dev/null || _eng157_int6b_rc=$?
+(( _eng157_int6b_rc == 35 )) \
+  && pass_at "ENG-157 INT6b: missing .md at dispatch time → rc=35" \
+  || fail_at "ENG-157 INT6b: missing .md arm" "expected rc=35, got rc=$_eng157_int6b_rc"
+if grep -qF 'plan-md-missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6b: halt comment carries plan-md-missing defect label"
+else
+  fail_at "ENG-157 INT6b: plan-md-missing label absent" "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ─── ENG-157 INT6c: validate-md rc=33 arm in _validate_plan_contract ─────────
+# Sub-agent finding (QA round 3): JSON-valid + MD has malformed token → rc=33 branch.
+# INT6 covers rc=34 (missing section). INT6b covers rc=35 (md absent on filesystem).
+# This test covers the rc=33 (plan-md-malformed) path that was entirely untested at
+# integration level. A malformed token has verified_by: with no colon-separated form
+# (e.g., "verified_by: gibberish_no_colon") — cmd_validate_md returns rc=33.
+printf '\n--- ENG-157 INT6c: validate-md rc=33 arm (plan-md-malformed) ---\n'
+reset_capture
+ENG15708_WT="$(issue_dir ENG-15708)/worktree"
+rm -rf "$ENG15708_WT"
+mkdir -p "$ENG15708_WT/docs/plans"
+( cd "$ENG15708_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+_INT6C_MD="$ENG15708_WT/docs/plans/${_ENG122_TODAY}-eng-15708-test.md"
+_INT6C_JSON="$ENG15708_WT/docs/plans/${_ENG122_TODAY}-eng-15708-test.json"
+cat > "$_INT6C_MD" <<'MDEOF'
+---
+linear: ENG-15708
+date: 2026-06-10
+topic: int6c fixture
+---
+
+## Goal
+
+stub.
+
+## System invariants
+
+- I-1: malformed token verified_by: gibberish_no_colon
+MDEOF
+_eng122_write_valid_json "$_INT6C_JSON" "ENG-15708"
+( cd "$ENG15708_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-15708 (int6c)" ) >/dev/null 2>&1
+_eng157_int6c_rc=0
+_validate_plan_contract ENG-15708 2>/dev/null || _eng157_int6c_rc=$?
+(( _eng157_int6c_rc == 33 )) \
+  && pass_at "ENG-157 INT6c: malformed MD token → rc=33" \
+  || fail_at "ENG-157 INT6c: malformed token arm" "expected rc=33, got rc=$_eng157_int6c_rc"
+if grep -qF 'plan-md-malformed' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6c: halt comment carries plan-md-malformed defect label"
+else
+  fail_at "ENG-157 INT6c: plan-md-malformed label absent" "capture=$(cat "$CAPTURE_FILE")"
+fi
 
 # ─── ENG-119: _validate_review_payload integration tests (INT1-INT5 + INT_*) ────
 # TDD tests for the review-payload validator (Task 4 of ENG-119).
