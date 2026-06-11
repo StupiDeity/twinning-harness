@@ -104,6 +104,14 @@ out="$(run_pipe event ENG-PE7d verdict pivot --target planning --stage bogus-sta
 out="$(run_pipe event ENG-PE7e verdict pivot --target implementing --stage implementing --reason plan-structural-defect 2>&1 || true)"
 [[ "$out" == *"not in pivot_targets"* ]] && pass_at "PE7e: bogus pivot target rejected" || fail_at "PE7e: bogus pivot target rejected" "got: $out"
 
+# PE7f: pivot missing --target (QA adversarial: pre-ENG-115 required field still enforced via schema)
+out="$(run_pipe event ENG-PE7f verdict pivot --stage implementing --reason plan-structural-defect 2>&1 || true)"
+[[ "$out" == *"--target required"* ]] && pass_at "PE7f: pivot requires --target" || fail_at "PE7f: pivot requires --target" "got: $out"
+
+# PE7g: pivot --reason "" (QA adversarial: empty string hits [[ -n "$reason" ]] gate, maps to missing-reason path)
+out="$(run_pipe event ENG-PE7g verdict pivot --target planning --stage implementing --reason "" 2>&1 || true)"
+[[ "$out" == *"--reason required"* ]] && pass_at "PE7g: pivot rejects empty --reason string" || fail_at "PE7g: pivot rejects empty --reason string" "got: $out"
+
 printf '\n--- bin/pipeline.sh: event transition ---\n'
 
 # PT1: valid transition — body uses two k=v pairs (from=X to=Y) per T2.6

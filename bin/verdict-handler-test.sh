@@ -1356,6 +1356,45 @@ else
   fail_at "case-ENG-115-pivot-find-fresh-projection" "proj=$proj"
 fi
 
+# ─── case-ENG-115-pivot-id-match ─────────────────────────────────────
+# QA adversarial: pivot verdict picked via ENG-87 strict id-match path.
+# Comments carry <!-- meta: dispatch id=... --> markers; find_fresh_verdict
+# must still return pipeline-pivot (not empty) when the id-match filter fires.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-115-adv-d0001"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=ENG-115-adv-d0001 stage=planning -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect --><!-- meta: dispatch id=ENG-115-adv-d0001 stage=implementing -->|2026-06-10T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+proj="$(find_fresh_verdict "ENG-115-adv-1" 2>/dev/null || printf '')"
+if [[ "$(jq -r '.marker' <<<"$proj")" == "pipeline-pivot" ]] \
+   && [[ "$(jq -r '.source_stage' <<<"$proj")" == "implementing" ]] \
+   && [[ "$(jq -r '.target_stage' <<<"$proj")" == "planning" ]] \
+   && [[ "$(jq -r '.reason' <<<"$proj")" == "plan-structural-defect" ]]; then
+  pass_at "case-ENG-115-pivot-id-match: pivot returned via strict id-match path"
+else
+  fail_at "case-ENG-115-pivot-id-match" "proj=$proj"
+fi
+
+# ─── case-ENG-115-wait-no-shadow-pivot ───────────────────────────────
+# QA adversarial: wait at T2 (newer) must NOT shadow pivot at T1 (older)
+# under the id-match path. The wait-skip filter must apply before
+# newest-marker selection. Guards the FV5 wait-skip logic extends to pivot.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-115-adv-d0002"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=ENG-115-adv-d0002 stage=planning -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect --><!-- meta: dispatch id=ENG-115-adv-d0002 stage=implementing -->|2026-06-10T11:00:00.000Z" \
+  "<!-- pipeline: verdict result=wait reason=awaiting-ci --><!-- meta: dispatch id=ENG-115-adv-d0002 stage=implementing -->|2026-06-10T12:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+proj="$(find_fresh_verdict "ENG-115-adv-2" 2>/dev/null || printf '')"
+if [[ "$(jq -r '.marker' <<<"$proj")" == "pipeline-pivot" ]] \
+   && [[ "$(jq -r '.source_stage' <<<"$proj")" == "implementing" ]]; then
+  pass_at "case-ENG-115-wait-no-shadow-pivot: wait at T2 does not shadow pivot at T1"
+else
+  fail_at "case-ENG-115-wait-no-shadow-pivot" "proj=$proj (expected pivot not shadowed by wait)"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
