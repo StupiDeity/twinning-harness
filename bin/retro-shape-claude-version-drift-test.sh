@@ -53,6 +53,20 @@ source "$HARNESS_DIR/retro-shape-claude-version-drift.sh"
 
 SCRIPT_DIR="$STUB_DIR"
 
+# Capture the REAL _capture_expected_version (head/sed/trim path) before any
+# monkey-patch so fixture-shapeC-pin-file-real-read can restore it locally.
+REAL_CAPTURE_EXPECTED="$(declare -f _capture_expected_version)"
+
+# Default monkey-patches. The M5 no-pin carve-out short-circuits dispatch
+# when _EXPECTED_VERSION == "(unpinned)", which the unmodified
+# _capture_expected_version would return on a host without
+# $HARNESS_ROOT/.claude-cli-version pinned. To keep fixtures that exercise
+# the dispatch path stable, set both captures to a non-carve-out default
+# here. Individual fixtures override as needed (and restore via
+# original_capture_* + eval before they exit).
+_capture_observed_version() { _OBSERVED_VERSION="claude-cli-test-observed"; }
+_capture_expected_version() { _EXPECTED_VERSION="claude-cli-test-expected"; }
+
 # ---------------------------------------------------------------------------
 # fixture-1: missing --artifact-path dies
 # ---------------------------------------------------------------------------
@@ -341,6 +355,10 @@ SCRIPT_DIR="$STUB_DIR"
   saved_pin_file_path="$_PIN_FILE_PATH"
   _PIN_FILE_PATH="$pin_file_tmp"
 
+  # Restore the REAL helper so the head/sed/trim path actually runs.
+  default_capture_expected="$(declare -f _capture_expected_version)"
+  eval "$REAL_CAPTURE_EXPECTED"
+
   unset PIPELINE_DRY_RUN
   rc=0
   main \
@@ -351,6 +369,7 @@ SCRIPT_DIR="$STUB_DIR"
   export PIPELINE_DRY_RUN=1
   _PIN_FILE_PATH="$saved_pin_file_path"
   rm -f "$pin_file_tmp"
+  eval "$default_capture_expected"
 
   if [[ -f "$RENDERED_PROMPT_COPY" ]] \
       && grep -qF 'claude-cli-2.0.0-real-read' "$RENDERED_PROMPT_COPY" \
