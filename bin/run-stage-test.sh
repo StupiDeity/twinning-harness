@@ -20,13 +20,30 @@ CAPTURE_FILE="$STUB_DIR/capture.txt"
 
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
-# args: \$1 subcommand \$2 sig \$3 ident \$4 body
+# Post-ENG-150 call shape: add-comment <ident> --sig <sig> --body <body>.
+# Legacy positional shape (add-comment <ident> <body>) still captured for
+# the no-sig path (verdicts, ad-hoc posts).
 # ENG-45: get-comments returns \$MOCK_COMMENTS_JSON (default '[]') so unit tests
 # of _fresh_wait_reason can inject fixture comment streams without standing up
 # a full Linear stub.
 case "\${1:-}" in
   get-comments)
     printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
+    ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
     ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
@@ -274,13 +291,25 @@ for cmd in metrics.sh slack.sh; do
   chmod +x "$STUB_DIR/$cmd"
 done
 # Stub `linear.sh stage-of` to return 'stage:qa' and always exit 0 for swap-stage/add-comment.
+# Post-ENG-150 the call shape is `add-comment <issue> --sig <sig> --body <body>`.
 cat > "$STUB_DIR/linear.sh" <<SH
 #!/usr/bin/env bash
 case "\${1:-}" in
   stage-of) printf 'stage:qa\n' ;;
-  add-or-update-comment)
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        shift ;;
+      esac
+    done
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
-      "\$1" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
     ;;
 esac
 exit 0
@@ -1009,7 +1038,7 @@ fi
 # never run. Same insertion pattern as cases 19-35 already followed.
 #
 # Rebuild the linear.sh stub: case-8 (line ~220) overwrote the initial stub
-# with a smaller variant that only handles stage-of/add-or-update-comment, so
+# with a smaller variant that only handles stage-of/add-comment, so
 # get-comments would silently exit 0 with empty output here. The variant below
 # preserves all paths the rest of the suite (and case-15+) might need.
 
@@ -1021,6 +1050,21 @@ case "\${1:-}" in
     printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
     ;;
   stage-of) printf 'stage:qa\n' ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -1187,6 +1231,21 @@ case "\${1:-}" in
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
     exit 1
+    ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
     ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
@@ -1820,6 +1879,21 @@ case "\${1:-}" in
   stage-of)
     printf '%s\n' "\${MOCK_STAGE_OF:-stage:brainstorming}"
     ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -1835,7 +1909,7 @@ chmod +x "$STUB_DIR/render-prompt.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"
 chmod +x "$STUB_DIR/dispatch.sh"
 
-# Override post_completion_comment so its add-or-update-comment call does not
+# Override post_completion_comment so its add-comment --sig call does not
 # drown the capture file. Harness-local; doesn't affect other cases since this
 # is the last case before the summary line.
 post_completion_comment() { return 0; }
@@ -1941,6 +2015,21 @@ cat > "$STUB_DIR/linear.sh" <<SH
 case "\${1:-}" in
   get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
   stage-of)     printf 'stage:qa\n' ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -2670,6 +2759,21 @@ cat > "$STUB_DIR/linear.sh" <<SH
 case "\${1:-}" in
   get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
   stage-of)     printf 'stage:building\n' ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -2815,6 +2919,21 @@ cat > "$STUB_DIR/linear.sh" <<SH
 case "\${1:-}" in
   get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
   stage-of)     printf 'stage:building\n' ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -3021,6 +3140,21 @@ case "\${1:-}" in
     ;;
   stage-of)     printf 'stage:building\n' ;;
   get-comments) printf '[]' ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -3060,6 +3194,21 @@ cat > "$STUB_DIR/linear.sh" <<SH
 case "\${1:-}" in
   get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
   stage-of)     printf 'stage:building\n' ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
@@ -4344,10 +4493,9 @@ else
   fail_at "ENG-87 H: mcp__plugin_linear → rc=29" "got rc=$_eng87_h_rc"
 fi
 # Verify halt-comment body shape via the captured add-comment.
-# add-comment's positional args are <ident> <body>; the stub records
-# them in the SIG / IDENT slots respectively (the stub was originally
-# written for add-or-update-comment's <sig> <ident> <body> layout).
-# Grep the entire CAPTURE_FILE for robustness.
+# Post-ENG-150 the stub parses `add-comment <ident> --sig <sig> --body <body>`
+# into the SIG / IDENT / BODY capture slots; grep the entire CAPTURE_FILE
+# for robustness.
 if grep -qF '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->' "$CAPTURE_FILE"; then
   pass_at "ENG-87 H: halt comment carries dispatch-envelope-violation marker"
 else

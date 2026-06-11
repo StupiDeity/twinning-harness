@@ -874,8 +874,8 @@ capture_core_bare_forensic() {
   if [[ -n "${LINEAR_API_KEY-}" && -n "$_post_issue" && -n "${HARNESS_ROOT:-}" \
         && -x "$HARNESS_ROOT/bin/linear.sh" ]]; then
     local _utc_day; _utc_day="$(date -u +%Y-%m-%d)"
-    bash "$HARNESS_ROOT/bin/linear.sh" add-or-update-comment \
-      "core-bare-flip/${_utc_day}" "$_post_issue" --body - <<EOF || true
+    bash "$HARNESS_ROOT/bin/linear.sh" add-comment \
+      "$_post_issue" --sig "core-bare-flip/${_utc_day}" --body - <<EOF || true
 <!-- meta: forensic kind=core-bare-flip path=${forensic_root} -->
 core.bare=true detected on ${git_dir} at ${ts} (UTC).
 Self-heal applied; forensic snapshot at:

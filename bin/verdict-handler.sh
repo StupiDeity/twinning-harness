@@ -53,13 +53,13 @@ _vh_protocol_violation() {
   local issue="$1" case_id="$2" reason="$3"
   local body
   body="$(printf '<!-- pipeline: verdict result=halt reason=protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
-  bash "$_VH_SCRIPT_DIR/linear.sh" add-or-update-comment \
-    "protocol-violation/$case_id/$issue" "$issue" "$body" || true
+  bash "$_VH_SCRIPT_DIR/linear.sh" add-comment "$issue" \
+    --sig "protocol-violation/$case_id/$issue" --body "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
   # ENG-87 review-iter-7 M3: cross-file mutation of run-stage.sh's
   # verdict_emitted global is gone — _append_dispatch_end_row reads
   # find_fresh_verdict at trap-fire time and picks up the halt comment
-  # this function just posted via add-or-update-comment.
+  # this function just posted via add-comment.
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
 }
 

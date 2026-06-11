@@ -14,7 +14,10 @@
 #   linear.sh add-comment <ENG-n> --body <body>
 #   linear.sh add-comment <ENG-n> --body -                   # body from stdin (heredoc-friendly)
 #   linear.sh add-comment <ENG-n> --body-file <path>         # body from file
-#   (same flags accepted by add-or-update-comment, after the <sig> argument)
+#   linear.sh add-comment <ENG-n> --sig <cat>/<stage>/<issue> --body <body>
+#     # append-only ledger tag: chokepoint suffixes /d<NNNN> from
+#     # PIPELINE_DISPATCH_ID and appends <!-- meta: dedup key=… -->
+#     # for operator grep (ENG-150 D-006); hash dedup skipped on --sig.
 #   linear.sh refresh-cache
 #   linear.sh stage-of <ENG-n>   # prints current stage:* label name (or empty)
 #   linear.sh all-stage-labels <ENG-n>   # prints all stage:* labels space-separated (or empty)
@@ -54,7 +57,7 @@ _classify_label() {
 # Append `<!-- meta: dispatch id=ENG-N-d<NNNN> stage=<gerund> -->` to a
 # comment body when PIPELINE_DISPATCH_ID is set. Idempotent — skip if
 # the body already contains the marker (defends against double-injection
-# on add-or-update-comment re-applies). Operator-lane writes (env unset)
+# on caller-embedded markers). Operator-lane writes (env unset)
 # bypass injection by design. ${VAR-} (single-dash empty fallback) is
 # the set -u-safe form for set-but-may-be-empty env probing.
 _inject_dispatch_marker() {
@@ -707,6 +710,44 @@ _resolve_body_arg() {
 
 add_comment() {
   local ident="$1"; shift
+
+  # ENG-150 D-003: pull --sig out of args BEFORE _resolve_body_arg so
+  # the body resolver sees only its native flag set. Empty sig =
+  # caller did not opt into the append-only ledger contract; behaviour
+  # is bit-identical to today's add_comment (no marker append, hash
+  # dedup runs).
+  local sig=""
+  local _rest=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --sig)
+        [[ $# -ge 2 ]] || die "linear.sh add-comment: --sig requires a value"
+        sig="$2"; shift 2
+        ;;
+      --sig=*)
+        sig="${1#--sig=}"; shift
+        ;;
+      *)
+        _rest+=("$1"); shift
+        ;;
+    esac
+  done
+  if (( ${#_rest[@]} > 0 )); then
+    set -- "${_rest[@]}"
+  else
+    set --
+  fi
+
+  # ENG-150 D-007 sig validation: reject characters that would corrupt
+  # the marker shape (newline splits the marker over multiple lines;
+  # the literal `-->` closes the HTML comment early). Bash strings
+  # cannot carry NUL bytes (C string limit) so no NUL check is needed.
+  if [[ -n "$sig" ]]; then
+    if [[ "$sig" == *$'\n'* || "$sig" == *'-->'* ]]; then
+      die "linear.sh add-comment: --sig contains illegal characters (newline / -->)"
+    fi
+  fi
+
   local body
   body="$(_resolve_body_arg "$@")"
   [[ -n "$body" ]] || die "add-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
@@ -736,7 +777,7 @@ add_comment() {
         fi
       fi
       local _event_type _summary _header
-      IFS=$'\t' read -r _event_type _summary < <(_derive_event_type_and_summary "$body" "")
+      IFS=$'\t' read -r _event_type _summary < <(_derive_event_type_and_summary "$body" "$sig")
       _header="$(_render_event_header "$ident" "$_event_type" "$_summary")" || return $?
       body="${_header}"$'\n\n'"${body}"
       ;;
@@ -750,6 +791,22 @@ add_comment() {
   # observe the injection). No-op when PIPELINE_DISPATCH_ID is unset
   # (operator-manual lane).
   body="$(_inject_dispatch_marker "$body")"
+
+  # ENG-150 D-003 + D-007a: when --sig set, defensively strip any
+  # caller-embedded `<!-- meta: dedup key=... -->` line (prevents the
+  # chokepoint's appended marker from becoming the SECOND such line on
+  # the wire when an agent stage-summary quoted a fixture body), then
+  # suffix with /d<NNNN> from PIPELINE_DISPATCH_ID and append the
+  # canonical dedup marker.
+  if [[ -n "$sig" ]]; then
+    body="$(printf '%s' "$body" | sed -E '/^<!-- meta: dedup key=.* -->$/d')"
+    local dispatch_seq=""
+    if [[ -n "${PIPELINE_DISPATCH_ID-}" ]]; then
+      dispatch_seq="${PIPELINE_DISPATCH_ID##*-}"
+    fi
+    local full_sig="${sig}${dispatch_seq:+/${dispatch_seq}}"
+    body+=$'\n\n'"<!-- meta: dedup key=${full_sig} -->"
+  fi
 
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
     # ENG-151: window widened from 80 → 400.  Post-header bodies open
@@ -766,7 +823,12 @@ add_comment() {
   # an operator-resume would dedup against the pre-resume verdict, leaving
   # the freshness window empty and tripping `protocol-violation/no-marker`
   # (ENG-73). Skip dedup when the body carries any new-shape pipeline marker.
-  if [[ "$body" == *'<!-- pipeline: '* ]]; then
+  # ENG-150 D-007: also skip on any caller that passed --sig (declaring
+  # append-only ledger semantics). The two checks are independent —
+  # verdict posts via bin/pipeline.sh::cmd_event_verdict don't pass --sig
+  # but do carry `<!-- pipeline: verdict ... -->` markers; ledger posts
+  # via D-008 don't carry pipeline markers but DO pass --sig.
+  if [[ "$body" == *'<!-- pipeline: '* ]] || [[ -n "$sig" ]]; then
     : # fall through to the post; verdict/transition/decision are append-only
   else
 
@@ -812,201 +874,6 @@ add_comment() {
   mvars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
   linear_query "$m" "$mvars" >/dev/null
   log "commented on $ident"
-}
-
-add_or_update_comment() {
-  # $1 = sig (e.g., "halt/implement/ENG-14")
-  # $2 = ident (e.g., "ENG-14")
-  # $3+ = body, accepted via the same --body / --body-file / --body - / legacy
-  #       positional shapes as add-comment (ENG-55).
-  local sig="$1" ident="$2"; shift 2
-  [[ -n "$sig" && -n "$ident" ]] \
-    || die "add-or-update-comment: <sig> and <ident> required"
-  local body
-  body="$(_resolve_body_arg "$@")"
-  [[ -n "$body" ]] \
-    || die "add-or-update-comment: body is empty (received no --body, --body-file, or stdin via --body -)"
-  _reject_legacy_marker_body "add-or-update-comment" "$body" || return $?
-
-  # ENG-151: auto-prepend bracketed header + event-type/summary line.
-  # Placement: AFTER legacy-marker reject (so the detective reads the
-  # un-headered body), BEFORE dispatch-id auto-inject + dedup-marker
-  # append (so footer + dedup land below the header), BEFORE the
-  # dry-run short-circuit (so unit tests observe the injection).
-  # human lane bypasses (D-005); agent lane with hand-rolled header
-  # rejected (D-009-b); agent lane with missing dispatch context fails
-  # via _render_event_header rc=15 (D-006).  Sig threaded into
-  # _derive_event_type_and_summary so P1 sig-derivation fires here.
-  case "${PIPELINE_WRITER:-orchestrator}" in
-    human) ;;
-    *)
-      if [[ "${PIPELINE_WRITER:-orchestrator}" == "agent" ]]; then
-        local _first_nonblank
-        _first_nonblank="$(printf '%s' "$body" | grep -m1 '[^ ]' || true)"
-        _first_nonblank="$(printf '%s' "$_first_nonblank" | sed 's/^[[:space:]]*//')"
-        if [[ "$_first_nonblank" =~ ^\[ENG-[0-9A-Z]+\ · ]]; then
-          printf 'linear.sh add-or-update-comment: agent-lane comment carries hand-rolled header line — rejected.\n            header line is auto-prepended by the chokepoint; do not emit it manually.\n' >&2
-          return 14
-        fi
-      fi
-      local _event_type _summary _header
-      IFS=$'\t' read -r _event_type _summary < <(_derive_event_type_and_summary "$body" "$sig")
-      _header="$(_render_event_header "$ident" "$_event_type" "$_summary")" || return $?
-      body="${_header}"$'\n\n'"${body}"
-      ;;
-  esac
-
-  # ENG-87: auto-inject dispatch_id marker. Same placement rationale as
-  # add_comment — after the legacy-marker reject, before the dedup-marker
-  # append. The dedup-append (line ~573) runs on the already-injected
-  # body so both meta-markers coexist on the same comment. Idempotent
-  # on re-apply.
-  body="$(_inject_dispatch_marker "$body")"
-
-  # ENG-60 vocabulary: write `<!-- meta: dedup key=... -->` (new shape).
-  # Look up matches against the legacy `<!-- pipeline-sig: ... -->` shape too,
-  # so in-flight issues whose comment threads were created under the legacy
-  # writer continue to be updated in place rather than duplicated.
-  local marker="<!-- meta: dedup key=$sig -->"
-  local marker_legacy="<!-- pipeline-sig: $sig -->"
-  if ! grep -qF -e "$marker" -e "$marker_legacy" <<<"$body"; then
-    body+=$'\n\n'"$marker"
-  fi
-
-  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
-    # ENG-151: window widened from 80 → 400 (see add_comment).
-    log "[DRY_RUN] would upsert $sig on $ident: ${body:0:400}..."
-    return 0
-  fi
-
-  local issue_uuid
-  issue_uuid="$(_resolve_issue_uuid "$ident")"
-
-  # Look for an existing comment carrying the sig (new or legacy shape).
-  # ENG-111: also request `url` per node so the breadcrumb body (below) can
-  # carry a Linear permalink to the canonical comment without a second
-  # roundtrip. Missing `url` (schema change / null payload) degrades to the
-  # URL-less breadcrumb shape — see body construction below.
-  local q='query($id: String!) { issue(id: $id) { comments(first: 50, orderBy: updatedAt) { nodes { id body url } } } }'
-  local vars resp existing_id
-  vars="$(jq -cn --arg id "$ident" '{id:$id}')"
-  resp="$(linear_query "$q" "$vars")"
-  existing_id="$(jq -r --arg m "$marker" --arg l "$marker_legacy" \
-    '[.data.issue.comments.nodes[]? | select(.body | contains($m) or contains($l)) | .id] | first // ""' <<<"$resp")"
-
-  if [[ -n "$existing_id" ]]; then
-    # ENG-63: when the existing comment's body (with any prior
-    # `<!-- meta: reapplied at=… -->` line stripped) is byte-equal to the
-    # caller's body (also stripped), append a fresh footer so Linear's
-    # updatedAt advances and operators see an inspectable signal of the
-    # latest re-apply moment. The strip regex is line-anchored (^…$) to
-    # avoid matching a quoted mention of the marker shape inside fenced
-    # prose.
-    # ENG-111: track whether this is an identical-body re-apply so the
-    # breadcrumb post (below) fires ONLY on the body-change path.
-    local is_identical_reapply=0
-    local existing_body strip_re existing_norm new_norm now_iso
-    existing_body="$(jq -r --arg id "$existing_id" \
-      '[.data.issue.comments.nodes[]? | select(.id == $id) | .body] | first // ""' \
-      <<<"$resp")"
-    # ENG-87 review-iter-7 Critical 4: extend the strip to ALSO remove
-    # `<!-- meta: dispatch id=… -->` lines. Post-ENG-87 every comment body
-    # carries an auto-injected dispatch marker (line-anchored, last
-    # line of body); a re-apply across two different dispatches now has
-    # different markers in existing vs new body, so the byte-equal arm
-    # would never fire and ENG-63's reapplied-footer + comment-reapplied
-    # metric signal would be silently absent for every halt re-apply
-    # post-cutover. Stripping both noise lines preserves ENG-63's
-    # byte-equal-modulo-meta-noise normalisation under dispatch-id
-    # rotation.
-    # ENG-151 D-007: also strip the auto-prepended header lines so the
-    # byte-equal-modulo-meta-noise normalisation (ENG-63) survives header
-    # rotation across re-applies. Line 1 = bracket; Line 2 = closed
-    # event-type vocabulary alternation (anchored to ^_event_types$ to
-    # avoid stripping caller prose lines like "TODO — fix later").
-    # `[0-9A-Z]+` (not `[0-9]+`) matches both production identifiers
-    # (`ENG-151`) and test fixtures (`ENG-151T`).
-    local _event_types='PASS|FAIL|HALT|WAIT|PIVOT|TRANSITION|DECISION|COMPLETION|TDD-EVIDENCE|LAST-REVIEW-STATE|SCOPE-APPROVAL|WORKTREE-MUTATION|COUNTER-BUMP|BREADCRUMB|FORENSIC|PROTOCOL-VIOLATION|RETRY-PENDING|COMMENT'
-    strip_re='/^<!-- meta: (reapplied at=|dispatch id=)[^>]* -->$/d; /^\[ENG-[0-9A-Z]+ · .* · .* · .* · [a-z-]+\]$/d; /^('"$_event_types"') — /d'
-    # The header-line strip leaves a leading blank line in new_norm
-    # (the `\n\n` join between the dropped header and the body).
-    # `sed '/./,$!d'` deletes leading blank lines so the byte-equal
-    # compare survives that residue.
-    existing_norm="$(printf '%s' "$existing_body" | sed -E "$strip_re" | sed '/./,$!d')"
-    new_norm="$(printf '%s' "$body" | sed -E "$strip_re" | sed '/./,$!d')"
-    # Defensive trailing-newline trim. Shell `$()` already strips trailing
-    # newlines from the cmdsub above; the explicit trim documents intent and
-    # guards a refactor that loses the cmdsub property.
-    existing_norm="${existing_norm%$'\n'}"
-    new_norm="${new_norm%$'\n'}"
-    if [[ "$existing_norm" == "$new_norm" && -n "$existing_norm" ]]; then
-      is_identical_reapply=1
-      now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      body="${new_norm}"$'\n'"<!-- meta: reapplied at=${now_iso} -->"
-      # ENG-151 H-017: strip_re removed the auto-prepended bracket +
-      # EVENT-TYPE header lines from new_norm so the byte-equal compare
-      # could survive header rotation across re-applies (D-007).  The
-      # body we hand to commentUpdate is composed from that stripped
-      # form, so re-prepend a fresh header here — otherwise every
-      # identical reapply lands headerless in Linear (AC #1 violation).
-      # Human lane bypassed header injection upstream, so its existing
-      # comment was never headered; preserve the symmetry by bypassing
-      # re-injection here too.
-      case "${PIPELINE_WRITER:-orchestrator}" in
-        human) ;;
-        *)
-          local _reapply_event_type _reapply_summary _reapply_header
-          IFS=$'\t' read -r _reapply_event_type _reapply_summary \
-            < <(_derive_event_type_and_summary "$new_norm" "$sig")
-          _reapply_header="$(_render_event_header "$ident" "$_reapply_event_type" "$_reapply_summary")" \
-            || return $?
-          body="${_reapply_header}"$'\n\n'"${body}"
-          ;;
-      esac
-      bash "$SCRIPT_DIR/metrics.sh" comment-reapplied "$ident" "" \
-        "reapplied" 0 || true
-    fi
-    local mu='mutation($id: String!, $body: String!) { commentUpdate(id: $id, input: { body: $body }) { success } }'
-    local mvars
-    mvars="$(jq -cn --arg id "$existing_id" --arg body "$body" '{id:$id, body:$body}')"
-    linear_query "$mu" "$mvars" >/dev/null
-    log "updated-in-place $sig on $ident (comment=$existing_id)"
-
-    # ENG-111: body-change re-emission posts a sig-less chronological
-    # breadcrumb so a top-down scan of the Linear feed surfaces the re-fire
-    # (the canonical's createdAt is the FIRST emission's moment and stays
-    # fixed across commentUpdate calls). Identical-body re-applies stay
-    # silent at the breadcrumb level — ENG-63's rotating footer is the
-    # canonical signal for that mode.
-    if (( is_identical_reapply == 0 )); then
-      local canonical_url breadcrumb_body prose trailer
-      canonical_url="$(jq -r --arg id "$existing_id" \
-        '[.data.issue.comments.nodes[]? | select(.id == $id) | .url] | first // ""' \
-        <<<"$resp")"
-      prose=$'Re-emitted (body changed) under sig `'"$sig"$'`. Canonical comment was updated in place; this pointer marks the moment.'
-      trailer=$'<!-- meta: breadcrumb sig='"$sig"$' comment_id='"$existing_id"$' -->'
-      if [[ -n "$canonical_url" ]]; then
-        breadcrumb_body="${prose}"$'\n'"${canonical_url}"$'\n\n'"${trailer}"
-      else
-        breadcrumb_body="${prose}"$'\n\n'"${trailer}"
-      fi
-      # add_comment runs the lane fence + dispatch-id auto-injection
-      # + last-10 hash dedup. Non-fatal on failure — the canonical
-      # update has already succeeded and is the load-bearing call.
-      if add_comment "$ident" --body "$breadcrumb_body"; then
-        bash "$SCRIPT_DIR/metrics.sh" comment-breadcrumb "$ident" "" \
-          "posted" 0 || true
-      else
-        log "add-or-update-comment: breadcrumb post failed for $sig on $ident (non-fatal)"
-      fi
-    fi
-  else
-    local mc='mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }'
-    local mcvars
-    mcvars="$(jq -cn --arg id "$issue_uuid" --arg body "$body" '{id:$id, body:$body}')"
-    linear_query "$mc" "$mcvars" >/dev/null
-    log "created $sig on $ident"
-  fi
 }
 
 refresh_cache() {
@@ -1067,7 +934,6 @@ main() {
     swap-stage)             swap_stage "$@" ;;
     transition-state)       transition_state "$@" ;;
     add-comment)            add_comment "$@" ;;
-    add-or-update-comment) add_or_update_comment "$@" ;;
     stage-of)               stage_of "$@" ;;
     all-stage-labels)       all_stage_labels "$@" ;;
     has-label)              has_label "$@" ;;

@@ -31,7 +31,7 @@ export VH_CURRENT_LABELS=""
 
 # linear.sh stub: handles get-comments (returns $VH_FIXTURE_COMMENTS),
 # add-comment, add-label, remove-label, swap-stage, transition-state,
-# stage-of (returns $VH_CURRENT_STAGE_LABEL), has-label, add-or-update-comment.
+# stage-of (returns $VH_CURRENT_STAGE_LABEL), has-label, add-comment.
 cat > "$STUB_DIR/linear.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "linear.sh $*" >> "$STUB_LOG"
@@ -225,7 +225,7 @@ VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-905" "qa" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/no-marker/ENG-905 ENG-905" \
+   && calls_contains "add-comment ENG-905 --sig protocol-violation/no-marker/ENG-905" \
    && ! calls_contains "remove-label ENG-905 pipeline:halted"; then
   pass_at "case-5 no-marker-protocol-violation"
 else
@@ -241,7 +241,7 @@ VH_CURRENT_STAGE_LABEL="stage:reviewing"
 VH_CURRENT_LABELS="stage:reviewing pipeline:halted"
 rc=0; verdict_handler "ENG-906" "reviewing" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/stage-mismatch/ENG-906 ENG-906"; then
+   && calls_contains "add-comment ENG-906 --sig protocol-violation/stage-mismatch/ENG-906"; then
   pass_at "case-6 stage-mismatch-protocol-violation"
 else
   fail_at "case-6 stage-mismatch-protocol-violation" "rc=$rc calls=$(cat "$STUB_LOG")"
@@ -258,7 +258,7 @@ VH_CURRENT_STAGE_LABEL="stage:ui"
 VH_CURRENT_LABELS="stage:ui pipeline:halted"
 rc=0; verdict_handler "ENG-907" "ui" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/unknown-loopback/ENG-907 ENG-907"; then
+   && calls_contains "add-comment ENG-907 --sig protocol-violation/unknown-loopback/ENG-907"; then
   pass_at "case-7 unknown-loopback-protocol-violation"
 else
   fail_at "case-7 unknown-loopback-protocol-violation" "rc=$rc calls=$(cat "$STUB_LOG")"
@@ -278,7 +278,7 @@ rc=0; verdict_handler "ENG-907a" "qa" >/dev/null 2>&1 || rc=$?
 # the halt body is multi-line and extract_call_body | head -1 would
 # truncate to the first line only.
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/no-marker/ENG-907a ENG-907a" \
+   && calls_contains "add-comment ENG-907a --sig protocol-violation/no-marker/ENG-907a" \
    && calls_contains "current_dispatch_id" \
    && calls_contains "Resolution" \
    && calls_contains "pipeline.sh decide ENG-907a"; then
@@ -309,7 +309,7 @@ VH_CURRENT_STAGE_LABEL="stage:planning"
 VH_CURRENT_LABELS="stage:planning"
 rc=0; verdict_handler "ENG-907b" "planning" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/dispatch-id-mismatch/ENG-907b ENG-907b" \
+   && calls_contains "add-comment ENG-907b --sig protocol-violation/dispatch-id-mismatch/ENG-907b" \
    && calls_contains "ENG-907b-d0002" \
    && calls_contains '$PIPELINE_DISPATCH_ID' \
    && calls_contains "Resolution"; then
@@ -977,7 +977,7 @@ case "\$1" in
   get-comments) printf '%s' '$COMMENTS_JSON' ;;
   get-issue)    printf '%s' '$ISSUE_JSON' ;;
   stage-of)     printf 'stage:reviewing\n' ;;
-  add-label|remove-label|add-comment|add-or-update-comment) printf 'ok' ;;
+  add-label|remove-label|add-comment) printf 'ok' ;;
   *) printf '' ;;
 esac
 EOF
