@@ -202,10 +202,14 @@ set -uo pipefail
   name="cf-2-some-shapes-skip-pr-opened"
   _new_test_env
   SCRIPT_DIR="$STUB_BIN"
-  # 3 fail (first three), 9 succeed
+  # 3 fail (first three), 9 succeed. Plan §7 row 9 designates cf-2 as the
+  # rc=124 (gtimeout SIGTERM) variant — vary one failing stub to rc=124 so
+  # the coordinator's catch-and-continue path exercises that exit code too.
   i=0
   for shape in "${SHAPES[@]}"; do
-    if (( i < 3 )); then
+    if (( i == 0 )); then
+      _write_shape_stub "$shape" 124 no no   # gtimeout SIGTERM
+    elif (( i < 3 )); then
       _write_shape_stub "$shape" 1 no no
     else
       _write_shape_stub "$shape" 0 yes yes
@@ -224,13 +228,23 @@ set -uo pipefail
       break
     fi
   done
+  # Plan §7 row 9 — assert the rc=124 variant lands in the body as
+  # `(rc=124, ...)` for the first failed shape.
+  rc124_listed=$(grep -qE "^- ${SHAPES[0]} \(rc=124," "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  # ENG-130 review n2: PR-body footer lines must NOT contain a literal `*`
+  # glob; coordinator resolves the actual log path (or names the dir).
+  no_literal_glob=yes
+  if grep -qE '^- .*\*' "$STUB_BIN/gh-body-file.md" 2>/dev/null; then
+    no_literal_glob=no
+  fi
   last_slack="$(tail -1 "$SLACK_LOG")"
   slack_error=$(printf '%s' "$last_slack" | grep -q '^error' && echo yes || echo no)
   if (( rc == 0 )) && [[ "$gh_called" == "yes" ]] && [[ "$footer_present" == "yes" ]] \
-       && [[ "$failed_listed" == "yes" ]] && [[ "$slack_error" == "yes" ]]; then
+       && [[ "$failed_listed" == "yes" ]] && [[ "$rc124_listed" == "yes" ]] \
+       && [[ "$no_literal_glob" == "yes" ]] && [[ "$slack_error" == "yes" ]]; then
     _pass "$name"
   else
-    _fail "$name (rc=$rc gh_called=$gh_called footer=$footer_present failed_listed=$failed_listed slack_error=$slack_error last_slack=$last_slack)"
+    _fail "$name (rc=$rc gh_called=$gh_called footer=$footer_present failed_listed=$failed_listed rc124_listed=$rc124_listed no_literal_glob=$no_literal_glob slack_error=$slack_error last_slack=$last_slack)"
   fi
   _teardown_test_env
 }
@@ -252,6 +266,44 @@ set -uo pipefail
     _pass "$name"
   else
     _fail "$name (rc=$rc gh_called=$gh_called no_changes_logged=$no_changes_logged slack_info=$slack_info)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-3b: degenerate-period variant (plan §7 row 6). When _compute_retro_period
+#        emits identical start and end timestamps, each shape's
+#        `## Insufficient-sample carve-out` produces a stub artifact; no
+#        tracked-file changes; no PR opens; info slack.
+# ---------------------------------------------------------------------------
+{
+  name="cf-3b-no-shape-produces-changes-degenerate-period"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes no  # artifacts but no tracked-file edits
+  # Save and override _compute_retro_period so start_iso == end_iso. The
+  # coordinator's per-shape argv-log records both timestamps; we assert they
+  # are byte-equal.
+  _saved_compute_retro_period="$(declare -f _compute_retro_period)"
+  _compute_retro_period() {
+    printf '%s\n%s\n' '2026-05-16T00:00:00Z' '2026-05-16T00:00:00Z'
+  }
+  rc=0
+  out="$(main 2>&1)" || rc=$?
+  start_iso="$(grep -oE '\-\-period-start-iso [^ ]+' "$ARGV_LOG" | awk '{print $2}' | head -1)"
+  end_iso="$(grep -oE '\-\-period-end-iso [^ ]+' "$ARGV_LOG" | awk '{print $2}' | head -1)"
+  degenerate=$([[ -n "$start_iso" && "$start_iso" == "$end_iso" ]] && echo yes || echo no)
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  no_changes_logged=$(printf '%s' "$out" | grep -q "no changes proposed" && echo yes || echo no)
+  slack_info=$(grep -q '^info' "$SLACK_LOG" && echo yes || echo no)
+  # Restore the original function so other fixtures see the production helper.
+  eval "$_saved_compute_retro_period"
+  unset _saved_compute_retro_period
+  if (( rc == 0 )) && [[ "$degenerate" == "yes" ]] && [[ "$gh_called" == "no" ]] \
+       && [[ "$no_changes_logged" == "yes" ]] && [[ "$slack_info" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc degenerate=$degenerate start=$start_iso end=$end_iso gh_called=$gh_called no_changes_logged=$no_changes_logged slack_info=$slack_info)"
   fi
   _teardown_test_env
 }
@@ -308,10 +360,34 @@ set -uo pipefail
       break
     fi
   done
-  if [[ "$array_matches" == "yes" ]] && [[ "$drivers_exist" == "yes" ]]; then
+  # Reverse direction (plan §7 row 17): every bin/retro-shape-*.sh on disk
+  # MUST appear in SHAPES — otherwise a driver could be added without
+  # registry update and silently never run.
+  no_orphans=yes
+  for f in "$HARNESS_DIR"/retro-shape-*.sh; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f" .sh)"
+    name_on_disk="${base#retro-shape-}"
+    # Exclude *-test.sh siblings — those are test files, not drivers.
+    case "$name_on_disk" in
+      *-test) continue ;;
+    esac
+    found=no
+    for shape in "${SHAPES[@]}"; do
+      if [[ "$shape" == "$name_on_disk" ]]; then
+        found=yes
+        break
+      fi
+    done
+    if [[ "$found" != "yes" ]]; then
+      no_orphans=no
+      break
+    fi
+  done
+  if [[ "$array_matches" == "yes" ]] && [[ "$drivers_exist" == "yes" ]] && [[ "$no_orphans" == "yes" ]]; then
     _pass "$name"
   else
-    _fail "$name (array_matches=$array_matches drivers_exist=$drivers_exist)"
+    _fail "$name (array_matches=$array_matches drivers_exist=$drivers_exist no_orphans=$no_orphans)"
   fi
 }
 
@@ -351,6 +427,39 @@ set -uo pipefail
   else
     _fail "$name (got: $result)"
   fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-7b: previous-period helper tolerates "/retrospective-" substring in the
+#        ancestor path. Plan m1 review finding: an `awk -F'/retrospective-'`
+#        split mis-attributes fields when PROJECT_STATE_DIR's ancestor
+#        directory carries a `retrospective-` segment. A basename-anchored
+#        parse must still pick the inner dated dir.
+# ---------------------------------------------------------------------------
+{
+  name="cf-7b-previous-period-helper-tolerates-substring-in-ancestor-path"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # Construct a PROJECT_STATE_DIR whose ancestor contains a literal
+  # "retrospective-Atest" segment. With FS='/retrospective-', awk's $2
+  # becomes "Atest/state" — lexically greater than any YYYY-MM-DD value,
+  # so the brittle predicate `$2 < today` is FALSE and the inner dated
+  # dir gets silently dropped. The basename-anchored fix sees only
+  # "retrospective-2026-05-09" and accepts it.
+  ancestor="$(mktemp -d)/retrospective-Atest"
+  mkdir -p "$ancestor/state"
+  export PROJECT_STATE_DIR="$ancestor/state"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-05-09"
+  printf 'prior\n' > "$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  result="$(_resolve_previous_period_artifact stage-failure-summary 2026-05-16)"
+  expected="$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  if [[ "$result" == "$expected" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (got: '$result' expected: '$expected')"
+  fi
+  rm -rf "$ancestor"
   _teardown_test_env
 }
 
