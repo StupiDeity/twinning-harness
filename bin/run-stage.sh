@@ -1662,6 +1662,23 @@ main() {
         "plan-stage progress.md entry missing or malformed: $_viol_msg_31" 31
       rm -f "$_viol_file_31" "$prompt_file"
       exit 31
+    elif (( dispatch_rc == 39 || dispatch_rc == 40 || dispatch_rc == 41 )); then
+      # ENG-125: plan-stage init.sh detective halt. rc=39=malformed (bash -n
+      # fails), 40=incomplete (missing shape marker), 41=missing (no file).
+      # Mirrors the rc=31 sibling above — sidecar shape, policy, and recovery
+      # are identical (skip-until-human-acts; `--action continue` after fix).
+      # All three rc values route to the same arm because the policy is
+      # identical and the diagnostic in the sidecar carries the disambiguator
+      # (init-sh-{malformed,incomplete,missing} prefix). Linear's outcome is
+      # set by classify_failure → failure_outcome_for_exit which routes each
+      # rc to its specific token.
+      local _viol_file_init _viol_msg_init
+      _viol_file_init="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_msg_init="$(cat "$_viol_file_init" 2>/dev/null || printf '<violation-detail-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "plan-stage init.sh: $_viol_msg_init" "$dispatch_rc"
+      rm -f "$_viol_file_init" "$prompt_file"
+      exit "$dispatch_rc"
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20
