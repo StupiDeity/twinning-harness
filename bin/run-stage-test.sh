@@ -7125,6 +7125,31 @@ else
     "expected no 9.9.99 in output, got: $_eng156_l_out"
 fi
 
+# Case 156-M: QA adversarial — show_sandbox_denials multi-sig display.
+# Pins the awk $4 column with a comma-separated two-sig value. Without this,
+# a regression that splits $4 on comma would silently truncate the second sig.
+_eng156_m_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$PROJECT_STATE_DIR/metrics/events.jsonl" <<JSON
+{"ts":"$_eng156_m_ts","event":"sandbox_denial","issue_id":"ENG-T","stage":"implementing","outcome":"detected","duration_ms":0,"notes":"count=2 signatures=bash-classifier,sandbox-path paths=/etc/hosts claude_version=1.2.3"}
+JSON
+_eng156_m_out="$(
+  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
+  PROJECT_SLUG="$PROJECT_SLUG" \
+  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
+  TARGET_REPO="${TARGET_REPO:-$STUB_DIR}" \
+  bash -c '
+    source "'"$HARNESS_DIR"'/status.sh" >/dev/null 2>&1
+    show_sandbox_denials 2>/dev/null
+  ' 2>/dev/null || true
+)"
+rm -f "$PROJECT_STATE_DIR/metrics/events.jsonl"
+if grep -qF 'sigs=bash-classifier,sandbox-path' <<<"$_eng156_m_out"; then
+  pass_at "ENG-156 M (QA adversarial): multi-sig display — both sigs reach awk \$4 intact"
+else
+  fail_at "ENG-156 M (QA adversarial): multi-sig display" \
+    "expected sigs=bash-classifier,sandbox-path in output, got: $_eng156_m_out"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

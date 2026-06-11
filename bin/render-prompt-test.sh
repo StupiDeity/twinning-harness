@@ -1241,6 +1241,36 @@ else
     "lines=$_eng156_w4_lines, contents=$(cat "$eng156_w4_sidecar" 2>/dev/null)"
 fi
 
+# Case 156-W5: QA adversarial — verdict_review_path Phase B blind spot.
+# The ENG-156 plan scoped the path-shaped allowlist to 6 entries and did NOT
+# include verdict_review_path even though it is genuinely path-shaped (ENG-119
+# added it to PROMPT_RESOLVERS before ENG-156 was planned). This test pins the
+# CURRENT behavior (verdict_review_path is NOT written to the sidecar) so that:
+# (a) any future addition of verdict_review_path to the writer causes a
+#     deliberate test-update, and
+# (b) the blind spot is machine-visible in the test suite until it is addressed
+#     (follow-up: add verdict_review_path to _write_rendered_paths_sidecar
+#     and update 156-W1 to expect 7 lines).
+eng156_w5_sidecar="$sandbox/eng156-w5.tsv"
+run_resolver_body '
+  _RENDER_BRAINSTORM_FILE="docs/brainstorms/eng-156-foo.md"
+  _RENDER_PLAN_FILE="/tmp/eng-156-plan.md"
+  _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-156W5/stage-summary-reviewing.md"
+  _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
+  _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W5/progress.md"
+  _RENDER_VERDICT_REVIEW_PATH="/tmp/state/ENG-156W5/verdict-review.json"
+  _write_rendered_paths_sidecar "'"$eng156_w5_sidecar"'"
+' 2>/dev/null
+# Current behavior: verdict_review_path NOT in sidecar (Phase B blind spot).
+# Update this assertion when verdict_review_path is added to the writer.
+if [[ -f "$eng156_w5_sidecar" ]] \
+  && ! grep -qE '^verdict_review_path'$'\t' "$eng156_w5_sidecar"; then
+  pass_at "ENG-156 W5 (QA adversarial): verdict_review_path absent from sidecar (Phase B blind spot documented — ENG-156 plan omission; follow-up needed)"
+else
+  fail_at "ENG-156 W5 (QA adversarial): verdict_review_path sidecar state" \
+    "expected verdict_review_path NOT in sidecar (it was not planned for ENG-156); contents: $(cat "$eng156_w5_sidecar" 2>/dev/null)"
+fi
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
