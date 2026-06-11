@@ -61,6 +61,7 @@ _BENIGN_PATH_CLASSES=(
   'docs/knowledge/*'
   'docs/plans/*'
   'docs/brainstorms/*'
+  'docs/pipeline-vocabulary.md'
 )
 
 # ENG-96: profile-derived lockfile basenames, populated once per main()
