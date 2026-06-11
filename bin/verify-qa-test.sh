@@ -210,25 +210,29 @@ STUB_DIR="$FIXTURE_DIR/stubs"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/curl" <<'STUB'
 #!/usr/bin/env bash
-# Minimal curl stub for verify-qa-test V-8. Honors -w '%{http_code}' AND
-# asserts argv contract: --max-time 10 must be present AND the URL must
-# be the predicate's url. Writes diagnostics to $STUB_LOG so the test
-# can read them post-invocation.
-want_code=0 max_time_seen=0 url_seen=""
-for arg in "$@"; do
-  case "$arg" in
-    '%{http_code}') want_code=1 ;;
-  esac
-done
-# Walk argv pairwise: look for --max-time 10.
+# Minimal curl stub for verify-qa-test V-8/V-8b/V-8c. Honors -w
+# '%{http_code}' AND -o <path> AND asserts argv contract: --max-time 10
+# must be present AND the URL must be the predicate's url. Writes
+# diagnostics to $STUB_LOG so the test can read them post-invocation.
+# Env knobs: $STUB_BODY (default empty) — bytes written to -o path,
+#            $STUB_STATUS (default 200) — printed to stdout via -w.
+want_code=0 max_time_seen=0 url_seen="" out_path=""
+# Walk argv pairwise: look for --max-time 10 AND -o <path>.
 i=1
 while [[ $i -le $# ]]; do
   cur="${!i}"
-  if [[ "$cur" == "--max-time" ]]; then
-    next_i=$((i+1))
-    next="${!next_i}"
-    if [[ "$next" == "10" ]]; then max_time_seen=1; fi
-  fi
+  case "$cur" in
+    '%{http_code}') want_code=1 ;;
+    --max-time)
+      next_i=$((i+1))
+      next="${!next_i}"
+      if [[ "$next" == "10" ]]; then max_time_seen=1; fi
+      ;;
+    -o)
+      next_i=$((i+1))
+      out_path="${!next_i}"
+      ;;
+  esac
   # Last positional non-flag is the URL.
   case "$cur" in
     -*) ;;
@@ -236,13 +240,17 @@ while [[ $i -le $# ]]; do
   esac
   i=$((i+1))
 done
+# Honor -o: write body to the requested path.
+if [[ -n "$out_path" ]]; then
+  printf '%s\n' "${STUB_BODY:-}" > "$out_path"
+fi
 # Log assertions for the test to inspect.
 {
   printf 'max_time_seen=%s\n' "$max_time_seen"
   printf 'url_seen=%s\n' "$url_seen"
 } >> "$STUB_LOG"
 if (( want_code == 1 )); then
-  printf '200'
+  printf '%s' "${STUB_STATUS:-200}"
 fi
 exit 0
 STUB
@@ -264,14 +272,74 @@ per_criterion_line="$(_first_crit_line "$out")"
 summary_line="$(_summary_line "$out")"
 stub_max="$(grep -c '^max_time_seen=1$' "$STUB_LOG" || true)"
 stub_url="$(grep -c '^url_seen=http://example.test/$' "$STUB_LOG" || true)"
+total_calls="$(grep -c '^max_time_seen=' "$STUB_LOG" || true)"
+# M5 (review iter-3): pin single-curl invocation. A regression to the
+# pre-M9 two-curl shape (one for status, one for body) logged
+# max_time_seen=1 TWICE; the prior `>= 1` assertion let it pass.
 if (( rc == 0 )) \
    && printf '%s\n' "$per_criterion_line" | jq -e '.pass == true' >/dev/null 2>&1 \
    && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1 \
-   && (( stub_max >= 1 )) \
-   && (( stub_url >= 1 )); then
-  pass_at "V-8: http_get stubbed 200 → pass=true + curl saw --max-time 10 + URL exactly"
+   && (( stub_max == 1 )) \
+   && (( stub_url == 1 )) \
+   && (( total_calls == 1 )); then
+  pass_at "V-8: http_get stubbed 200 → pass=true + EXACTLY one curl call with --max-time 10 + URL"
 else
-  fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl-stub.log records max-time + URL; got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, stub_log=$(cat "$STUB_LOG")"
+  fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl invoked EXACTLY ONCE (M9); got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, total_calls=$total_calls, stub_log=$(cat "$STUB_LOG")"
+fi
+
+# ─── V-8b: http_get expect_body_match true-path (M2 iter-3) ─────────
+# The stub writes "hello\n" to its -o path; predicate expects to match
+# "hello". Exercises the body-fetch + grep arm (verify-qa.sh:520-536)
+# that M9 introduced but had no test coverage.
+: > "$STUB_LOG"  # rotate so V-8b doesn't accumulate V-8's counts
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "http_get", "url": "http://example.test/", "expect_status": 200, "expect_body_match": "hello" }
+  ]
+}
+EOF
+rc=0
+out="$(PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" STUB_BODY=hello bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+per_criterion_line="$(_first_crit_line "$out")"
+summary_line="$(_summary_line "$out")"
+total_calls="$(grep -c '^max_time_seen=' "$STUB_LOG" || true)"
+if (( rc == 0 )) \
+   && printf '%s\n' "$per_criterion_line" | jq -e '.pass == true' >/dev/null 2>&1 \
+   && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1 \
+   && (( total_calls == 1 )); then
+  pass_at "V-8b: http_get expect_body_match='hello' + body='hello' → pass=true + single curl"
+else
+  fail_at "V-8b: body-match true-path" "expected pass=true + single curl; got rc=$rc, per=$per_criterion_line, summary=$summary_line, total_calls=$total_calls"
+fi
+
+# ─── V-8c: http_get expect_body_match false-path (M2 iter-3) ────────
+# Stub writes "other\n"; predicate expects "hello". Body mismatch must
+# produce pass=false + detail naming "body did not match".
+: > "$STUB_LOG"
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "http_get", "url": "http://example.test/", "expect_status": 200, "expect_body_match": "hello" }
+  ]
+}
+EOF
+rc=0
+out="$(PATH="$STUB_DIR:$PATH" STUB_LOG="$STUB_LOG" STUB_BODY=other bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+per_criterion_line="$(_first_crit_line "$out")"
+summary_line="$(_summary_line "$out")"
+total_calls="$(grep -c '^max_time_seen=' "$STUB_LOG" || true)"
+if (( rc == 0 )) \
+   && printf '%s\n' "$per_criterion_line" | jq -e '.pass == false and (.detail | test("body did not match"))' >/dev/null 2>&1 \
+   && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 1' >/dev/null 2>&1 \
+   && (( total_calls == 1 )); then
+  pass_at "V-8c: http_get expect_body_match='hello' + body='other' → pass=false + 'body did not match'"
+else
+  fail_at "V-8c: body-match false-path" "expected pass=false + 'body did not match' + failed=1 + single curl; got rc=$rc, per=$per_criterion_line, summary=$summary_line, total_calls=$total_calls"
 fi
 
 # ─── V-9: --ident mismatch → rc=43 ──────────────────────────────────
@@ -643,6 +711,94 @@ _assert_url_denied "V-34" "http://[::ffff:7f00:1]/"
 # 127.0.0.1. Post-fix the URL is lowercased before the regex, so the
 # encoding-bypass guard above still fires.
 _assert_url_denied "V-35" "HTTP://2130706433/"
+
+# ─── V-36: M3 (review iter-3) — unknown kind rejection ─────────────
+# verify-qa.sh passes --kinds smoke,file_exists,grep,http_get; the
+# helper's fall-through emits 'unknown kind "X" (allowed: …)'. No prior
+# fixture exercised this arm; a regression dropping a kind from the
+# CSV would silently reject every predicate of that kind at rc=43 with
+# the wrong diagnostic. Pin the path explicitly.
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "bogus", "path": "x" }
+  ]
+}
+EOF
+rc=0
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 43 )) \
+   && [[ "$out" == *"unknown kind"* ]] \
+   && [[ "$out" == *"smoke"* ]] \
+   && [[ "$out" == *"file_exists"* ]] \
+   && [[ "$out" == *"grep"* ]] \
+   && [[ "$out" == *"http_get"* ]]; then
+  pass_at "V-36: kind='bogus' → exit 43 + 'unknown kind' + every allowed kind named (M3 iter-3)"
+else
+  fail_at "V-36: unknown kind" "expected rc=43 + 'unknown kind' + all 4 allowed kinds in diagnostic; got rc=$rc, out=$out"
+fi
+
+# ─── V-37/V-38/V-39: M4 (review iter-3) — qa_predicate_schema_version
+# wrong-type / wrong-value / missing branches. verify-qa.sh:227-239
+# has three rejection paths: missing, non-integer, !=1. Only "missing"
+# had implicit coverage via V-3. Future bump to schema_version=2 (a
+# real possibility) without updating the validator would silently
+# accept v2 documents on a v1 validator.
+#
+# V-37 — qa_predicate_schema_version absent → 'missing required field'.
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
+{
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "x" }
+  ]
+}
+EOF
+rc=0
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 43 )) && [[ "$out" == *"missing required field"* ]] && [[ "$out" == *"qa_predicate_schema_version"* ]]; then
+  pass_at "V-37: qa_predicate_schema_version absent → exit 43 + 'missing required field' (M4 iter-3)"
+else
+  fail_at "V-37: schema_version absent" "expected rc=43 + 'missing required field' + field name; got rc=$rc, out=$out"
+fi
+
+# V-38 — qa_predicate_schema_version wrong type (string) → 'must be an integer'.
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
+{
+  "qa_predicate_schema_version": "one",
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "x" }
+  ]
+}
+EOF
+rc=0
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 43 )) && [[ "$out" == *"must be an integer"* ]]; then
+  pass_at "V-38: qa_predicate_schema_version='one' → exit 43 + 'must be an integer' (M4 iter-3)"
+else
+  fail_at "V-38: schema_version type" "expected rc=43 + 'must be an integer'; got rc=$rc, out=$out"
+fi
+
+# V-39 — qa_predicate_schema_version wrong value (2) → 'must be 1'.
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
+{
+  "qa_predicate_schema_version": 2,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "x" }
+  ]
+}
+EOF
+rc=0
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 43 )) && [[ "$out" == *"must be 1"* ]]; then
+  pass_at "V-39: qa_predicate_schema_version=2 → exit 43 + 'must be 1' (M4 iter-3)"
+else
+  fail_at "V-39: schema_version value" "expected rc=43 + 'must be 1'; got rc=$rc, out=$out"
+fi
 
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
