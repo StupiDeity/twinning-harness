@@ -257,6 +257,26 @@ rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv12.json" >/dev/null 2>&1 || rc
   && pass_at "T_adv_12: verdict=\"PASS\" (uppercase) → exit 40" \
   || fail_at "T_adv_12: uppercase verdict" "expected rc=40, got rc=$rc"
 
+# ─── T_adv_13: valid dim[0] + invalid dim[1] → exit 40, verifies loop ──
+# Confirms the per-dimension validation loop checks ALL dimensions, not
+# only dim[0]. dim[1].score=-0.5 is out of range; dim[0] is valid.
+cat > "$FIXTURE_DIR/adv13.json" <<'EOF'
+{
+  "qa_payload_schema_version": 1,
+  "issue_id": "ENG-1",
+  "dispatch_id": "ENG-1-d0001",
+  "verdict": "pass",
+  "dimensions": [
+    { "name": "gate_compliance", "score": 1.0, "rationale": "ok", "threshold_met": true },
+    { "name": "test_coverage",   "score": -0.5, "rationale": "ok", "threshold_met": false }
+  ]
+}
+EOF
+rc=0; bash "$VALIDATOR" validate "$FIXTURE_DIR/adv13.json" >/dev/null 2>&1 || rc=$?
+(( rc == 40 )) \
+  && pass_at "T_adv_13: valid dim[0] + invalid dim[1] (score=-0.5) → exit 40 (loop checks all dims)" \
+  || fail_at "T_adv_13: multi-dimension loop" "expected rc=40, got rc=$rc"
+
 # ─── Summary ─────────────────────────────────────────────────────────
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
