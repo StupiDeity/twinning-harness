@@ -222,7 +222,12 @@ _validate_pass_criterion() {
       # ftp:// (unencrypted egress), and cloud-metadata SSRF chains that
       # need a non-http scheme to land. https:// IS accepted so the
       # predicate stays usable against external services.
-      if [[ ! "$url_val" =~ ^https?:// ]]; then
+      # Review iter-3 minor: lowercase the URL before the scheme test so
+      # `HTTP://...` does not bypass the gate and combine with an IPv4
+      # encoding bypass against the host-class denylist below (V-35).
+      local _url_lc
+      _url_lc="$(printf '%s' "$url_val" | tr '[:upper:]' '[:lower:]')"
+      if [[ ! "$_url_lc" =~ ^https?:// ]]; then
         _VALIDATE_CRIT_DIAG="$loc (http_get): url must use http:// or https:// scheme, got: $url_val"
         return 34
       fi
@@ -252,10 +257,23 @@ _validate_pass_criterion() {
 }
 
 # Extract the host from a URL and test it against the deny-by-default
-# host-class denylist (C4 — review iter-2). Returns 0 (denied) when the
-# host matches loopback / link-local / RFC1918 / IMDS / IPv6 ULA;
-# returns 1 otherwise. Operates on the URL's host string only; no DNS
+# host-class denylist (C4 — review iter-2; M1 — review iter-3).
+# Returns 0 (denied) when the host matches loopback / link-local /
+# RFC1918 / IMDS / IPv6 ULA OR a numeric-encoding IPv4 alias
+# (decimal/hex/octal IPv4, IPv4-mapped IPv6) of one of those classes.
+# Returns 1 otherwise. Operates on the URL's host string only; no DNS
 # resolution (which would add a dig dependency and DNS-rebinding race).
+#
+# Review iter-3 M1: the canonical-form denylist below misses every
+# well-known IPv4/IPv6 numeric-encoding bypass curl resolves:
+#   http://2130706433/     → decimal of 127.0.0.1
+#   http://0x7f000001/     → hex of 127.0.0.1
+#   http://0177.0.0.1/     → octal first octet
+#   http://0/              → bare 0 → 0.0.0.0 on Linux
+#   http://[::ffff:7f00:1]/ → IPv6 hex of ::ffff:127.0.0.1
+# The numeric-encoding guard below refuses these shapes at validate
+# time. DNS rebinding remains out of scope per the brainstorm threat
+# model (single-user sandbox; active DNS attacker not in model).
 _url_host_class_denied() {
   local url="$1"
   # Strip scheme.
@@ -275,6 +293,27 @@ _url_host_class_denied() {
   fi
   # Lowercase for case-insensitive comparison.
   host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  # M1 (review iter-3): IPv4 numeric-encoding bypass guard.
+  # Single-component hosts (no dot / no colon) that parse as a number
+  # — decimal, hex, or octal — are IPv4 shorthand curl resolves.
+  case "$host" in
+    *.*|*:*) ;;
+    0x*) return 0 ;;                  # hex IPv4 (e.g. 0x7f000001)
+    0) return 0 ;;                    # bare zero → 0.0.0.0 on Linux
+    0[0-9]*) return 0 ;;              # octal IPv4 (length > 1, leading 0)
+    *)
+      # Pure decimal integer host — IPv4 shorthand
+      # (e.g. 2130706433 → 127.0.0.1). Reject all such hosts.
+      if [[ "$host" =~ ^[0-9]+$ ]]; then return 0; fi
+      ;;
+  esac
+  # M1 (review iter-3): dotted-form with hex (0x..) or octal-leading
+  # (0[0-9]+) octets — non-canonical IPv4 representations. Match any
+  # position so 0x7f.0x0.0x0.0x1 / 0177.0.0.1 / 192.0x7f.0.1 all hit.
+  case "$host" in
+    0x*.*|*.0x*) return 0 ;;
+    0[0-9]*.*|*.0[0-9]*) return 0 ;;
+  esac
   case "$host" in
     localhost|0.0.0.0) return 0 ;;
     127.*) return 0 ;;
@@ -282,7 +321,11 @@ _url_host_class_denied() {
     192.168.*) return 0 ;;
     169.254.*) return 0 ;;
     172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
-    ::1|::ffff:127.*) return 0 ;;
+    # IPv6 form. ::ffff:* is IPv4-mapped — by definition an IPv4
+    # address; rejecting all such forms closes the hex-encoding bypass
+    # (::ffff:7f00:1 → 127.0.0.1, ::ffff:0a00:1 → 10.0.0.1, …) without
+    # enumerating each /8. fe80::/10 = link-local; fc00::/7 = ULA.
+    ::1|::ffff:*) return 0 ;;
     fe80:*|fc[0-9a-f][0-9a-f]:*|fd[0-9a-f][0-9a-f]:*) return 0 ;;
   esac
   return 1
