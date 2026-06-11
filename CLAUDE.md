@@ -323,6 +323,16 @@ canonical heading shape (`## <dispatch-id> - <stage> -
 <ISO-8601-UTC>`) live in `docs/runbooks/progress-md.md`. Path
 resolves through `bin/common.sh::progress_md_path <ident>`.
 
+`verdict-qa.json` (ENG-117) is a per-dispatch dimensional-grading
+payload written by the qa agent under `$(issue_dir <ident>)/`. Schema
+source-of-truth lives in `bin/qa-payload-schema.sh`'s header comment;
+the post-dispatch detective scan in `bin/run-stage.sh::_validate_qa_payload`
+halts the dispatch with `qa-payload-invalid` on missing/malformed
+payloads. Cleared on every qa-stage dispatch-start by
+`_clear_current_stage_slots` (same per-medium primitive as
+`stage-summary-<stage>.md`, `wait-<stage>.json`, and ENG-119's
+`verdict-review.json`).
+
 The orchestrator NEVER dispatches into `$TARGET_REPO` — every dispatch resolves
 a per-issue worktree first (ENG-67). If you see the canonical operator-recognition
 phrase `FATAL: internal: worktree_path empty after reconcile=proceed (ENG-67); refusing to dispatch from $TARGET_REPO`,
