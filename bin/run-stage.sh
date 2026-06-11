@@ -951,6 +951,14 @@ _clear_current_stage_slots() {
   if [[ "$stage" == "reviewing" ]]; then
     rm -f "$d/verdict-review.json" 2>/dev/null || true
   fi
+  # ENG-117: pre-clean verdict-qa.json on qa-stage dispatch start.
+  # Stage-gated to qa for the same reason as ENG-119's reviewing-gated
+  # clear: the file is qa-specific; clearing on other stages would erase
+  # prior-iteration payloads the threshold / retrospective sub-tickets
+  # may read during loopback.
+  if [[ "$stage" == "qa" ]]; then
+    rm -f "$d/verdict-qa.json" 2>/dev/null || true
+  fi
   return 0
 }
 
@@ -1198,6 +1206,44 @@ _post_review_payload_halt() {
   local payload; payload="$(issue_dir "$ident")/verdict-review.json"
   local body
   body="$(printf '<!-- pipeline: verdict result=halt reason=review-payload-invalid -->\n\nReview-payload validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §11.' \
+    "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$payload" "$safe" "$ident" "$payload" "$ident")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+}
+
+# ENG-117: qa-payload validator. Filesystem detective — checks that the qa
+# agent wrote a well-formed $issue_dir/verdict-qa.json with current
+# dispatch_id. Returns 0=valid, 39=malformed, 40=incomplete,
+# 41=missing-file (caller halts).
+_validate_qa_payload() {
+  local ident="$1"
+  local payload; payload="$(issue_dir "$ident")/verdict-qa.json"
+  if [[ ! -f "$payload" ]]; then
+    _post_qa_payload_halt "$ident" "qa-payload-missing" \
+      "no verdict-qa.json at $payload"
+    return 41
+  fi
+  local out rc=0
+  out="$(bash "$SCRIPT_DIR/qa-payload-schema.sh" validate "$payload" \
+         --ident "$ident" --dispatch-id "${PIPELINE_DISPATCH_ID-}" 2>&1)" || rc=$?
+  case "$rc" in
+    0)  return 0 ;;
+    39) _post_qa_payload_halt "$ident" "qa-payload-malformed"  "$out" ; return 39 ;;
+    40) _post_qa_payload_halt "$ident" "qa-payload-incomplete" "$out" ; return 40 ;;
+    41) _post_qa_payload_halt "$ident" "qa-payload-missing"    "$out" ; return 41 ;;
+    *)  _post_qa_payload_halt "$ident" "unexpected-rc" \
+          "validator returned unexpected rc=$rc; stdout: $out" ; return 39 ;;
+  esac
+}
+
+# Posts a halt comment for a qa-payload violation. Mirrors
+# _post_review_payload_halt sanitisation: <!-- → <\!-- + tilde-fence wrap
+# so agent-controlled diagnostic strings can't hijack the marker parser.
+_post_qa_payload_halt() {
+  local ident="$1" defect="$2" raw="$3"
+  local safe="${raw//<!--/<\\!--}"
+  local payload; payload="$(issue_dir "$ident")/verdict-qa.json"
+  local body
+  body="$(printf '<!-- pipeline: verdict result=halt reason=qa-payload-invalid -->\n\nQA-payload validation failed on dispatch_id=%s stage=qa:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/qa-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage qa`. See `docs/runbooks/recovery.md` §11.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$payload" "$safe" "$ident" "$payload" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
@@ -1980,6 +2026,24 @@ main() {
           classify_failure "$ident" "$stage" "skip-until-human-acts" \
             "review-payload-invalid: $(failure_outcome_for_exit "$_rev_rc")" "$_rev_rc"
           exit "$_rev_rc"
+        fi
+        ;;
+    esac
+  fi
+
+  # ENG-117: qa-payload validator. Post-dispatch; qa stage only.
+  # Halts with qa-payload-invalid if $issue_dir/verdict-qa.json is absent,
+  # malformed, or fails schema-v1 validation. Exit codes 39/40/41 map to
+  # the failure_outcome_for_exit taxonomy entries added in 75d2866.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      qa)
+        local _qa_payload_rc=0
+        _validate_qa_payload "$ident" || _qa_payload_rc=$?
+        if (( _qa_payload_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "qa-payload-invalid: $(failure_outcome_for_exit "$_qa_payload_rc")" "$_qa_payload_rc"
+          exit "$_qa_payload_rc"
         fi
         ;;
     esac
