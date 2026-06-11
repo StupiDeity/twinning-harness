@@ -335,6 +335,9 @@ failure_outcome_for_exit() {
     36) printf 'review-payload-malformed' ;;
     37) printf 'review-payload-incomplete' ;;
     38) printf 'review-payload-missing' ;;
+    39) printf 'qa-payload-malformed' ;;
+    40) printf 'qa-payload-incomplete' ;;
+    41) printf 'qa-payload-missing' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac

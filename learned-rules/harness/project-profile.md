@@ -49,6 +49,8 @@ are implicit and not declared here.
   - `Bash(bash bin/poll-slot-test.sh:*)`
   - `Bash(bash bin/profile-allowlist-test.sh:*)`
   - `Bash(bash bin/progress-md-cross-stage-test.sh:*)`
+  - `Bash(bash bin/qa-payload-schema-adversarial-test.sh:*)`
+  - `Bash(bash bin/qa-payload-schema-test.sh:*)`
   - `Bash(bash bin/reconcile-test.sh:*)`
   - `Bash(bash bin/render-pr-body-test.sh:*)`
   - `Bash(bash bin/render-prompt-slug-test.sh:*)`
@@ -96,6 +98,8 @@ are implicit and not declared here.
   - `Bash(bash bin/poll-slot-test.sh:*)`
   - `Bash(bash bin/profile-allowlist-test.sh:*)`
   - `Bash(bash bin/progress-md-cross-stage-test.sh:*)`
+  - `Bash(bash bin/qa-payload-schema-adversarial-test.sh:*)`
+  - `Bash(bash bin/qa-payload-schema-test.sh:*)`
   - `Bash(bash bin/reconcile-test.sh:*)`
   - `Bash(bash bin/render-pr-body-test.sh:*)`
   - `Bash(bash bin/render-prompt-slug-test.sh:*)`

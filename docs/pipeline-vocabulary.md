@@ -247,6 +247,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `dispatch-envelope-violation`
 - `plan-contract-invalid`
 - `review-payload-invalid`
+- `qa-payload-invalid`
 
 ### `wait_reasons`
 

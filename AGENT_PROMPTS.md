@@ -1651,6 +1651,40 @@ Your task:
    proposed expiry. Retrospective opens the CODEOWNERS-gated PR.
    Never append to qa-patterns.md directly.
 
+8. **Emit dimensional grading payload (verdict-qa.json):**
+   Before exiting (on any decision path — A, B, C, or D), write a
+   dimensional grading payload to `$(issue_dir {issue_id})/verdict-qa.json`
+   describing per-dimension scores. Schema source-of-truth: header comment
+   of `bin/qa-payload-schema.sh`. Required fields:
+
+     qa_payload_schema_version  integer, must be 1
+     issue_id                   "{issue_id}"
+     dispatch_id                "{dispatch_id}"   (exported into your env)
+     verdict                    one of: pass | fail | halt
+     dimensions[]               at least one entry; each must have:
+                                  name           snake_case (^[a-z][a-z0-9_]*$)
+                                  score          float in [0.0, 1.0]
+                                  rationale      1-2 sentences citing concrete evidence
+                                  threshold_met  boolean (your judgment)
+
+   Suggested starter dimensions for the qa stage (not mandated; the
+   threshold-logic sub-ticket will decide the canonical set):
+   `gate_compliance`, `coverage`, `regression_intent`,
+   `adversarial_coverage`, `plan_alignment`, `flake_dismissal_integrity`.
+   Include a dimension only if you can cite concrete evidence; omit
+   rather than fabricate.
+
+   The post-dispatch detective scan in
+   `bin/run-stage.sh::_validate_qa_payload` will halt the dispatch with
+   `qa-payload-invalid` if the file is missing, malformed, or fails
+   schema validation. The threshold sub-ticket will later gate the
+   dispatch verdict on dimensional minimums; today the payload is
+   recorded forensically without gating.
+
+   Overwrite-on-every-dispatch contract per §0; use `Write` (not Edit)
+   against the canonical path; do NOT write scratch fixtures elsewhere
+   in the worktree.
+
 Quality gates (must all be true to advance):
   - All gate commands pass (or all failures are citation-backed flakes).
   - Zero P0 findings from §1–5.
@@ -1711,6 +1745,10 @@ Output:
 - Linear summary comment on {issue_id}.
 - Any new test commits pushed to `{branch_name}`.
 - No edits to qa-patterns.md (use the candidate marker comment).
+- `verdict-qa.json` written to `$(issue_dir {issue_id})/verdict-qa.json`
+  on every decision path (A, B, C, or D). Overwrite-on-every-dispatch
+  contract per §0; orchestrator's detective scan validates it before
+  advancing.
 - **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting
   the verdict marker. On Decision-path C/D (all-green or back-fill confirmed)
   ONLY. Use `Edit` with append-via-anchor (or
