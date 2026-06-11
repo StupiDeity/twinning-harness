@@ -5093,6 +5093,54 @@ else
   fail_at "ENG-157 INT6b: plan-md-missing label absent" "capture=$(cat "$CAPTURE_FILE")"
 fi
 
+# ─── ENG-157 INT6c: validate-md rc=33 arm in _validate_plan_contract ─────────
+# Sub-agent finding (QA round 3): JSON-valid + MD has malformed token → rc=33 branch.
+# INT6 covers rc=34 (missing section). INT6b covers rc=35 (md absent on filesystem).
+# This test covers the rc=33 (plan-md-malformed) path that was entirely untested at
+# integration level. A malformed token has verified_by: with no colon-separated form
+# (e.g., "verified_by: gibberish_no_colon") — cmd_validate_md returns rc=33.
+printf '\n--- ENG-157 INT6c: validate-md rc=33 arm (plan-md-malformed) ---\n'
+reset_capture
+ENG15708_WT="$(issue_dir ENG-15708)/worktree"
+rm -rf "$ENG15708_WT"
+mkdir -p "$ENG15708_WT/docs/plans"
+( cd "$ENG15708_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+_INT6C_MD="$ENG15708_WT/docs/plans/${_ENG122_TODAY}-eng-15708-test.md"
+_INT6C_JSON="$ENG15708_WT/docs/plans/${_ENG122_TODAY}-eng-15708-test.json"
+cat > "$_INT6C_MD" <<'MDEOF'
+---
+linear: ENG-15708
+date: 2026-06-10
+topic: int6c fixture
+---
+
+## Goal
+
+stub.
+
+## System invariants
+
+- I-1: malformed token verified_by: gibberish_no_colon
+MDEOF
+_eng122_write_valid_json "$_INT6C_JSON" "ENG-15708"
+( cd "$ENG15708_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-15708 (int6c)" ) >/dev/null 2>&1
+_eng157_int6c_rc=0
+_validate_plan_contract ENG-15708 2>/dev/null || _eng157_int6c_rc=$?
+(( _eng157_int6c_rc == 33 )) \
+  && pass_at "ENG-157 INT6c: malformed MD token → rc=33" \
+  || fail_at "ENG-157 INT6c: malformed token arm" "expected rc=33, got rc=$_eng157_int6c_rc"
+if grep -qF 'plan-md-malformed' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6c: halt comment carries plan-md-malformed defect label"
+else
+  fail_at "ENG-157 INT6c: plan-md-malformed label absent" "capture=$(cat "$CAPTURE_FILE")"
+fi
+
 # ─── ENG-119: _validate_review_payload integration tests (INT1-INT5 + INT_*) ────
 # TDD tests for the review-payload validator (Task 4 of ENG-119).
 # Source-and-stub: STUB_DIR/review-payload-schema.sh delegates to the real validator.

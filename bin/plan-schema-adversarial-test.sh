@@ -438,5 +438,43 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_mixed_defects.md" 2>/dev/nu
   && pass_at "T_qa_adv_mixed_defects: malformed + incomplete → rc=33 (malformed priority wins)" \
   || fail_at "T_qa_adv_mixed_defects" "expected rc=33 (mixed: malformed priority), got rc=$rc"
 
+# ─── QA adversarial round 3 (sub-agent sweep) ──────────────────────────────
+# FINDING 1: CRLF line endings — valid file passes; correct but untested.
+# BSD awk on macOS preserves \r in records. POSIX [[:space:]] includes \r, so
+# the heading regex /^## System invariants[[:space:]]*$/ matches the heading
+# with a trailing \r, and the token regex stops before \r. Entire CRLF file
+# should validate as rc=0 on macOS BSD awk.
+# shellcheck disable=SC2059
+printf '%s\r\n' \
+  '---' \
+  'linear: ENG-CRLF' \
+  '---' \
+  '' \
+  '## System invariants' \
+  '' \
+  '- I-1: stub verified_by: bin/plan-schema.sh:cmd_validate_md' \
+  > "$FIXTURE_DIR/qa_crlf.md"
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_crlf.md" 2>/dev/null || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_qa_adv_crlf: CRLF file with valid bullet → rc=0 (BSD awk [[:space:]] includes \\r)" \
+  || fail_at "T_qa_adv_crlf" "expected rc=0 for CRLF plan, got rc=$rc"
+
+# FINDING 6: Whitespace-only file (non-zero size) — distinct from zero-byte.
+# T_qa_adv_empty_file covers zero-byte (size=0). A whitespace-only file passes
+# [[ -f ]] but awk finds no heading: rc=34 (missing-section path).
+printf '   \n\t\n\n   \n' > "$FIXTURE_DIR/qa_whitespace_only.md"
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_whitespace_only.md" 2>/dev/null || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_qa_adv_whitespace_only: whitespace-only non-empty file → rc=34 (missing section; distinct from zero-byte)" \
+  || fail_at "T_qa_adv_whitespace_only" "expected rc=34 for whitespace-only file, got rc=$rc"
+
+# FINDING 4: Directory path as file argument — misleading "file not found" diagnostic
+# but correct rc=35 (production path via git ls-tree cannot produce this; diagnostic
+# quality gap only). [[ ! -f dir ]] is true for directories → rc=35.
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR" 2>/dev/null || rc=$?
+(( rc == 35 )) \
+  && pass_at "T_qa_adv_directory_path: directory as file arg → rc=35 (correct exit; misleading message documented)" \
+  || fail_at "T_qa_adv_directory_path" "expected rc=35 for directory path, got rc=$rc"
+
 printf '\nplan-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
