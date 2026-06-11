@@ -11,7 +11,7 @@ OUT="$HARNESS_ROOT/docs/pipeline-vocabulary.md"
 generated() {
   printf '## Closed event registry\n\n'
   printf 'Source: `bin/pipeline-events.json` — edit there, not here.\n\n'
-  for field in verdict_results halt_reasons wait_reasons fail_targets pivot_targets decision_actions decision_gates meta_kinds stages; do
+  for field in verdict_results halt_reasons wait_reasons fail_targets pivot_targets pivot_reasons decision_actions decision_gates meta_kinds stages; do
     printf '### `%s`\n\n' "$field"
     jq -r --arg f "$field" '.[$f][] | "- `" + . + "`"' "$REG"
     printf '\n'

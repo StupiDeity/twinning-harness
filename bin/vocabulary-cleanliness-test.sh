@@ -100,7 +100,7 @@ fi
 REG="$HARNESS_ROOT/bin/pipeline-events.json"
 if [[ -f "$REG" ]]; then
   required_keys=(verdict_results halt_reasons wait_reasons fail_targets
-                 pivot_targets decision_actions decision_gates meta_kinds stages)
+                 pivot_targets pivot_reasons decision_actions decision_gates meta_kinds stages)
   missing=""
   for k in "${required_keys[@]}"; do
     if ! jq -e --arg k "$k" 'has($k)' "$REG" >/dev/null 2>&1; then
@@ -152,6 +152,17 @@ if jq -e '.halt_reasons | index("plan-contract-invalid") != null' "$REG" >/dev/n
 else
   fail_at "ENG-122 case-4: plan-contract-invalid in halt_reasons registry" \
     "expected \"plan-contract-invalid\" in .halt_reasons array of $REG"
+fi
+
+# ─── ENG-115: plan-structural-defect in pivot_reasons registry ──────
+# Verifies that the new pivot reason token added by ENG-115 is present
+# in the closed vocabulary so that `bash bin/pipeline.sh event ... verdict
+# pivot --reason plan-structural-defect` passes registry validation.
+if jq -e '.pivot_reasons | index("plan-structural-defect") != null' "$REG" >/dev/null 2>&1; then
+  pass_at "case-5: plan-structural-defect in pivot_reasons registry"
+else
+  fail_at "case-5: plan-structural-defect in pivot_reasons registry" \
+    "expected \"plan-structural-defect\" in .pivot_reasons array of $REG"
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────

@@ -35,6 +35,9 @@
   "pivot_targets": [
     "planning"
   ],
+  "pivot_reasons": [
+    "plan-structural-defect"
+  ],
   "decision_actions": [
     "continue",
     "approve",
@@ -91,13 +94,20 @@
           "fail":  ["target"],
           "halt":  ["reason"],
           "wait":  ["reason"],
-          "pivot": ["target"]
+          "pivot": ["target", "stage", "reason"]
         },
         "field_registry": {
           "result": "verdict_results",
           "stage":  "stages",
           "target": "fail_targets|pivot_targets",
           "reason": "halt_reasons|wait_reasons"
+        },
+        "_comment_field_registry_by_arm": "Per-arm overrides: this map[arm][field] beats field_registry[field] in pipeline.sh::_validate_event_payload. Used to narrow a top-level union (e.g. 'fail_targets|pivot_targets') to the arm-specific subset so the writer rejects with 'not in <subset>' instead of accepting the wider union.",
+        "field_registry_by_arm": {
+          "pivot": {
+            "target": "pivot_targets",
+            "reason": "pivot_reasons"
+          }
         },
         "dedup_sig_by_arm": {
           "pass":  null,

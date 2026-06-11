@@ -93,7 +93,7 @@ validates every emitted body against the schema below.
   - `fail`: `target`
   - `halt`: `reason`
   - `wait`: `reason`
-  - `pivot`: `target`
+  - `pivot`: `target`, `stage`, `reason`
 - **Dedup sig by arm:**
   - `pass`: _(append-only)_
   - `fail`: _(append-only)_
@@ -150,6 +150,17 @@ context that the generated list can't carry:
   `halt` instead.
 - **`pivot_targets`** — currently only `planning`. Used when an agent
   decides the plan itself was wrong; rare.
+- **`pivot_reasons`** — why an agent declared the plan is
+  structurally wrong. Currently only `plan-structural-defect`.
+  Mirrors the `halt_reasons` shape; the rare-and-bucketed
+  discipline applies (the retrospective surfaces pivot rates so
+  we can size when to grow the vocabulary). *As of ENG-115,
+  routing of pivot markers (loopback to `stage:planning` with
+  `pipeline:supersede`) is deferred to a follow-up sub-ticket;
+  the verdict_handler logs the detection and halts the issue
+  pending that ticket. Operator recovery is
+  `bash bin/pipeline.sh decide --action continue`, same as any
+  other halt.*
 - **`decision_actions`** — operator actions. `continue` is the
   catch-all resume; `approve` requires `--gate`; `abandon` is terminal.
 - **`decision_gates`** — `scope` (approve a scope-check rejection),
@@ -265,6 +276,10 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 ### `pivot_targets`
 
 - `planning`
+
+### `pivot_reasons`
+
+- `plan-structural-defect`
 
 ### `decision_actions`
 
