@@ -1310,64 +1310,6 @@ eng106_rc31_taxonomy() {
 }
 eng106_rc31_taxonomy
 
-# ─── ENG-125: validate_init_sh unit tests + rc=39/40/41 taxonomy arms ────
-# Mirrors dispatch-test's IS1-IS4 cases at the validate_init_sh layer (unit,
-# not detective). Pins the function's exit-code contract independently of
-# bin/dispatch.sh::_assert_init_sh_well_formed.
-eng125_validate_init_sh_unit() {
-  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/eng125-XXXXXX")"
-  local init="$tdir/init.sh"
-  local rc out
-
-  # Helper: write a well-formed init.sh fixture.
-  _eng125_write_well_formed() {
-    cat > "$1" <<'INIT'
-#!/usr/bin/env bash
-set -euo pipefail
-# ─── smoke ───
-:
-# ─── typecheck ───
-:
-# ─── lint ───
-:
-# ─── test ───
-:
-INIT
-  }
-
-  # IS1 (unit): well-formed → rc=0
-  _eng125_write_well_formed "$init"
-  rc=0; validate_init_sh "$init" >/dev/null 2>&1 || rc=$?
-  assert_eq "eng125_validate_init_sh_well_formed_rc" "0" "$rc"
-
-  # IS2 (unit): missing file → rc=41
-  rc=0; validate_init_sh "$tdir/absent.sh" >/dev/null 2>&1 || rc=$?
-  assert_eq "eng125_validate_init_sh_missing_rc" "41" "$rc"
-
-  # IS3 (unit): malformed (bash -n fails) → rc=39
-  printf '#!/usr/bin/env bash\necho "unterminated\n' > "$init"
-  rc=0; out="$(validate_init_sh "$init" 2>&1)" || rc=$?
-  assert_eq "eng125_validate_init_sh_malformed_rc" "39" "$rc"
-  if [[ "$out" == *"init-sh-malformed"* ]]; then
-    report_ok "eng125_validate_init_sh_malformed_diag"
-  else
-    report_fail "eng125_validate_init_sh_malformed_diag" "*init-sh-malformed*" "$out"
-  fi
-
-  # IS4 (unit): incomplete (missing one marker) → rc=40
-  _eng125_write_well_formed "$init"
-  sed -i.bak 's|^# ─── lint ───$|# (removed)|' "$init"
-  rm -f "$init.bak"
-  rc=0; out="$(validate_init_sh "$init" 2>&1)" || rc=$?
-  assert_eq "eng125_validate_init_sh_incomplete_rc" "40" "$rc"
-  if [[ "$out" == *"lint"* ]]; then
-    report_ok "eng125_validate_init_sh_incomplete_diag_names_missing_gate"
-  else
-    report_fail "eng125_validate_init_sh_incomplete_diag_names_missing_gate" "*lint*" "$out"
-  fi
-}
-eng125_validate_init_sh_unit
-
 # ENG-125: failure_outcome_for_exit rc=39/40/41 arms — pins the taxonomy so
 # a refactor renumbering or dropping them routes the outcome to
 # unknown-exit-N and breaks retrospective §1 classification.
