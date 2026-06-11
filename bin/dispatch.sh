@@ -270,9 +270,20 @@ _render_and_capture_stream() {
   if _matched_write="$(assert_no_write_to_path "$raw_capture" "/progress.md")"; then
     :   # rc 0: no match, fall through
   else
+    # SB-2 fix: a progress.md Write is a tool-choice mistake (Edit / `cat >>`
+    # was the correct append shape), NOT a correctness failure of the stage's
+    # actual work. When the agent ALSO posted a valid pass verdict / completion
+    # claim for THIS stage, the real work succeeded — returning rc=29 here would
+    # spuriously halt a clean pass (observed on ENG-150 reviewing, ENG-130 qa).
+    # Downgrade to a warning in that case; still hard-halt (rc=29) when no pass
+    # marker exists, which indicates a genuinely confused / no-verdict dispatch.
     printf '%s\n' "$_matched_write" > "$violation_file"
-    log "[assert] stage=$stage transcript invoked forbidden Write on progress.md: ${_matched_write}"
-    return 29
+    if grep -qE "result=pass stage=${stage}" <<<"${raw_capture:-}"; then
+      log "[assert] stage=$stage progress.md Write after a clean pass — downgrading to warning (append-only convention violated; not halting): ${_matched_write}"
+    else
+      log "[assert] stage=$stage transcript invoked forbidden Write on progress.md: ${_matched_write}"
+      return 29
+    fi
   fi
   # ENG-155 D-003: forbid agent Write/Edit against orchestrator-owned files
   # inside $issue_state_dir. D-001 widens the sandbox to include
