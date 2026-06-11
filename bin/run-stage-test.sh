@@ -5042,6 +5042,57 @@ else
     "capture=$(cat "$CAPTURE_FILE")"
 fi
 
+# ─── ENG-157 INT6b: validate-md rc=35 arm in _validate_plan_contract ─────────
+# Sub-agent finding: the rc=35 branch (run-stage.sh:1150) fires when
+# validate-md reports plan-md-missing. This requires a plan .md committed to
+# HEAD (passes git ls-tree check at :1113) and a valid .json on the filesystem
+# (passes the JSON validator), but the .md absent from the filesystem so that
+# validate-md fires rc=35. Expected: rc=35, halt comment carries plan-md-missing.
+printf '\n--- ENG-157 INT6b: validate-md rc=35 arm (plan-md-missing) ---\n'
+reset_capture
+ENG15707_WT="$(issue_dir ENG-15707)/worktree"
+rm -rf "$ENG15707_WT"
+mkdir -p "$ENG15707_WT/docs/plans"
+( cd "$ENG15707_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+_INT6B_MD="$ENG15707_WT/docs/plans/${_ENG122_TODAY}-eng-15707-test.md"
+_INT6B_JSON="$ENG15707_WT/docs/plans/${_ENG122_TODAY}-eng-15707-test.json"
+cat > "$_INT6B_MD" <<'MDEOF'
+---
+linear: ENG-15707
+date: 2026-06-10
+topic: int6b fixture
+---
+
+## Goal
+
+stub.
+
+## System invariants
+
+- I-1: present verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
+_eng122_write_valid_json "$_INT6B_JSON" "ENG-15707"
+( cd "$ENG15707_WT" \
+  && git add docs/plans \
+  && git commit --quiet -m "plan for ENG-15707 (int6b)" ) >/dev/null 2>&1
+# Now remove the .md so validate-md fires rc=35 while git ls-tree still finds it.
+# The .json stays on the filesystem so the JSON validator passes first.
+rm "$_INT6B_MD"
+_eng157_int6b_rc=0
+_validate_plan_contract ENG-15707 2>/dev/null || _eng157_int6b_rc=$?
+(( _eng157_int6b_rc == 35 )) \
+  && pass_at "ENG-157 INT6b: missing .md at dispatch time → rc=35" \
+  || fail_at "ENG-157 INT6b: missing .md arm" "expected rc=35, got rc=$_eng157_int6b_rc"
+if grep -qF 'plan-md-missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6b: halt comment carries plan-md-missing defect label"
+else
+  fail_at "ENG-157 INT6b: plan-md-missing label absent" "capture=$(cat "$CAPTURE_FILE")"
+fi
+
 # ─── ENG-119: _validate_review_payload integration tests (INT1-INT5 + INT_*) ────
 # TDD tests for the review-payload validator (Task 4 of ENG-119).
 # Source-and-stub: STUB_DIR/review-payload-schema.sh delegates to the real validator.

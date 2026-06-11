@@ -366,5 +366,77 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_task_no_digits.md" >/dev/nu
   && pass_at "T_qa_adv_task_t_no_digits: task:T without digits → rc=0 (generic path:test wins; P2 gap documented)" \
   || fail_at "T_qa_adv_task_t_no_digits" "expected rc=0 (generic-branch win), got rc=$rc"
 
+# ─── QA adversarial 2: empty file → rc=34 (missing-section path) ─────────────
+# Sub-agent finding: zero-byte file exercises awk END-block-only path where
+# saw_section=0 and bullet_count=0. Expected: rc=34 with missing-section
+# diagnostic (not rc=0 or silent failure on empty input).
+cat > "$FIXTURE_DIR/qa_empty.md" <<'MDEOF'
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_empty.md" 2>/dev/null || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_qa_adv_empty_file: empty .md → rc=34 (missing-section diagnostic)" \
+  || fail_at "T_qa_adv_empty_file" "expected rc=34, got rc=$rc"
+
+# ─── QA adversarial 2b: heading at last line, no body ─────────────────────────
+# Sub-agent finding: ## System invariants as the very last line of the file
+# (saw_section=1, bullet_count=0). Expected: rc=34 with zero-bullets diagnostic.
+cat > "$FIXTURE_DIR/qa_heading_only.md" <<'MDEOF'
+## System invariants
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_heading_only.md" 2>/dev/null || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_qa_adv_heading_only: heading at EOF with no bullets → rc=34" \
+  || fail_at "T_qa_adv_heading_only" "expected rc=34, got rc=$rc"
+
+# ─── QA adversarial 2c: verified_by: with bare colon (nothing after) ──────────
+# Sub-agent finding: `- foo verified_by:` (nothing after colon) routes to
+# rc=33 (malformed) because the second match branch sees `verified_by:` without
+# a valid token form. Documents this as "no token → malformed" (not "incomplete").
+cat > "$FIXTURE_DIR/qa_bare_colon.md" <<'MDEOF'
+## System invariants
+
+- I-1: bare colon verified_by:
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_bare_colon.md" 2>/dev/null || rc=$?
+(( rc == 33 )) \
+  && pass_at "T_qa_adv_bare_colon_token: verified_by: with no token → rc=33 (malformed; bare-colon routes to malformed not incomplete)" \
+  || fail_at "T_qa_adv_bare_colon_token" "expected rc=33, got rc=$rc"
+
+# ─── QA adversarial 2d: fake section heading inside code fence ────────────────
+# Sub-agent finding: validator does not parse fences, so ## System invariants
+# inside a fenced code block triggers in_section=1. A file with no real section
+# but a fenced-heading + valid bullet passes validation (acceptable noise per
+# D-001 §8.3). Pin the behavior explicitly.
+cat > "$FIXTURE_DIR/qa_fence_heading.md" <<'MDEOF'
+## Goal
+
+Example:
+
+```
+## System invariants
+
+- I-1: inside fence verified_by: bin/foo.sh:T_foo
+```
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_fence_heading.md" 2>/dev/null || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_qa_adv_fence_heading: fenced heading triggers in_section=1 → rc=0 (D-001 §8.3 acceptable noise; pinned)" \
+  || fail_at "T_qa_adv_fence_heading" "expected rc=0 (fence-heading treated as real — acceptable noise), got rc=$rc"
+
+# ─── QA adversarial 2e: mixed malformed + incomplete → rc=33 priority ─────────
+# Sub-agent finding: malformed_count > 0 takes priority over incomplete_count > 0
+# in the awk END block. File has one bullet with bad token (malformed) and one
+# bullet missing verified_by: entirely (incomplete). Expected: rc=33 (not rc=34).
+cat > "$FIXTURE_DIR/qa_mixed_defects.md" <<'MDEOF'
+## System invariants
+
+- I-1: bad token form verified_by: gibberish_no_colon
+- I-2: missing token entirely
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/qa_mixed_defects.md" 2>/dev/null || rc=$?
+(( rc == 33 )) \
+  && pass_at "T_qa_adv_mixed_defects: malformed + incomplete → rc=33 (malformed priority wins)" \
+  || fail_at "T_qa_adv_mixed_defects" "expected rc=33 (mixed: malformed priority), got rc=$rc"
+
 printf '\nplan-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
