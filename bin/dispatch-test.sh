@@ -3415,35 +3415,70 @@ NDJSON
   fi
 
   # IS6 — non-planning gate pin (BEHAVIORAL): drive _render_and_capture_stream
-  # with stage=implementing and NO init.sh. The planning-gated init.sh detective
-  # MUST NOT fire — renderer returns rc=0 and writes no
-  # .transcript-violation-planning sidecar. Subsumes both the "Detective fires
+  # across every non-planning stage with NO init.sh. The planning-gated init.sh
+  # detective MUST NOT fire — renderer returns rc=0 and writes no
+  # .transcript-violation-<stage> sidecar. Subsumes both the "Detective fires
   # only on planning stage" Failure Mode row's positive case AND the legacy
-  # structural grep — a refactor deleting the `stage == "planning"` guard
-  # would cause rc=41 here, tripping the test.
+  # structural grep — a refactor swapping the `stage == "planning"` guard for
+  # `stage != "implementing"` would PASS at implementing but break every other
+  # non-planning stage; parameterising catches that exact regression.
+  # NOTE: the sidecar shape is `.transcript-violation-<stage>` per
+  # bin/dispatch.sh's `$violation_file=${issue_dir}/.transcript-violation-${stage}`
+  # — the dispatch-stage suffix tracks the dispatched stage, not the gated stage.
   if declare -f _render_and_capture_stream >/dev/null 2>&1; then
-    IS6_DIR="$_TEST_STUB_DIR/IS6"; mkdir -p "$IS6_DIR"
-    export PIPELINE_DISPATCH_ID="ENG-T-IS6-d0001"
-    rm -f "$IS6_DIR/init.sh" "$IS6_DIR/progress.md" \
-          "$IS6_DIR/.transcript-violation-planning" "$IS6_DIR/.transcript-violation-implementing"
-    _is6_usage="$IS6_DIR/usage-implementing.json"
-    rc_is6=0
-    # Clean transcript (no forbidden gh pr create — that would trigger rc=22
-    # via the implementing-stage gate at bin/dispatch.sh:173-182).
-    _render_and_capture_stream "$_is6_usage" "$IS6_DIR" "implementing" >/dev/null 2>&1 <<'NDJSON' || rc_is6=$?
+    for _is6_stage in brainstorming implementing ui reviewing qa building released; do
+      IS6_DIR="$_TEST_STUB_DIR/IS6-${_is6_stage}"; mkdir -p "$IS6_DIR"
+      export PIPELINE_DISPATCH_ID="ENG-T-IS6-${_is6_stage}-d0001"
+      rm -f "$IS6_DIR/init.sh" "$IS6_DIR/progress.md" \
+            "$IS6_DIR/.transcript-violation-planning" \
+            "$IS6_DIR/.transcript-violation-${_is6_stage}"
+      _is6_usage="$IS6_DIR/usage-${_is6_stage}.json"
+      rc_is6=0
+      # Clean transcript — no forbidden tool invocations (e.g. gh pr create
+      # via bin/dispatch.sh's implementing-stage gate at :173-182 would trip
+      # rc=22). Each non-planning stage iterates the same clean payload.
+      _render_and_capture_stream "$_is6_usage" "$IS6_DIR" "$_is6_stage" >/dev/null 2>&1 <<'NDJSON' || rc_is6=$?
 {"type":"system","subtype":"init","session_id":"is6sess","model":"claude-test"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"benign work"}]}}
 {"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
 NDJSON
-    if [[ "$rc_is6" == "0" ]] \
-       && [[ ! -f "$IS6_DIR/.transcript-violation-planning" ]]; then
-      pass_at "IS6: stage=implementing + missing init.sh → rc=0, no planning sidecar (init.sh detective gates only on planning)"
-    else
-      fail_at "IS6" "rc=$rc_is6 planning_sidecar=$([[ -f $IS6_DIR/.transcript-violation-planning ]] && echo y || echo n)"
-    fi
+      if [[ "$rc_is6" == "0" ]] \
+         && [[ ! -f "$IS6_DIR/.transcript-violation-${_is6_stage}" ]]; then
+        pass_at "IS6[${_is6_stage}]: missing init.sh → rc=0, no .transcript-violation-${_is6_stage} sidecar (init.sh detective gates only on planning)"
+      else
+        fail_at "IS6[${_is6_stage}]" "rc=$rc_is6 sidecar=$([[ -f $IS6_DIR/.transcript-violation-${_is6_stage} ]] && echo y || echo n)"
+      fi
+    done
+    unset _is6_stage
   else
     fail_at "IS6 precondition: _render_and_capture_stream defined" "function not found"
   fi
+
+  # IS7 — run-stage.sh routing pin (STRUCTURAL): grep the run-stage.sh source
+  # for the rc=39/40/41 dispatch_rc arm. The IS1-IS4 cases pin
+  # _assert_init_sh_well_formed's typed-rc contract out of dispatch.sh, but the
+  # halt contract documented in AGENT_PROMPTS.md §2 (skip-until-human-acts +
+  # `bash bin/pipeline.sh decide … --action continue` recovery) is enforced by
+  # run-stage.sh's dispatch_rc switch, NOT by dispatch.sh. A refactor that
+  # drops the arm (or routes it to retry-immediately policy) would otherwise
+  # ship green — see the review-iter-1 critical finding. Strategy: grep for
+  # the literal arm header AND the classify_failure call shape with
+  # skip-until-human-acts and the dispatch-stage init.sh diagnostic prefix.
+  _RS_SH="$SCRIPT_DIR/run-stage.sh"
+  if [[ -f "$_RS_SH" ]]; then
+    # The single combined arm handles all three rc values; assert its presence
+    # and its classify_failure call shape.
+    if grep -q 'dispatch_rc == 39 || dispatch_rc == 40 || dispatch_rc == 41' "$_RS_SH" \
+       && grep -q 'classify_failure "\$ident" "\$stage" "skip-until-human-acts" \\' "$_RS_SH" \
+       && grep -q '"plan-stage init.sh:' "$_RS_SH"; then
+      pass_at "IS7: run-stage.sh routes rc=39/40/41 to skip-until-human-acts (halt contract pinned)"
+    else
+      fail_at "IS7" "rc=39/40/41 arm missing or mis-shaped in $_RS_SH"
+    fi
+  else
+    fail_at "IS7 precondition" "$_RS_SH not found"
+  fi
+  unset _RS_SH
 
   unset PIPELINE_DISPATCH_ID
 fi
