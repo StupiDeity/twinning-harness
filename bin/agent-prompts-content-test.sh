@@ -446,8 +446,7 @@ for stage_section in \
   "## 5. Review Agent" \
   "## 6. QA Agent" \
   "## 7. Build Agent" \
-  "## 8. Release Agent" \
-  "## 9. Retrospective Agent (Scheduled)"; do
+  "## 8. Release Agent"; do
   # rendered_stage_body == §0 (Common rules) + per-stage body. The phrases
   # tested below now live in §0 (consolidated) and are delivered to every
   # stage by render-prompt.sh::main's prepend.
@@ -492,8 +491,7 @@ for stage_section in \
   "## 5. Review Agent" \
   "## 6. QA Agent" \
   "## 7. Build Agent" \
-  "## 8. Release Agent" \
-  "## 9. Retrospective Agent (Scheduled)"; do
+  "## 8. Release Agent"; do
   body="$(section_body "$stage_section")"
   short="${stage_section## }"
 
@@ -527,8 +525,7 @@ for stage_section in \
   "## 5. Review Agent" \
   "## 6. QA Agent" \
   "## 7. Build Agent" \
-  "## 8. Release Agent" \
-  "## 9. Retrospective Agent (Scheduled)"; do
+  "## 8. Release Agent"; do
   # rendered_stage_body picks up the rule from §0 (consolidated).
   body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
@@ -571,8 +568,7 @@ for stage_section in \
   "## 5. Review Agent" \
   "## 6. QA Agent" \
   "## 7. Build Agent" \
-  "## 8. Release Agent" \
-  "## 9. Retrospective Agent (Scheduled)"; do
+  "## 8. Release Agent"; do
   body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
 
@@ -1024,8 +1020,7 @@ for stage_section in \
   "## 5. Review Agent" \
   "## 6. QA Agent" \
   "## 7. Build Agent" \
-  "## 8. Release Agent" \
-  "## 9. Retrospective Agent (Scheduled)"; do
+  "## 8. Release Agent"; do
   body="$(rendered_stage_body "$stage_section")"
   short="${stage_section## }"
 
@@ -1228,8 +1223,7 @@ for stage_key in \
   '## 5. Review Agent' \
   '## 6. QA Agent' \
   '## 7. Build Agent' \
-  '## 8. Release Agent' \
-  '## 9. Retrospective Agent (Scheduled)'; do
+  '## 8. Release Agent'; do
   short="${stage_key%% Agent*}"
   rsb="$(rendered_stage_body "$stage_key")"
   if printf '%s' "$rsb" | grep -qF 'Sub-agent debris (ENG-100)'; then
