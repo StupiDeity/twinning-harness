@@ -597,6 +597,112 @@ GHFAIL
   _teardown_test_env
 }
 
+# ---------------------------------------------------------------------------
+# qa-adv-r1: _resolve_previous_period_artifact picks the most-recent dir
+#            when multiple prior retrospective dirs exist.
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r1-previous-period-picks-most-recent"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-04-25"
+  printf 'old\n' > "$PROJECT_STATE_DIR/retrospective-2026-04-25/stage-failure-summary.md"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-05-02"
+  printf 'middle\n' > "$PROJECT_STATE_DIR/retrospective-2026-05-02/stage-failure-summary.md"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-05-09"
+  printf 'most-recent\n' > "$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  result="$(_resolve_previous_period_artifact stage-failure-summary 2026-05-16)"
+  expected="$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  if [[ "$result" == "$expected" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (got: '$result' expected: '$expected')"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# qa-adv-r2: missing shape driver (rc=127) is treated as a per-shape failure
+#            (non-blocking); surviving shapes still compose the PR.
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r2-missing-driver-is-nonblocking"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # Write stubs for all shapes except the first; leave SHAPES[0] with no driver.
+  i=0
+  for shape in "${SHAPES[@]}"; do
+    if (( i > 0 )); then
+      _write_shape_stub "$shape" 0 yes yes
+    fi
+    (( i++ )) || true
+  done
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  footer_present=$(grep -q '^## Failed shapes' "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  missing_shape="${SHAPES[0]}"
+  missing_in_footer=$(grep -qE "^- ${missing_shape}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$gh_called" == "yes" ]] && [[ "$footer_present" == "yes" ]] && [[ "$missing_in_footer" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc gh_called=$gh_called footer=$footer_present missing_in_footer=$missing_in_footer)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# qa-adv-r3: _compute_retro_period falls back to 30-day window when git
+#            emits a non-numeric merge timestamp (robustness guard).
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r3-period-fallback-on-non-numeric-git-output"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  cat > "$STUB_BIN/git" <<'GITSTUB_R3'
+#!/usr/bin/env bash
+is_log=false
+for a in "$@"; do [[ "$a" == "log" ]] && is_log=true; done
+if $is_log; then printf 'not-a-number weekly retrospective merge\n'; exit 0; fi
+command git "$@"
+GITSTUB_R3
+  chmod +x "$STUB_BIN/git"
+  period_output="$(_compute_retro_period 2>/dev/null)" || true
+  start="$(printf '%s' "$period_output" | sed -n '1p')"
+  end="$(printf '%s' "$period_output" | sed -n '2p')"
+  if [[ -n "$start" ]] && [[ "$start" != "$end" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (start='$start' end='$end')"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# qa-adv-r4: failed-shape artifact content is absent from PR body even when
+#            the shape wrote an artifact before exiting non-zero.
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r4-failed-shape-content-absent-from-pr-body"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # SHAPES[0] fails (rc=1) but writes artifact and tracked file; rest succeed.
+  _write_shape_stub "${SHAPES[0]}" 1 yes yes
+  for ((i=1; i<${#SHAPES[@]}; i++)); do
+    _write_shape_stub "${SHAPES[$i]}" 0 yes yes
+  done
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  failed_in_body=$(grep -qF "MARKER-${SHAPES[0]}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  second_in_body=$(grep -qF "MARKER-${SHAPES[1]}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$failed_in_body" == "no" ]] && [[ "$second_in_body" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc failed_in_body=$failed_in_body second_in_body=$second_in_body)"
+  fi
+  _teardown_test_env
+}
+
 printf '\n'
 if (( FAIL == 0 )); then
   printf 'OK: run-retrospective-local tests (%d passed)\n' "$PASS"
