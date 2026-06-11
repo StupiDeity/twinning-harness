@@ -607,6 +607,43 @@ else
   fail_at "V-28: smoke at anchor cwd" "expected rc=0 + summary failed=0 (pwd matched $WT_DIR); got rc=$rc, out=$out"
 fi
 
+# ─── V-30..V-34: M1 (review iter-3) IPv4/IPv6 encoding-bypass guard ─
+# Reviewer-cited cases — every one of these resolves to 127.0.0.1 or
+# 0.0.0.0 in curl. The canonical-form denylist arms below missed them.
+# Each case asserts the helper now refuses at validate-time (rc=43 +
+# 'host' in diagnostic) — symmetric with V-24/V-25/V-26.
+_assert_url_denied() {
+  local case_id="$1" url="$2"
+  cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<EOF
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "http_get", "url": "$url", "expect_status": 200, "expect_body_match": null }
+  ]
+}
+EOF
+  local _rc=0 _out
+  _out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || _rc=$?
+  if (( _rc == 43 )) && [[ "$_out" == *"host"* ]]; then
+    pass_at "$case_id: $url → exit 43 (C4 numeric-encoding guard, M1 iter-3)"
+  else
+    fail_at "$case_id: $url" "expected rc=43 + 'host' in diagnostic; got rc=$_rc, out=$_out"
+  fi
+}
+_assert_url_denied "V-30" "http://2130706433/"
+_assert_url_denied "V-31" "http://0x7f000001/"
+_assert_url_denied "V-32" "http://0177.0.0.1/"
+_assert_url_denied "V-33" "http://0/"
+_assert_url_denied "V-34" "http://[::ffff:7f00:1]/"
+
+# ─── V-35: case-insensitive scheme test (minor finding iter-3) ─────
+# Pre-fix: ^https?:// was case-sensitive; HTTP://2130706433/ bypassed
+# the scheme gate AND combined with the encoding-bypass to land at
+# 127.0.0.1. Post-fix the URL is lowercased before the regex, so the
+# encoding-bypass guard above still fires.
+_assert_url_denied "V-35" "HTTP://2130706433/"
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
