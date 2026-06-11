@@ -15,6 +15,9 @@ _PERIOD_START_ISO=""
 _PERIOD_END_ISO=""
 _OBSERVED_VERSION=""
 _EXPECTED_VERSION=""
+# Test-only override: when non-empty, _capture_expected_version reads from this
+# path instead of $HARNESS_ROOT/.claude-cli-version. Empty in production.
+_PIN_FILE_PATH=""
 
 _parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -60,7 +63,7 @@ _capture_observed_version() {
 }
 
 _capture_expected_version() {
-  local pin_file="$HARNESS_ROOT/.claude-cli-version"
+  local pin_file="${_PIN_FILE_PATH:-$HARNESS_ROOT/.claude-cli-version}"
   if [[ -f "$pin_file" ]]; then
     local raw
     raw="$(head -1 "$pin_file" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true)"
@@ -112,6 +115,20 @@ main() {
 
   _capture_observed_version
   _capture_expected_version
+
+  # No-pin carve-out — short-circuit before dispatch. The output schema
+  # promises a `## Observation` header on every artifact; emit it directly
+  # rather than dispatching against a prompt body whose own carve-out
+  # branch emitted a header-less line.
+  if [[ "$_EXPECTED_VERSION" == "(unpinned)" ]]; then
+    cat > "$_ARTIFACT_PATH" <<'CARVE'
+## Observation
+
+No expected version pinned; see pin-claude-version ticket.
+CARVE
+    log "shape: claude-version-drift no-pin carve-out; skipping dispatch"
+    return 0
+  fi
 
   local rendered
   rendered="$(mktemp -t retro-shape-claude-version-drift-XXXXXX.md)"
