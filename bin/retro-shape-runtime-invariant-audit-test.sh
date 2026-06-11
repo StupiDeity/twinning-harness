@@ -66,6 +66,30 @@ SCRIPT_DIR="$STUB_DIR"
 }
 
 # ---------------------------------------------------------------------------
+# fixture-prev-period-accepted: coordinator (ENG-130) passes
+# --previous-period-path to every shape. Shape B is a current-tree audit
+# so it ignores the value, but it MUST accept the flag without `die`.
+# ---------------------------------------------------------------------------
+{
+  name="fixture-prev-period-path-accepted"
+  artifact_path="$ARTIFACT_DIR/fprev.md"
+  export SHAPE_TEST_ARTIFACT_PATH="$artifact_path"
+  rc=0
+  main \
+    --artifact-path "$artifact_path" \
+    --period-start-iso 2026-05-08T00:00:00Z \
+    --period-end-iso   2026-05-15T00:00:00Z \
+    --previous-period-path "(none)" \
+    2>/dev/null || rc=$?
+  if (( rc == 0 )) && [[ -f "$artifact_path" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc — driver rejected --previous-period-path)"
+  fi
+  export SHAPE_TEST_ARTIFACT_PATH=""
+}
+
+# ---------------------------------------------------------------------------
 # fixture-2: dry-run happy path
 # ---------------------------------------------------------------------------
 {
