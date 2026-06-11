@@ -1091,19 +1091,45 @@ _validate_plan_contract() {
   today="$(date +%Y-%m-%d)"
   local plan_md plan_json schema_out schema_rc=0
 
-  # Trailing hyphen after ident_lower prevents eng-12 from matching eng-122
-  # or eng-1234. The pattern is bound to `today` so a cross-midnight
-  # re-dispatch on a plan written the day before will fail-open (correct:
-  # the plan is the prior day's; no false halt, just a benign skip).
-  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}-*.md" 2>/dev/null | sort | head -1)"
-  # Fail-open if no plan .md for today: the exit-25 agent-contract validator
-  # handles the absent-md case upstream; double-halting here would be noise.
+  # ENG-179: gate planning→implementing on a HEAD-COMMITTED plan artifact.
+  # Worktree `find` (pre-ENG-179) saw dirty-but-uncommitted files; that
+  # let a session-limit death post verdict=pass + write files into the
+  # worktree but die before commit, and the transition would still fire
+  # because the orchestrator's partition-sweep runs AFTER verdict_handler.
+  # `git ls-tree -r HEAD` returns only committed paths, matching the
+  # issue's acceptance criterion ("present in the branch's commits, not
+  # just the dirty worktree"). Agent self-commit (AGENT_PROMPTS.md §2
+  # step 4) is now LOAD-BEARING for this gate's correctness; if that
+  # contract is ever softened, this gate must be reordered behind the
+  # partition-sweep commit (a structural change, not a softening here).
+  #
+  # Trailing hyphen after ident_lower preserves the existing eng-12 vs
+  # eng-122 boundary guard. The today-only date prefix was DROPPED
+  # (vs pre-ENG-179) so a cross-midnight planning re-dispatch on
+  # yesterday's committed plan still satisfies the gate; the schema
+  # validator's `issue_id` field check (^ENG-[0-9]+$ matched against
+  # --ident) re-asserts the artifact belongs to this ident, so the
+  # looser filename pattern cannot let a foreign plan satisfy the gate.
+  plan_md="$(cd "$wt" && git ls-tree --name-only -r HEAD -- docs/plans/ 2>/dev/null \
+    | grep -iE "^docs/plans/[0-9]{4}-[0-9]{2}-[0-9]{2}-.*${ident_lower}-.*\.md$" \
+    | sort | tail -1)"
   if [[ -z "$plan_md" ]]; then
-    log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}-*.md; fail-open"
-    return 0
+    _post_plan_contract_halt "$ident" "plan-contract-missing" \
+      "$(printf 'No committed plan artifact at docs/plans/<date>-*-%s-*.md in branch HEAD. The planning agent emitted verdict=pass but did not commit the canonical plan .md (and sibling .json).\n\nCommon cause: claude -p session-limit / out_of_credits death after marker emission but before file commit (operator memory: session-limit-false-halts). Inspect the dispatch log at $PROJECT_STATE_DIR/<slug>/logs/%s-planning-*.log to confirm before re-running.\n\nResume: bash bin/pipeline.sh decide %s --action continue' "$ident_lower" "$ident" "$ident")"
+    return 35
   fi
 
   plan_json="${plan_md%.md}.json"
+
+  # ENG-179: also gate the sibling .json on HEAD. plan-schema.sh's
+  # rc=35 (missing-file) reads the worktree filesystem and would accept
+  # a written-but-uncommitted .json; querying HEAD here closes that
+  # gap with the same shape used for the .md above.
+  if ! (cd "$wt" && git ls-tree --name-only -r HEAD -- "$plan_json" 2>/dev/null | grep -qxF "$plan_json"); then
+    _post_plan_contract_halt "$ident" "plan-contract-missing" \
+      "$(printf 'Sibling plan JSON not committed to HEAD at %s. The .md is in HEAD but the .json is not — schema validation cannot proceed.\n\nResume: bash bin/pipeline.sh decide %s --action continue' "$plan_json" "$ident")"
+    return 35
+  fi
 
   schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
     --ident "$ident")" || schema_rc=$?
