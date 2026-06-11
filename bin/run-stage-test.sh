@@ -4687,8 +4687,16 @@ mkdir -p "$ENG179R_WT/docs/plans"
   && git config user.email t@t \
   && git config user.name t \
   && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
-printf 'stub plan\n' \
-  > "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.md"
+# ENG-157 retrofit: stub plan needs a `## System invariants` section with
+# one bullet + parseable verified_by: token so the MD validator (which now
+# runs after JSON-clean per the ENG-157 splice) returns rc=0.
+cat > "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.md" <<'MDEOF'
+stub plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179R_WT/docs/plans/${_ENG122_TODAY}-eng-17901-test.json" "ENG-17901"
 ( cd "$ENG179R_WT" \
@@ -4760,8 +4768,14 @@ mkdir -p "$ENG179U_WT/docs/plans"
 # on Linux also accepts -d "yesterday". Per CLAUDE.md the harness runs
 # on macOS (Bash 3.2), so the -v form is canonical.
 _ENG179U_YESTERDAY="$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)"
-printf 'stub plan (yesterday)\n' \
-  > "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.md"
+# ENG-157 retrofit: same System-invariants stub as INT-R.
+cat > "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.md" <<'MDEOF'
+stub plan (yesterday)
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179U_WT/docs/plans/${_ENG179U_YESTERDAY}-eng-17902-test.json" "ENG-17902"
 ( cd "$ENG179U_WT" \
@@ -4795,12 +4809,25 @@ mkdir -p "$ENG179ADV1_WT/docs/plans"
   && git config user.name t \
   && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
 _ENG179_YESTERDAY="$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)"
-printf 'older plan\n' \
-  > "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.md"
+# ENG-157 retrofit: each .md needs a `## System invariants` section so the
+# new MD validator (which runs after JSON-clean) returns rc=0. tail -1 picks
+# the newer plan, so the validator runs against eng-17911-new.md.
+cat > "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.md" <<'MDEOF'
+older plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179ADV1_WT/docs/plans/${_ENG179_YESTERDAY}-eng-17911-old.json" "ENG-17911"
-printf 'newer plan\n' \
-  > "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.md"
+cat > "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.md" <<'MDEOF'
+newer plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
 _eng122_write_valid_json \
   "$ENG179ADV1_WT/docs/plans/${_ENG122_TODAY}-eng-17911-new.json" "ENG-17911"
 ( cd "$ENG179ADV1_WT" \
