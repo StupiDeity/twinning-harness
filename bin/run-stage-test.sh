@@ -5025,10 +5025,20 @@ else
   fail_at "ENG-157 INT6: plan-contract-invalid marker absent" \
     "capture=$(cat "$CAPTURE_FILE")"
 fi
-if grep -qF 'Defect: plan-md-incomplete' "$CAPTURE_FILE"; then
-  pass_at "ENG-157 INT6: halt comment carries Defect: plan-md-incomplete"
+if grep -qF -- '- Defect: plan-md-incomplete' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6: halt comment carries Defect: plan-md-incomplete prefix"
 else
-  fail_at "ENG-157 INT6: Defect: plan-md-incomplete absent" \
+  fail_at "ENG-157 INT6: Defect: plan-md-incomplete prefix absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+# Validator stdout sits inside the ~~~ fence on the line below "Defect: ..." —
+# pin the diagnostic text itself so a regression that flips the MD-validator
+# to a wrong diagnostic shape (e.g. "zero bullets" when the section is in
+# fact absent) is caught even though the defect-name prefix still matches.
+if grep -qF 'plan-md-incomplete: required H2 section "## System invariants" missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-157 INT6: halt comment carries validator's missing-section diagnostic verbatim"
+else
+  fail_at "ENG-157 INT6: missing-section diagnostic absent from halt body" \
     "capture=$(cat "$CAPTURE_FILE")"
 fi
 
