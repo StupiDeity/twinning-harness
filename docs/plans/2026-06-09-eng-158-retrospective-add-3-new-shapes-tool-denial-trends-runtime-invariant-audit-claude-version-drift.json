@@ -1,0 +1,150 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-158",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Add three new retrospective shapes (tool-denial-trends, runtime-invariant-audit, claude-version-drift) following the ENG-129 prompt + driver + sibling-test pattern; wire all three into run-retrospective-local.sh and AGENT_PROMPTS.md §9.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/retro-shape-tool-denial-trends-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "OK: retro-shape-tool-denial-trends tests"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/retro-shape-runtime-invariant-audit-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "OK: retro-shape-runtime-invariant-audit tests"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/retro-shape-claude-version-drift-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "OK: retro-shape-claude-version-drift tests"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-prompts/tool-denial-trends.md"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-prompts/runtime-invariant-audit.md"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-prompts/claude-version-drift.md"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-shape-tool-denial-trends.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-shape-runtime-invariant-audit.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-shape-claude-version-drift.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-shape-tool-denial-trends-test.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-shape-runtime-invariant-audit-test.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/retro-shape-claude-version-drift-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "tool_denial_trends_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "runtime_invariant_audit_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "claude_version_drift_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-retrospective-local.sh",
+          "pattern": "retro-shape-tool-denial-trends.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-retrospective-local.sh",
+          "pattern": "retro-shape-runtime-invariant-audit.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-retrospective-local.sh",
+          "pattern": "retro-shape-claude-version-drift.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{tool_denial_trends_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{runtime_invariant_audit_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{claude_version_drift_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "retro-shape-tool-denial-trends-test.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "retro-shape-runtime-invariant-audit-test.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "retro-shape-claude-version-drift-test.sh",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
