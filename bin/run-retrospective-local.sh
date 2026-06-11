@@ -145,6 +145,14 @@ main() {
   # in turn; rc != 0 is logged and the loop continues. Surviving shapes
   # still contribute to the PR. After the loop, the coordinator opens
   # exactly one PR iff `git diff --cached` shows tracked-file changes.
+  #
+  # ENG-158 grep-discoverability hint: the loop iterates ${shape} →
+  # bash retro-shape-${shape}.sh, so the literal driver filenames for
+  # the ENG-158 shapes are listed here for maintainers searching by
+  # filename — runtime behavior is the SHAPES array above.
+  #   - retro-shape-tool-denial-trends.sh
+  #   - retro-shape-runtime-invariant-audit.sh
+  #   - retro-shape-claude-version-drift.sh
   local -a succeeded_shapes=()
   local -a failed_shapes=()
   local -A shape_rcs=()  # bash 4.4+ (assoc array + set -u empty-array expansion); host runs bash 5 per CLAUDE.md
