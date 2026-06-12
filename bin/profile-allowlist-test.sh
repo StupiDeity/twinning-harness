@@ -376,6 +376,27 @@ for stg in brainstorming planning ui; do
   notcontains "eng76_${stg}_no_metrics" 'Bash(bash bin/metrics.sh:*)' "$tools"
 done
 
+# ─── T_profile_file_layout_lists_mcp (ENG-27 I-6) ───────────────────────
+# I-6 invariant: the harness profile's `## File layout` section lists
+# `mcp/`. Without it, partition_dirty_paths classifies committed
+# mcp/*.json as self-leak and halts the implementing dispatch — a fast-
+# feedback regression catcher for any future operator who edits the
+# profile and accidentally drops the bullet.
+T_profile_file_layout_lists_mcp() {
+  printf '\n--- T_profile_file_layout_lists_mcp (ENG-27 I-6) ---\n'
+  local profile="$_eng95_saved_harness_root/learned-rules/harness/project-profile.md"
+  if [[ ! -f "$profile" ]]; then
+    ng 'T_profile_file_layout_lists_mcp' "harness profile not found at $profile"
+    return
+  fi
+  # Extract the `## File layout` section body via awk: lines after the
+  # `## File layout` header and before the next H2.
+  local section
+  section="$(awk '/^## File layout/{flag=1; next} /^## /{flag=0} flag' "$profile")"
+  contains 'T_profile_file_layout_lists_mcp' '`mcp/`' "$section"
+}
+T_profile_file_layout_lists_mcp
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
