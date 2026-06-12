@@ -281,12 +281,21 @@ _url_host_class_denied() {
   local url="$1"
   # Strip scheme.
   local rest="${url#*://}"
-  # Strip userinfo (anything before final `@` in authority).
-  rest="${rest##*@}"
-  # Strip path/query/fragment (after first `/`, `?`, `#`).
+  # Strip path/query/fragment BEFORE stripping userinfo. `${rest##*@}` is
+  # greedy: applied to the whole URL it would consume through any `@` in
+  # path/query/fragment, leaving an attacker-controlled trailing string
+  # that masquerades as the host. RFC 3986 puts `@` only inside the
+  # authority component; curl parses the same way (authority ends at the
+  # first `/`), so e.g. `http://127.0.0.1/@public.com/` connects to
+  # 127.0.0.1 while the pre-reorder validator saw `public.com`. Same
+  # parser-divergence class as the iter-3 case-insensitive scheme and
+  # iter-5 unbracketed-IPv6 truncation. Isolate the authority first, THEN
+  # drop userinfo inside it.
   local host="${rest%%/*}"
   host="${host%%\?*}"
   host="${host%%#*}"
+  # Strip userinfo (anything before final `@` in the authority).
+  host="${host##*@}"
   # IPv6 form is [::1]:8080 — keep the inner address; strip brackets.
   if [[ "$host" == \[*\]* ]]; then
     host="${host%%\]*}"; host="${host#\[}"
@@ -340,25 +349,25 @@ _url_host_class_denied() {
     192.168.*) return 0 ;;
     169.254.*) return 0 ;;
     172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
-    # IPv6 loopback. ::1 is the canonical short form; curl's resolver
-    # also accepts the long form 0:0:0:0:0:0:0:1 plus partial-collapse
-    # variants (0::1, 0:0::1, …, ::0:1, ::0:0:1, …). Each form below
-    # resolves to ::1 at the OS level; the literal arms close them all.
+    # Three parallel IPv6 expansion axes — loopback (::1), unspecified
+    # (::, resolves to ::1 on Linux outbound connect), IPv4-mapped
+    # (::ffff:*, wraps every IPv4 address including denylisted ones).
+    # For each axis the curl resolver accepts the canonical short form,
+    # the canonical long form (full eight groups), and every partial-
+    # collapse variant where `::` expands to a run of `0:` groups. Each
+    # literal arm matches one syntactic form so the closures are easy
+    # to audit; a normalizer would be one extra moving part on the
+    # SSRF-critical path.
+    # — loopback (::1):
     ::1) return 0 ;;
     0:0:0:0:0:0:0:1) return 0 ;;
     0::1|0:0::1|0:0:0::1|0:0:0:0::1|0:0:0:0:0::1|0:0:0:0:0:0::1) return 0 ;;
     ::0:1|::0:0:1|::0:0:0:1|::0:0:0:0:1|::0:0:0:0:0:1|::0:0:0:0:0:0:1) return 0 ;;
-    # IPv6 unspecified. `::` (all zeros) resolves to ::1 on Linux for
-    # outbound connect, so `http://[::]/internal-service` reaches loopback
-    # — parallel axis to ::1, not a duplicate. Same enum-over-normalizer
-    # shape: canonical short form + canonical long form + collapses.
+    # — unspecified (::):
     ::|0:0:0:0:0:0:0:0) return 0 ;;
     0::|0:0::|0:0:0::|0:0:0:0::|0:0:0:0:0::|0:0:0:0:0:0::|0:0:0:0:0:0:0::) return 0 ;;
     ::0|::0:0|::0:0:0|::0:0:0:0|::0:0:0:0:0|::0:0:0:0:0:0|::0:0:0:0:0:0:0) return 0 ;;
-    # IPv6 IPv4-mapped. ::ffff:* is the canonical short form; curl
-    # accepts long form 0:0:0:0:0:ffff:* and partial collapses. Rejects
-    # every form regardless of the trailing IPv4 value (::ffff:7f00:1
-    # = 127.0.0.1, ::ffff:0a00:1 = 10.0.0.1, …) without enumerating /8.
+    # — IPv4-mapped (::ffff:*) — trailing IPv4 octets vary by target:
     ::ffff:*) return 0 ;;
     0:0:0:0:0:ffff:*) return 0 ;;
     0::ffff:*|0:0::ffff:*|0:0:0::ffff:*|0:0:0:0::ffff:*|0:0:0:0:0::ffff:*) return 0 ;;

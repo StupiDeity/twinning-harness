@@ -122,7 +122,7 @@ _parse_validate_argv() {
 # (c) live under $PROJECT_STATE_DIR realpath (rc=42). The size cap is
 # enforced post-snapshot in cmd_validate (the size check on the original
 # bytes would open a TOCTOU window — the snapshot is the canonical
-# source per iter-2 M5).
+# source).
 # Splits the parent-realpath assignment so a failed cd properly trips
 # the `if !` — the inlined `if ! file_real="$(cd … && pwd -P)/$(basename …)"`
 # shape rolls the last-command exit into basename (always 0) and the
@@ -540,7 +540,20 @@ _exec_http_get() {
   # request AND any redirects — closes a file:// / scp:// escape via
   # a 30x Location header even though the validator already gated the
   # initial scheme. Defense in depth, not a duplicate check.
-  code="$(curl -sS --proto '=http,https' --proto-redir '=http,https' -o "$body_tmp" -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)" || curl_rc=$?
+  # `-L` is intentionally NOT set today: redirects are NOT followed, so
+  # --proto-redir is preventive-only. A future change that adds `-L`
+  # would also need `--max-redirs <N>` (bounded redirect chain) AND a
+  # re-application of `_url_host_class_denied` on the final URL — the
+  # initial-URL host-class check is bypassed by a 30x to a denylisted
+  # host otherwise.
+  # --max-filesize 1048576 (1 MiB) caps the body byte count so a
+  # legitimate-or-attacker URL streaming hundreds of MB over LAN within
+  # the --max-time 10s wall-clock window cannot exhaust disk before the
+  # rm cleans body_tmp. Same DoS-byte-cap intent as the predicate-file
+  # 64 KiB cap (D-011); expect_body_match grep still works on a
+  # truncated body. 1 MiB is well above any reasonable response-body
+  # signal the predicate would inspect via grep -E.
+  code="$(curl -sS --proto '=http,https' --proto-redir '=http,https' --max-filesize 1048576 -o "$body_tmp" -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)" || curl_rc=$?
   if (( curl_rc != 0 )); then
     rm -f "$body_tmp"
     CRIT_PASS=false; CRIT_DETAIL='"connection failed"'
@@ -558,6 +571,14 @@ _exec_http_get() {
     return 0
   fi
   local grep_rc=0
+  # Residual TOCTOU window: between body_tmp's mktemp and the grep
+  # open() below, a sibling smoke criterion that runs in parallel could
+  # `ln -sfn /etc/passwd "$body_tmp"`. Bounded by (a) `body_tmp` lives
+  # under `mktemp -t` (private to the current process's TMPDIR slot),
+  # (b) smoke is already arbitrary code execution in the worktree by
+  # design (D-002), so a smoke able to symlink-race body_tmp could
+  # already read /etc/passwd directly. Not a privilege escalation
+  # surface under the current threat model.
   grep -Eq "$expect_body_match" "$body_tmp" || grep_rc=$?
   rm -f "$body_tmp"
   if (( grep_rc == 2 )); then
@@ -614,6 +635,15 @@ cmd_validate() {
   # reject and the snapshot read: re-check immediately before opening
   # the file. A swap to a symlink between the two checks would otherwise
   # let the head/redirect follow it.
+  #
+  # Residual race: a few CPU cycles still elapse between this `-L` test
+  # and the `head -c < "$ARG_FILE"` open() below. An attacker who wins
+  # that window reads attacker-chosen bytes into snap_file — but those
+  # bytes must still pass schema validation (`_validate_predicate_schema`
+  # on snap_file enforces JSON object + qa_predicate_schema_version=1 +
+  # issue_id + array-shape pass_criteria), so the worst case is reading
+  # an attacker-chosen-but-schema-valid predicate. Not exploitable as a
+  # confused-deputy escalation; doc gap only.
   if [[ -L "$ARG_FILE" ]]; then
     rm -f "$snap_file"
     _VERIFY_QA_SNAP_FILE=""
