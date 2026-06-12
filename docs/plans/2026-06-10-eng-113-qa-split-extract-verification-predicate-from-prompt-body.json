@@ -29,19 +29,19 @@
         {
           "kind": "grep",
           "path": "bin/common.sh",
-          "pattern": "36\\) printf 'qa-predicate-malformed'",
+          "pattern": "42\\) printf 'qa-predicate-malformed'",
           "expect_match": true
         },
         {
           "kind": "grep",
           "path": "bin/common.sh",
-          "pattern": "37\\) printf 'qa-predicate-incomplete'",
+          "pattern": "43\\) printf 'qa-predicate-incomplete'",
           "expect_match": true
         },
         {
           "kind": "grep",
           "path": "bin/common.sh",
-          "pattern": "38\\) printf 'qa-predicate-missing'",
+          "pattern": "44\\) printf 'qa-predicate-missing'",
           "expect_match": true
         },
         {
