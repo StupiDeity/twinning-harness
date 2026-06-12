@@ -348,6 +348,13 @@ _url_host_class_denied() {
     0:0:0:0:0:0:0:1) return 0 ;;
     0::1|0:0::1|0:0:0::1|0:0:0:0::1|0:0:0:0:0::1|0:0:0:0:0:0::1) return 0 ;;
     ::0:1|::0:0:1|::0:0:0:1|::0:0:0:0:1|::0:0:0:0:0:1|::0:0:0:0:0:0:1) return 0 ;;
+    # IPv6 unspecified. `::` (all zeros) resolves to ::1 on Linux for
+    # outbound connect, so `http://[::]/internal-service` reaches loopback
+    # — parallel axis to ::1, not a duplicate. Same enum-over-normalizer
+    # shape: canonical short form + canonical long form + collapses.
+    ::|0:0:0:0:0:0:0:0) return 0 ;;
+    0::|0:0::|0:0:0::|0:0:0:0::|0:0:0:0:0::|0:0:0:0:0:0::|0:0:0:0:0:0:0::) return 0 ;;
+    ::0|::0:0|::0:0:0|::0:0:0:0|::0:0:0:0:0|::0:0:0:0:0:0|::0:0:0:0:0:0:0) return 0 ;;
     # IPv6 IPv4-mapped. ::ffff:* is the canonical short form; curl
     # accepts long form 0:0:0:0:0:ffff:* and partial collapses. Rejects
     # every form regardless of the trailing IPv4 value (::ffff:7f00:1
