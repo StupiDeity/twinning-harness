@@ -121,6 +121,13 @@ source "$HARNESS_DIR/classify-failure.sh"
 # at end of dispatch.sh prevents main() from firing.
 # shellcheck source=dispatch.sh
 source "$HARNESS_DIR/dispatch.sh"
+# ENG-180 review-iter-2 (SCO-REPLAY-CONTINUE-COMPOSITE major): source pipeline.sh
+# so cmd_decide + _pipeline_clear_halt_label + _pipeline_post_operator_transition
+# are in-process for the composite test below. MUST source BEFORE run-stage.sh
+# because both files define `main()`; the SCO-REPLAY block needs run-stage.sh's
+# main, so its definition must come LAST (same pattern as dispatch.sh above).
+# shellcheck source=pipeline.sh
+source "$HARNESS_DIR/pipeline.sh"
 # shellcheck source=run-stage.sh
 source "$HARNESS_DIR/run-stage.sh"
 
@@ -715,7 +722,13 @@ case "\${1:-}" in
   has-label)
     case "\${3:-}" in
       stage:implementing|stage:ui) exit 0 ;;
-      pipeline:halted)              exit 1 ;;
+      pipeline:halted)
+        # SR_HALT_PRESENT=1 simulates the halt label being applied (used by
+        # the COMPOSITE fixture so cmd_decide's _pipeline_clear_halt_label
+        # call actually exercises the remove-label path). Default is unset
+        # → exit 1 (matches every other SR-* fixture's expectation).
+        [[ "\${SR_HALT_PRESENT:-0}" == "1" ]] && exit 0 || exit 1
+        ;;
       pipeline:paused)              exit 1 ;;
       *)                            exit 1 ;;
     esac
@@ -832,13 +845,19 @@ SR_STAGE_OF="stage:ui" sr_run_main ENG-T-SR2 ui || true
 _at_count="$(grep -c '^ARGS=ENG-T-SR2 ui reviewing ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
 _pdah_called="$([[ -f "$SR_PDAH_FLAG" ]] && echo yes || echo no)"
 _vh_called="$([[ -f "$SR_VH_FLAG" ]] && echo yes || echo no)"
+# ENG-180 review-iter-2: AC #7 ("verdict=transitioned scope-approval-replay=1"
+# metric) applies to both forward paths; pinning here matches FORWARD-1's
+# assertion shape so a future regression that drops the replay flag on the
+# ui-path fails this case too.
+_replay_metric="$(grep -c 'scope-approval-replay=1' "$SR_METRICS_CAPTURE" 2>/dev/null || true)"
 if [[ "$_at_count" -ge "1" \
       && "$_pdah_called" == "no" \
-      && "$_vh_called" == "no" ]]; then
-  pass_at "SCO-REPLAY-FORWARD-2: ui → reviewing (apply_transition called)"
+      && "$_vh_called" == "no" \
+      && "$_replay_metric" -ge "1" ]]; then
+  pass_at "SCO-REPLAY-FORWARD-2: ui → reviewing (apply_transition called; replay metric)"
 else
   fail_at "SCO-REPLAY-FORWARD-2" \
-    "at=$_at_count pdah=$_pdah_called vh=$_vh_called"
+    "at=$_at_count pdah=$_pdah_called vh=$_vh_called replay=$_replay_metric"
 fi
 
 # SCO-REPLAY-DEFENSIVE: unknown forward — override _vh_lookup_forward to return
@@ -895,30 +914,63 @@ else
     "first=$_first_args second=$_second_args"
 fi
 
-# SCO-REPLAY-CONTINUE-COMPOSITE: simulates post-`decide --action continue` state
-# (halt-label-cleared via the new helper, sentinel still in place) and asserts
-# the D-002 branch still fires correctly. The cmd_decide path itself is covered
-# by bin/pipeline-test.sh::DEC-APPROVE-SCOPE-1..5 and PR-E; this test pins the
-# composition: continue clears halt → next replay fires D-002 → no
-# protocol-violation. We assert verdict_handler is NOT called (= no
-# protocol-violation can be posted).
+# SCO-REPLAY-CONTINUE-COMPOSITE: drives the full cmd_decide(continue) →
+# run-stage.sh(replay) composition the plan T3 spec and AC #4 bind to this
+# fixture. Stage 1: seed halt-label (SR_HALT_PRESENT=1) + scope-approval
+# sentinel, then call cmd_decide ENG-1806 --action continue against the
+# SR-aware linear stub. Assert the decide arm (a) issued
+# `remove-label ENG-1806 pipeline:halted` via the new _pipeline_clear_halt_label
+# helper AND (b) posted the operator-resume transition waypoint. Stage 2:
+# drive run-stage.sh::main with the preserved sentinel; assert the new D-002
+# branch fires (apply_transition implementing → ui) and verdict_handler is
+# NOT called (= no protocol-violation can be posted). The cmd_decide drain
+# helpers (_pipeline_drain_wait_files / _pipeline_drain_skip_labels /
+# _pipeline_drain_issue_state / _pipeline_clear_breaker / auto_commit_in_scope /
+# _pipeline_emit_resume_metric) are overridden in the subshell so they neither
+# touch the scope-approval sentinel/decision-marker comment nor pollute the
+# SR_LINEAR_CAPTURE shared with Stage 2. Uses a numeric issue id (ENG-1806)
+# because cmd_decide's D-014 guard rejects `ENG-T-SR6` (path-traversal guard).
 sr_reset
-sr_seed_sentinel ENG-T-SR6
-SR_STAGE_OF="stage:implementing" sr_run_main ENG-T-SR6 implementing || true
-_at_count="$(grep -c '^ARGS=ENG-T-SR6 implementing ui ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
+sr_seed_sentinel ENG-1806
+
+# Stage 1: cmd_decide --action continue
+(
+  PIPELINE_DRY_RUN=""
+  PIPELINE_WRITER="human"
+  # export so the `bash "$SCRIPT_DIR/linear.sh"` subprocess inherits the flag
+  # (cmd_decide's _pipeline_clear_halt_label calls has-label as a subprocess).
+  export SR_HALT_PRESENT=1
+  _pipeline_drain_wait_files()  { printf '0'; }
+  _pipeline_drain_skip_labels() { printf '0'; }
+  _pipeline_drain_issue_state() { printf 'false'; }
+  _pipeline_clear_breaker()     { printf 'false'; }
+  auto_commit_in_scope()        { printf '0'; }
+  _pipeline_emit_resume_metric(){ return 0; }
+  cmd_decide ENG-1806 --action continue
+) 2>/dev/null || true
+_cd_halt_remove="$(grep -c '^ARGS=remove-label ENG-1806 pipeline:halted' "$SR_LINEAR_CAPTURE" 2>/dev/null || true)"
+_cd_resume_post="$(grep -c 'operator-resume' "$SR_LINEAR_CAPTURE" 2>/dev/null || true)"
+
+# Stage 2: run-stage.sh::main against the preserved sentinel
+SR_STAGE_OF="stage:implementing" sr_run_main ENG-1806 implementing || true
+_at_count="$(grep -c '^ARGS=ENG-1806 implementing ui ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
 _vh_called="$([[ -f "$SR_VH_FLAG" ]] && echo yes || echo no)"
-if [[ "$_at_count" -ge "1" && "$_vh_called" == "no" ]]; then
-  pass_at "SCO-REPLAY-CONTINUE-COMPOSITE: D-002 fires after continue clears halt; no protocol-violation"
+if [[ "$_cd_halt_remove" -ge "1" \
+      && "$_cd_resume_post" -ge "1" \
+      && "$_at_count" -ge "1" \
+      && "$_vh_called" == "no" ]]; then
+  pass_at "SCO-REPLAY-CONTINUE-COMPOSITE: decide-continue clears halt + posts operator-resume; next replay fires D-002; no protocol-violation"
 else
   fail_at "SCO-REPLAY-CONTINUE-COMPOSITE" \
-    "at=$_at_count vh=$_vh_called"
+    "halt_remove=$_cd_halt_remove resume_post=$_cd_resume_post at=$_at_count vh=$_vh_called"
 fi
 
 # Restore the GLOBAL stubs the SCO-REPLAY block overwrote so subsequent
-# cases see the original shapes. scope-check.sh and branch-name.sh are
-# the only ones not re-created by later cases (case-19 et al. re-create
-# linear.sh, metrics.sh, scan-gotcha-trailers.sh, render-prompt.sh,
-# dispatch.sh themselves).
+# cases see the original shapes. scope-check.sh and branch-name.sh are the
+# ones we re-author HERE; the rest are re-created downstream — case-25 (line
+# 954) rewrites metrics.sh, case-26 (line 980+) rewrites it again under a
+# different capture path, and the dispatch/render-prompt/scan-gotcha
+# stubs are not re-referenced by any later case (no-op stubs are inert).
 cat > "$STUB_DIR/scope-check.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "${MOCK_SCOPE_OUT:-}"
