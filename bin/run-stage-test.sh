@@ -690,6 +690,230 @@ else
     "file_exists=$([[ -e "$COST_DIR_F/usage-implement.json" ]] && echo yes || echo no) capture=$(cat "$METRICS_CAPTURE_F")"
 fi
 
+# ─── ENG-180 D-002: scope-approval-replay forward transition ─────────
+# Drives main() through the scope-approval gate (skip_dispatch=1) and verifies
+# the new D-002 branch calls apply_transition directly without entering
+# _post_dispatch_apply_halt or verdict_handler (which would protocol-violation
+# the dispatch because no fresh verdict marker is posted on a replay).
+#
+# Stubs and helpers below are dedicated to this block; they re-create $STUB_DIR's
+# linear.sh / scope-check.sh / metrics.sh so case-24's stubs do not bleed in.
+
+SR_LINEAR_CAPTURE="$STUB_DIR/sr-linear.capture"
+SR_METRICS_CAPTURE="$STUB_DIR/sr-metrics.capture"
+SR_AT_CAPTURE="$STUB_DIR/sr-apply-transition.capture"
+SR_PDAH_FLAG="$STUB_DIR/sr-pdah.flag"
+SR_VH_FLAG="$STUB_DIR/sr-vh.flag"
+SR_CF_CAPTURE="$STUB_DIR/sr-classify-failure.capture"
+
+cat > "$STUB_DIR/linear.sh" <<SH_SR
+#!/usr/bin/env bash
+printf 'ARGS=%s\n' "\$*" >> "$SR_LINEAR_CAPTURE"
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  stage-of)     printf '%s\n' "\${SR_STAGE_OF:-stage:implementing}" ;;
+  has-label)
+    case "\${3:-}" in
+      stage:implementing|stage:ui) exit 0 ;;
+      pipeline:halted)              exit 1 ;;
+      pipeline:paused)              exit 1 ;;
+      *)                            exit 1 ;;
+    esac
+    ;;
+  add-comment|remove-label|add-label|transition-state) exit 0 ;;
+  *) exit 0 ;;
+esac
+exit 0
+SH_SR
+chmod +x "$STUB_DIR/linear.sh"
+
+cat > "$STUB_DIR/scope-check.sh" <<'SH_SR'
+#!/usr/bin/env bash
+case "${1:-}" in
+  has-scope-approval) exit 0 ;;
+esac
+printf 'notable\tdocs/runbooks/foo.md\n'
+exit "${SR_SCOPE_CHECK_RC:-1}"
+SH_SR
+chmod +x "$STUB_DIR/scope-check.sh"
+
+cat > "$STUB_DIR/metrics.sh" <<SH_SR
+#!/usr/bin/env bash
+printf 'ARGS=%s\n' "\$*" >> "$SR_METRICS_CAPTURE"
+exit 0
+SH_SR
+chmod +x "$STUB_DIR/metrics.sh"
+
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/scan-gotcha-trailers.sh"
+chmod +x "$STUB_DIR/scan-gotcha-trailers.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/render-prompt.sh"
+chmod +x "$STUB_DIR/render-prompt.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_DIR/dispatch.sh"
+chmod +x "$STUB_DIR/dispatch.sh"
+
+cat > "$STUB_DIR/branch-name.sh" <<'SH_SR'
+#!/usr/bin/env bash
+printf 'fix/%s-mock\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH_SR
+chmod +x "$STUB_DIR/branch-name.sh"
+
+sr_seed_sentinel() {
+  local ident="$1"
+  local d; d="$(issue_dir "$ident")"
+  mkdir -p "$d"
+  printf 'issue=%s\nbranch=fix/mock\napplied_at=2026-06-12T00:00:00Z\nfoo.md\n' "$ident" \
+    > "$d/scope-approval"
+}
+
+sr_reset() {
+  : > "$SR_LINEAR_CAPTURE"
+  : > "$SR_METRICS_CAPTURE"
+  : > "$SR_AT_CAPTURE"
+  : > "$SR_CF_CAPTURE"
+  rm -f "$SR_PDAH_FLAG" "$SR_VH_FLAG"
+}
+
+# Run main() in a subshell with apply_transition / _post_dispatch_apply_halt /
+# verdict_handler / classify_failure overridden to capture-only stubs. The
+# third arg, when non-empty, is eval'd inside the subshell to override
+# _vh_lookup_forward (used for the SCO-REPLAY-DEFENSIVE fixture).
+sr_run_main() {
+  local ident="$1" stage="$2" pre_eval="${3:-}"
+  local rc=0
+  (
+    verify_preconditions() { return 0; }
+    find_fresh_verdict() { printf 'dummy-marker'; }
+    post_completion_comment() { return 0; }
+    push_branch_if_ahead() { return 0; }
+    apply_transition() {
+      printf 'ARGS=%s\n' "$*" >> "$SR_AT_CAPTURE"
+      return 0
+    }
+    _post_dispatch_apply_halt() {
+      printf 'CALLED\n' > "$SR_PDAH_FLAG"
+      return 0
+    }
+    verdict_handler() {
+      printf 'CALLED\n' > "$SR_VH_FLAG"
+      return 0
+    }
+    classify_failure() {
+      printf 'ARGS=%s\n' "$*" >> "$SR_CF_CAPTURE"
+      return 0
+    }
+    [[ -n "$pre_eval" ]] && eval "$pre_eval"
+    main "$ident" "$stage" 2>/dev/null
+  ) || rc=$?
+  return "$rc"
+}
+
+# SCO-REPLAY-FORWARD-1: implementing → ui
+sr_reset
+sr_seed_sentinel ENG-T-SR1
+SR_STAGE_OF="stage:implementing" sr_run_main ENG-T-SR1 implementing || true
+_at_count="$(grep -c '^ARGS=ENG-T-SR1 implementing ui ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
+_pdah_called="$([[ -f "$SR_PDAH_FLAG" ]] && echo yes || echo no)"
+_vh_called="$([[ -f "$SR_VH_FLAG" ]] && echo yes || echo no)"
+_replay_metric="$(grep -c 'scope-approval-replay=1' "$SR_METRICS_CAPTURE" 2>/dev/null || true)"
+if [[ "$_at_count" -ge "1" \
+      && "$_pdah_called" == "no" \
+      && "$_vh_called" == "no" \
+      && "$_replay_metric" -ge "1" ]]; then
+  pass_at "SCO-REPLAY-FORWARD-1: implementing → ui (apply_transition called; pdah+vh NOT called; replay metric)"
+else
+  fail_at "SCO-REPLAY-FORWARD-1" \
+    "at=$_at_count pdah=$_pdah_called vh=$_vh_called replay=$_replay_metric metrics=$(cat "$SR_METRICS_CAPTURE")"
+fi
+
+# SCO-REPLAY-FORWARD-2: ui → reviewing
+sr_reset
+sr_seed_sentinel ENG-T-SR2
+SR_STAGE_OF="stage:ui" sr_run_main ENG-T-SR2 ui || true
+_at_count="$(grep -c '^ARGS=ENG-T-SR2 ui reviewing ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
+_pdah_called="$([[ -f "$SR_PDAH_FLAG" ]] && echo yes || echo no)"
+_vh_called="$([[ -f "$SR_VH_FLAG" ]] && echo yes || echo no)"
+if [[ "$_at_count" -ge "1" \
+      && "$_pdah_called" == "no" \
+      && "$_vh_called" == "no" ]]; then
+  pass_at "SCO-REPLAY-FORWARD-2: ui → reviewing (apply_transition called)"
+else
+  fail_at "SCO-REPLAY-FORWARD-2" \
+    "at=$_at_count pdah=$_pdah_called vh=$_vh_called"
+fi
+
+# SCO-REPLAY-DEFENSIVE: unknown forward — override _vh_lookup_forward to return
+# empty; assert classify_failure invoked with skip-until-human-acts + exit 22.
+sr_reset
+sr_seed_sentinel ENG-T-SR3
+sr_rc=0
+SR_STAGE_OF="stage:implementing" \
+  sr_run_main ENG-T-SR3 implementing '_vh_lookup_forward() { printf ""; return 0; }' \
+  || sr_rc=$?
+_cf_match="$(grep -c 'skip-until-human-acts.*scope-approval-replay: no forward transition' "$SR_CF_CAPTURE" 2>/dev/null || true)"
+_at_count="$(grep -c '^ARGS=ENG-T-SR3 ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
+if [[ "$_cf_match" -ge "1" \
+      && "$_at_count" == "0" \
+      && "$sr_rc" == "22" ]]; then
+  pass_at "SCO-REPLAY-DEFENSIVE: empty forward → classify_failure skip-until-human-acts + exit 22"
+else
+  fail_at "SCO-REPLAY-DEFENSIVE" \
+    "cf=$_cf_match at=$_at_count rc=$sr_rc"
+fi
+
+# SCO-REPLAY-STAGE-DRIFT: dispatched stage:implementing but stage-of returns
+# stage:ui — drift guard exits BEFORE the D-002 branch is reached.
+sr_reset
+sr_seed_sentinel ENG-T-SR4
+SR_STAGE_OF="stage:ui" sr_run_main ENG-T-SR4 implementing || true
+_drift_metric="$(grep -c 'stage-drift' "$SR_METRICS_CAPTURE" 2>/dev/null || true)"
+_at_count="$(grep -c '^ARGS=ENG-T-SR4 ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
+_pdah_called="$([[ -f "$SR_PDAH_FLAG" ]] && echo yes || echo no)"
+if [[ "$_drift_metric" -ge "1" \
+      && "$_at_count" == "0" \
+      && "$_pdah_called" == "no" ]]; then
+  pass_at "SCO-REPLAY-STAGE-DRIFT: drift exit fires before D-002 branch (no apply_transition)"
+else
+  fail_at "SCO-REPLAY-STAGE-DRIFT" \
+    "drift=$_drift_metric at=$_at_count pdah=$_pdah_called"
+fi
+
+# SCO-REPLAY-IDEMPOTENT: re-running the FORWARD-1 fixture yields the same
+# apply_transition args on the second pass. apply_transition's idempotency
+# is guaranteed by the production helper (bin/verdict-handler.sh:309-310);
+# this test asserts the D-002 branch CALLS it with the same args each time.
+sr_reset
+sr_seed_sentinel ENG-T-SR5
+SR_STAGE_OF="stage:implementing" sr_run_main ENG-T-SR5 implementing || true
+_first_args="$( { grep '^ARGS=ENG-T-SR5 ' "$SR_AT_CAPTURE" 2>/dev/null || true; } | head -1)"
+sr_seed_sentinel ENG-T-SR5   # re-seed because post-dispatch deleted the sentinel
+SR_STAGE_OF="stage:implementing" sr_run_main ENG-T-SR5 implementing || true
+_second_args="$( { grep '^ARGS=ENG-T-SR5 ' "$SR_AT_CAPTURE" 2>/dev/null || true; } | sed -n '2p')"
+if [[ -n "$_first_args" && "$_first_args" == "$_second_args" ]]; then
+  pass_at "SCO-REPLAY-IDEMPOTENT: second run apply_transition args identical to first"
+else
+  fail_at "SCO-REPLAY-IDEMPOTENT" \
+    "first=$_first_args second=$_second_args"
+fi
+
+# SCO-REPLAY-CONTINUE-COMPOSITE: simulates post-`decide --action continue` state
+# (halt-label-cleared via the new helper, sentinel still in place) and asserts
+# the D-002 branch still fires correctly. The cmd_decide path itself is covered
+# by bin/pipeline-test.sh::DEC-APPROVE-SCOPE-1..5 and PR-E; this test pins the
+# composition: continue clears halt → next replay fires D-002 → no
+# protocol-violation. We assert verdict_handler is NOT called (= no
+# protocol-violation can be posted).
+sr_reset
+sr_seed_sentinel ENG-T-SR6
+SR_STAGE_OF="stage:implementing" sr_run_main ENG-T-SR6 implementing || true
+_at_count="$(grep -c '^ARGS=ENG-T-SR6 implementing ui ' "$SR_AT_CAPTURE" 2>/dev/null || true)"
+_vh_called="$([[ -f "$SR_VH_FLAG" ]] && echo yes || echo no)"
+if [[ "$_at_count" -ge "1" && "$_vh_called" == "no" ]]; then
+  pass_at "SCO-REPLAY-CONTINUE-COMPOSITE: D-002 fires after continue clears halt; no protocol-violation"
+else
+  fail_at "SCO-REPLAY-CONTINUE-COMPOSITE" \
+    "at=$_at_count vh=$_vh_called"
+fi
+
 # ─── Case 25: _cost_flags_for tolerates corrupt JSON (review blocker 1) ──
 # Plan failure-mode → test-map row "usage-<stage>.json exists but
 # _cost_flags_for jq parse fails" requires a *malformed file* fixture, not
