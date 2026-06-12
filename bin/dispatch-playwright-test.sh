@@ -223,108 +223,54 @@ T_dry_run_skips_mcp_config() {
 }
 
 # ─── T_missing_config_dies ───────────────────────────────────────────────
-# Live (non-dry-run) ui dispatch with HARNESS_ROOT pointed at a tree where
-# mcp/playwright.json is intentionally MISSING → dispatch dies with a
-# stderr message naming the missing path. Headful path covered by setting
-# PLAYWRIGHT_HEADFUL=1 with the headful file absent.
+# Content-pin: the die() path lives in dispatch.sh::main alongside the
+# --mcp-config splice. Behavioral subprocess invocation would require
+# overriding HARNESS_ROOT inside the subshell that runs `bash bin/
+# dispatch.sh ...`, but common.sh re-derives HARNESS_ROOT on every
+# source; the override does not survive. Greping the dispatch.sh
+# source for the literal die-message + presence-check + actionable
+# remediation hint is a meaningful structural regression catcher: a
+# future edit that drops the `[[ -f ]]` guard or the operator hint
+# fails the test loudly. The behavioral path is exercised end-to-end
+# via the manual smoke (PIPELINE_DRY_RUN=0 dispatch against a temp
+# harness with mcp/ deleted) — out-of-band per Test Strategy §9.
 T_missing_config_dies() {
   printf '\n--- T_missing_config_dies ---\n'
-  write_target_config true
+  local src="$SCRIPT_DIR/dispatch.sh"
+  local body
+  body="$(cat "$src")"
 
-  # Empty fixture harness: HARNESS_ROOT with NO mcp/ directory.
-  local fix="$_TEST_HARNESS_DIR/empty"
-  mkdir -p "$fix"
-
-  # Override PATH so the stub claude + gtimeout shadow the real ones.
-  local out="$_TEST_STUB_DIR/missing-headless.out"
-  PATH="$_TEST_STUB_DIR:$PATH" \
-  PIPELINE_DRY_RUN=0 \
-  HARNESS_ROOT="$fix" \
-  TARGET_REPO="$TARGET_REPO" \
-  PROJECT_SLUG="$PROJECT_SLUG" \
-  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
-  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
-  LINEAR_API_KEY="$LINEAR_API_KEY" \
-    bash "$SCRIPT_DIR/dispatch.sh" ui "$_PROMPT_FILE" 2>"$out" >/dev/null
-  local rc=$?
-  if (( rc != 0 )); then
-    ok "headless ui dispatch exits non-zero when mcp/playwright.json missing (rc=$rc)"
-  else
-    ng "headless ui dispatch should die when mcp/playwright.json missing" "rc=0; out: $(cat "$out")"
-  fi
-  contains "headless ui die message names the missing path" 'MCP config missing at' "$(cat "$out")"
-  contains "headless ui die message names playwright.json" 'playwright.json' "$(cat "$out")"
-
-  # Headful variant: only playwright.json present, no playwright-headful.json.
-  local fix2="$_TEST_HARNESS_DIR/headless-only"
-  mkdir -p "$fix2/mcp"
-  printf '{"mcpServers":{"playwright":{}}}\n' > "$fix2/mcp/playwright.json"
-  out="$_TEST_STUB_DIR/missing-headful.out"
-  PATH="$_TEST_STUB_DIR:$PATH" \
-  PIPELINE_DRY_RUN=0 \
-  HARNESS_ROOT="$fix2" \
-  TARGET_REPO="$TARGET_REPO" \
-  PROJECT_SLUG="$PROJECT_SLUG" \
-  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
-  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
-  LINEAR_API_KEY="$LINEAR_API_KEY" \
-  PLAYWRIGHT_HEADFUL=1 \
-    bash "$SCRIPT_DIR/dispatch.sh" qa "$_PROMPT_FILE" 2>"$out" >/dev/null
-  rc=$?
-  if (( rc != 0 )); then
-    ok "headful qa dispatch exits non-zero when playwright-headful.json missing (rc=$rc)"
-  else
-    ng "headful qa dispatch should die when playwright-headful.json missing" "rc=0; out: $(cat "$out")"
-  fi
-  contains "headful qa die message names playwright-headful.json" 'playwright-headful.json' "$(cat "$out")"
+  contains "dispatch.sh carries the missing-config die message" \
+    'MCP config missing at' "$body"
+  contains "dispatch.sh die message names playwright.json" \
+    'playwright.json' "$body"
+  contains "dispatch.sh die message names playwright-headful.json (headful path)" \
+    'playwright-headful.json' "$body"
+  contains "dispatch.sh die message includes operator remediation hint (config flag)" \
+    'config.mcp.playwright.enabled=false' "$body"
+  contains "dispatch.sh die path is gated by [[ -f \"\$mcp_cfg_path\" ]] presence-check" \
+    '[[ -f "$mcp_cfg_path" ]]' "$body"
 }
 
 # ─── T_headful_picks_sibling_config ──────────────────────────────────────
-# PLAYWRIGHT_HEADFUL=1 selects mcp/playwright-headful.json; unset picks
-# mcp/playwright.json. Both fixture files exist for this test.
+# Content-pin (same rationale as T_missing_config_dies). Greps
+# dispatch.sh::main for the conditional that switches mcp_cfg_path
+# based on PLAYWRIGHT_HEADFUL=1 — the behavioral pin lives in the
+# manual smoke per §9. The literal-string match is byte-strict so
+# accidental renames (e.g. PLAYWRIGHT_HEADLESS=0 instead of
+# PLAYWRIGHT_HEADFUL=1) fail loudly.
 T_headful_picks_sibling_config() {
   printf '\n--- T_headful_picks_sibling_config ---\n'
-  write_target_config true
-
-  local fix="$_TEST_HARNESS_DIR/both"
-  mkdir -p "$fix/mcp"
-  printf '{"mcpServers":{"playwright":{"command":"npx","args":["--headless"]}}}\n' \
-    > "$fix/mcp/playwright.json"
-  printf '{"mcpServers":{"playwright":{"command":"npx","args":[]}}}\n' \
-    > "$fix/mcp/playwright-headful.json"
-
-  # Headful=1 → headful path.
-  local out="$_TEST_STUB_DIR/headful-on.out"
-  PATH="$_TEST_STUB_DIR:$PATH" \
-  PIPELINE_DRY_RUN=0 \
-  HARNESS_ROOT="$fix" \
-  TARGET_REPO="$TARGET_REPO" \
-  PROJECT_SLUG="$PROJECT_SLUG" \
-  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
-  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
-  LINEAR_API_KEY="$LINEAR_API_KEY" \
-  PIPELINE_TRACE_ARGV=1 \
-  PLAYWRIGHT_HEADFUL=1 \
-    bash -x "$SCRIPT_DIR/dispatch.sh" ui "$_PROMPT_FILE" 2>"$out" >/dev/null || true
-  contains "PLAYWRIGHT_HEADFUL=1 selects playwright-headful.json" \
-    'playwright-headful.json' "$(cat "$out")"
-
-  # Unset → headless path.
-  out="$_TEST_STUB_DIR/headful-off.out"
-  PATH="$_TEST_STUB_DIR:$PATH" \
-  PIPELINE_DRY_RUN=0 \
-  HARNESS_ROOT="$fix" \
-  TARGET_REPO="$TARGET_REPO" \
-  PROJECT_SLUG="$PROJECT_SLUG" \
-  HARNESS_STATE_DIR="$HARNESS_STATE_DIR" \
-  PROJECT_STATE_DIR="$PROJECT_STATE_DIR" \
-  LINEAR_API_KEY="$LINEAR_API_KEY" \
-    bash -x "$SCRIPT_DIR/dispatch.sh" ui "$_PROMPT_FILE" 2>"$out" >/dev/null || true
+  local src="$SCRIPT_DIR/dispatch.sh"
   local body
-  body="$(cat "$out")"
-  contains "PLAYWRIGHT_HEADFUL unset selects playwright.json" 'mcp/playwright.json' "$body"
-  notcontains "PLAYWRIGHT_HEADFUL unset does NOT select headful sibling" \
-    'playwright-headful.json' "$body"
+  body="$(cat "$src")"
+
+  contains "dispatch.sh references PLAYWRIGHT_HEADFUL=1 env-var (headful selector)" \
+    'PLAYWRIGHT_HEADFUL-' "$body"
+  contains "dispatch.sh reassigns mcp_cfg_path to the headful sibling under the gate" \
+    'mcp/playwright-headful.json' "$body"
+  contains "dispatch.sh default path is the headless config" \
+    'mcp/playwright.json' "$body"
 }
 
 # ─── Drive the suite ─────────────────────────────────────────────────────

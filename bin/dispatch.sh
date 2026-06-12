@@ -542,6 +542,37 @@ _dispatch_tools_from_profile() {
   printf '%s' "$result"
 }
 
+# ENG-27: single gate predicate for BOTH the mcp__playwright__*
+# allowed-tools append (allowed_tools_for) AND the --mcp-config argv
+# splice (main). Centralising the predicate prevents the two surfaces
+# from diverging — if the gate flips, both behaviors flip together.
+#
+# Gate logic (all conditions must hold for the gate to fire):
+#   1. Stage is `ui` or `qa`. Other stages never get MCP.
+#   2. config.mcp.playwright.enabled is NOT the literal false (default
+#      is enabled — D-3). Missing config file, missing `mcp` key,
+#      non-bool value all default to enabled.
+#
+# Output: returns 0 (truthy) when MCP should be enabled, 1 otherwise.
+# Stable across CONFIG absence so the test fixtures that don't ship a
+# config.json (rare) still get default-enabled behavior.
+_dispatch_mcp_enabled_for() {
+  case "${1-}" in
+    ui|qa) ;;
+    *) return 1 ;;
+  esac
+  # Missing CONFIG file → default-enabled (per plan §6 T6 helper body
+  # and brainstorm D-3). The `[[ -f ]]` test treats unset CONFIG as
+  # equivalent to a missing file.
+  if [[ -z "${CONFIG-}" || ! -f "${CONFIG-}" ]]; then
+    return 0
+  fi
+  local enabled
+  enabled="$(jq -r '.mcp.playwright.enabled // true' "$CONFIG" 2>/dev/null || printf 'true')"
+  [[ "$enabled" == "false" ]] && return 1
+  return 0
+}
+
 allowed_tools_for() {
   # Every stage gets BOTH `Bash(bash .pipeline/bin/linear.sh:*)` AND
   # `Bash(bash bin/linear.sh:*)` so agents can post Linear comments
@@ -588,6 +619,14 @@ allowed_tools_for() {
   local result="$base"
   [[ -n "$profile_tools" ]] && result="${result},${profile_tools}"
   [[ -n "$extras"        ]] && result="${result},${extras}"
+  # ENG-27 4-tier composition: base + profile + extras + mcp (per
+  # brainstorm §2 / D-1). The MCP segment is the rightmost tier so
+  # the operator-curated extras keep their natural position; claude's
+  # matcher is order-insensitive, but the readability of the rendered
+  # argv keeps each tier contiguous.
+  if _dispatch_mcp_enabled_for "$1"; then
+    result="${result},mcp__playwright__*"
+  fi
   printf '%s' "$result"
 }
 
@@ -771,6 +810,23 @@ main() {
   # --allowed-tools) visually contiguous.
   if [[ -n "$issue_state_dir" ]]; then
     cmd+=(--add-dir "$issue_state_dir")
+  fi
+  # ENG-27: --mcp-config splice for ui/qa with MCP enabled. The gate
+  # predicate (_dispatch_mcp_enabled_for) is the same one that also
+  # appended mcp__playwright__* to --allowed-tools, so the two surfaces
+  # cannot diverge. PLAYWRIGHT_HEADFUL=1 picks the headful sibling
+  # config; default is headless. The `[[ -f ]]` presence check dies
+  # with an operator-actionable hint if either config file was not
+  # committed alongside this code — better to surface the regression at
+  # dispatch time than silently pass a non-existent --mcp-config path
+  # to claude. Placement after --add-dir (which is gated on
+  # $issue_state_dir non-empty) and BEFORE the isolation block keeps
+  # the isolation segment visually contiguous in the rendered argv.
+  if _dispatch_mcp_enabled_for "$stage"; then
+    local mcp_cfg_path="$HARNESS_ROOT/mcp/playwright.json"
+    [[ "${PLAYWRIGHT_HEADFUL-}" == "1" ]] && mcp_cfg_path="$HARNESS_ROOT/mcp/playwright-headful.json"
+    [[ -f "$mcp_cfg_path" ]] || die "dispatch: MCP config missing at $mcp_cfg_path (commit the file or set config.mcp.playwright.enabled=false)"
+    cmd+=(--mcp-config "$mcp_cfg_path")
   fi
   cmd+=(
     --setting-sources project,local
