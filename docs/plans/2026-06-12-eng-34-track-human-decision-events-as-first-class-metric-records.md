@@ -19,8 +19,30 @@ pipeline-events.json registry, or the existing `halt-resume` emission.
 ## 2. Assumption Inventory
 
 Every fact below is verified at the cited `path:line` in this worktree.
-Branch-base freshness: `HEAD..origin/main` empty at plan time
-(origin/main = `c6722bc`; HEAD = `87bd94b`). No Task 0 rebase needed.
+
+**Branch-base freshness (refreshed 2026-06-12 plan re-dispatch).**
+`git log --oneline HEAD..origin/main` returns **27 commits** at plan time
+(origin/main = `707b597`; HEAD = `fc687ec`). The drift is ENG-125 (init-sh
+plan-stage validator + exit-code reallocation 39/40/41 → 45/46/47) plus
+its tests and prompt-rendering updates. NONE of those commits touch
+`bin/pipeline.sh`, `bin/pipeline-test.sh`, `bin/metrics.sh`,
+`bin/metrics-test.sh`, or `CLAUDE.md` — the entire production + test
+surface this plan modifies. Verified by `git diff --name-only HEAD
+origin/main` returning the ENG-125-only file set
+(AGENT_PROMPTS.md, bin/{common,dispatch,render-prompt,run-stage}.sh,
+bin/agent-prompts-content-test.sh, bin/common-test.sh,
+bin/dispatch-test.sh, bin/init-sh-validator-{,adversarial-}test.sh,
+bin/render-prompt-test.sh, learned-rules/harness/project-profile.md,
+plus ENG-125's own brainstorm/plan docs and a stale copy of this very
+plan/brainstorm pair).
+
+Because all `path:line` anchors below sit in files outside the drift
+set, they survive the rebase byte-for-byte; nevertheless **Task 0 in
+Backend Tasks performs the rebase first** so the implement agent's
+pre-commit gate (`.githooks/pre-commit`) inherits the ENG-125
+init-sh-validator tests that now ship with the harness — without the
+rebase those tests are absent from the worktree's `bin/` directory and
+the gate would error on missing sibling scripts.
 
 ### Codebase facts (verified against HEAD)
 
@@ -110,12 +132,17 @@ implicitly via the `.githooks/pre-commit` sweep (the full file list is
 in CLAUDE.md, and `pipeline-test.sh` is one of the canonical
 self-contained sibling tests).
 
-### Branch-base freshness
+### Branch-base freshness (re-stated for retrospective grep)
 
-`git log --oneline HEAD..origin/main` empty at plan time
-(origin/main = `c6722bc7b147cca2a9611d560332211cd845d021`; HEAD =
-`87bd94babf5caff017aff760c856a757a4312925`). No drift; all `path:line`
-references above are pinned against this HEAD.
+`git log --oneline HEAD..origin/main | wc -l` returns **27** at plan
+time (origin/main = `707b59752325804d4194e6d06dc9e3fffd58e3fb`;
+HEAD = `fc687ece0906269af2411927fbca3c4aae2479c4`). Clean drift
+(ENG-125 only — no file overlap with this plan's File Structure);
+handled via Task 0 rebase. All `path:line` references above were
+verified against the post-rebase byte-for-byte equivalent in
+`bin/pipeline.sh` / `bin/metrics.sh` / `bin/pipeline-test.sh` /
+`bin/metrics-test.sh` / `CLAUDE.md` (none of which are touched by
+ENG-125 — verified via `git diff --name-only HEAD origin/main`).
 
 ## System invariants
 
@@ -195,9 +222,51 @@ as space-separated `key=value` tokens — the same convention
 
 ## 5. Backend Tasks
 
-### Task 1: Add three helpers + one call site to `bin/pipeline.sh::cmd_decide`
+### Task 0: Rebase onto origin/main
 
 - `depends_on: []`
+- `touches: (worktree state only — no file edits in this task)`
+
+- [ ] **Step 1 — fetch + rebase.**
+  ```bash
+  git fetch origin main
+  git rebase origin/main
+  ```
+  Expect: clean rebase. The 27 commits in `HEAD..origin/main` at plan
+  time are entirely ENG-125 (init-sh plan-stage validator + sibling
+  tests + exit-code reallocation) and DO NOT overlap with the files
+  this plan modifies (`bin/pipeline.sh`, `bin/pipeline-test.sh`,
+  `bin/metrics.sh`, `bin/metrics-test.sh`, `CLAUDE.md`). If a conflict
+  surfaces, STOP and halt the implement dispatch — a sibling commit
+  touching one of the plan's files violates the freshness assumption
+  and the plan must be re-validated against the new main (see
+  "Branch-base freshness" in §2).
+
+- [ ] **Step 2 — re-verify the anchored `path:line` references.**
+  After the rebase, sanity-check that the anchors used by Tasks 1–4
+  still resolve:
+  ```bash
+  awk 'NR==471 || NR==502 || NR==574' bin/pipeline.sh
+  ```
+  Expect L471 to print `# cmd_decide <issue> --action <continue|approve|abandon> [--gate <gate>]`,
+  L502 to print `  # posting the decision comment. The decision comment follows below.`,
+  L574 to print `  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"`.
+  If any of these mis-match, halt the dispatch — silent drift in one
+  of the load-bearing anchors invalidates Task 1's content-anchored
+  insertions and the plan must be revised. (Tasks 1–4 are all
+  content-anchored so they survive small drift; the line-number
+  fingerprints above are a fail-fast sanity check, not the primary
+  boundary mechanism.)
+
+- [ ] **Step 3 — confirm rebase landed.**
+  ```bash
+  git log --oneline HEAD..origin/main
+  ```
+  Expect EMPTY output.
+
+### Task 1: Add three helpers + one call site to `bin/pipeline.sh::cmd_decide`
+
+- `depends_on: [0]`
 - `touches: bin/pipeline.sh::_pipeline_resolve_actor,
   bin/pipeline.sh::_pipeline_resolve_before_state,
   bin/pipeline.sh::_pipeline_emit_human_decision,
@@ -385,7 +454,7 @@ as space-separated `key=value` tokens — the same convention
 
 ### Task 2: Add five test cases to `bin/pipeline-test.sh`
 
-- `depends_on: [1]`
+- `depends_on: [0, 1]`
 - `touches: bin/pipeline-test.sh`
 
 - [ ] **Step 1 — locate insertion anchor.** Content anchor: the line
@@ -514,7 +583,7 @@ as space-separated `key=value` tokens — the same convention
 
 ### Task 3: Document the new event in `CLAUDE.md`
 
-- `depends_on: [1]`
+- `depends_on: [0, 1]`
 - `touches: CLAUDE.md`
 
 - [ ] **Step 1 — locate insertion anchor.** Content anchor: the
@@ -544,7 +613,7 @@ as space-separated `key=value` tokens — the same convention
 
 ### Task 4: Full gate + commit
 
-- `depends_on: [1, 2, 3]`
+- `depends_on: [0, 1, 2, 3]`
 - `touches: (verification + commit only)`
 
 - [ ] **Step 1 — run the pre-commit sweep:**
@@ -643,3 +712,16 @@ gate-runnable glob; the only test changes land in the existing
 `bin/pipeline-test.sh`. No token is removed from production code, so
 the removal-side sweep is vacuous. No update to
 `learned-rules/harness/project-profile.md` is required.
+
+**Rebase pre-condition (ENG-125 freshness):** Task 0 rebases the
+worktree onto `origin/main` before any other work. Without the rebase
+the implement agent's `.githooks/pre-commit` gate (Task 4 Step 1)
+would attempt to run the ENG-125 init-sh-validator tests
+(`bin/init-sh-validator-{,adversarial-}test.sh`) which do not yet
+exist in this branch's `bin/` tree, and the pre-commit hook's
+`KNOWN_BROKEN` allowlist excludes them — meaning a missing-file error
+at gate time. The rebase brings those files in. The plan's
+production-code files (`bin/pipeline.sh`, `bin/pipeline-test.sh`,
+`bin/metrics.sh`, `bin/metrics-test.sh`, `CLAUDE.md`) are NOT in
+ENG-125's diff, so the rebase is mechanical and Task 1's content
+anchors survive byte-for-byte.
