@@ -8,8 +8,7 @@
 #
 # Codes 36/37/38 are held by ENG-119 (review-payload-{malformed,
 # incomplete,missing}); codes 39/40/41 are held by ENG-117 (qa-payload-*);
-# ENG-113 (qa-predicate) lives at 42/43/44 — the gap was closed in review
-# iter-3 after the c6722bc rebase observed ENG-117 had taken 39/40/41.
+# ENG-113 (qa-predicate) lives at 42/43/44.
 #
 # Pattern: source-and-stub (CLAUDE.md "How tests work"). Tests invoke
 # bin/verify-qa.sh via direct CLI call (matches production invocation by
@@ -35,15 +34,14 @@ export PROJECT_SLUG=test-slug
 # D-011: predicate must live under $PROJECT_STATE_DIR. Override default.
 export PROJECT_STATE_DIR="$FIXTURE_DIR/project-state"
 mkdir -p "$PROJECT_STATE_DIR/ENG-1"
-# --worktree fence (finding #15) requires the path be a realpath
-# subpath of TARGET_REPO. Place the worktree fixture INSIDE TARGET_REPO
-# so realpath-on-realpath containment holds. V-4 grep target lives at
-# $WT_DIR/bin/verify-qa.sh; V-7's sample.txt lives at $WT_DIR/sample.txt.
-# WT_DIR replaces the original $FIXTURE_DIR/wt path; finding #25 noted
-# that V-7's grep target relied on V-4's mkdir, so we pre-create here.
+# --worktree fence requires the path be a realpath subpath of
+# TARGET_REPO. Place the worktree fixture INSIDE TARGET_REPO so
+# realpath-on-realpath containment holds. V-4 grep target lives at
+# $WT_DIR/bin/verify-qa.sh. Pre-create here so each test case does
+# not need its own mkdir.
 WT_DIR="$TARGET_REPO/wt"
 mkdir -p "$WT_DIR/bin"
-# Defensive path-shape guard before any rm -rf (finding #26).
+# Defensive path-shape guard before any rm -rf.
 _assert_temp_path() {
   case "$1" in
     /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*) return 0 ;;
@@ -77,8 +75,7 @@ EOF
 # Pull the LAST JSONL line (summary) and FIRST per-criterion line. The
 # per-criterion lines start at line 1 (validator emits no leading
 # diagnostics on the success path), but pull explicitly so future
-# additions (a header line, e.g.) don't break the assertion silently
-# (finding #24).
+# additions (a header line, e.g.) don't break the assertion silently.
 _summary_line() { printf '%s\n' "$1" | jq -c 'select(.summary == true)' 2>/dev/null; }
 _first_crit_line() { printf '%s\n' "$1" | jq -c 'select(.summary != true)' 2>/dev/null | head -1; }
 
@@ -213,8 +210,8 @@ else
 fi
 
 # ─── V-8: http_get stub → pass=true + curl argv verified ────────────
-# Finding #18: stub must verify --max-time 10 and the URL argument so a
-# regression that drops the timeout (DoS surface) trips this test.
+# Stub verifies --max-time 10 and the URL argument so a regression that
+# drops the timeout (DoS surface) trips this test.
 STUB_DIR="$FIXTURE_DIR/stubs"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/curl" <<'STUB'
@@ -304,12 +301,11 @@ stub_url="$(grep -c '^url_seen=http://example.test/$' "$STUB_LOG" || true)"
 stub_sS="$(grep -c '^sS_seen=1$' "$STUB_LOG" || true)"
 stub_k="$(grep -c '^k_seen=1$' "$STUB_LOG" || true)"
 total_calls="$(grep -c '^max_time_seen=' "$STUB_LOG" || true)"
-# Pin single-curl invocation. A regression to the pre-M9 two-curl shape
-# (one for status, one for body) logged max_time_seen=1 TWICE; the prior
-# `>= 1` assertion let it pass.
-# Pin -sS present and -k absent. A regression dropping -S would silently
-# eat curl stderr (triage-friction); a regression adding -k would
-# disable TLS verification (security regression).
+# Pin single-curl invocation. A two-curl shape (one for status, one for
+# body) would log max_time_seen=1 TWICE; a `>= 1` assertion would let
+# it pass silently. Also pin -sS present and -k absent: dropping -S
+# silently eats curl stderr (triage friction); adding -k disables TLS
+# verification (security regression).
 if (( rc == 0 )) \
    && printf '%s\n' "$per_criterion_line" | jq -e '.pass == true' >/dev/null 2>&1 \
    && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1 \
@@ -323,10 +319,9 @@ else
   fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl ONCE + -sS present + -k absent; got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, stub_sS=$stub_sS, stub_k=$stub_k, total_calls=$total_calls, stub_log=$(cat "$STUB_LOG")"
 fi
 
-# ─── V-8b: http_get expect_body_match true-path (M2 iter-3) ─────────
+# ─── V-8b: http_get expect_body_match true-path ─────────────────────
 # The stub writes "hello\n" to its -o path; predicate expects to match
-# "hello". Exercises the body-fetch + grep arm (verify-qa.sh:520-536)
-# that M9 introduced but had no test coverage.
+# "hello". Exercises the body-fetch + grep arm of _exec_http_get.
 : > "$STUB_LOG"  # rotate so V-8b doesn't accumulate V-8's counts
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
@@ -351,7 +346,7 @@ else
   fail_at "V-8b: body-match true-path" "expected pass=true + single curl; got rc=$rc, per=$per_criterion_line, summary=$summary_line, total_calls=$total_calls"
 fi
 
-# ─── V-8c: http_get expect_body_match false-path (M2 iter-3) ────────
+# ─── V-8c: http_get expect_body_match false-path ────────────────────
 # Stub writes "other\n"; predicate expects "hello". Body mismatch must
 # produce pass=false + detail naming "body did not match".
 : > "$STUB_LOG"
@@ -472,10 +467,10 @@ else
   fail_at "V-14: --worktree fence" "expected rc=43 + 'must be a subpath of'; got rc=$rc, out=$out"
 fi
 
-# ─── V-14b: --worktree under PROJECT_STATE_DIR/<ident>/worktree → accepted (C1)
-# Per-issue worktrees resolve to $PROJECT_STATE_DIR/<ident>/worktree/ — the
-# pre-fix fence rejected these because they are NOT a TARGET_REPO subpath.
-# Post-C1 fix: accept-list widens to include $PROJECT_STATE_DIR subpaths.
+# ─── V-14b: --worktree under PROJECT_STATE_DIR/<ident>/worktree → accepted
+# Per-issue worktrees resolve to $PROJECT_STATE_DIR/<ident>/worktree/ — a
+# TARGET_REPO-only fence would reject these. Accept-list widens to
+# include $PROJECT_STATE_DIR subpaths.
 ISSUE_WT="$PROJECT_STATE_DIR/ENG-1/worktree"
 mkdir -p "$ISSUE_WT/bin"
 printf '#!/bin/sh\n' > "$ISSUE_WT/bin/verify-qa.sh"
@@ -485,12 +480,12 @@ out="$(bash "$VERIFIER" validate "$f" --ident ENG-1 --worktree "$ISSUE_WT" 2>&1)
 summary_line="$(_summary_line "$out")"
 if (( rc == 0 )) \
    && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1; then
-  pass_at "V-14b: --worktree under PROJECT_STATE_DIR/<ident>/worktree → accepted (C1 widened fence)"
+  pass_at "V-14b: --worktree under PROJECT_STATE_DIR/<ident>/worktree → accepted (widened fence)"
 else
   fail_at "V-14b: per-issue worktree fence" "expected rc=0 + summary failed=0; got rc=$rc, summary=$summary_line"
 fi
 
-# ─── V-14c: no --worktree, PIPELINE_ISSUE_ID auto-derives per-issue worktree (C1)
+# ─── V-14c: no --worktree, PIPELINE_ISSUE_ID auto-derives per-issue worktree
 # AGENT_PROMPTS.md §6 invokes verify-qa.sh WITHOUT --worktree; the auto-derive
 # from PIPELINE_ISSUE_ID is what makes the documented invocation work.
 f="$(write_valid_predicate qa-predicate-ENG-1.json ENG-1)"
@@ -499,12 +494,12 @@ out="$(PIPELINE_ISSUE_ID=ENG-1 bash "$VERIFIER" validate "$f" --ident ENG-1 2>&1
 summary_line="$(_summary_line "$out")"
 if (( rc == 0 )) \
    && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1; then
-  pass_at "V-14c: no --worktree + PIPELINE_ISSUE_ID set → auto-derive (C1)"
+  pass_at "V-14c: no --worktree + PIPELINE_ISSUE_ID set → auto-derive"
 else
   fail_at "V-14c: auto-derive --worktree" "expected rc=0 + summary failed=0; got rc=$rc, out=$out"
 fi
 
-# ─── V-15: file_exists with symlink-pivot → pass=false (critical #4)
+# ─── V-15: file_exists with symlink-pivot → pass=false
 # Drop a symlink inside the worktree pointing at /etc/passwd. The
 # lexical D-013 guard accepts `path: "leak"` (no ../ no leading /);
 # only the executor's realpath containment check stops the exfiltration
@@ -532,10 +527,10 @@ else
   fail_at "V-15: symlink pivot" "expected rc=0 + pass=false + 'escapes worktree' detail; got rc=$rc, per=$per_criterion_line"
 fi
 
-# ─── V-16: predicate file > 64 KiB → rc=42 (M8 file-size cap) ──────
-# M8 replaced the criteria-count cap (which did NOT bound wall-clock — 64×60s
-# smoke = 64 min, past the 30 min dispatch watchdog) with a byte-size cap at
-# the authority phase, which actually bounds memory/parse cost.
+# ─── V-16: predicate file > 64 KiB → rc=42 (file-size cap) ─────────
+# The byte-size cap replaced a criteria-count cap which did NOT bound
+# wall-clock (64×60s smoke = 64 min, past the 30 min dispatch watchdog).
+# Bytes-per-parse is the cost that matters for DoS.
 LARGE="$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
 {
   printf '{\n  "qa_predicate_schema_version": 1,\n  "issue_id": "ENG-1",\n  "pass_criteria": [\n'
@@ -595,7 +590,7 @@ else
   fail_at "V-15b: two-hop chain" "expected rc=0 + pass=false + 'escapes worktree' detail; got rc=$rc, per=$per_criterion_line"
 fi
 
-# ─── V-23: bare '..' lexical guard → rc=43 (M1) ────────────────────
+# ─── V-23: bare '..' lexical guard → rc=43 ─────────────────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -608,12 +603,12 @@ EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
 if (( rc == 43 )) && [[ "$out" == *"path must be worktree-relative"* ]]; then
-  pass_at "V-23: file_exists bare '..' → exit 43 (M1 lexical guard widened)"
+  pass_at "V-23: file_exists bare '..' → exit 43 (lexical guard)"
 else
   fail_at "V-23: bare '..'" "expected rc=43 + 'path must be worktree-relative'; got rc=$rc, out=$out"
 fi
 
-# ─── V-24: http_get loopback host → rc=43 (C4 host-class denylist) ───
+# ─── V-24: http_get loopback host → rc=43 (host-class denylist) ──────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -626,12 +621,12 @@ EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
 if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
-  pass_at "V-24: http_get to 127.0.0.1 → exit 43 (C4 host-class denylist)"
+  pass_at "V-24: http_get to 127.0.0.1 → exit 43 (host-class denylist)"
 else
   fail_at "V-24: loopback denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
 fi
 
-# ─── V-25: http_get IMDS → rc=43 (C4 host-class denylist) ───────────
+# ─── V-25: http_get IMDS → rc=43 (host-class denylist) ──────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -644,12 +639,12 @@ EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
 if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
-  pass_at "V-25: http_get to 169.254.169.254 → exit 43 (C4 cloud-metadata denylist)"
+  pass_at "V-25: http_get to 169.254.169.254 → exit 43 (cloud-metadata denylist)"
 else
   fail_at "V-25: IMDS denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
 fi
 
-# ─── V-26: http_get RFC1918 private → rc=43 (C4) ────────────────────
+# ─── V-26: http_get RFC1918 private → rc=43 ─────────────────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -662,12 +657,12 @@ EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
 if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
-  pass_at "V-26: http_get to 10.0.0.1 → exit 43 (C4 RFC1918 denylist)"
+  pass_at "V-26: http_get to 10.0.0.1 → exit 43 (RFC1918 denylist)"
 else
   fail_at "V-26: RFC1918 denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
 fi
 
-# ─── V-27: grep against a directory → distinct diagnostic (m7) ──────
+# ─── V-27: grep against a directory → distinct diagnostic ──────────
 mkdir -p "$WT_DIR/somedir"
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
@@ -684,14 +679,14 @@ per_criterion_line="$(_first_crit_line "$out")"
 if (( rc == 0 )) \
    && printf '%s\n' "$per_criterion_line" | jq -e '.pass == false' >/dev/null 2>&1 \
    && printf '%s\n' "$per_criterion_line" | jq -e '.detail | type == "string" and (test("directory"; "i"))' >/dev/null 2>&1; then
-  pass_at "V-27: grep target is a directory → distinct 'directory' diagnostic (m7)"
+  pass_at "V-27: grep target is a directory → distinct 'directory' diagnostic"
 else
   fail_at "V-27: grep on directory" "expected pass=false + directory-named detail; got rc=$rc, per=$per_criterion_line"
 fi
 
-# ─── V-28: smoke runs at anchor cwd (M4) ───────────────────────────
-# Pre-M4: bash -c inherited the runner's PWD; smoke commands depending on
-# cwd would observe wherever verify-qa.sh was invoked from. Post-M4 the
+# ─── V-28: smoke runs at anchor cwd ─────────────────────────────────
+# A naive bash -c that inherits the runner's PWD would have smoke
+# commands observe wherever verify-qa.sh was invoked from. The
 # command's cwd is the worktree anchor.
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
@@ -708,16 +703,16 @@ out="$(cd / && bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-
 summary_line="$(_summary_line "$out")"
 if (( rc == 0 )) \
    && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1; then
-  pass_at "V-28: smoke 'pwd' matches anchor (M4: cwd at anchor, not runner's PWD)"
+  pass_at "V-28: smoke 'pwd' matches anchor (cwd at anchor, not runner's PWD)"
 else
   fail_at "V-28: smoke at anchor cwd" "expected rc=0 + summary failed=0 (pwd matched $WT_DIR); got rc=$rc, out=$out"
 fi
 
-# ─── V-30..V-34: M1 (review iter-3) IPv4/IPv6 encoding-bypass guard ─
-# Reviewer-cited cases — every one of these resolves to 127.0.0.1 or
-# 0.0.0.0 in curl. The canonical-form denylist arms below missed them.
-# Each case asserts the helper now refuses at validate-time (rc=43 +
-# 'host' in diagnostic) — symmetric with V-24/V-25/V-26.
+# ─── V-30..V-34: IPv4/IPv6 numeric-encoding bypass guard ────────────
+# Every one of these URLs resolves to 127.0.0.1 or 0.0.0.0 in curl. A
+# canonical-form-only denylist misses them. Each case asserts the
+# helper refuses at validate-time (rc=43 + 'host' in diagnostic) —
+# symmetric with V-24/V-25/V-26.
 _assert_url_denied() {
   local case_id="$1" url="$2"
   cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<EOF
@@ -732,7 +727,7 @@ EOF
   local _rc=0 _out
   _out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || _rc=$?
   if (( _rc == 43 )) && [[ "$_out" == *"host"* ]]; then
-    pass_at "$case_id: $url → exit 43 (C4 numeric-encoding guard, M1 iter-3)"
+    pass_at "$case_id: $url → exit 43 (numeric-encoding guard)"
   else
     fail_at "$case_id: $url" "expected rc=43 + 'host' in diagnostic; got rc=$_rc, out=$_out"
   fi
@@ -758,14 +753,14 @@ _assert_url_denied "V-30d" "http://[0:0:0:0:0:ffff:7f00:1]/"
 # strip it before the case-match.
 _assert_url_denied "V-30e" "http://[::1%eth0]/"
 
-# ─── V-35: case-insensitive scheme test (minor finding iter-3) ─────
+# ─── V-35: case-insensitive scheme test ─────────────────────────────
 # Pre-fix: ^https?:// was case-sensitive; HTTP://2130706433/ bypassed
 # the scheme gate AND combined with the encoding-bypass to land at
 # 127.0.0.1. Post-fix the URL is lowercased before the regex, so the
 # encoding-bypass guard above still fires.
 _assert_url_denied "V-35" "HTTP://2130706433/"
 
-# ─── V-36: M3 (review iter-3) — unknown kind rejection ─────────────
+# ─── V-36: unknown kind rejection ───────────────────────────────────
 # verify-qa.sh passes --kinds smoke,file_exists,grep,http_get; the
 # helper's fall-through emits 'unknown kind "X" (allowed: …)'. No prior
 # fixture exercised this arm; a regression dropping a kind from the
@@ -788,17 +783,17 @@ if (( rc == 43 )) \
    && [[ "$out" == *"file_exists"* ]] \
    && [[ "$out" == *"grep"* ]] \
    && [[ "$out" == *"http_get"* ]]; then
-  pass_at "V-36: kind='bogus' → exit 43 + 'unknown kind' + every allowed kind named (M3 iter-3)"
+  pass_at "V-36: kind='bogus' → exit 43 + 'unknown kind' + every allowed kind named"
 else
   fail_at "V-36: unknown kind" "expected rc=43 + 'unknown kind' + all 4 allowed kinds in diagnostic; got rc=$rc, out=$out"
 fi
 
-# ─── V-37/V-38/V-39: M4 (review iter-3) — qa_predicate_schema_version
-# wrong-type / wrong-value / missing branches. verify-qa.sh:227-239
-# has three rejection paths: missing, non-integer, !=1. Only "missing"
-# had implicit coverage via V-3. Future bump to schema_version=2 (a
-# real possibility) without updating the validator would silently
-# accept v2 documents on a v1 validator.
+# ─── V-37/V-38/V-39: qa_predicate_schema_version wrong-type /
+# wrong-value / missing branches. The schema validator has three
+# rejection paths: missing, non-integer, !=1. Without explicit
+# coverage, a future bump to schema_version=2 (a real possibility)
+# without updating the validator would silently accept v2 documents
+# on a v1 validator.
 #
 # V-37 — qa_predicate_schema_version absent → 'missing required field'.
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
@@ -812,7 +807,7 @@ EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
 if (( rc == 43 )) && [[ "$out" == *"missing required field"* ]] && [[ "$out" == *"qa_predicate_schema_version"* ]]; then
-  pass_at "V-37: qa_predicate_schema_version absent → exit 43 + 'missing required field' (M4 iter-3)"
+  pass_at "V-37: qa_predicate_schema_version absent → exit 43 + 'missing required field'"
 else
   fail_at "V-37: schema_version absent" "expected rc=43 + 'missing required field' + field name; got rc=$rc, out=$out"
 fi
@@ -830,7 +825,7 @@ EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
 if (( rc == 43 )) && [[ "$out" == *"must be an integer"* ]]; then
-  pass_at "V-38: qa_predicate_schema_version='one' → exit 43 + 'must be an integer' (M4 iter-3)"
+  pass_at "V-38: qa_predicate_schema_version='one' → exit 43 + 'must be an integer'"
 else
   fail_at "V-38: schema_version type" "expected rc=43 + 'must be an integer'; got rc=$rc, out=$out"
 fi

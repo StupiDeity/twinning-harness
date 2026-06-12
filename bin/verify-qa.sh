@@ -4,15 +4,15 @@
 # Usage:
 #   bash bin/verify-qa.sh validate <file> [--ident <ENG-N>] [--worktree <path>]
 #
-# Trust boundary (file header — finding #7):
+# Trust boundary:
 #   smoke.command runs UNDER bash -c, wrapped in gtimeout 60s. The QA agent
 #   authors the predicate inside a dispatched claude -p sandbox; the operator
 #   never types commands here. Treat smoke.command as agent-controlled but
 #   sandboxed (no envelope to Linear writes; no access outside worktree;
-#   60s wall-clock cap). gtimeout is REQUIRED — absence dies (M3) rather
+#   60s wall-clock cap). gtimeout is REQUIRED — absence dies rather
 #   than silently downgrading the wall-clock guarantee.
 #
-# --worktree fence (C1 review iter-2):
+# --worktree fence:
 #   When --worktree is passed, the value MUST be a subpath of TARGET_REPO
 #   OR a subpath of $PROJECT_STATE_DIR (which is where per-issue worktrees
 #   live). Bypassing the fence would let a malicious predicate pivot
@@ -21,18 +21,17 @@
 #   per-issue worktree at $(issue_dir "$PIPELINE_ISSUE_ID")/worktree is
 #   auto-derived — this is the form AGENT_PROMPTS.md §6 invokes.
 #
-# Exit codes (ENG-113; shifted 39/40/41 → 42/43/44 in review iter-3 after
-# ENG-117 took 39/40/41 on origin/main):
+# Exit codes (ENG-113; 42/43/44 — 39/40/41 are held by ENG-117 qa-payload-*):
 #   0  — predicate schema valid; per-criterion JSONL report emitted on
 #        stdout regardless of how many criteria failed (caller reads the
 #        summary line to decide verdict per D-008/D-012).
 #   42 — malformed: JSON parse error / not an object / predicate file
 #        lives outside $PROJECT_STATE_DIR (D-011 authority surface) /
-#        file size > 64 KiB (M8 — DoS-meaningful byte cap).
+#        file size > 64 KiB (DoS-meaningful byte cap).
 #   43 — incomplete: required field missing, wrong type, unknown kind,
 #        --ident mismatch, D-013 path-traversal violation in a
 #        file_exists / grep criterion (lexical guard; the executor adds
-#        a realpath symlink-pivot guard via `realpath -m`), or C4
+#        a realpath symlink-pivot guard via `realpath -m`), or
 #        host-class denylist hit on an http_get URL.
 #   44 — missing: predicate file does not exist at the given path.
 #
@@ -130,18 +129,18 @@ _parse_validate_argv() {
 
 # ─── Phase 2: authority surface (D-011) ──────────────────────────────
 # Predicate file must (a) exist (rc=44), (b) live under $PROJECT_STATE_DIR
-# realpath (rc=42), (c) be <= _QA_PREDICATE_MAX_BYTES bytes (rc=42, M8).
+# realpath (rc=42), (c) be <= _QA_PREDICATE_MAX_BYTES bytes (rc=42).
 # Splits the parent-realpath assignment so a failed cd properly trips
-# the `if !` (M2: the prior `if ! file_real="$(cd ... && pwd -P)/$(basename …)"`
-# rolled the last-command exit into basename — always 0 — and the error
-# was silently swallowed).
+# the `if !` — the inlined `if ! file_real="$(cd … && pwd -P)/$(basename …)"`
+# shape rolls the last-command exit into basename (always 0) and the
+# cd error is silently swallowed.
 _authority_check() {
   local file="$1"
   if [[ ! -f "$file" ]]; then
     printf 'qa-predicate-missing: file not found: %s\n' "$file"
     return 44
   fi
-  # M8: file-size cap at authority phase. Bounds memory/parse cost.
+  # File-size cap at authority phase. Bounds memory/parse cost.
   local size
   size="$(wc -c < "$file" 2>/dev/null | tr -d ' ')"
   if [[ -z "$size" ]] || (( size > _QA_PREDICATE_MAX_BYTES )); then
@@ -169,9 +168,9 @@ _authority_check() {
   return 0
 }
 
-# ─── Phase 3: --worktree fence (C1 widened, review iter-2) ───────────
+# ─── Phase 3: --worktree fence ───────────────────────────────────────
 # Accept-list for --worktree's realpath:
-#   - subpath of TARGET_REPO (original fence), OR
+#   - subpath of TARGET_REPO, OR
 #   - subpath of $PROJECT_STATE_DIR (per-issue worktrees live here).
 # When --worktree is empty, auto-derive from PIPELINE_ISSUE_ID
 # ($(issue_dir "$PIPELINE_ISSUE_ID")/worktree) — this is the shape
@@ -181,7 +180,7 @@ _worktree_fence() {
   local worktree="$1"
   RESOLVED_WORKTREE=""
   if [[ -z "$worktree" ]]; then
-    # C1 auto-derive: PIPELINE_ISSUE_ID points at the per-issue worktree.
+    # Auto-derive: PIPELINE_ISSUE_ID points at the per-issue worktree.
     if [[ -n "${PIPELINE_ISSUE_ID:-}" ]]; then
       local derived="$(issue_dir "$PIPELINE_ISSUE_ID")/worktree"
       if [[ -d "$derived" ]]; then
@@ -202,7 +201,7 @@ _worktree_fence() {
   fi
   local wt_real
   wt_real="$(cd "$worktree" && pwd -P)"
-  # C1: accept subpath of TARGET_REPO OR subpath of $PROJECT_STATE_DIR.
+  # Accept subpath of TARGET_REPO OR subpath of $PROJECT_STATE_DIR.
   local target_real="" state_real=""
   if [[ -n "${TARGET_REPO:-}" && -d "${TARGET_REPO:-}" ]]; then
     target_real="$(cd "$TARGET_REPO" && pwd -P)"
@@ -291,10 +290,10 @@ _validate_predicate_schema() {
     return 43
   fi
 
-  # Per-criterion schema validation via the shared helper. M7 (review
-  # iter-2): the helper sets $_VALIDATE_CRIT_DIAG on rc=34; this caller
-  # wraps with the `qa-predicate-incomplete:` prefix and returns rc=43
-  # (qa-predicate-incomplete) — independent of the helper's internal rc.
+  # Per-criterion schema validation via the shared helper. The helper
+  # sets $_VALIDATE_CRIT_DIAG on rc=34; this caller wraps with the
+  # `qa-predicate-incomplete:` prefix and returns rc=43 — independent
+  # of the helper's internal rc.
   local ci
   for (( ci=0; ci<pc_len; ci++ )); do
     if ! _validate_pass_criterion "$file" 0 "$ci" \
@@ -327,7 +326,7 @@ _execute_predicate() {
     total=$((total+1))
     local pass=false detail=null
     # The schema validator's --kinds gate makes any unrecognised kind
-    # unreachable here (C3): we don't need a `*)` fallthrough arm.
+    # unreachable here: we don't need a `*)` fallthrough arm.
     case "$kind" in
       smoke)
         _exec_smoke "$file" "$ci" "$anchor_real"
@@ -377,9 +376,9 @@ _exec_smoke() {
   cmd="$(jq -r --argjson j "$ci" '.pass_criteria[$j].command' "$file")"
   expect_exit="$(jq -r --argjson j "$ci" '.pass_criteria[$j].expect_exit' "$file")"
   expect_stdout_match="$(jq -r --argjson j "$ci" '.pass_criteria[$j].expect_stdout_match // null' "$file")"
-  # M3 (review iter-2): gtimeout REQUIRED — silent fallback contradicts
-  # the file-header invariant. CLAUDE.md guarantees Homebrew coreutils on
-  # PATH for launchd; absence is a host misconfig the operator must fix.
+  # gtimeout REQUIRED — silent fallback contradicts the file-header
+  # invariant. CLAUDE.md guarantees Homebrew coreutils on PATH for
+  # launchd; absence is a host misconfig the operator must fix.
   command -v gtimeout >/dev/null 2>&1 \
     || die "verify-qa.sh: gtimeout required (brew install coreutils); refusing to run smoke without wall-clock cap"
   # Smoke runs at the worktree anchor cwd, not the runner's PWD.
@@ -439,11 +438,10 @@ _canonical_path() {
 }
 
 # Resolve a worktree-relative path under the anchor, then assert the
-# realpath stays inside the anchor's realpath. C2 + M6 (review iter-2):
-# replaces the prior 50-LOC hand-rolled walker (which resolved only ONE
-# symlink hop, leaving the two-hop chain bypass `a -> b -> /etc/passwd`
-# wide open) with `_canonical_path` (grealpath -m / realpath -m).
-# Both canonicalise the FULL symlink chain in one call.
+# realpath stays inside the anchor's realpath. `_canonical_path`
+# (grealpath -m / realpath -m) canonicalises the FULL symlink chain in
+# one call so a two-hop chain `a -> b -> /etc/passwd` cannot escape via
+# the bypass a single-hop hand-rolled walker leaves wide open.
 # Returns 0 with RESOLVED_PATH populated; returns 1 with RESOLVED_DIAGNOSTIC
 # populated on escape.
 _resolve_inside_anchor() {
@@ -500,8 +498,8 @@ _exec_grep() {
     CRIT_DETAIL="$(jq -nc --arg p "$RESOLVED_PATH" '"target missing: " + $p')"
     return 0
   fi
-  # m7 (review iter-2): grep against a directory exits rc=2, which the
-  # executor mislabeled as "regex compile error". Distinct diagnostic.
+  # grep against a directory exits rc=2, which a naive executor would
+  # mislabel as "regex compile error". Surface a distinct diagnostic.
   if [[ -d "$RESOLVED_PATH" ]]; then
     CRIT_PASS=false
     CRIT_DETAIL="$(jq -nc --arg p "$path" '"target is a directory (grep needs a file): " + $p')"
@@ -522,12 +520,11 @@ _exec_grep() {
   fi
 }
 
-# M9 (review iter-2): single curl request that captures BOTH status AND
-# body in one round-trip. Prior shape did two requests (`-o /dev/null`
-# for status, then second request for body), which was a race against
-# load-balanced / A/B-tested servers. m8 (review iter-2): scheme +
-# host-class are gated at schema-validation; this executor trusts the
-# upstream validation.
+# Single curl request that captures BOTH status AND body in one
+# round-trip. A two-request shape (`-o /dev/null` for status, then a
+# second request for body) is a race against load-balanced / A/B-tested
+# servers. Scheme + host-class are gated at schema-validation time;
+# this executor trusts the upstream validation.
 _exec_http_get() {
   local file="$1" ci="$2"
   local url expect_status expect_body_match code curl_rc=0
@@ -573,7 +570,7 @@ _exec_http_get() {
 
 # ─── Orchestrator: cmd_validate ──────────────────────────────────────
 # Sequences phase 1 (argv) → phase 2 (authority) → phase 3 (worktree
-# fence) → snapshot the predicate to a mktemp (M5 TOCTOU) → phase 4
+# fence) → snapshot the predicate to a mktemp (TOCTOU closure) → phase 4
 # (schema) → phase 5 (executor). Each phase short-circuits on failure;
 # phase 5's per-criterion failures NEVER short-circuit.
 cmd_validate() {
