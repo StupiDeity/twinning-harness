@@ -77,7 +77,7 @@
         {
           "kind": "grep",
           "path": "CLAUDE.md",
-          "pattern": "Approved-but-stuck",
+          "pattern": "scope-approval-replay transitioned",
           "expect_match": true
         }
       ]
