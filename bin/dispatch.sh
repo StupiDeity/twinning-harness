@@ -553,6 +553,14 @@ _dispatch_tools_from_profile() {
 #      is enabled — D-3). Missing config file, missing `mcp` key,
 #      non-bool value all default to enabled.
 #
+# jq predicate: a naive `.mcp.playwright.enabled // true` is WRONG —
+# jq's `//` returns the right operand when the left is `null` OR
+# `false`, so it would collapse an explicit `false` to `true` and
+# the gate would silently leak MCP into config=false dispatches.
+# Use `== false` instead: returns the JSON boolean `true` ONLY when
+# the value is explicitly the literal false (missing, true, and any
+# non-bool all return JSON `false`, i.e. "not explicitly disabled").
+#
 # Output: returns 0 (truthy) when MCP should be enabled, 1 otherwise.
 # Stable across CONFIG absence so the test fixtures that don't ship a
 # config.json (rare) still get default-enabled behavior.
@@ -562,14 +570,11 @@ _dispatch_mcp_enabled_for() {
     *) return 1 ;;
   esac
   # Missing CONFIG file → default-enabled (per plan §6 T6 helper body
-  # and brainstorm D-3). The `[[ -f ]]` test treats unset CONFIG as
-  # equivalent to a missing file.
-  if [[ -z "${CONFIG-}" || ! -f "${CONFIG-}" ]]; then
-    return 0
-  fi
-  local enabled
-  enabled="$(jq -r '.mcp.playwright.enabled // true' "$CONFIG" 2>/dev/null || printf 'true')"
-  [[ "$enabled" == "false" ]] && return 1
+  # and brainstorm D-3).
+  [[ -f "${CONFIG-}" ]] || return 0
+  local explicit_false
+  explicit_false="$(jq -r '.mcp.playwright.enabled == false' "$CONFIG" 2>/dev/null || printf 'false')"
+  [[ "$explicit_false" == "true" ]] && return 1
   return 0
 }
 
