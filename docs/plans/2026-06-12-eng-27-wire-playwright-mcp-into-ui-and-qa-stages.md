@@ -55,7 +55,7 @@ This plan REMOVES no tokens from production code. No sibling test files contain 
 
 We add `bin/dispatch-playwright-test.sh`. Per ENG-122, `learned-rules/harness/project-profile.md` is listed in File Structure with a task updating the `## Build & test gates` Test command line to chain `&& bash bin/dispatch-playwright-test.sh` onto the existing string. The new test ALSO runs automatically via the pre-commit hook's `bin/*-test.sh` sweep (`.githooks/pre-commit`), so the gate string is the only profile-side update needed.
 
-## 3. System invariants
+## System invariants
 
 - **I-1 — Toolset and MCP config presence agree.** `_dispatch_mcp_enabled_for(stage)` is the single gate for both the `mcp__playwright__*` allowlist append and the `--mcp-config <path>` argv splice — the two cannot diverge. *verified_by: `task:T6`* (T6's smoke test `T_mcp_gate_coherent` in the new `bin/dispatch-playwright-test.sh` asserts the four-cell matrix: ui/qa × config{absent,true,false} × dry-run{0,1}; the gate-runnable test file is listed in T6's `touches:`).
 - **I-2 — Dry-run elides `--mcp-config` but PRESERVES the MCP allowlist entry.** Per D-5: the dry-run echo at `bin/dispatch.sh:682` must show `mcp__playwright__*` in `--allowed-tools` (test signal for wiring) but must NOT include `--mcp-config` (no MCP child spawn in dry-run). *verified_by: `task:T6`* (T6's `T_dry_run_keeps_allowlist` and `T_dry_run_skips_mcp_config` assertions in the new `bin/dispatch-playwright-test.sh`).
