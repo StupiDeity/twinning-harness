@@ -56,6 +56,7 @@ progress_md_path=_resolve_progress_md_path
 plan_json=_resolve_plan_json
 verdict_review_path=_resolve_verdict_review_path
 init_sh_path=_resolve_init_sh_path
+artifacts_dir=_resolve_artifacts_dir
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -101,6 +102,7 @@ _write_rendered_paths_sidecar() {
     [[ -n "${_RENDER_STAGE_SUMMARY_PATH:-}" ]] && printf 'stage_summary_path\t%s\n' "$_RENDER_STAGE_SUMMARY_PATH"
     [[ -n "${_RENDER_LEARNED_RULES_DIR:-}" ]]  && printf 'learned_rules_dir\t%s\n'  "$_RENDER_LEARNED_RULES_DIR"
     [[ -n "${_RENDER_PROGRESS_MD_PATH:-}" ]]   && printf 'progress_md_path\t%s\n'   "$_RENDER_PROGRESS_MD_PATH"
+    [[ -n "${_RENDER_ARTIFACTS_DIR:-}" ]]      && printf 'artifacts_dir\t%s\n'      "$_RENDER_ARTIFACTS_DIR"
     # plan_json's resolver `_resolve_plan_json` returns the FILE
     # CONTENTS, not the path — so we cannot reuse it here. The path
     # this sidecar is named after is `${_RENDER_PLAN_FILE%.md}.json`
@@ -273,6 +275,7 @@ _resolve_stage_summary_path() { printf '%s' "$_RENDER_STAGE_SUMMARY_PATH"; }
 _resolve_progress_md_path() { printf '%s' "$_RENDER_PROGRESS_MD_PATH"; }
 _resolve_verdict_review_path() { printf '%s' "$_RENDER_VERDICT_REVIEW_PATH"; }
 _resolve_init_sh_path() { printf '%s' "$_RENDER_INIT_SH_PATH"; }
+_resolve_artifacts_dir() { printf '%s' "$_RENDER_ARTIFACTS_DIR"; }
 _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
 # ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
 # resolvers (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
@@ -578,6 +581,13 @@ main() {
   # agent must Write to. Plan-stage filesystem detective in dispatch.sh
   # validates shape post-stream.
   _RENDER_INIT_SH_PATH="$(issue_dir "$issue_id")/init.sh"
+  # ENG-27: per-issue artifacts directory (Playwright screenshots etc.).
+  # Resolver returns the absolute path with trailing slash; the ui/qa
+  # AGENT_PROMPTS.md bodies reference it as {artifacts_dir} for the
+  # mcp__playwright__browser_take_screenshot filename arg. The
+  # directory itself is created in bin/run-stage.sh next to
+  # $(issue_dir) so writes succeed regardless of which stage runs.
+  _RENDER_ARTIFACTS_DIR="$(issue_dir "$issue_id")/artifacts/"
   # ENG-87 review-iter-7 M9: bind _RENDER_DISPATCH_ID like the sibling
   # _RENDER_* globals so resolver test isolation is uniform across the
   # registry. Falls through to empty when PIPELINE_DISPATCH_ID is unset

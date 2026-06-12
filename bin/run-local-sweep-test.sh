@@ -316,6 +316,18 @@ printf '?? .scratch/bte.md\0' \
 printf '?? .scratchpad\0' \
   | assert_partition scratch_path_boundary_not_matched implementing ENG-14 0 0 1
 
+# 29 (ENG-27 plan §8 F-5 row): agent forgets the `{artifacts_dir}/` prefix
+# when calling mcp__playwright__browser_take_screenshot, so the .png lands at
+# the worktree root instead of the artifacts dir. A root-level .png is in no
+# allowlist on ui|qa → partition routes it to the out-of-scope stream (FD5);
+# run-local.sh's self-leak handler then hard-fails it as a NEW untracked path.
+# Pins a concrete .png assertion so the plan §8 coverage claim is real, not
+# inferred from the generic untracked-path case.
+printf '?? ui-home-default.png\0' \
+  | assert_partition screenshot_root_leak_ui ui ENG-14 0 0 1
+printf '?? qa-checkout-error.png\0' \
+  | assert_partition screenshot_root_leak_qa qa ENG-14 0 0 1
+
 # AC-K2-PARALLEL-WORKERS (ENG-81 Task 5): structural assertions on the
 # scheduler/worker fork plumbing in bin/run-local.sh. The full end-to-end
 # fanout against stubbed poll.sh / run-stage.sh is deferred to QA per
