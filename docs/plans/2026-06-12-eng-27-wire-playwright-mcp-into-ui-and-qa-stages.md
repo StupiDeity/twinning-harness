@@ -16,7 +16,13 @@ Every fact below is verified at the cited `path:line` in this worktree. Brainsto
 
 ### Branch-base freshness
 
-`git log --oneline HEAD..origin/main` empty at plan time (origin/main = `c6722bc`); HEAD = `5e83ef8 chore(pipeline): brainstorming for ENG-27`. No Task 0 rebase required.
+`git log --oneline HEAD..origin/main` NON-EMPTY at plan time. origin/main = `707b597` (ENG-125 init.sh-validator merge); HEAD = `92a7911 chore(pipeline): plan for ENG-27`. Roughly 24 commits ahead on origin/main, dominated by ENG-125 which touched `bin/dispatch.sh`, `bin/render-prompt.sh`, `bin/run-stage.sh`, `AGENT_PROMPTS.md`, `learned-rules/harness/project-profile.md`, and `bin/common.sh`. None of those changes are semantically incompatible with this plan (ENG-125 adds an init.sh validator at planning stage; our edits add MCP wiring at the ui/qa dispatch path — orthogonal subsystems). However, every `path:line` informational hint in §2 was captured against HEAD before the ENG-125 merge, so the line numbers may drift by ~10-30 lines per file post-rebase. **Mitigation:** Task 0 (added below) MUST run a clean `git fetch origin main && git rebase origin/main` before any other task, and every subsequent task uses CONTENT anchors (literal strings, comment markers, function signatures) as the load-bearing boundary; line numbers are informational only. Specifically, ENG-125 added:
+- `bin/render-prompt.sh`: new `init_sh_path=_resolve_init_sh_path` PROMPT_RESOLVERS entry (~L57) and `_RENDER_INIT_SH_PATH="$(issue_dir "$issue_id")/init.sh"` binding in `main()` (~L579) — neither conflicts with this plan's `artifacts_dir` addition; they sit in the same regions and follow the same pattern.
+- `bin/dispatch.sh`: collapsed planning-detective stanza (~L353-359) and new `_assert_init_sh_well_formed` helper — orthogonal to `allowed_tools_for` / `main()`'s argv build.
+- `bin/run-stage.sh`: new `rc=39/40/41` arm in the dispatch_rc switch (~L1665) — orthogonal to the `mkdir -p` site at ~L1662.
+- `AGENT_PROMPTS.md`: §2 renumbered to step 8 in its completion-checklist header — does NOT touch §4 or §6.
+- `learned-rules/harness/project-profile.md`: `init-sh-validator-{test,adversarial-test}.sh` entries added to the implementing/qa allowlists and the Build & test gates Test command — does NOT touch `## File layout`.
+None of these changes block the planned edits; the implement agent re-verifies all path:line hints after Task 0's rebase and falls back to content anchors (which are immune to line-number drift) for the actual edits.
 
 ### Codebase facts (verified against current HEAD)
 
@@ -107,9 +113,19 @@ The first is exercised by Task 6's `bin/dispatch-playwright-test.sh`; the second
 
 ## 6. Backend Tasks
 
+### Task 0: Rebase onto origin/main
+
+- `depends_on: []`
+- `touches: (no files written; rebases the entire branch)`
+- [ ] Run `git fetch origin main` from the per-issue worktree.
+- [ ] Run `git rebase origin/main`. The brainstorm commit (`5e83ef8 chore(pipeline): brainstorming for ENG-27`) and plan commit (`92a7911 chore(pipeline): plan for ENG-27`) are the only commits ahead of base; both touch only `docs/brainstorms/` and `docs/plans/` and CANNOT conflict with ENG-125's `bin/` and `AGENT_PROMPTS.md` deltas. Rebase should be conflict-free. If a conflict surfaces, STOP and post `verdict halt --reason agent-blocked` with the conflicting file path — do NOT auto-resolve, because the conflict would indicate an unanticipated overlap with main that the brainstorm did not anticipate.
+- [ ] After the rebase completes, re-verify every `path:line` informational hint in §2 (Assumption Inventory). For each hint, run a quick `grep -n` against the cited file to confirm the literal content anchor is present (the line number itself may have drifted, but the anchor MUST still exist). Specifically re-verify: `bin/dispatch.sh::allowed_tools_for() {`, `bin/dispatch.sh:`'s `--add-dir "$issue_state_dir"` block, the `--setting-sources project,local` line, the `PIPELINE_DRY_RUN` early-return block; `bin/render-prompt.sh::PROMPT_RESOLVERS=`, the closing `'` of the registry, `_resolve_progress_md_path()` definition, `_write_rendered_paths_sidecar` brace block; `bin/run-stage.sh:`'s existing `mkdir -p "$(issue_dir "$ident")"` line; `bin/setup.sh::ALL_PHASES=(`; `AGENT_PROMPTS.md`'s `## 4. UI Agent (Frontend)` and `## 6. QA Agent` headers, the `Per-component UX checklist` literal, the `Second-reviewer pass (MANDATORY` literal, the `Coverage audit (proxy since` literal, and the `Regression-intent audit` literal; `learned-rules/harness/project-profile.md::## File layout` and `## Build & test gates`.
+- [ ] If ANY content anchor is missing after rebase (which would mean ENG-125 or another sibling ticket altered or removed the anchor), STOP, post `verdict halt --reason agent-blocked` with the missing-anchor surface, and request `pipeline:supersede` so this plan is re-drafted against the new main. Do NOT proceed to Tasks 1-8 with broken anchors.
+- [ ] Force-push the rebased branch (`git push --force-with-lease origin <branch>`) so the dispatch.sh allow-listed git operations recognize it. The implement agent's `Bash(git push:*)` allowlist permits this.
+
 ### Task 1: Create `mcp/playwright.json` and `mcp/playwright-headful.json`
 
-- `depends_on: [5]` — profile must list `mcp/` in `## File layout` first so the implement agent's tick-end scope sweep classifies these as in-scope.
+- `depends_on: [0, 5]` — profile must list `mcp/` in `## File layout` first (Task 5) so the implement agent's tick-end scope sweep classifies these as in-scope; rebase (Task 0) must run before anything.
 - `touches: mcp/playwright.json, mcp/playwright-headful.json`
 - [ ] Verify upstream `npx @playwright/mcp@latest --help` arg names. Brainstorm OQ-2: confirm `--headless` / `--headed` / `--browser` / `--viewport-size` / `--isolated` flags exist. If upstream's actual flag spelling differs, adapt the JSON `args` array. Do NOT speculate; run the help command locally first.
 - [ ] Create `mcp/playwright.json` with the headless template body (see File Structure §4 for the canonical shape). `mcpServers.playwright.command` is `npx`; `mcpServers.playwright.args` is the verified-upstream argv list.
@@ -118,7 +134,7 @@ The first is exercised by Task 6's `bin/dispatch-playwright-test.sh`; the second
 
 ### Task 2: Add `artifacts_dir` resolver to `bin/render-prompt.sh`
 
-- `depends_on: []`
+- `depends_on: [0]`
 - `touches: bin/render-prompt.sh::PROMPT_RESOLVERS, bin/render-prompt.sh::_resolve_artifacts_dir, bin/render-prompt.sh::_write_rendered_paths_sidecar, bin/render-prompt.sh::main`
 - [ ] Edit `PROMPT_RESOLVERS` (the literal-string registry between lines 40-58): AFTER the existing `verdict_review_path=_resolve_verdict_review_path` entry (the closing entry before the trailing `'`), insert a new line `artifacts_dir=_resolve_artifacts_dir`. Content anchor: the closing `'` of the registry, which is the only single-quote at column 0 between lines 40-60.
 - [ ] Add a new resolver function `_resolve_artifacts_dir() { printf '%s/artifacts/' "$(issue_dir "$_RENDER_ISSUE_ID")"; }` alongside the other `_resolve_*` functions. Content anchor: place adjacent to `_resolve_progress_md_path()` (find its definition via Grep; the function block starts with `_resolve_progress_md_path()` and ends with the matching `}`).
@@ -128,14 +144,14 @@ The first is exercised by Task 6's `bin/dispatch-playwright-test.sh`; the second
 
 ### Task 3: `mkdir -p artifacts/` in `bin/run-stage.sh`
 
-- `depends_on: []`
+- `depends_on: [0]`
 - `touches: bin/run-stage.sh`
 - [ ] Edit `bin/run-stage.sh` to add a new line `mkdir -p "$(issue_dir "$ident")/artifacts/"` immediately AFTER the existing line `mkdir -p "$(issue_dir "$ident")"` at line 1659. Content anchor: the literal `# Guarantee the per-issue state dir exists before dispatch so an agent's first` comment (above L1657) and the `mkdir -p "$(issue_dir "$ident")"` line at L1659. Place the new mkdir on the very next line.
 - [ ] Run `bash bin/run-stage-test.sh` and confirm pass.
 
 ### Task 4: AGENT_PROMPTS.md — §4 UI browser-verification block + §6 QA §3.5 block + D-10 stage-summary line
 
-- `depends_on: [2]` — `{artifacts_dir}` token must be a registered resolver before the prompt body references it (else `bin/render-prompt.sh:421` halts every ui/qa dispatch).
+- `depends_on: [0, 2]` — `{artifacts_dir}` token must be a registered resolver before the prompt body references it (else `bin/render-prompt.sh::resolve_block_tokens`'s unknown-token validator halts every ui/qa dispatch); rebase (Task 0) must run before anything.
 - `touches: AGENT_PROMPTS.md::§4 UI Agent, AGENT_PROMPTS.md::§6 QA Agent`
 - [ ] Edit §4 (UI). Insert a new H3-block immediately AFTER the "Per-component UX checklist" 8-item list's closing line `Require ≥7/8 items pass per component. Items 1, 3, 4 are P0 (never merge without them).` (L1122) and BEFORE the "Second-reviewer pass (MANDATORY — independent check):" anchor (L1124). Content anchor: the literal phrase `Require ≥7/8 items pass per component. Items 1, 3, 4 are P0 (never merge without them).`. Block title: `Browser verification (per-route gate) (MANDATORY when the profile names a frontend layer):`. Body:
   - Predicate (verbatim wording): *"the profile's Stack section names a frontend layer AND the plan's Frontend Tasks are not 'N/A' AND your work touched at least one route or component. If the predicate is false, skip THIS block but still emit the `Browser verification: skipped · reason=<token>` line below."*
@@ -149,14 +165,14 @@ The first is exercised by Task 6's `bin/dispatch-playwright-test.sh`; the second
 
 ### Task 5: project-profile.md `## File layout` — add `mcp/`
 
-- `depends_on: []`
+- `depends_on: [0]`
 - `touches: learned-rules/harness/project-profile.md::## File layout`
 - [ ] Edit `learned-rules/harness/project-profile.md`. Insert a new bullet `- \`mcp/\` — checked-in MCP server config files (e.g. \`playwright.json\` and \`playwright-headful.json\`) referenced by \`bin/dispatch.sh\` via \`$HARNESS_ROOT/mcp/\`. Per-stage MCP gating lives in \`bin/dispatch.sh::_dispatch_mcp_enabled_for\`; presence-check + die contract lives in \`dispatch.sh::main\`.` BETWEEN the `launchd/` bullet (L141 informational; content anchor: literal `\`launchd/\` — \`*.plist.template\`...`) and the `docs/brainstorms/` bullet (L142 informational; content anchor: literal `\`docs/brainstorms/\` and \`docs/plans/\`...`).
 - [ ] Run `bash bin/profile-allowlist-test.sh` and confirm pass (no behavioural change — the test pins the H2 section presence + parsing shape).
 
 ### Task 6: `bin/dispatch.sh` — `_dispatch_mcp_enabled_for` helper + allowed-tools splice + main argv splice + new sibling test
 
-- `depends_on: [1]` — config files must exist on disk before the dispatch path's `[[ -f "$mcp_cfg_path" ]]` check passes.
+- `depends_on: [0, 1]` — config files must exist on disk before the dispatch path's `[[ -f "$mcp_cfg_path" ]]` check passes (Task 1); rebase (Task 0) must run before anything.
 - `touches: bin/dispatch.sh::_dispatch_mcp_enabled_for, bin/dispatch.sh::allowed_tools_for, bin/dispatch.sh::main, bin/dispatch-playwright-test.sh`
 - [ ] Add helper `_dispatch_mcp_enabled_for(stage)` directly ABOVE the `allowed_tools_for() {` definition (content anchor: the literal `allowed_tools_for() {` at line 526). Body:
   - Stage gate: return non-zero unless stage is `ui` or `qa` (`case "$1" in ui|qa) ;; *) return 1 ;; esac`).
@@ -191,7 +207,7 @@ The first is exercised by Task 6's `bin/dispatch-playwright-test.sh`; the second
 
 ### Task 7: `bin/setup.sh` — `phase_playwright_install` + `ALL_PHASES` insert
 
-- `depends_on: []`
+- `depends_on: [0]`
 - `touches: bin/setup.sh::phase_playwright_install, bin/setup.sh::is_playwright_install_done, bin/setup.sh::ALL_PHASES`
 - [ ] Add `phase_playwright_install` function AFTER `is_validate_done` (content anchor: literal `is_validate_done() { return 1; }  # always re-run on demand`) and BEFORE the `# ── Phase 11: launchd ─────` H4 (content anchor: literal `# ── Phase 11: launchd`). Body:
   ```bash
@@ -217,7 +233,7 @@ The first is exercised by Task 6's `bin/dispatch-playwright-test.sh`; the second
 
 ### Task 8: project-profile.md `## Build & test gates` + profile-allowlist test for I-6
 
-- `depends_on: [6]` — the new test file must exist before the gate command tries to run it.
+- `depends_on: [0, 6]` — the new test file must exist before the gate command tries to run it (Task 6); rebase (Task 0) must run before anything.
 - `touches: learned-rules/harness/project-profile.md::## Build & test gates, bin/profile-allowlist-test.sh::T_profile_file_layout_lists_mcp`
 - [ ] Edit `learned-rules/harness/project-profile.md`. Append `&& bash bin/dispatch-playwright-test.sh` to the Test command string at line 17. Content anchor: the trailing closing-paren-and-comment that ends the Test command's `&&`-chain — specifically the literal `bash bin/retro-shape-claude-version-drift-test.sh\`` ending the chain. Insert `&& bash bin/dispatch-playwright-test.sh` BEFORE the closing backtick.
 - [ ] Add an assertion to `bin/profile-allowlist-test.sh` named `T_profile_file_layout_lists_mcp` that greps the profile's `## File layout` section for a `mcp/` bullet and fails loudly if absent. Anchors I-6 to a runnable test. Place the new function adjacent to existing `T_*` assertions; use the file's existing source-and-stub pattern.
