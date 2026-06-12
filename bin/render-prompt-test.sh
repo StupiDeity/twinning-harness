@@ -1129,8 +1129,10 @@ fi
 # PROMPT_RESOLVERS entry without updating the writer fails loudly here.
 printf '\n--- ENG-156: _write_rendered_paths_sidecar ---\n'
 
-# Case 156-W1: all six path-shaped resolver values bound → sidecar has
-# exactly six TSV lines, one per path-shaped resolver.
+# Case 156-W1: all seven path-shaped resolver values bound → sidecar has
+# exactly seven TSV lines, one per path-shaped resolver. ENG-27 added
+# artifacts_dir as the seventh; this fixture binds _RENDER_ARTIFACTS_DIR so
+# a deletion of the printf line in _write_rendered_paths_sidecar fails loudly.
 eng156_w1_sidecar="$sandbox/eng156-w1.tsv"
 # Pre-create the plan.json so the writer's [[ -f "$_pj_path" ]] guard
 # passes for the plan_json line.
@@ -1142,17 +1144,18 @@ run_resolver_body '
   _RENDER_STAGE_SUMMARY_PATH="/tmp/state/ENG-156W1/stage-summary-implementing.md"
   _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
   _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W1/progress.md"
+  _RENDER_ARTIFACTS_DIR="/tmp/state/ENG-156W1/artifacts/"
   _write_rendered_paths_sidecar "'"$eng156_w1_sidecar"'"
 ' 2>/dev/null
 if [[ -s "$eng156_w1_sidecar" ]] \
-  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "6" ]]; then
-  pass_at "ENG-156 W1: sidecar has exactly six TSV lines for the six path-shaped resolvers"
+  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "7" ]]; then
+  pass_at "ENG-156 W1: sidecar has exactly seven TSV lines for the seven path-shaped resolvers"
 else
   fail_at "ENG-156 W1: sidecar line count" \
-    "expected 6 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
+    "expected 7 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
 fi
 _eng156_w1_ok=1
-for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json; do
+for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json artifacts_dir; do
   if ! grep -qE "^${tok}"$'\t' "$eng156_w1_sidecar"; then
     _eng156_w1_ok=0
     break
