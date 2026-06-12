@@ -70,8 +70,22 @@ _poll_evaluate_skip() {
       if [[ "$cur_policy" == "retry-immediately" ]]; then
         log "poll: keeping retry-immediately state for $ident (active retry tracking, ENG-78)"
       else
-        log "poll: orphan state file for $ident (no skip label, policy=$cur_policy); removing"
-        rm -f "$state_file"
+        # SB-17 fix: do NOT rm the whole file — that discards the
+        # allocator fields (current_dispatch_seq/id) and resets the next
+        # dispatch to d0001, breaking ENG-87 monotonicity (duplicate
+        # progress.md entries → rc=31 on planning resume; stale same-id
+        # verdict matches in find_fresh_verdict). Strip classify fields
+        # but preserve {seq,id,stage}, mirroring continue's
+        # _pipeline_drain_issue_state (ENG-146). Idempotent: once
+        # stripped, the file keeps its allocator fields on subsequent ticks.
+        if jq -e 'has("current_dispatch_id") and (.current_dispatch_id // "") != ""' "$state_file" >/dev/null 2>&1; then
+          log "poll: orphan state file for $ident (no skip label, policy=$cur_policy); stripping classify fields, preserving dispatch-id (SB-17)"
+          strip_state_preserve_alloc "$state_file"
+        else
+          # zero-byte / corrupt / no allocator fields → remove (ENG-78 D-003)
+          log "poll: orphan state file for $ident (no skip label, policy=$cur_policy); removing (no allocator fields)"
+          rm -f "$state_file"
+        fi
       fi
     fi
     return 0
