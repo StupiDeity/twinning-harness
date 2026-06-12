@@ -54,31 +54,19 @@
 #   { "index": <int>, "kind": "<kind>", "pass": <bool>, "detail": <string|null> }   (one per criterion)
 #   { "summary": true, "total": <int>, "passed": <int>, "failed": <int>, "duration_s": <int> }
 
-# set -uo pipefail (no -e): per-criterion failures must NOT abort the loop —
-# the executor's contract is "always emit a summary line". A grep that
-# fails to match, a curl that times out, or a smoke command that exits
-# non-zero are NOT script-fatal; they flip `pass=false` and the loop
-# continues. Adding `-e` would short-circuit on the first failing
-# criterion and produce a truncated JSONL stream — the caller's
-# `passed/failed` tally would diverge from `total`.
+# No -e: per-criterion failures flip `pass=false` and the loop continues
+# so the JSONL stream always ends with a summary line.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# File-size cap at the authority phase. Earlier iterations used a
-# per-criterion count cap, which didn't actually bound wall-clock
-# (64 × 60s smoke = 64 min, past the 30 min dispatch watchdog).
-# Bytes-per-parse is the cost that matters for DoS.
+# Bytes-per-parse cap at the authority phase (bounds memory/parse cost).
 _QA_PREDICATE_MAX_BYTES=65536
 
-# Predicate snapshot path (set by cmd_validate; cleaned by EXIT trap).
-# Script-scope so the trap can see it even when cmd_validate dies via
-# a downstream `die` call (_canonical_path / _exec_smoke require
-# grealpath / gtimeout; absence is a host misconfig that hits exit 1
-# without cmd_validate's success-path `rm -f`). Pre-trap, the snapshot
-# leaked under $PROJECT_STATE_DIR/.verify-qa-snap/ on every die path.
+# Script-scope so the EXIT trap can clean the snapshot on die-paths
+# (e.g. _exec_smoke's gtimeout die) that bypass cmd_validate's `rm -f`.
 _VERIFY_QA_SNAP_FILE=""
 _verify_qa_cleanup_snap() {
   [[ -n "${_VERIFY_QA_SNAP_FILE:-}" ]] && rm -f "$_VERIFY_QA_SNAP_FILE"
@@ -136,11 +124,20 @@ _parse_validate_argv() {
 # cd error is silently swallowed.
 _authority_check() {
   local file="$1"
+  # Reject symlinks at the predicate path. `_authority_check` canonicalises
+  # the PARENT but suffixes the basename verbatim — a symlink `predicate.json
+  # -> /etc/shadow` would otherwise pass the parent-prefix check and the
+  # downstream `cp -f` would follow it. The QA agent emits the predicate
+  # via `Write` (no symlink creation surface); a symlink at this path is
+  # never legitimate.
+  if [[ -L "$file" ]]; then
+    printf 'qa-predicate-malformed: predicate file must not be a symlink: %s\n' "$file"
+    return 42
+  fi
   if [[ ! -f "$file" ]]; then
     printf 'qa-predicate-missing: file not found: %s\n' "$file"
     return 44
   fi
-  # File-size cap at authority phase. Bounds memory/parse cost.
   local size
   size="$(wc -c < "$file" 2>/dev/null | tr -d ' ')"
   if [[ -z "$size" ]] || (( size > _QA_PREDICATE_MAX_BYTES )); then
@@ -155,10 +152,6 @@ _authority_check() {
     return 42
   fi
   local file_real="$parent_real/$(basename "$file")"
-  if [[ -z "${PROJECT_STATE_DIR:-}" || ! -d "${PROJECT_STATE_DIR:-}" ]]; then
-    printf 'qa-predicate-malformed: $PROJECT_STATE_DIR is unset or not a directory: %s\n' "${PROJECT_STATE_DIR:-}"
-    return 42
-  fi
   local prefix_real
   prefix_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
   if [[ "$file_real" != "$prefix_real"/* ]]; then
@@ -202,22 +195,16 @@ _worktree_fence() {
   local wt_real
   wt_real="$(cd "$worktree" && pwd -P)"
   # Accept subpath of TARGET_REPO OR subpath of $PROJECT_STATE_DIR.
-  local target_real="" state_real=""
-  if [[ -n "${TARGET_REPO:-}" && -d "${TARGET_REPO:-}" ]]; then
-    target_real="$(cd "$TARGET_REPO" && pwd -P)"
-  fi
-  if [[ -n "${PROJECT_STATE_DIR:-}" && -d "${PROJECT_STATE_DIR:-}" ]]; then
-    state_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
-  fi
-  if [[ -z "$target_real" && -z "$state_real" ]]; then
-    printf 'qa-predicate-incomplete: neither $TARGET_REPO nor $PROJECT_STATE_DIR is set; cannot fence --worktree\n'
-    return 43
-  fi
+  # common.sh::require_env enforces TARGET_REPO; PROJECT_STATE_DIR is
+  # always derived. Trust both are set + readable here.
+  local target_real state_real
+  target_real="$(cd "$TARGET_REPO" && pwd -P)"
+  state_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
   local in_target=0 in_state=0
-  if [[ -n "$target_real" && ( "$wt_real" == "$target_real" || "$wt_real" == "$target_real"/* ) ]]; then
+  if [[ "$wt_real" == "$target_real" || "$wt_real" == "$target_real"/* ]]; then
     in_target=1
   fi
-  if [[ -n "$state_real" && ( "$wt_real" == "$state_real" || "$wt_real" == "$state_real"/* ) ]]; then
+  if [[ "$wt_real" == "$state_real" || "$wt_real" == "$state_real"/* ]]; then
     in_state=1
   fi
   if (( in_target == 0 && in_state == 0 )); then
@@ -367,8 +354,7 @@ _execute_predicate() {
 
 # ─── Per-kind executor arms ──────────────────────────────────────────
 # Each arm sets CRIT_PASS (true|false) and CRIT_DETAIL (jq-quoted JSON
-# value or literal `null`). bash-3 lacks namerefs, so caller globals are
-# the simplest robust hand-off.
+# value or literal `null`) via caller globals.
 
 _exec_smoke() {
   local file="$1" ci="$2" anchor_real="$3"
@@ -385,12 +371,9 @@ _exec_smoke() {
   # Brainstorm D-011 promises "Commands execute with cwd =
   # <worktree-from-flag-or-inferred>".
   local out actual_exit=0
-  # Detect cd failure up-front so the diagnostic distinguishes
-  # "anchor disappeared between fence and exec" (race against a prior
-  # criterion that removed the worktree, broken-symlink anchor, perms
-  # drift) from a plain exit-mismatch. Pre-fix, a failed cd silently
-  # populated actual_exit with cd's rc and the criterion reported a
-  # generic exit-mismatch with no signal that the command never ran.
+  # Probe `cd` so an "anchor disappeared" race (prior criterion rm'd the
+  # worktree, broken-symlink anchor, perms drift) is distinguishable
+  # from a plain exit-mismatch in the diagnostic.
   if ! ( cd "$anchor_real" 2>/dev/null ); then
     CRIT_PASS=false
     CRIT_DETAIL='"failed to cd to anchor"'
@@ -418,22 +401,27 @@ _exec_smoke() {
   fi
 }
 
-# macOS BSD realpath lacks -m (no canonicalisation of non-existent
-# paths). Homebrew coreutils ships `grealpath` (GNU) which has -m.
-# CLAUDE.md guarantees coreutils on PATH for launchd hosts. Prefer
-# grealpath when present; fall back to GNU `realpath -m` (Linux); die
-# if neither shape is available — the macOS BSD `realpath` would lie
-# about non-existent paths and we'd lose the symlink-pivot guard.
+# Prefer Homebrew coreutils' `grealpath -m` (macOS BSD realpath lacks -m
+# and would lie about non-existent paths, losing the symlink-pivot guard);
+# fall back to GNU `realpath -m` on Linux. The startup gate
+# `_check_canonical_path_available` ensures one of these is present, so
+# this helper does not need to die — by the time it runs, the host has
+# already been validated.
 _canonical_path() {
   local p="$1"
   if command -v grealpath >/dev/null 2>&1; then
     grealpath -m -- "$p" 2>/dev/null
     return $?
   fi
-  if realpath -m -- "$p" >/dev/null 2>&1; then
-    realpath -m -- "$p" 2>/dev/null
-    return $?
-  fi
+  realpath -m -- "$p" 2>/dev/null
+}
+
+# Hoisted from _canonical_path — runs once at cmd_validate startup
+# (before any JSONL emission). A die mid-loop would truncate the JSONL
+# stream and leave the caller unable to read a summary line.
+_check_canonical_path_available() {
+  command -v grealpath >/dev/null 2>&1 && return 0
+  realpath -m -- / >/dev/null 2>&1 && return 0
   die "verify-qa.sh: grealpath required (brew install coreutils) to canonicalise paths with non-existent leaves"
 }
 
@@ -575,6 +563,7 @@ _exec_http_get() {
 # phase 5's per-criterion failures NEVER short-circuit.
 cmd_validate() {
   _parse_validate_argv "$@" || return $?
+  _check_canonical_path_available
   _authority_check "$ARG_FILE" || return $?
   _worktree_fence "$ARG_WORKTREE" || return $?
   # Snapshot the predicate to a mktemp inside $PROJECT_STATE_DIR so
@@ -591,6 +580,12 @@ cmd_validate() {
     printf 'qa-predicate-malformed: cannot create snapshot dir under $PROJECT_STATE_DIR: %s\n' "$snap_dir"
     return 42
   }
+  # `mkdir -p` succeeds if snap_dir is a pre-existing symlink to e.g. /etc;
+  # the subsequent mktemp would then write outside $PROJECT_STATE_DIR.
+  if [[ -L "$snap_dir" ]]; then
+    printf 'qa-predicate-malformed: snapshot dir is a symlink: %s\n' "$snap_dir"
+    return 42
+  fi
   snap_file="$(mktemp "$snap_dir/predicate.XXXXXX" 2>/dev/null)"
   if [[ -z "$snap_file" ]]; then
     printf 'qa-predicate-malformed: mktemp failed under %s\n' "$snap_dir"

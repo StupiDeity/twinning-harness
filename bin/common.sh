@@ -93,47 +93,21 @@ qa_predicate_path() {
 }
 
 # Shared per-pass_criterion validator (brainstorm D-007 — single source
-# of truth for plan.json and qa-predicate JSON validation). Lifted from
-# bin/plan-schema.sh:181-260. Callers: plan-schema.sh::cmd_validate
-# (plan.json) and verify-qa.sh::cmd_validate (qa-predicate JSON). The
-# --kinds CSV restricts the allowed kind set; plan-schema passes
-# "smoke,file_exists,grep"; verify-qa passes "smoke,file_exists,grep,http_get".
-# The `http_get` kind validates `url` (non-empty string starting with
-# http:// or https://), `expect_status` (integer), and optional
-# `expect_body_match` (string|null).
-# The `file_exists` and `grep` kinds additionally enforce D-013
-# path-traversal hardening: reject leading `/` and any `..` path-segment;
-# exempt `smoke` (commands run any binary) and `http_get` (URLs are
-# not filesystem paths). Returns rc=34 on any failure with a
-# diagnostic shape. The helper writes the body of its diagnostic into the
-# `_VALIDATE_CRIT_DIAG` global on rc=34; the caller is responsible for
-# prepending its own `<contract>-incomplete:` prefix and emitting.
-# The `--shape flat|nested` flag picks the jq index expression — `nested`
-# (default) is plan-schema's `features[$i].pass_criteria[$j]`, `flat`
-# is verify-qa's top-level `pass_criteria[$j]`.
+# of truth for plan.json and qa-predicate JSON validation). Callers:
+# plan-schema.sh::cmd_validate (plan.json) and verify-qa.sh::cmd_validate
+# (qa-predicate JSON). `--kinds` restricts the allowed kind set (plan
+# passes smoke/file_exists/grep; verify-qa adds http_get). `--shape`
+# picks the jq index expression — nested for plan-schema's
+# `features[$i].pass_criteria[$j]`, flat for verify-qa's top-level
+# `pass_criteria[$j]`. file_exists/grep enforce D-013 path-traversal
+# (reject leading `/` and any `..` segment); http_get gates scheme +
+# host-class denylist (loopback / RFC1918 / IMDS / IPv6 ULA / numeric
+# encodings — see _url_host_class_denied).
 #
-# Deliberate behaviour change vs the pre-lift code (bin/plan-schema.sh@ce8df8d):
-# the per-kind unknown-field warning loop (smoke_unknown / fe_unknown /
-# grep_unknown) was NOT lifted. Original plan-schema emitted a stderr
-# `log "[plan-schema] warning: unknown pass_criteria[<kind>] field: <f>"`
-# for every field outside the allowed set. The warning was advisory
-# (exit 0 path), pinned no test, and would have become misleading when
-# called from verify-qa (the prefix would still read "[plan-schema]").
-# Caller-tag plumbing for a never-pinned advisory was rejected as
-# YAGNI. The top-level `keys - [allowed]` unknown-field warning at
-# plan-schema.sh's pre-feature gate still fires; only the per-criterion
-# warning was dropped. If a future caller needs per-criterion unknown-
-# field signal, restore via a `--warn-tag <caller>` flag here.
+# On rc=34 the helper writes the diagnostic body to $_VALIDATE_CRIT_DIAG;
+# the caller prepends its own `<contract>-incomplete:` prefix and emits.
 #
 # Usage: _validate_pass_criterion <file> <fi> <ci> [--kinds <csv>] [--shape flat|nested]
-#   <file>  — JSON file under inspection
-#   <fi>    — feature index for diagnostics (verify-qa passes 0)
-#   <ci>    — criterion index for diagnostics
-#   --kinds  — CSV of allowed kinds (default: smoke,file_exists,grep)
-#   --shape  — jq path shape: nested|flat (default: nested)
-#
-# On rc=34, the caller MUST read `$_VALIDATE_CRIT_DIAG` and format its
-# own diagnostic; the helper does NOT emit to stdout/stderr itself.
 _validate_pass_criterion() {
   local file="$1" fi="$2" ci="$3"
   shift 3
@@ -303,6 +277,11 @@ _url_host_class_denied() {
     # `%<zone>` suffixes on link-local addresses; without this strip,
     # the case-arms below miss the literal denylist match.
     host="${host%%%*}"
+  elif [[ "$host" == *:*:* ]]; then
+    # Unbracketed IPv6 (port requires brackets, so any multi-colon host
+    # IS the address). Pre-fix `host="${host%%:*}"` truncated `::1` at
+    # the first colon to an empty string that bypassed every literal arm.
+    host="${host%%%*}"
   else
     # IPv4/hostname:port — strip the port.
     host="${host%%:*}"
@@ -313,6 +292,8 @@ _url_host_class_denied() {
   # / no colon) that parse as a number — decimal, hex, or octal — are
   # IPv4 shorthand curl resolves.
   case "$host" in
+    # Multi-component host (dotted IPv4/hostname or colon-bearing IPv6) —
+    # skip the single-component numeric-shorthand guards below.
     *.*|*:*) ;;
     0x*) return 0 ;;                  # hex IPv4 (e.g. 0x7f000001)
     0) return 0 ;;                    # bare zero → 0.0.0.0 on Linux
