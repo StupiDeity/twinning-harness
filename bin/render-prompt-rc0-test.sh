@@ -480,6 +480,29 @@ else
   ok "ENG-140 case N: PIPELINE_LOOPBACK_SOURCE=reviewing + qa-file present → sentinel (no stale qa-findings leak)"
 fi
 
+# ─── ENG-113 case O: {qa_predicate_path} resolves on a qa-stage render ────
+# The §6 prompt body carries the literal token {qa_predicate_path}, and
+# render-prompt.sh::PROMPT_RESOLVERS registers `qa_predicate_path` →
+# `_resolve_qa_predicate_path`. main() binds _RENDER_QA_PREDICATE_PATH via
+# common.sh::qa_predicate_path(issue_id). After resolution, the rendered
+# prompt MUST contain the full absolute-path shape `<issue-dir>/qa-predicate-<ISSUE>.json`
+# — basename-only would pass even if a regression dropped the directory
+# prefix and emitted just the filename (broken authority surface).
+ISSUE_DIR_O="$sandbox/state/test-slug-rc0/ENG-87R6X-O"
+rm -rf "$ISSUE_DIR_O"; mkdir -p "$ISSUE_DIR_O"
+out_o="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-O 2>/dev/null || true)"
+EXPECTED_O="$sandbox/state/test-slug-rc0/ENG-87R6X-O/qa-predicate-ENG-87R6X-O.json"
+if grep -qF "$EXPECTED_O" <<<"$out_o"; then
+  ok "ENG-113 case O: {qa_predicate_path} resolves to $EXPECTED_O on qa-stage render"
+else
+  fail "ENG-113 case O: {qa_predicate_path} resolves on qa-stage render" \
+       "expected absolute-path substring '$EXPECTED_O' missing from rendered prompt — out tail: $(tail -10 <<<"$out_o" | tr '\n' ' ')"
+fi
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

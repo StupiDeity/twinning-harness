@@ -80,6 +80,353 @@ progress_md_path() {
   [[ -n "$issue" ]] || die "progress_md_path: missing issue id"
   printf '%s/progress.md' "$(issue_dir "$issue")"
 }
+
+# ENG-113: per-issue qa-predicate JSON path. Mirrors progress_md_path;
+# consumed by bin/verify-qa.sh and the {qa_predicate_path} prompt resolver.
+# The file lives under $(issue_dir "$issue") — i.e. inside $PROJECT_STATE_DIR,
+# OUTSIDE the worktree (D-011 authority surface: verify-qa.sh asserts the
+# file path is anchored under $PROJECT_STATE_DIR before opening it).
+qa_predicate_path() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "qa_predicate_path: missing issue id"
+  printf '%s/qa-predicate-%s.json' "$(issue_dir "$issue")" "$issue"
+}
+
+# Shared per-pass_criterion validator (brainstorm D-007 — single source
+# of truth for plan.json and qa-predicate JSON validation). Callers:
+# plan-schema.sh::cmd_validate (plan.json) and verify-qa.sh::cmd_validate
+# (qa-predicate JSON). `--kinds` restricts the allowed kind set (plan
+# passes smoke/file_exists/grep; verify-qa adds http_get). `--shape`
+# picks the jq index expression — nested for plan-schema's
+# `features[$i].pass_criteria[$j]`, flat for verify-qa's top-level
+# `pass_criteria[$j]`. file_exists/grep enforce D-013 path-traversal
+# (reject leading `/` and any `..` segment); http_get gates scheme +
+# host-class denylist (loopback / RFC1918 / IMDS / IPv6 ULA / numeric
+# encodings — see _url_host_class_denied).
+#
+# On rc=34 the helper writes the diagnostic body to $_VALIDATE_CRIT_DIAG;
+# the caller prepends its own `<contract>-incomplete:` prefix and emits.
+#
+# Usage: _validate_pass_criterion <file> <fi> <ci> --kinds <csv> --shape flat|nested
+_validate_pass_criterion() {
+  local file="$1" fi="$2" ci="$3"
+  shift 3
+  local kinds_csv="" shape=""
+  _VALIDATE_CRIT_DIAG=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --kinds)
+        [[ $# -ge 2 ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --kinds requires a value"; return 34; }
+        kinds_csv="$2"; shift 2 ;;
+      --shape)
+        [[ $# -ge 2 ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --shape requires a value"; return 34; }
+        case "$2" in flat|nested) shape="$2" ;;
+                     *) _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --shape must be flat or nested, got $2"; return 34 ;; esac
+        shift 2 ;;
+      *) _VALIDATE_CRIT_DIAG="_validate_pass_criterion: unknown flag $1"; return 34 ;;
+    esac
+  done
+  [[ -n "$kinds_csv" ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --kinds is required"; return 34; }
+  [[ -n "$shape" ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --shape is required"; return 34; }
+  local pc_jq
+  if [[ "$shape" == "nested" ]]; then
+    pc_jq=".features[\$i].pass_criteria[\$j]"
+  else
+    pc_jq=".pass_criteria[\$j]"
+  fi
+  # Diagnostic locator: nested → "features[FI].pass_criteria[CI]";
+  # flat → "pass_criteria[CI]". Avoids the §11 "operator confusion"
+  # where flat-shape diagnostics referenced a phantom features[0] index.
+  local loc
+  if [[ "$shape" == "nested" ]]; then
+    loc="features[$fi].pass_criteria[$ci]"
+  else
+    loc="pass_criteria[$ci]"
+  fi
+  local kind
+  kind="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.kind // \"MISSING\"" "$file")"
+  if [[ "$kind" == "MISSING" ]]; then
+    _VALIDATE_CRIT_DIAG="$loc.kind is required"
+    return 34
+  fi
+
+  # Enforce --kinds gate (rejects unknown kinds, AND rejects allowed kinds
+  # the caller did not enable — e.g. plan-schema rejects http_get).
+  local kind_allowed=0
+  local IFS_save="$IFS"; IFS=','
+  for allowed in $kinds_csv; do
+    [[ "$kind" == "$allowed" ]] && kind_allowed=1
+  done
+  IFS="$IFS_save"
+  if (( kind_allowed == 0 )); then
+    _VALIDATE_CRIT_DIAG="$loc: unknown kind \"$kind\" (allowed: $kinds_csv)"
+    return 34
+  fi
+
+  case "$kind" in
+    smoke)
+      local cmd_val cmd_type exit_type
+      cmd_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.command | type" "$file")"
+      cmd_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.command // \"MISSING\"" "$file")"
+      if [[ "$cmd_val" == "MISSING" || "$cmd_type" != "string" || -z "$cmd_val" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (smoke): command must be a non-empty string"
+        return 34
+      fi
+      exit_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_exit | type" "$file")"
+      if [[ "$exit_type" != "number" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (smoke): expect_exit must be an integer, got type=$exit_type"
+        return 34
+      fi
+      # expect_stdout_match: string|null. Empty-string is explicitly rejected
+      # — a zero-width regex matches every output, which is never what an
+      # author intends; treat it as a schema defect rather than a tautology.
+      local esm_type esm_val
+      esm_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_stdout_match | type" "$file")"
+      if [[ "$esm_type" != "string" && "$esm_type" != "null" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (smoke): expect_stdout_match must be string or null, got type=$esm_type"
+        return 34
+      fi
+      if [[ "$esm_type" == "string" ]]; then
+        esm_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_stdout_match" "$file")"
+        if [[ -z "$esm_val" ]]; then
+          _VALIDATE_CRIT_DIAG="$loc (smoke): expect_stdout_match must be a non-empty string (use null for 'any output')"
+          return 34
+        fi
+      fi
+      ;;
+    file_exists)
+      _validate_relative_path "$file" "$fi" "$ci" "$pc_jq" "$loc" "file_exists" || return 34
+      ;;
+    grep)
+      local pattern_val pattern_type em_type
+      _validate_relative_path "$file" "$fi" "$ci" "$pc_jq" "$loc" "grep" || return 34
+      pattern_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.pattern | type" "$file")"
+      pattern_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.pattern // \"MISSING\"" "$file")"
+      if [[ "$pattern_val" == "MISSING" || "$pattern_type" != "string" || -z "$pattern_val" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (grep): pattern must be a non-empty string"
+        return 34
+      fi
+      em_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_match | type" "$file")"
+      if [[ "$em_type" != "boolean" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (grep): expect_match must be a boolean, got type=$em_type"
+        return 34
+      fi
+      ;;
+    http_get)
+      local url_val url_type es_type ebm_type
+      url_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.url | type" "$file")"
+      url_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.url // \"MISSING\"" "$file")"
+      if [[ "$url_val" == "MISSING" || "$url_type" != "string" || -z "$url_val" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (http_get): url must be a non-empty string"
+        return 34
+      fi
+      # Restrict url scheme to http:// or https://. Blocks file://
+      # (filesystem exfiltration via curl), gopher:// (SMTP smuggling),
+      # ftp:// (unencrypted egress), and cloud-metadata SSRF chains that
+      # need a non-http scheme to land. https:// IS accepted so the
+      # predicate stays usable against external services.
+      # Lowercase the URL before the scheme test so `HTTP://...` does
+      # not bypass the gate and combine with an IPv4 encoding bypass
+      # against the host-class denylist below.
+      local _url_lc
+      _url_lc="$(printf '%s' "$url_val" | tr '[:upper:]' '[:lower:]')"
+      if [[ ! "$_url_lc" =~ ^https?:// ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (http_get): url must use http:// or https:// scheme, got: $url_val"
+        return 34
+      fi
+      # Reject URLs whose host targets loopback, link-local, RFC1918,
+      # IMDS, or IPv6 ULA. Brainstorm threat model "no out-of-worktree
+      # access" is broader than scheme-only; the literal-string denylist
+      # catches every hostname-form SSRF target. DNS rebinding is not in
+      # scope (the agent runs in a single-user sandbox; an active DNS
+      # attacker is outside the threat model).
+      if _url_host_class_denied "$url_val"; then
+        _VALIDATE_CRIT_DIAG="$loc (http_get): url host is on the denylist (loopback / link-local / RFC1918 / IMDS / IPv6 ULA): $url_val"
+        return 34
+      fi
+      es_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_status | type" "$file")"
+      if [[ "$es_type" != "number" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (http_get): expect_status must be an integer, got type=$es_type"
+        return 34
+      fi
+      ebm_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_body_match | type" "$file")"
+      if [[ "$ebm_type" != "string" && "$ebm_type" != "null" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (http_get): expect_body_match must be string or null, got type=$ebm_type"
+        return 34
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# Extract the host from a URL and test it against the deny-by-default
+# host-class denylist. Returns 0 (denied) when the host matches
+# loopback / link-local / RFC1918 / IMDS / IPv6 ULA OR a numeric-
+# encoding IPv4 alias (decimal/hex/octal IPv4, IPv4-mapped IPv6) of
+# one of those classes. Returns 1 otherwise. Operates on the URL's
+# host string only; no DNS resolution (which would add a dig
+# dependency and DNS-rebinding race).
+#
+# A canonical-form-only denylist misses every well-known IPv4/IPv6
+# numeric-encoding bypass curl resolves:
+#   http://2130706433/     → decimal of 127.0.0.1
+#   http://0x7f000001/     → hex of 127.0.0.1
+#   http://0177.0.0.1/     → octal first octet
+#   http://0/              → bare 0 → 0.0.0.0 on Linux
+#   http://[::ffff:7f00:1]/ → IPv6 hex of ::ffff:127.0.0.1
+# The numeric-encoding guard below refuses these shapes at validate
+# time. DNS rebinding remains out of scope per the brainstorm threat
+# model (single-user sandbox; active DNS attacker not in model).
+_url_host_class_denied() {
+  local url="$1"
+  # Strip scheme.
+  local rest="${url#*://}"
+  # Strip path/query/fragment BEFORE stripping userinfo. `${rest##*@}` is
+  # greedy: applied to the whole URL it would consume through any `@` in
+  # path/query/fragment, leaving an attacker-controlled trailing string
+  # that masquerades as the host. RFC 3986 puts `@` only inside the
+  # authority component; curl parses the same way (authority ends at the
+  # first `/`), so e.g. `http://127.0.0.1/@public.com/` connects to
+  # 127.0.0.1 while the pre-reorder validator saw `public.com`. Same
+  # parser-divergence class as the iter-3 case-insensitive scheme and
+  # iter-5 unbracketed-IPv6 truncation. Isolate the authority first, THEN
+  # drop userinfo inside it.
+  local host="${rest%%/*}"
+  host="${host%%\?*}"
+  host="${host%%#*}"
+  # Strip userinfo (anything before final `@` in the authority).
+  host="${host##*@}"
+  # IPv6 form is [::1]:8080 — keep the inner address; strip brackets.
+  if [[ "$host" == \[*\]* ]]; then
+    host="${host%%\]*}"; host="${host#\[}"
+    # Strip IPv6 zone-id (RFC 6874): `[::1%eth0]` → `::1`. curl accepts
+    # `%<zone>` suffixes on link-local addresses; without this strip,
+    # the case-arms below miss the literal denylist match.
+    host="${host%%%*}"
+  elif [[ "$host" == *:*:* ]]; then
+    # Unbracketed IPv6. RFC 3986 §3.2.2 requires `[...]` brackets to
+    # disambiguate the address-port boundary in a URL, but curl
+    # tolerates bracket-less multi-colon forms (`http://::1/foo`),
+    # so we treat any host with two or more colons as an IPv6
+    # address. Strip only the zone-id (no port to strip — the
+    # bracketless form has no port-component). Pre-fix
+    # `host="${host%%:*}"` truncated `::1` to an empty string at
+    # the first colon, bypassing every literal denylist arm.
+    host="${host%%%*}"
+  else
+    # IPv4/hostname:port — strip the port.
+    host="${host%%:*}"
+  fi
+  # Lowercase for case-insensitive comparison.
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  # Strip trailing root-label dot(s) — the FQDN/absolute form. `localhost.`,
+  # `0.0.0.0.`, `::1.`, `0.` are all root-anchored names that getaddrinfo and
+  # curl resolve identically to their dotless spelling, but the exact-match and
+  # numeric-shorthand arms below match the dotless form only. Normalizing the
+  # trailing dot HERE — before every numeric guard and case-arm — closes the
+  # whole trailing-dot representation class in one place (every arm benefits at
+  # once) rather than bolting on a per-literal `localhost.`/`0.0.0.0.` arm. This
+  # is the same normalize-then-match discipline as the case / bracket / zone-id
+  # / userinfo strips above; matching the recurring parser-divergence class
+  # (iter-3 case, iter-5 unbracketed-IPv6, iter-7/8 ::-collapse) at the
+  # normalization layer is what stops the next syntactic variant from slipping
+  # past. The loop also collapses pathological multi-dot suffixes (`localhost..`).
+  while [[ "$host" == *. ]]; do host="${host%.}"; done
+  # IPv4 numeric-encoding bypass guard. Single-component hosts (no dot
+  # / no colon) that parse as a number — decimal, hex, or octal — are
+  # IPv4 shorthand curl resolves.
+  case "$host" in
+    # Multi-component host (dotted IPv4/hostname or colon-bearing IPv6) —
+    # skip the single-component numeric-shorthand guards below.
+    *.*|*:*) ;;
+    0x*) return 0 ;;                  # hex IPv4 (e.g. 0x7f000001)
+    0) return 0 ;;                    # bare zero → 0.0.0.0 on Linux
+    0[0-9]*) return 0 ;;              # octal IPv4 (length > 1, leading 0)
+    *)
+      # Pure decimal integer host — IPv4 shorthand
+      # (e.g. 2130706433 → 127.0.0.1). Reject all such hosts.
+      if [[ "$host" =~ ^[0-9]+$ ]]; then return 0; fi
+      ;;
+  esac
+  # Dotted-form with hex (0x..) or octal-leading (0[0-9]+) octets —
+  # non-canonical IPv4 representations. Match any position so
+  # 0x7f.0x0.0x0.0x1 / 0177.0.0.1 / 192.0x7f.0.1 all hit.
+  case "$host" in
+    0x*.*|*.0x*) return 0 ;;
+    0[0-9]*.*|*.0[0-9]*) return 0 ;;
+  esac
+  case "$host" in
+    localhost|0.0.0.0) return 0 ;;
+    127.*) return 0 ;;
+    10.*) return 0 ;;
+    192.168.*) return 0 ;;
+    169.254.*) return 0 ;;
+    172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
+    # Three parallel IPv6 expansion axes — loopback (::1), unspecified
+    # (::, resolves to ::1 on Linux outbound connect), IPv4-mapped
+    # (::ffff:*, wraps every IPv4 address including denylisted ones).
+    # For each axis the curl resolver accepts the canonical short form,
+    # the canonical long form (full eight groups), and every partial-
+    # collapse variant where `::` expands to a run of `0:` groups. Each
+    # literal arm matches one syntactic form so the closures are easy
+    # to audit; a normalizer would be one extra moving part on the
+    # SSRF-critical path.
+    # — loopback (::1):
+    ::1) return 0 ;;
+    0:0:0:0:0:0:0:1) return 0 ;;
+    0::1|0:0::1|0:0:0::1|0:0:0:0::1|0:0:0:0:0::1|0:0:0:0:0:0::1) return 0 ;;
+    ::0:1|::0:0:1|::0:0:0:1|::0:0:0:0:1|::0:0:0:0:0:1|::0:0:0:0:0:0:1) return 0 ;;
+    # — unspecified (::):
+    ::|0:0:0:0:0:0:0:0) return 0 ;;
+    0::|0:0::|0:0:0::|0:0:0:0::|0:0:0:0:0::|0:0:0:0:0:0::|0:0:0:0:0:0:0::) return 0 ;;
+    ::0|::0:0|::0:0:0|::0:0:0:0|::0:0:0:0:0|::0:0:0:0:0:0|::0:0:0:0:0:0:0) return 0 ;;
+    # — IPv4-mapped (::ffff:*) — trailing IPv4 octets vary by target:
+    ::ffff:*) return 0 ;;
+    0:0:0:0:0:ffff:*) return 0 ;;
+    0::ffff:*|0:0::ffff:*|0:0:0::ffff:*|0:0:0:0::ffff:*|0:0:0:0:0::ffff:*) return 0 ;;
+    # fe80::/10 = link-local; fc00::/7 = ULA.
+    fe80:*|fc[0-9a-f][0-9a-f]:*|fd[0-9a-f][0-9a-f]:*) return 0 ;;
+  esac
+  return 1
+}
+
+# Internal helper: validate a `.path` field on a pass_criterion for the
+# `file_exists` / `grep` kinds. Enforces D-013 lexical traversal guard
+# (rejects leading `/` and any `..` path-segment) and the non-empty /
+# string-type contract. Two arms (file_exists, grep) share this body —
+# centralised so the security guard cannot drift between them.
+# Returns rc=34 on any failure (caller propagates as a single ||).
+#
+# Symlink resolution (executor side) is NOT done here: the validator is
+# pre-execution, and the executor (`bin/verify-qa.sh`) resolves the path
+# against the worktree anchor at run time. The lexical guard here closes
+# the obvious string-shape attacks; the executor's realpath check closes
+# the symlink-pivot vector.
+_validate_relative_path() {
+  local file="$1" fi="$2" ci="$3" pc_jq="$4" loc="$5" kind="$6"
+  local path_val path_type
+  path_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path | type" "$file")"
+  path_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.path // \"MISSING\"" "$file")"
+  # D-013 lexical traversal guard runs BEFORE the non-empty / type check
+  # so `path: "/etc/passwd"` cannot slip past the type test (string +
+  # non-empty) before the worktree-relative gate fires.
+  # Include bare ".." — without it, `path: ".."` slips through and lets
+  # _resolve_inside_anchor confirm parent-dir existence as an oracle.
+  if [[ "$path_val" == /* \
+        || "$path_val" == .. \
+        || "$path_val" == ../* \
+        || "$path_val" == */../* \
+        || "$path_val" == */.. ]]; then
+    _VALIDATE_CRIT_DIAG="$loc ($kind): path must be worktree-relative (no leading '/' and no '..' path-segment), got: $path_val"
+    return 34
+  fi
+  if [[ "$path_val" == "MISSING" || "$path_type" != "string" || -z "$path_val" ]]; then
+    _VALIDATE_CRIT_DIAG="$loc ($kind): path must be a non-empty string"
+    return 34
+  fi
+  return 0
+}
+
 # Compute a stable sha256 over the set of files that drive pipeline
 # behavior from the main dev dir. Intentionally excludes metrics/ and
 # learned-rules/ (churn every tick). Emits a single hex digest, no
@@ -385,6 +732,9 @@ failure_outcome_for_exit() {
     39) printf 'qa-payload-malformed' ;;
     40) printf 'qa-payload-incomplete' ;;
     41) printf 'qa-payload-missing' ;;
+    42) printf 'qa-predicate-malformed' ;;  # ENG-113
+    43) printf 'qa-predicate-incomplete' ;; # ENG-113
+    44) printf 'qa-predicate-missing' ;;    # ENG-113
     45) printf 'init-sh-malformed' ;;
     46) printf 'init-sh-incomplete' ;;
     47) printf 'init-sh-missing' ;;
@@ -545,7 +895,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

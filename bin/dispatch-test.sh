@@ -100,6 +100,27 @@ for stage in brainstorming planning implementing ui reviewing qa building releas
   fi
 done
 
+# ─── ENG-113: verify-qa.sh dual-path on qa arm ──────────────────────
+# The qa stage's allowed_tools_for output MUST contain BOTH:
+#   Bash(bash .pipeline/bin/verify-qa.sh:*)
+#   Bash(bash bin/verify-qa.sh:*)
+# Mirror of the linear.sh dual-path check above. Without both, the QA
+# agent's `bash bin/verify-qa.sh validate {qa_predicate_path}` call would
+# be sandbox-denied on whichever layout (.pipeline/ or harness-self/bin/)
+# does NOT match the single entry. Reviewer iter-6 M4: previous closure
+# was implement-time only (a runtime check in dispatch.sh); a durable
+# test pin guards against silent regression.
+qa_tools="$(allowed_tools_for qa 2>/dev/null)"
+if ! printf '%s' "$qa_tools" | grep -q 'Bash(bash \.pipeline/bin/verify-qa\.sh:\*)'; then
+  fail_at "ENG-113: qa allowlist contains Bash(bash .pipeline/bin/verify-qa.sh:*)" \
+    "tools=$qa_tools"
+elif ! printf '%s' "$qa_tools" | grep -q 'Bash(bash bin/verify-qa\.sh:\*)'; then
+  fail_at "ENG-113: qa allowlist contains Bash(bash bin/verify-qa.sh:*)" \
+    "tools=$qa_tools"
+else
+  pass_at "ENG-113: qa allowlist carries verify-qa.sh dual-path"
+fi
+
 # ─── ENG-120: metrics.sh dual-path on implementing arm ────────────────
 # The implementing stage gains Bash(bash .pipeline/bin/metrics.sh:*) AND
 # Bash(bash bin/metrics.sh:*) so the within-stage iteration loop's

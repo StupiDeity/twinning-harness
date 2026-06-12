@@ -253,6 +253,38 @@ else
     "literal 'QA → implement loopback handling' header missing from §3 — has the QA-loopback block been removed or its header renamed?"
 fi
 
+# ─── ENG-113: §6 contains the new "Emit verification predicate" step ───
+# The QA prompt MUST instruct the agent to emit a structured verification
+# predicate at dispatch start so the verification half of QA is scriptable
+# without invoking claude. Pin the distinctive bold-header phrase so a
+# future edit that removes the step trips here.
+if printf '%s\n' "$s6" | grep -qF 'Emit verification predicate'; then
+  ok "§6 ENG-113: 'Emit verification predicate' step present"
+else
+  nope "§6 ENG-113: 'Emit verification predicate' step present" \
+    "literal 'Emit verification predicate' phrase missing from §6 — has the step been removed or its bold header renamed?"
+fi
+
+# ─── ENG-113: §6 references the {qa_predicate_path} render token ─────
+# Finding #16 (review iter 1): the §6 pin must ALSO check that the
+# `{qa_predicate_path}` placeholder is present, so a future edit that
+# removes the step's Write target — but leaves the bold header for
+# context — still trips here. Two assertions: presence + count >= 2
+# (Write step + validator-invocation step both interpolate the token).
+if printf '%s\n' "$s6" | grep -qF '{qa_predicate_path}'; then
+  ok "§6 ENG-113: '{qa_predicate_path}' token present"
+else
+  nope "§6 ENG-113: '{qa_predicate_path}' token present" \
+    "literal '{qa_predicate_path}' placeholder missing from §6 — has the resolver token been removed?"
+fi
+qa_pred_count="$(printf '%s\n' "$s6" | grep -cF '{qa_predicate_path}' || true)"
+if (( qa_pred_count >= 2 )); then
+  ok "§6 ENG-113: '{qa_predicate_path}' appears in both Write + validator-invocation steps (count=$qa_pred_count)"
+else
+  nope "§6 ENG-113: '{qa_predicate_path}' multi-site pin (count=$qa_pred_count, need >=2)" \
+    "expected the token in at least the Write target AND the verify-qa validate command line — finding #16 calibration"
+fi
+
 # ─── ENG-109: {progress_md_path} now present in §§1, 3, 4, 5, 6, 7;
 # absent from §8 (released uses the legacy sed pass which substitutes
 # only {version}/{tag}/{prev_tag}/{issue_id} — {progress_md_path} would

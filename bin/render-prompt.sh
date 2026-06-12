@@ -56,6 +56,7 @@ progress_md_path=_resolve_progress_md_path
 plan_json=_resolve_plan_json
 verdict_review_path=_resolve_verdict_review_path
 init_sh_path=_resolve_init_sh_path
+qa_predicate_path=_resolve_qa_predicate_path
 artifacts_dir=_resolve_artifacts_dir
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
@@ -275,6 +276,7 @@ _resolve_stage_summary_path() { printf '%s' "$_RENDER_STAGE_SUMMARY_PATH"; }
 _resolve_progress_md_path() { printf '%s' "$_RENDER_PROGRESS_MD_PATH"; }
 _resolve_verdict_review_path() { printf '%s' "$_RENDER_VERDICT_REVIEW_PATH"; }
 _resolve_init_sh_path() { printf '%s' "$_RENDER_INIT_SH_PATH"; }
+_resolve_qa_predicate_path() { printf '%s' "$_RENDER_QA_PREDICATE_PATH"; }
 _resolve_artifacts_dir() { printf '%s' "$_RENDER_ARTIFACTS_DIR"; }
 _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
 # ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
@@ -581,6 +583,11 @@ main() {
   # agent must Write to. Plan-stage filesystem detective in dispatch.sh
   # validates shape post-stream.
   _RENDER_INIT_SH_PATH="$(issue_dir "$issue_id")/init.sh"
+  # ENG-113: per-issue qa-predicate path resolved at render time. The
+  # value is the absolute on-disk path where the QA agent writes
+  # qa-predicate-<ident>.json (D-001 path-shaped resolver). Composes on
+  # common.sh::qa_predicate_path which mirrors progress_md_path's shape.
+  _RENDER_QA_PREDICATE_PATH="$(qa_predicate_path "$issue_id")"
   # ENG-27: per-issue artifacts directory (Playwright screenshots etc.).
   # Resolver returns the absolute path with trailing slash; the ui/qa
   # AGENT_PROMPTS.md bodies reference it as {artifacts_dir} for the

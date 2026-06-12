@@ -20,7 +20,8 @@
     "plan-contract-invalid",
     "review-payload-invalid",
     "qa-payload-invalid",
-    "sandbox-contract-violation"
+    "sandbox-contract-violation",
+    "qa-predicate-invalid"
   ],
   "wait_reasons": [
     "awaiting-approval",

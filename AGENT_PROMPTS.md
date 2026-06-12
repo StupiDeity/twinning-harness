@@ -839,7 +839,7 @@ and the rest of THIS block does not apply. Otherwise:
   3. Do NOT post `verdict pass` if any P0 finding remains uncommitted. The branch's git log is the only authoritative record of work done — re-emitting the prior `completion/implementing/{issue_id}` body via the overwrite-on-every-dispatch contract without making fresh commits is the same NOOP-loopback failure mode the review-loopback block guards against.
   4. **Scope-drift restraint — a QA finding is NOT authorization to expand scope.** The brainstorm and plan are the only authorization surfaces for behavior in this PR. If addressing a finding would require behavior the brainstorm/plan did not authorize — a new defensive layer, a new contract field, a new validation outcome, a new metric — STOP and file it as a follow-up via `<!-- meta: metric name=plan_gap -->` with the finding text and the brainstorm/plan section that should have covered it.
      - Carve-out: fixing a real bug that the QA test exposed IS in scope by construction. The plan's Failure Mode → Test Map enumerates the bugs each test guards against; if a test is failing because the code is wrong AND the test correctly encodes the plan's expected behavior, the fix is authorized even if the brainstorm did not enumerate the specific code path. Distinguish "the test reveals a bug in code the plan told you to write" (FIX IT) from "the QA agent wrote an adversarial test exposing a contract the plan did not specify" (FILE `plan_gap`, do NOT silently expand contract).
-     - Concrete failure (mirror of the ENG-123 review-loopback example): an adversarial QA test asserting a 404 response shape the plan never specified is NOT authorization to add 404-shape code paths. QA's adversarial-testing budget (§6 step 5) is exploratory; its tests become specification only via a `plan_gap` follow-up.
+     - Concrete failure (mirror of the ENG-123 review-loopback example): an adversarial QA test asserting a 404 response shape the plan never specified is NOT authorization to add 404-shape code paths. QA's adversarial-testing budget (§6 step 6) is exploratory; its tests become specification only via a `plan_gap` follow-up.
 
 QA summary (verbatim):
 
@@ -1680,22 +1680,46 @@ New-code-path definition (replaces the legacy handwave):
 
 Your task:
 
-1. **Flaky-pattern triage (first pass — BEFORE running the suite):**
+1. **Emit verification predicate (MANDATORY — BEFORE any other QA work):**
+
+   The plan stage may have emitted a structured plan.json sibling. When present, its contents are already embedded above between the `<<<PLAN_JSON_BEGIN>>>` and `<<<PLAN_JSON_END>>>` delimiters (ENG-124). Build the verification predicate from THAT embedded block — do NOT open the .json file from disk; the embedded body is authoritative for this dispatch.
+
+   Write a JSON document via the `Write` tool at `{qa_predicate_path}` (resolved by the orchestrator to an absolute path under `$PROJECT_STATE_DIR` — outside the worktree; partition_dirty_paths will NOT see it). Document shape:
+
+       {
+         "qa_predicate_schema_version": 1,
+         "issue_id": "{issue_id}",
+         "pass_criteria": [
+           ...
+         ]
+       }
+
+   The `pass_criteria[]` array is a SUPERSET of the plan's: (a) copy every `pass_criteria` entry from each `features[]` element of the embedded plan.json verbatim, and (b) OPTIONALLY add QA-authored smoke / file_exists / grep / http_get criteria that name additional deterministic checks for this issue. Reuse the schema-v1 `kind` taxonomy: `smoke` (`command`, `expect_exit`, optional `expect_stdout_match`), `file_exists` (`path` — worktree-relative, no leading `/`, no `../`), `grep` (`path`, `pattern`, `expect_match`), `http_get` (`url`, `expect_status`, optional `expect_body_match`).
+
+   Overwrite-on-every-dispatch contract (§0): use `Write`; pre-existing predicate from a prior QA dispatch is replaced.
+
+   When the embedded plan.json body reads `(no plan.json — falling back to prose plan)`, the plan stage did not emit structured data: derive `pass_criteria[]` from the prose plan's Failure Mode → Test Map and the Project profile's "Build & test gates" Test commands. The predicate file MUST still be written.
+
+   On Decision-path D (back-fill PR — see end of section), the predicate is written with the plan's pass_criteria verbatim; QA-authored adversarial criteria are not required.
+
+   Validate your predicate before continuing: `bash bin/verify-qa.sh validate {qa_predicate_path} --ident {issue_id}`. Read the final summary JSONL line: if `failed > 0`, address the failing checks BEFORE running the remaining numbered steps; if any per-criterion line has `pass: false`, that's QA's signal that a plan-acceptance criterion is not yet met and the appropriate response is `Decision path B` below (genuine failure → `verdict fail --target implementing`).
+
+2. **Flaky-pattern triage (first pass — BEFORE running the suite):**
    - Read qa-patterns.md end-to-end. Identify entries whose pattern overlaps this
      feature area.
    - When you later dismiss a failure as "known flaky," quote the `path:line` of the
      matching qa-patterns.md entry. A dismissal without citation is itself P0 (flakes
      aren't escape hatches).
 
-2. **Run the gate commands** listed in the Project profile addendum's "Build & test gates" section. Run the Integration/E2E gate when ANY of the following holds:
+3. **Run the gate commands** listed in the Project profile addendum's "Build & test gates" section. Run the Integration/E2E gate when ANY of the following holds:
      (a) any frontend file (per the profile's File layout) changed,
      (b) any FE↔BE handler signature changed in the diff,
      (c) any event payload shape in the `api-contract` block changed.
 
-3. **Coverage audit (proxy since no line-level tooling is wired):**
+4. **Coverage audit (proxy since no line-level tooling is wired):**
    For every new code path identified above, grep the test tree (use the stack's test-discovery idiom — the profile's `Build & test gates` section names the canonical command, and `File layout` names the test-file roots) for a test that names the path directly (function name, handler name, or component name). Missing → P0.
 
-3.5. **End-to-end verification (browser) (MANDATORY when the profile names a frontend layer and the diff touches user-visible routes):**
+4.5. **End-to-end verification (browser) (MANDATORY when the profile names a frontend layer and the diff touches user-visible routes):**
    - **Predicate.** Fires when the profile's Stack section names a frontend layer AND
      the diff under review touches at least one user-visible route or component file.
      If the predicate is false (docs-only diff, backend-only diff, or no frontend layer
@@ -1725,14 +1749,14 @@ Your task:
      path under `artifacts/` in the stage-summary Notes section. Absolute paths leak
      dispatch-host filesystem layout.
 
-4. **Regression-intent audit:**
+5. **Regression-intent audit:**
    Any previously-passing test now failing is a regression by default.
    Escape hatch: the failing commit message must contain the trailer
      `Regression-intent: <justification>`
    referencing the brainstorm or plan section that authorises the behaviour change.
    Regressions without that trailer are P0.
 
-5. **Adversarial testing (MANDATORY — maker-checker within QA):**
+6. **Adversarial testing (MANDATORY — maker-checker within QA):**
    After happy-path and plan-enumerated tests pass, write NEW tests QA-authored:
    for each new code path, add at least one test per category above that is NOT in
    the plan's Failure Mode → Test Map. Commit these tests on `{branch_name}` with
@@ -1746,7 +1770,7 @@ Your task:
      - Ask: "What breakages have not been tested?"
      - Merge the sub-agent's suggested breakages into QA-authored tests.
 
-6. **Bug dedup (before filing Linear bugs):**
+7. **Bug dedup (before filing Linear bugs):**
    For every genuine (non-flaky, non-intent-regression) failure:
      - Compute a signature: `<failing-test-name>@<first-line-of-panic-or-assert-message>`.
      - Search existing Linear issues with label `Bug` for the signature via `linear.sh query`.
@@ -1756,13 +1780,13 @@ Your task:
        containing: failing test, stderr snippet, expected vs actual, reproduction
        steps, and the branch + commit SHA.
 
-7. **qa-patterns updates (PROPOSE, do not write):**
+8. **qa-patterns updates (PROPOSE, do not write):**
    qa-patterns.md is CODEOWNERS-protected. Propose via Linear comment tagged
    `<!-- meta: metric name=qa_pattern_candidate -->` with pattern, evidence, and
    proposed expiry. Retrospective opens the CODEOWNERS-gated PR.
    Never append to qa-patterns.md directly.
 
-8. **Emit dimensional grading payload (verdict-qa.json):**
+9. **Emit dimensional grading payload (verdict-qa.json):**
    Before exiting (on any decision path — A, B, C, or D), write a
    dimensional grading payload to `$(issue_dir {issue_id})/verdict-qa.json`
    describing per-dimension scores. Schema source-of-truth: header comment
@@ -1798,7 +1822,7 @@ Your task:
 
 Quality gates (must all be true to advance):
   - All gate commands pass (or all failures are citation-backed flakes).
-  - Zero P0 findings from §1–5.
+  - Zero P0 findings from §3–6.
   - Every Failure Mode → Test Map row matched by a real test with the right assertion.
   - Every new code path has boundary + failure-mode + concurrency tests per the budget.
   - No regressions without an explicit `Regression-intent:` trailer.
@@ -1811,7 +1835,7 @@ Decision path (apply exactly one):
      (§ loop-back to implementing).
 
   B. **Genuine failures** (any P0 or non-flake fail):
-     - File deduped Linear bugs per §6.
+     - File deduped Linear bugs per §7.
      - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} qa_rejection --reason "<one-line summary of the genuine-failure cause (P0 / non-flake)>"`.
        (Omit `--reason-code` — no token registered for qa-side rejection yet; the prose reason is enough for the audit trail.)
      - Post a Linear comment tagged `<!-- meta: metric name=qa_reject -->` with the
@@ -1845,7 +1869,7 @@ Decision path (apply exactly one):
 
   D. **Back-fill PR** (branch-shape detection above flagged this PR as docs-only — every path under `git diff main..HEAD --name-only` matches `^docs/`):
      - Run the gate commands listed in the Project profile addendum's "Build & test gates" section. The gates protect against a regression on `main` between when the original fix shipped and this PR opened; they must still pass.
-     - SKIP the coverage audit (§3), the regression-intent audit (§4), and the adversarial-testing budget (§5). The new-code-path budget is vacuously satisfied — zero new code paths means zero required tests.
+     - SKIP the coverage audit (§4), the regression-intent audit (§5), and the adversarial-testing budget (§6). The new-code-path budget is vacuously satisfied — zero new code paths means zero required tests.
      - Verify the brainstorm's specification matches the in-tree implementation. Use Read + Grep on `main` to confirm the code described in the brainstorm exists at the paths the brainstorm names. If the brainstorm describes something that is NOT in the tree, this is a P0 finding — treat as Decision-path B (genuine failure, loop back to implementing).
      - Commit no new tests (none required).
      - Post a QA summary comment on the PR (gates green + back-fill confirmation: brainstorm spec ↔ in-tree code match).
