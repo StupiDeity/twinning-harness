@@ -1660,12 +1660,10 @@ main() {
   # Guarantee the per-issue state dir exists before dispatch so an agent's first
   # Write of stage-summary-<stage>.md cannot fail on missing parents.
   mkdir -p "$(issue_dir "$ident")"
-  # ENG-27: per-issue artifacts/ for ui/qa Playwright screenshots. Created
-  # on every stage so the dir is uniformly available; the cost is one
-  # cheap mkdir per dispatch. The agent references this path via
-  # {artifacts_dir} (render-prompt.sh resolver) only on ui/qa, but
-  # eagerly creating it avoids a race when the first ui/qa dispatch
-  # writes before bin/run-stage.sh's mkdir has run.
+  # ENG-27: per-issue artifacts/ for ui/qa Playwright screenshots. The agent
+  # references this path via {artifacts_dir} (render-prompt.sh resolver) only
+  # on ui/qa, but creating it on every stage keeps the precondition uniform
+  # and the cost is one cheap mkdir per dispatch.
   mkdir -p "$(issue_dir "$ident")/artifacts/"
   # ENG-109 C2: ensure progress.md exists before dispatch so the agent's Edit
   # tool (append-via-anchor path) succeeds on first dispatch on a fresh issue.
