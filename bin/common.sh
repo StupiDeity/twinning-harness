@@ -107,12 +107,11 @@ qa_predicate_path() {
 # On rc=34 the helper writes the diagnostic body to $_VALIDATE_CRIT_DIAG;
 # the caller prepends its own `<contract>-incomplete:` prefix and emits.
 #
-# Usage: _validate_pass_criterion <file> <fi> <ci> [--kinds <csv>] [--shape flat|nested]
+# Usage: _validate_pass_criterion <file> <fi> <ci> --kinds <csv> --shape flat|nested
 _validate_pass_criterion() {
   local file="$1" fi="$2" ci="$3"
   shift 3
-  local kinds_csv="smoke,file_exists,grep"
-  local shape="nested"
+  local kinds_csv="" shape=""
   _VALIDATE_CRIT_DIAG=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -127,6 +126,8 @@ _validate_pass_criterion() {
       *) _VALIDATE_CRIT_DIAG="_validate_pass_criterion: unknown flag $1"; return 34 ;;
     esac
   done
+  [[ -n "$kinds_csv" ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --kinds is required"; return 34; }
+  [[ -n "$shape" ]] || { _VALIDATE_CRIT_DIAG="_validate_pass_criterion: --shape is required"; return 34; }
   local pc_jq
   if [[ "$shape" == "nested" ]]; then
     pc_jq=".features[\$i].pass_criteria[\$j]"
@@ -175,6 +176,22 @@ _validate_pass_criterion() {
       if [[ "$exit_type" != "number" ]]; then
         _VALIDATE_CRIT_DIAG="$loc (smoke): expect_exit must be an integer, got type=$exit_type"
         return 34
+      fi
+      # expect_stdout_match: string|null. Empty-string is explicitly rejected
+      # — a zero-width regex matches every output, which is never what an
+      # author intends; treat it as a schema defect rather than a tautology.
+      local esm_type esm_val
+      esm_type="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_stdout_match | type" "$file")"
+      if [[ "$esm_type" != "string" && "$esm_type" != "null" ]]; then
+        _VALIDATE_CRIT_DIAG="$loc (smoke): expect_stdout_match must be string or null, got type=$esm_type"
+        return 34
+      fi
+      if [[ "$esm_type" == "string" ]]; then
+        esm_val="$(jq -r --argjson i "$fi" --argjson j "$ci" "$pc_jq.expect_stdout_match" "$file")"
+        if [[ -z "$esm_val" ]]; then
+          _VALIDATE_CRIT_DIAG="$loc (smoke): expect_stdout_match must be a non-empty string (use null for 'any output')"
+          return 34
+        fi
       fi
       ;;
     file_exists)
@@ -278,9 +295,14 @@ _url_host_class_denied() {
     # the case-arms below miss the literal denylist match.
     host="${host%%%*}"
   elif [[ "$host" == *:*:* ]]; then
-    # Unbracketed IPv6 (port requires brackets, so any multi-colon host
-    # IS the address). Pre-fix `host="${host%%:*}"` truncated `::1` at
-    # the first colon to an empty string that bypassed every literal arm.
+    # Unbracketed IPv6. RFC 3986 §3.2.2 requires `[...]` brackets to
+    # disambiguate the address-port boundary in a URL, but curl
+    # tolerates bracket-less multi-colon forms (`http://::1/foo`),
+    # so we treat any host with two or more colons as an IPv6
+    # address. Strip only the zone-id (no port to strip — the
+    # bracketless form has no port-component). Pre-fix
+    # `host="${host%%:*}"` truncated `::1` to an empty string at
+    # the first colon, bypassing every literal denylist arm.
     host="${host%%%*}"
   else
     # IPv4/hostname:port — strip the port.

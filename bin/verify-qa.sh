@@ -67,12 +67,14 @@ _QA_PREDICATE_MAX_BYTES=65536
 
 # Script-scope so the EXIT trap can clean the snapshot on die-paths
 # (e.g. _exec_smoke's gtimeout die) that bypass cmd_validate's `rm -f`.
+# The trap is registered inside cmd_validate (not at source-time) so a
+# caller sourcing this script for unit tests does not inherit our EXIT
+# handler.
 _VERIFY_QA_SNAP_FILE=""
 _verify_qa_cleanup_snap() {
   [[ -n "${_VERIFY_QA_SNAP_FILE:-}" ]] && rm -f "$_VERIFY_QA_SNAP_FILE"
   _VERIFY_QA_SNAP_FILE=""
 }
-trap '_verify_qa_cleanup_snap' EXIT
 
 # ─── Phase 1: parse argv ──────────────────────────────────────────────
 # Returns 0 with parsed values in ARG_FILE/ARG_IDENT/ARG_WORKTREE
@@ -116,8 +118,11 @@ _parse_validate_argv() {
 }
 
 # ─── Phase 2: authority surface (D-011) ──────────────────────────────
-# Predicate file must (a) exist (rc=44), (b) live under $PROJECT_STATE_DIR
-# realpath (rc=42), (c) be <= _QA_PREDICATE_MAX_BYTES bytes (rc=42).
+# Predicate file must (a) exist (rc=44), (b) not be a symlink (rc=42),
+# (c) live under $PROJECT_STATE_DIR realpath (rc=42). The size cap is
+# enforced post-snapshot in cmd_validate (the size check on the original
+# bytes would open a TOCTOU window — the snapshot is the canonical
+# source per iter-2 M5).
 # Splits the parent-realpath assignment so a failed cd properly trips
 # the `if !` — the inlined `if ! file_real="$(cd … && pwd -P)/$(basename …)"`
 # shape rolls the last-command exit into basename (always 0) and the
@@ -127,35 +132,31 @@ _authority_check() {
   # Reject symlinks at the predicate path. `_authority_check` canonicalises
   # the PARENT but suffixes the basename verbatim — a symlink `predicate.json
   # -> /etc/shadow` would otherwise pass the parent-prefix check and the
-  # downstream `cp -f` would follow it. The QA agent emits the predicate
-  # via `Write` (no symlink creation surface); a symlink at this path is
-  # never legitimate.
+  # downstream snapshot read would follow it. The QA agent emits the
+  # predicate via `Write` (no symlink creation surface); a symlink at this
+  # path is never legitimate.
+  # Diagnostics route to stderr — the file-header contract is "JSONL on
+  # stdout"; mixing prose diagnostics into the JSONL stream breaks
+  # downstream `jq -c 'select(.summary == true)'` consumers.
   if [[ -L "$file" ]]; then
-    printf 'qa-predicate-malformed: predicate file must not be a symlink: %s\n' "$file"
+    printf 'qa-predicate-malformed: predicate file must not be a symlink: %s\n' "$file" >&2
     return 42
   fi
   if [[ ! -f "$file" ]]; then
-    printf 'qa-predicate-missing: file not found: %s\n' "$file"
+    printf 'qa-predicate-missing: file not found: %s\n' "$file" >&2
     return 44
-  fi
-  local size
-  size="$(wc -c < "$file" 2>/dev/null | tr -d ' ')"
-  if [[ -z "$size" ]] || (( size > _QA_PREDICATE_MAX_BYTES )); then
-    printf 'qa-predicate-malformed: predicate file size %s exceeds cap %s bytes\n' \
-      "${size:-unknown}" "$_QA_PREDICATE_MAX_BYTES"
-    return 42
   fi
   local dir parent_real
   dir="$(dirname "$file")"
   if ! parent_real="$(cd "$dir" 2>/dev/null && pwd -P)"; then
-    printf 'qa-predicate-malformed: cannot resolve realpath of predicate file parent: %s\n' "$dir"
+    printf 'qa-predicate-malformed: cannot resolve realpath of predicate file parent: %s\n' "$dir" >&2
     return 42
   fi
   local file_real="$parent_real/$(basename "$file")"
   local prefix_real
   prefix_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
   if [[ "$file_real" != "$prefix_real"/* ]]; then
-    printf 'qa-predicate-malformed: predicate file must live under $PROJECT_STATE_DIR; got %s\n' "$file"
+    printf 'qa-predicate-malformed: predicate file must live under $PROJECT_STATE_DIR; got %s\n' "$file" >&2
     return 42
   fi
   return 0
@@ -167,50 +168,60 @@ _authority_check() {
 #   - subpath of $PROJECT_STATE_DIR (per-issue worktrees live here).
 # When --worktree is empty, auto-derive from PIPELINE_ISSUE_ID
 # ($(issue_dir "$PIPELINE_ISSUE_ID")/worktree) — this is the shape
-# AGENT_PROMPTS.md §6 invokes (no --worktree flag).
+# AGENT_PROMPTS.md §6 invokes (no --worktree flag). The auto-derive
+# path runs through the SAME fence as the explicit-flag path so a
+# symlink at $(issue_dir <ident>)/worktree → /etc cannot pivot
+# file_exists/grep authority outside the trust anchor (D-011).
 # Returns 0 with RESOLVED_WORKTREE populated, 43 on fence violation.
-_worktree_fence() {
-  local worktree="$1"
-  RESOLVED_WORKTREE=""
-  if [[ -z "$worktree" ]]; then
-    # Auto-derive: PIPELINE_ISSUE_ID points at the per-issue worktree.
-    if [[ -n "${PIPELINE_ISSUE_ID:-}" ]]; then
-      local derived="$(issue_dir "$PIPELINE_ISSUE_ID")/worktree"
-      if [[ -d "$derived" ]]; then
-        RESOLVED_WORKTREE="$(cd "$derived" && pwd -P)"
-        return 0
-      fi
-    fi
-    if [[ -n "${TARGET_REPO:-}" && -d "${TARGET_REPO:-}" ]]; then
-      RESOLVED_WORKTREE="$(cd "$TARGET_REPO" && pwd -P)"
-    else
-      RESOLVED_WORKTREE="."
-    fi
-    return 0
-  fi
-  if [[ ! -d "$worktree" ]]; then
-    printf 'qa-predicate-incomplete: --worktree must be an existing directory, got: %s\n' "$worktree"
-    return 43
-  fi
-  local wt_real
-  wt_real="$(cd "$worktree" && pwd -P)"
-  # Accept subpath of TARGET_REPO OR subpath of $PROJECT_STATE_DIR.
+_assert_worktree_fenced() {
+  local wt_real="$1"
   # common.sh::require_env enforces TARGET_REPO; PROJECT_STATE_DIR is
   # always derived. Trust both are set + readable here.
   local target_real state_real
   target_real="$(cd "$TARGET_REPO" && pwd -P)"
   state_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
-  local in_target=0 in_state=0
   if [[ "$wt_real" == "$target_real" || "$wt_real" == "$target_real"/* ]]; then
-    in_target=1
+    return 0
   fi
   if [[ "$wt_real" == "$state_real" || "$wt_real" == "$state_real"/* ]]; then
-    in_state=1
+    return 0
   fi
-  if (( in_target == 0 && in_state == 0 )); then
-    printf 'qa-predicate-incomplete: --worktree must be a subpath of $TARGET_REPO or $PROJECT_STATE_DIR (got %s)\n' "$wt_real"
+  printf 'qa-predicate-incomplete: --worktree must be a subpath of $TARGET_REPO or $PROJECT_STATE_DIR (got %s)\n' "$wt_real" >&2
+  return 43
+}
+
+_worktree_fence() {
+  local worktree="$1"
+  RESOLVED_WORKTREE=""
+  if [[ -z "$worktree" ]]; then
+    # Auto-derive: PIPELINE_ISSUE_ID points at the per-issue worktree.
+    local derived=""
+    if [[ -n "${PIPELINE_ISSUE_ID:-}" ]]; then
+      local issue_wt="$(issue_dir "$PIPELINE_ISSUE_ID")/worktree"
+      if [[ -d "$issue_wt" ]]; then
+        derived="$(cd "$issue_wt" && pwd -P)"
+      fi
+    fi
+    if [[ -z "$derived" && -n "${TARGET_REPO:-}" && -d "${TARGET_REPO:-}" ]]; then
+      derived="$(cd "$TARGET_REPO" && pwd -P)"
+    fi
+    if [[ -z "$derived" ]]; then
+      die "verify-qa.sh: cannot derive worktree (no --worktree, no PIPELINE_ISSUE_ID worktree, no TARGET_REPO directory)"
+    fi
+    # The auto-derive path runs through the same fence as the
+    # explicit-flag path — a symlink at $(issue_dir <ident>)/worktree
+    # would otherwise pivot RESOLVED_WORKTREE outside the trust anchor.
+    _assert_worktree_fenced "$derived" || return $?
+    RESOLVED_WORKTREE="$derived"
+    return 0
+  fi
+  if [[ ! -d "$worktree" ]]; then
+    printf 'qa-predicate-incomplete: --worktree must be an existing directory, got: %s\n' "$worktree" >&2
     return 43
   fi
+  local wt_real
+  wt_real="$(cd "$worktree" && pwd -P)"
+  _assert_worktree_fenced "$wt_real" || return $?
   RESOLVED_WORKTREE="$wt_real"
   return 0
 }
@@ -224,11 +235,11 @@ _validate_predicate_schema() {
   local jq_type_out jq_rc=0
   jq_type_out="$(jq -r 'type' "$file" 2>&1)" || jq_rc=$?
   if (( jq_rc != 0 )); then
-    printf 'qa-predicate-malformed: JSON parse error: %s\n' "$jq_type_out"
+    printf 'qa-predicate-malformed: JSON parse error: %s\n' "$jq_type_out" >&2
     return 42
   fi
   if [[ "$jq_type_out" != "object" ]]; then
-    printf 'qa-predicate-malformed: top-level JSON is not an object (got: %s)\n' "$jq_type_out"
+    printf 'qa-predicate-malformed: top-level JSON is not an object (got: %s)\n' "$jq_type_out" >&2
     return 42
   fi
 
@@ -236,15 +247,15 @@ _validate_predicate_schema() {
   local ver
   ver="$(jq -r '.qa_predicate_schema_version // "MISSING"' "$file")"
   if [[ "$ver" == "MISSING" ]]; then
-    printf 'qa-predicate-incomplete: missing required field: qa_predicate_schema_version\n'
+    printf 'qa-predicate-incomplete: missing required field: qa_predicate_schema_version\n' >&2
     return 43
   fi
   if ! jq -e '.qa_predicate_schema_version | type == "number"' "$file" >/dev/null 2>&1; then
-    printf 'qa-predicate-incomplete: qa_predicate_schema_version must be an integer, got: %s\n' "$ver"
+    printf 'qa-predicate-incomplete: qa_predicate_schema_version must be an integer, got: %s\n' "$ver" >&2
     return 43
   fi
   if ! jq -e '.qa_predicate_schema_version == 1' "$file" >/dev/null 2>&1; then
-    printf 'qa-predicate-incomplete: qa_predicate_schema_version must be 1, got: %s\n' "$ver"
+    printf 'qa-predicate-incomplete: qa_predicate_schema_version must be 1, got: %s\n' "$ver" >&2
     return 43
   fi
 
@@ -252,15 +263,15 @@ _validate_predicate_schema() {
   issue_id_type="$(jq -r '.issue_id | type' "$file" 2>/dev/null || printf 'missing')"
   issue_id_val="$(jq -r '.issue_id // "MISSING"' "$file")"
   if [[ "$issue_id_val" == "MISSING" || "$issue_id_type" != "string" ]]; then
-    printf 'qa-predicate-incomplete: issue_id must be a non-empty string (e.g. ENG-1), got type=%s\n' "$issue_id_type"
+    printf 'qa-predicate-incomplete: issue_id must be a non-empty string (e.g. ENG-1), got type=%s\n' "$issue_id_type" >&2
     return 43
   fi
   if ! [[ "$issue_id_val" =~ ^ENG-[0-9]+$ ]]; then
-    printf 'qa-predicate-incomplete: issue_id must match ^ENG-[0-9]+\$, got: %s\n' "$issue_id_val"
+    printf 'qa-predicate-incomplete: issue_id must match ^ENG-[0-9]+\$, got: %s\n' "$issue_id_val" >&2
     return 43
   fi
   if [[ -n "$ident" && "$issue_id_val" != "$ident" ]]; then
-    printf 'qa-predicate-incomplete: issue_id mismatch: JSON has '\''%s'\'' but --ident '\''%s'\'' was passed (stale template?)\n' "$issue_id_val" "$ident"
+    printf 'qa-predicate-incomplete: issue_id mismatch: JSON has '\''%s'\'' but --ident '\''%s'\'' was passed (stale template?)\n' "$issue_id_val" "$ident" >&2
     return 43
   fi
 
@@ -269,11 +280,11 @@ _validate_predicate_schema() {
   pc_type="$(jq -r '.pass_criteria | type' "$file" 2>/dev/null || printf 'missing')"
   pc_len="$(jq -r '.pass_criteria | length' "$file" 2>/dev/null || printf '0')"
   if [[ "$pc_type" != "array" ]]; then
-    printf 'qa-predicate-incomplete: pass_criteria must be an array, got type=%s\n' "$pc_type"
+    printf 'qa-predicate-incomplete: pass_criteria must be an array, got type=%s\n' "$pc_type" >&2
     return 43
   fi
   if (( pc_len == 0 )); then
-    printf 'qa-predicate-incomplete: pass_criteria must contain at least 1 entry\n'
+    printf 'qa-predicate-incomplete: pass_criteria must contain at least 1 entry\n' >&2
     return 43
   fi
 
@@ -286,7 +297,7 @@ _validate_predicate_schema() {
     if ! _validate_pass_criterion "$file" 0 "$ci" \
       --kinds smoke,file_exists,grep,http_get \
       --shape flat; then
-      printf 'qa-predicate-incomplete: %s\n' "$_VALIDATE_CRIT_DIAG"
+      printf 'qa-predicate-incomplete: %s\n' "$_VALIDATE_CRIT_DIAG" >&2
       return 43
     fi
   done
@@ -525,7 +536,11 @@ _exec_http_get() {
     CRIT_PASS=false; CRIT_DETAIL='"mktemp failed"'
     return 0
   fi
-  code="$(curl -sS -o "$body_tmp" -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)" || curl_rc=$?
+  # --proto / --proto-redir lock curl to http/https for the initial
+  # request AND any redirects — closes a file:// / scp:// escape via
+  # a 30x Location header even though the validator already gated the
+  # initial scheme. Defense in depth, not a duplicate check.
+  code="$(curl -sS --proto '=http,https' --proto-redir '=http,https' -o "$body_tmp" -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)" || curl_rc=$?
   if (( curl_rc != 0 )); then
     rm -f "$body_tmp"
     CRIT_PASS=false; CRIT_DETAIL='"connection failed"'
@@ -562,6 +577,9 @@ _exec_http_get() {
 # (schema) → phase 5 (executor). Each phase short-circuits on failure;
 # phase 5's per-criterion failures NEVER short-circuit.
 cmd_validate() {
+  # Register the snap-cleanup trap here (not at source-time) so unit
+  # tests that source this script do not inherit our EXIT handler.
+  trap '_verify_qa_cleanup_snap' EXIT
   _parse_validate_argv "$@" || return $?
   _check_canonical_path_available
   _authority_check "$ARG_FILE" || return $?
@@ -577,27 +595,48 @@ cmd_validate() {
   local snap_dir snap_file rc=0
   snap_dir="$PROJECT_STATE_DIR/.verify-qa-snap"
   mkdir -p "$snap_dir" 2>/dev/null || {
-    printf 'qa-predicate-malformed: cannot create snapshot dir under $PROJECT_STATE_DIR: %s\n' "$snap_dir"
+    printf 'qa-predicate-malformed: cannot create snapshot dir under $PROJECT_STATE_DIR: %s\n' "$snap_dir" >&2
     return 42
   }
   # `mkdir -p` succeeds if snap_dir is a pre-existing symlink to e.g. /etc;
   # the subsequent mktemp would then write outside $PROJECT_STATE_DIR.
   if [[ -L "$snap_dir" ]]; then
-    printf 'qa-predicate-malformed: snapshot dir is a symlink: %s\n' "$snap_dir"
+    printf 'qa-predicate-malformed: snapshot dir is a symlink: %s\n' "$snap_dir" >&2
     return 42
   fi
   snap_file="$(mktemp "$snap_dir/predicate.XXXXXX" 2>/dev/null)"
   if [[ -z "$snap_file" ]]; then
-    printf 'qa-predicate-malformed: mktemp failed under %s\n' "$snap_dir"
+    printf 'qa-predicate-malformed: mktemp failed under %s\n' "$snap_dir" >&2
     return 42
   fi
   _VERIFY_QA_SNAP_FILE="$snap_file"
-  # Single-pass cp: the bytes the validator and executor see are
-  # whatever was on disk at this instant.
-  if ! cp -f "$ARG_FILE" "$snap_file" 2>/dev/null; then
+  # Close the symlink-TOCTOU window between _authority_check's `-L`
+  # reject and the snapshot read: re-check immediately before opening
+  # the file. A swap to a symlink between the two checks would otherwise
+  # let the head/redirect follow it.
+  if [[ -L "$ARG_FILE" ]]; then
     rm -f "$snap_file"
     _VERIFY_QA_SNAP_FILE=""
-    printf 'qa-predicate-malformed: failed to snapshot predicate to %s\n' "$snap_file"
+    printf 'qa-predicate-malformed: predicate file became a symlink (TOCTOU): %s\n' "$ARG_FILE" >&2
+    return 42
+  fi
+  # head -c bounds the snapshot read to MAX+1 bytes — even a
+  # 1-petabyte ARG_FILE produces at most MAX+1 bytes on disk. The
+  # post-snapshot wc -c then enforces the byte cap against snap_file
+  # (the canonical source) rather than ARG_FILE (TOCTOU-vulnerable).
+  if ! head -c $((_QA_PREDICATE_MAX_BYTES + 1)) < "$ARG_FILE" > "$snap_file" 2>/dev/null; then
+    rm -f "$snap_file"
+    _VERIFY_QA_SNAP_FILE=""
+    printf 'qa-predicate-malformed: failed to snapshot predicate to %s\n' "$snap_file" >&2
+    return 42
+  fi
+  local snap_size
+  snap_size="$(wc -c < "$snap_file" 2>/dev/null | tr -d ' ')"
+  if [[ -z "$snap_size" ]] || (( snap_size > _QA_PREDICATE_MAX_BYTES )); then
+    rm -f "$snap_file"
+    _VERIFY_QA_SNAP_FILE=""
+    printf 'qa-predicate-malformed: predicate file size %s exceeds cap %s bytes\n' \
+      "${snap_size:-unknown}" "$_QA_PREDICATE_MAX_BYTES" >&2
     return 42
   fi
   _validate_predicate_schema "$snap_file" "$ARG_IDENT" || rc=$?
