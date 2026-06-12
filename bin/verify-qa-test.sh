@@ -104,6 +104,10 @@ else
 fi
 
 # ─── V-3: schema-incomplete (missing pass_criteria) → rc=43 ──────────
+# Asserts the specific diagnostic phrase (pass_criteria must be an array)
+# in addition to the contract prefix — mirrors V-37/V-38/V-39's
+# per-branch diagnostic pin so a regression that returns rc=43 with a
+# generic "incomplete" message is caught.
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -112,10 +116,12 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" 2>&1)" || rc=$?
-if (( rc == 43 )) && [[ "$out" == *"qa-predicate-incomplete"* ]]; then
-  pass_at "V-3: missing pass_criteria → exit 43 + stdout names qa-predicate-incomplete"
+if (( rc == 43 )) \
+   && [[ "$out" == *"qa-predicate-incomplete"* ]] \
+   && [[ "$out" == *"pass_criteria must be an array"* ]]; then
+  pass_at "V-3: missing pass_criteria → exit 43 + 'qa-predicate-incomplete' + 'pass_criteria must be an array'"
 else
-  fail_at "V-3: missing pass_criteria" "expected rc=43 + 'qa-predicate-incomplete'; got rc=$rc, out=$out"
+  fail_at "V-3: missing pass_criteria" "expected rc=43 + 'qa-predicate-incomplete' + 'pass_criteria must be an array'; got rc=$rc, out=$out"
 fi
 
 # ─── V-4: valid, all pass → rc=0, summary failed=0 ──────────────────
@@ -156,9 +162,9 @@ else
 fi
 
 # ─── V-6: file_exists path absent → pass=false, detail names path ───
-# Finding #17: also assert the `detail` shape, not just .pass == false —
-# a regression that silently swapped `detail` for `null` on the fail
-# path would otherwise pass V-6 today and break operator triage.
+# Asserts the `detail` shape, not just .pass == false — a regression
+# that silently swapped `detail` for `null` on the fail path would
+# otherwise pass V-6 and break operator triage.
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -548,8 +554,8 @@ else
 fi
 
 # ─── V-17: summary line carries duration_s (not duration_ms) ───────
-# Finding #8: prior shape emitted `duration_ms` whose value was
-# `seconds × 1000` (always 0/1000/2000 ms); rename + correct unit.
+# Prior shape emitted `duration_ms` whose value was `seconds × 1000`
+# (always 0/1000/2000 ms); rename + correct unit.
 f="$(write_valid_predicate qa-predicate-ENG-1.json ENG-1)"
 rc=0
 out="$(bash "$VERIFIER" validate "$f" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
@@ -732,6 +738,46 @@ EOF
     fail_at "$case_id: $url" "expected rc=43 + 'host' in diagnostic; got rc=$_rc, out=$_out"
   fi
 }
+# ─── V-26b..V-26i: positive SSRF coverage gap fill ────────────────────
+# Iter-4 landed _url_host_class_denied arms for 192.168.* / 172.16-31.* /
+# localhost / 0.0.0.0 / fe80:* / fc00:/fd00:* ULA, but only V-24/V-25/V-26
+# pinned them (loopback / IMDS / class-10). Per-arm assertions below
+# close the test-coverage gap so a regression dropping any arm trips a
+# specific case.
+_assert_url_denied "V-26b" "http://192.168.0.1/foo"
+_assert_url_denied "V-26c" "http://172.16.0.1/foo"
+_assert_url_denied "V-26d" "http://172.31.255.255/foo"
+_assert_url_denied "V-26e" "http://[fe80::1]/foo"
+_assert_url_denied "V-26f" "http://[fc00::1]/foo"
+_assert_url_denied "V-26g" "http://[fd00::1]/foo"
+_assert_url_denied "V-26h" "http://localhost/foo"
+_assert_url_denied "V-26i" "http://0.0.0.0/foo"
+
+# ─── V-26j/V-26k: 172.16-31 boundary negative controls ──────────────
+# The RFC1918 172.16/12 block bounds at 172.16.0.0..172.31.255.255. A
+# regression that widened the arm to `172.*` (or narrowed it to a single
+# octet) would silently change classification of public 172.15.* /
+# 172.32.* hosts. Source common.sh and invoke _url_host_class_denied
+# directly so the negative assertion doesn't depend on curl reaching a
+# real public host.
+_assert_url_class_check() {
+  local case_id="$1" url="$2" expect="$3"  # expect: denied | allowed
+  local _rc=0
+  bash -c "TARGET_REPO='$TARGET_REPO' PROJECT_SLUG='$PROJECT_SLUG' source '$SCRIPT_DIR/common.sh' 2>/dev/null && _url_host_class_denied '$url'" || _rc=$?
+  case "$expect" in
+    denied)
+      if (( _rc == 0 )); then pass_at "$case_id: $url → denied"
+      else fail_at "$case_id" "expected denied (rc=0), got rc=$_rc"
+      fi ;;
+    allowed)
+      if (( _rc == 1 )); then pass_at "$case_id: $url → allowed (negative control)"
+      else fail_at "$case_id" "expected allowed (rc=1), got rc=$_rc"
+      fi ;;
+  esac
+}
+_assert_url_class_check "V-26j" "http://172.15.0.1/foo" "allowed"
+_assert_url_class_check "V-26k" "http://172.32.0.1/foo" "allowed"
+
 _assert_url_denied "V-30" "http://2130706433/"
 _assert_url_denied "V-31" "http://0x7f000001/"
 _assert_url_denied "V-32" "http://0177.0.0.1/"
@@ -896,11 +942,13 @@ rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_V41" 2>&1)" || rc=$?
 crit_lines="$(printf '%s\n' "$out" | jq -c 'select(.summary != true)' 2>/dev/null)"
 second_crit="$(printf '%s\n' "$crit_lines" | sed -n '2p')"
+summary_line="$(_summary_line "$out")"
 if (( rc == 0 )) \
-   && printf '%s\n' "$second_crit" | jq -e '.pass == false and (.detail | type == "string" and test("failed to cd to anchor"))' >/dev/null 2>&1; then
-  pass_at "V-41: anchor removed mid-stream → criterion 1 reports 'failed to cd to anchor'"
+   && printf '%s\n' "$second_crit" | jq -e '.pass == false and (.detail | type == "string" and test("failed to cd to anchor"))' >/dev/null 2>&1 \
+   && printf '%s\n' "$summary_line" | jq -e '.summary == true and .total == 2 and .failed >= 1' >/dev/null 2>&1; then
+  pass_at "V-41: anchor removed mid-stream → criterion 2 reports 'failed to cd to anchor' + summary total=2 failed>=1"
 else
-  fail_at "V-41: cd-failure detection" "expected criterion 1 pass=false + 'failed to cd to anchor'; got rc=$rc, second_crit=$second_crit, out=$out"
+  fail_at "V-41: cd-failure detection" "expected criterion 2 pass=false + 'failed to cd to anchor' + summary total=2 failed>=1; got rc=$rc, second_crit=$second_crit, summary=$summary_line, out=$out"
 fi
 
 # ─── V-42: _parse_validate_argv flag-value collision ────────────────
@@ -922,6 +970,42 @@ if (( rc == 42 )) && [[ "$out" == *"--worktree"* ]] && [[ "$out" == *"non-flag v
 else
   fail_at "V-42b: --worktree flag-value collision" "expected rc=42 + '--worktree' + 'non-flag value'; got rc=$rc, out=$out"
 fi
+
+# ─── V-43: predicate file is a symlink → rc=42 ─────────────────────
+# `_authority_check` canonicalizes the predicate file's PARENT via
+# `cd … && pwd -P`, but then suffixes the basename verbatim. A symlink
+# at $ARG_FILE whose target is outside $PROJECT_STATE_DIR passes the
+# parent-prefix check; the subsequent `cp -f` follows the symlink and
+# the validator reads bytes from the target. Reject `[[ -L "$file" ]]`
+# at the authority phase before the snapshot step.
+TARGET_FILE="$FIXTURE_DIR/outside-state.json"
+cat > "$TARGET_FILE" <<'EOF'
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "bin/verify-qa.sh" }
+  ]
+}
+EOF
+SYMLINK="$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
+rm -f "$SYMLINK"
+ln -sfn "$TARGET_FILE" "$SYMLINK"
+rc=0
+out="$(bash "$VERIFIER" validate "$SYMLINK" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *"symlink"* ]]; then
+  pass_at "V-43: predicate file is a symlink → rc=42 + 'symlink' diagnostic"
+else
+  fail_at "V-43: symlink reject" "expected rc=42 + 'symlink' in diagnostic; got rc=$rc, out=$out"
+fi
+rm -f "$SYMLINK"
+
+# ─── V-43b: unbracketed IPv6 host (::1) → denied ───────────────────
+# `_url_host_class_denied`'s pre-fix port-strip `host="${host%%:*}"`
+# truncated unbracketed IPv6 at the first colon, leaving an empty host
+# that matched no denylist arm. The fix detects multi-colon hosts and
+# skips the port-strip arm so the literal `::1` arm fires.
+_assert_url_class_check "V-43b" "http://::1/foo" "denied"
 
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
