@@ -2209,6 +2209,14 @@ _browser_assert '§6' "$s6_eng27" 'Browser verification: skipped'
 _browser_assert '§6' "$s6_eng27" 'Browser verification: failed'
 _browser_assert '§6' "$s6_eng27" 'MANDATORY: include exactly ONE Browser verification'
 
+# Plan §8 F-5 grep contract: the `{artifacts_dir}` token MUST appear in both
+# §4 and §6 — it is the resolver-backed prefix that keeps screenshots out of
+# the worktree root (the self-leak failure mode). A mis-edit dropping the
+# token from either section silently re-opens that failure mode, so pin its
+# presence per-section here (registry-side coverage lives in render-prompt-test.sh).
+_browser_assert '§4' "$s4_eng27" '{artifacts_dir}'
+_browser_assert '§6' "$s6_eng27" '{artifacts_dir}'
+
 unset -f _browser_assert
 unset s4_eng27 s6_eng27
 
