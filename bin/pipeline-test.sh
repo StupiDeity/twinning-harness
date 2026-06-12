@@ -714,6 +714,99 @@ else
 fi
 _ar_clear "ENG-5807"
 
+# ── PR-HD-1 (ENG-34): continue emits human-decision with before_state=halted
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5840" "skip-until-human-acts"
+LABELS_ON="pipeline:halted,pipeline:skip-until-human-acts" \
+  STAGE_OF="stage:building" \
+  _ar_decide "ENG-5840" --action continue || true
+hd_line="$(grep "^human-decision ENG-5840 building resumed 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ -n "$hd_line" \
+      && "$hd_line" == *"action=continue"* \
+      && "$hd_line" == *"actor="* \
+      && "$hd_line" == *"before_state=halted"* ]]; then
+  pass_at "PR-HD-1: continue emits human-decision (outcome=resumed, before_state=halted)"
+else
+  fail_at "PR-HD-1: human-decision continue" "line='$hd_line'"
+fi
+_ar_clear "ENG-5840"
+
+# ── PR-HD-2 (ENG-34): approve --gate scope emits with outcome=approved
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5841" "skip-until-human-acts"
+LABELS_ON="pipeline:skip-until-human-acts" \
+  STAGE_OF="stage:implementing" \
+  _ar_decide "ENG-5841" --action approve --gate scope || true
+hd_line="$(grep "^human-decision ENG-5841 implementing approved 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ -n "$hd_line" \
+      && "$hd_line" == *"action=approve"* \
+      && "$hd_line" == *"gate=scope"* \
+      && "$hd_line" == *"before_state=skip-until-human-acts"* ]]; then
+  pass_at "PR-HD-2: approve --gate scope emits human-decision (outcome=approved, gate=scope)"
+else
+  fail_at "PR-HD-2: human-decision approve" "line='$hd_line'"
+fi
+_ar_clear "ENG-5841"
+
+# ── PR-HD-3 (ENG-34): abandon --gate build-cap emits with outcome=abandoned
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5842" "skip-until-human-acts"
+# No halt-class labels set: before_state should resolve to `none`.
+LABELS_ON="" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5842" --action abandon --gate build-cap || true
+hd_line="$(grep "^human-decision ENG-5842 building abandoned 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+if [[ -n "$hd_line" \
+      && "$hd_line" == *"action=abandon"* \
+      && "$hd_line" == *"gate=build-cap"* \
+      && "$hd_line" == *"before_state=none"* ]]; then
+  pass_at "PR-HD-3: abandon --gate build-cap emits human-decision (outcome=abandoned, gate=build-cap, before_state=none)"
+else
+  fail_at "PR-HD-3: human-decision abandon" "line='$hd_line'"
+fi
+_ar_clear "ENG-5842"
+
+# ── PR-HD-DRY (ENG-34): dry-run suppresses human-decision emission
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5843" "skip-until-human-acts"
+PIPELINE_DRY_RUN=1 PIPELINE_WRITER=human \
+  cmd_decide "ENG-5843" --action continue >/dev/null 2>&1 || true
+PIPELINE_DRY_RUN=""
+hd_count="$(grep -c "^human-decision ENG-5843 " "$_AR_METRICS_CALLS" || true)"
+if [[ "$hd_count" == "0" ]]; then
+  pass_at "PR-HD-DRY: PIPELINE_DRY_RUN=1 suppresses human-decision emission"
+else
+  fail_at "PR-HD-DRY: dry-run suppression" "expected 0 human-decision rows, got $hd_count"
+fi
+_ar_clear "ENG-5843"
+
+# ── PR-HD-SAN (ENG-34): actor resolver strips shell metas and length-caps.
+: > "$_AR_LINEAR_CALLS"; : > "$_AR_METRICS_CALLS"
+_ar_seed "ENG-5844" "skip-until-human-acts"
+# Point HARNESS_ROOT at a fresh empty repo (no user.email) so the resolver
+# falls back to $USER, into which we inject a malicious overlong payload.
+_HD_SAN_REPO="$(mktemp -d -t hd-san.XXXXXX)"
+( cd "$_HD_SAN_REPO" && git init --quiet -b main ) >/dev/null 2>&1
+_OLD_HARNESS_ROOT="$HARNESS_ROOT"
+HARNESS_ROOT="$_HD_SAN_REPO"
+USER='evil$(rm -rf /);name@example.com;echo PWNED;aaaaaaaaaaaaaaaaaaaa' \
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-5844" --action continue || true
+HARNESS_ROOT="$_OLD_HARNESS_ROOT"
+rm -rf "$_HD_SAN_REPO"
+hd_line="$(grep "^human-decision ENG-5844 building resumed 0 " "$_AR_METRICS_CALLS" | head -1 || true)"
+# Extract just the actor= token value (up to the next space).
+actor_val="${hd_line#*actor=}"
+actor_val="${actor_val%% *}"
+san_ok=1
+[[ "$actor_val" =~ ^[A-Za-z0-9._@+-]+$ ]] || san_ok=0
+(( ${#actor_val} <= 64 )) || san_ok=0
+if [[ "$san_ok" == "1" && -n "$actor_val" ]]; then
+  pass_at "PR-HD-SAN: actor sanitiser strips shell metas + caps length (got '$actor_val', ${#actor_val} bytes)"
+else
+  fail_at "PR-HD-SAN: actor sanitiser" "actor_val='$actor_val' len=${#actor_val} line='$hd_line'"
+fi
+_ar_clear "ENG-5844"
+
 printf '\n--- bin/pipeline.sh: ENG-112 schema validator ---\n'
 
 # ENG-112 B-001: events.verdict.linear_comment.body_shape reachable via jq.

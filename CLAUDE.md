@@ -733,6 +733,15 @@ and freshness contract" is the prompt-side defense.
   (see docs/runbooks/operator-mental-model.md §3 for the operator
   grep recipe).
 - Metric writes go through `bin/metrics.sh` (lands in `events.jsonl`).
+- `bin/pipeline.sh decide` emits a `human-decision` metric event
+  (post-`add-comment` success) capturing
+  `actor=<git-user-email-or-USER> action=<continue|approve|abandon>
+  [gate=<scope|build-cap>] before_state=<halted|skip-until-human-acts
+  |skip-until-code-changes|none>` in the JSONL `notes` field, with
+  `outcome ∈ {resumed, approved, abandoned}`. This is the audit trail
+  for harness-mediated explicit human decisions; **direct Linear-UI
+  label or state edits by humans are NOT captured** (known v1
+  limitation; calibration shape accepts the imperfect signal).
 - Per-stage allowed tool lists are centralized in
   `dispatch.sh::allowed_tools_for`. New stages must add a case there.
 - For exit codes, use the `failure_outcome_for_exit` taxonomy (common.sh) —

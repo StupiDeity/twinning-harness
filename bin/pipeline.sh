@@ -480,6 +480,68 @@ _pipeline_emit_resume_metric() {
     "atomic-reset" 0 "$stats" || true
 }
 
+# ENG-34: actor resolver for human-decision metric events.
+# `git config user.email` with $USER fallback; sanitised to a
+# conservative char-class and 64-byte cap before reaching the JSONL
+# writer. Defence in depth above metrics.sh's `--arg notes` jq-escape.
+# `git -C "$HARNESS_ROOT"` makes the resolver worktree-independent
+# (operators run `bin/pipeline.sh` from anywhere; HARNESS_ROOT resolves
+# via common.sh).
+_pipeline_resolve_actor() {
+  local raw
+  raw="$(git -C "$HARNESS_ROOT" config user.email 2>/dev/null || true)"
+  [[ -z "$raw" ]] && raw="${USER-}"
+  raw="$(printf '%s' "$raw" | tr -dc 'A-Za-z0-9._@+-' | head -c 64)"
+  [[ -z "$raw" ]] && raw="unknown"
+  printf '%s' "$raw"
+}
+
+# ENG-34: coarse before-state token for human-decision metric.
+# Returns the highest-priority halt-class label present on the issue,
+# or `none` when none of the three are set. Iterates a fixed priority
+# list so the result is deterministic when multiple labels are set
+# (rare but legal). Network failure of `linear.sh has-label` is
+# absorbed silently — best-effort audit, not load-bearing.
+_pipeline_resolve_before_state() {
+  local issue="$1"
+  local pair label token
+  for pair in \
+    "pipeline:halted halted" \
+    "pipeline:skip-until-human-acts skip-until-human-acts" \
+    "pipeline:skip-until-code-changes skip-until-code-changes"; do
+    label="${pair% *}"
+    token="${pair#* }"
+    if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "$label" 2>/dev/null; then
+      printf '%s' "$token"
+      return 0
+    fi
+  done
+  printf 'none'
+}
+
+# ENG-34: emit one human-decision event per cmd_decide invocation.
+# Mirrors _pipeline_emit_resume_metric's shape: `|| true` swallows
+# metric-write failures so the operator never sees a halted decide.
+# `action` is already registry-validated upstream; switch arm is
+# exhaustive over the three valid values plus a safety fall-through.
+_pipeline_emit_human_decision() {
+  local issue="$1" stage="$2" action="$3" gate="${4-}"
+  local actor before_state outcome notes
+  actor="$(_pipeline_resolve_actor)"
+  before_state="$(_pipeline_resolve_before_state "$issue")"
+  case "$action" in
+    continue) outcome="resumed"   ;;
+    approve)  outcome="approved"  ;;
+    abandon)  outcome="abandoned" ;;
+    *)        outcome="unknown"   ;;
+  esac
+  notes="actor=$actor action=$action"
+  [[ -n "$gate" ]] && notes+=" gate=$gate"
+  notes+=" before_state=$before_state"
+  bash "$SCRIPT_DIR/metrics.sh" human-decision "$issue" "$stage" \
+    "$outcome" 0 "$notes" || true
+}
+
 # cmd_decide <issue> --action <continue|approve|abandon> [--gate <gate>]
 cmd_decide() {
   local issue="${1:-}"; shift || true
@@ -601,6 +663,20 @@ cmd_decide() {
   fi
 
   bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
+
+  # ENG-34: record a human-decision metric event for downstream
+  # calibration. Resolved here on the live path only — the dry-run
+  # early-exit above returns before this point, so no row is written on
+  # dry-run. Best-effort: failure is swallowed inside the helper
+  # (mirrors _pipeline_emit_resume_metric's `|| true` contract). Sits
+  # past the add-comment success line so we only record decisions that
+  # landed on Linear. `$gate` is in scope (empty on continue, set on
+  # approve|abandon); the helper conditionally appends it.
+  local current_stage_hd
+  current_stage_hd="$(bash "$SCRIPT_DIR/linear.sh" stage-of "$issue" 2>/dev/null || printf 'unknown')"
+  current_stage_hd="${current_stage_hd#stage:}"
+  [[ "$current_stage_hd" =~ ^[a-z]+$ ]] || current_stage_hd="unknown"
+  _pipeline_emit_human_decision "$issue" "$current_stage_hd" "$action" "$gate"
 }
 
 main() {
