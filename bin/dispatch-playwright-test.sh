@@ -19,6 +19,19 @@ export PIPELINE_DRY_RUN=1
 export LINEAR_API_KEY
 export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
 
+# Behavioral subshell tests below set PIPELINE_DRY_RUN=0 and invoke
+# main() directly (sourced, not bash-bin/dispatch.sh-in-subshell — the
+# latter re-derives HARNESS_ROOT via common.sh:9's unguarded assignment
+# and silently discards any override). The mutex acquire writes a slot
+# under $CLAUDE_SEMAPHORE_DIR (= $HARNESS_STATE_DIR/.claude-semaphore)
+# bound at source time; pin K=2 here so the path doesn't depend on
+# config.json lookup for cap resolution.
+export CLAUDE_MAX_CONCURRENT="${CLAUDE_MAX_CONCURRENT:-2}"
+# Disable gtime discovery so the resource-sample block does not need a
+# brewed gnu-time install (and so the metric-emit path doesn't fire on
+# the test PROJECT_STATE_DIR which lacks a real metrics.sh wiring).
+export _PIPELINE_GTIME_DISABLED=1
+
 # ─── Temp dirs ──────────────────────────────────────────────────────────
 _TEST_TARGET_DIR="$(mktemp -d -t twinning-eng27.XXXXXX)"
 _TEST_STUB_DIR="$(mktemp -d -t twinning-eng27.XXXXXX)"
@@ -95,12 +108,29 @@ contains()    { if [[ "$3" == *"$2"* ]]; then ok "$1"; else ng "$1" "expected co
 notcontains() { if [[ "$3" != *"$2"* ]]; then ok "$1"; else ng "$1" "expected absent: $2 | got: $3"; fi }
 
 # ─── Prepare claude / gtimeout stubs ─────────────────────────────────────
+# The claude stub records its argv to $_TEST_CAPTURE_CLAUDE_ARGV when set
+# (behavioral subshell tests) and otherwise behaves as a quiet sink. env
+# propagates the variable through the `env PIPELINE_WRITER=agent …` chain
+# in dispatch.sh::main's cmd array (env preserves the parent environment
+# and only ADDS the explicit VAR=val assignments).
 cat > "$_TEST_STUB_DIR/claude" <<'SH'
 #!/usr/bin/env bash
+if [[ -n "${_TEST_CAPTURE_CLAUDE_ARGV:-}" ]]; then
+  {
+    printf 'argv:'
+    for a in "$@"; do printf ' %q' "$a"; done
+    printf '\n'
+  } >> "$_TEST_CAPTURE_CLAUDE_ARGV"
+fi
 cat > /dev/null
 exit 0
 SH
 chmod +x "$_TEST_STUB_DIR/claude"
+
+# Prepend stubs to PATH so claude/gtimeout (and any other shim) resolve
+# to the test sandbox before the real binaries — load-bearing for the
+# behavioral subshell tests below.
+export PATH="$_TEST_STUB_DIR:$PATH"
 
 cat > "$_TEST_STUB_DIR/gtimeout" <<'SH'
 #!/usr/bin/env bash
@@ -128,6 +158,37 @@ run_dryrun() {
   HARNESS_ROOT="$harness" \
   PLAYWRIGHT_HEADFUL="$headful" \
     bash "$SCRIPT_DIR/dispatch.sh" "$stage" "$_PROMPT_FILE" 2>"$out" >/dev/null || true
+}
+
+# ─── Behavioral: invoke main() directly post-source ──────────────────────
+# Subshell wrapper around `main` so:
+#   - HARNESS_ROOT override survives (common.sh:9 re-derives in a fresh
+#     subshell+source — that's the workaround critical findings #1 / #2
+#     called out. Sourcing once at file load + subshell invocation keeps
+#     the override intact across the subshell boundary).
+#   - die() in main exits the subshell only.
+#   - acquire_claude_mutex's EXIT trap releases the slot on subshell
+#     exit, so subsequent runs re-acquire cleanly.
+# Writes:
+#   $4.argv   — one-line `argv: -p --output-format ...` capture from
+#               the claude stub (empty when main died before exec).
+#   $4.stderr — main's stderr (greppable for the die message).
+#   $4.stdout — main's stdout (typically empty).
+# Returns rc on stdout (printf '%d').
+run_main_behavioral() {
+  local stage="$1" harness="$2" prefix="$3" headful="${4-}"
+  : > "$prefix.argv"; : > "$prefix.stderr"; : > "$prefix.stdout"
+  local rc=0
+  (
+    HARNESS_ROOT="$harness"
+    PIPELINE_DRY_RUN=0
+    PLAYWRIGHT_HEADFUL="$headful"
+    _TEST_CAPTURE_CLAUDE_ARGV="$prefix.argv"
+    export HARNESS_ROOT PIPELINE_DRY_RUN PLAYWRIGHT_HEADFUL _TEST_CAPTURE_CLAUDE_ARGV
+    unset PIPELINE_ISSUE_ID
+    main "$stage" "$_PROMPT_FILE"
+  ) 2>"$prefix.stderr" >"$prefix.stdout" || rc=$?
+  printf '%d' "$rc"
 }
 
 # ─── T_mcp_gate_coherent ─────────────────────────────────────────────────
@@ -167,13 +228,18 @@ T_mcp_gate_coherent() {
 }
 
 # ─── T_other_stages_no_mcp ───────────────────────────────────────────────
-# Stages other than ui/qa must NEVER carry the MCP allowlist entry, and the
-# dry-run argv echo must NEVER include --mcp-config — regardless of the
-# config flag's value.
+# Stages other than ui/qa must NEVER carry the MCP allowlist entry, and
+# the cmd argv must NEVER include --mcp-config — regardless of the
+# config flag's value. Two surfaces are checked:
+#   1. allowed_tools_for() output (compile-time tool string).
+#   2. main()'s REAL cmd argv composed in a behavioral subshell, via
+#      the claude stub's capture (the major-finding F-10 gap pre-loopback:
+#      a future refactor that split the gate predicate could regress one
+#      surface without the other).
 T_other_stages_no_mcp() {
   printf '\n--- T_other_stages_no_mcp ---\n'
 
-  # Toggle config across true/false so the gate predicate is exercised both ways.
+  # Surface 1: allowed_tools_for() output across config toggles.
   for cfg in true false null; do
     write_target_config "$cfg"
     for stage in brainstorming planning implementing reviewing building released; do
@@ -183,6 +249,27 @@ T_other_stages_no_mcp() {
         'mcp__playwright__*' "$tools"
     done
   done
+
+  # Surface 2: behavioral cmd argv on each non-ui/qa stage with config
+  # default-enabled. The stage-gate predicate at the helper's first arm
+  # (case ui|qa) must keep --mcp-config out of argv even when the
+  # config-side gate would otherwise pass.
+  write_target_config true
+  local stage prefix rc
+  for stage in brainstorming planning implementing reviewing building released; do
+    prefix="$_TEST_STUB_DIR/other-stage-$stage"
+    rc="$(run_main_behavioral "$stage" "$REAL_HARNESS_ROOT" "$prefix")"
+    if [[ "$rc" == "0" ]]; then
+      ok "stage=$stage: main exits 0 (behavioral)"
+    else
+      ng "stage=$stage: main exits 0 (behavioral)" "rc=$rc; stderr=$(cat "$prefix.stderr" 2>/dev/null | head -3)"
+    fi
+    notcontains "stage=$stage: cmd argv omits --mcp-config (behavioral)" \
+      '--mcp-config' "$(cat "$prefix.argv")"
+    notcontains "stage=$stage: cmd argv omits mcp/playwright.json (behavioral)" \
+      'mcp/playwright.json' "$(cat "$prefix.argv")"
+  done
+
   write_target_config null
 }
 
@@ -195,82 +282,160 @@ T_dry_run_keeps_allowlist() {
   local out="$_TEST_STUB_DIR/dryrun-ui.out"
   run_dryrun ui "$REAL_HARNESS_ROOT" "$out"
   local line
-  line="$(grep -E '^\[DRY_RUN\] would invoke' "$out" | head -1)"
+  line="$(grep -E '\[DRY_RUN\] would invoke' "$out" | head -1 || true)"
   contains "ui dry-run argv contains mcp__playwright__*" 'mcp__playwright__*' "$line"
 
   out="$_TEST_STUB_DIR/dryrun-qa.out"
   run_dryrun qa "$REAL_HARNESS_ROOT" "$out"
-  line="$(grep -E '^\[DRY_RUN\] would invoke' "$out" | head -1)"
+  line="$(grep -E '\[DRY_RUN\] would invoke' "$out" | head -1 || true)"
   contains "qa dry-run argv contains mcp__playwright__*" 'mcp__playwright__*' "$line"
 }
 
 # ─── T_dry_run_skips_mcp_config ──────────────────────────────────────────
 # Dry-run argv echo MUST NOT include --mcp-config (no MCP child process is
-# spawned in dry-run; D-5).
+# spawned in dry-run; D-5). Pre-loopback this test was tautological — the
+# dry-run echo at bin/dispatch.sh:740 is hand-rolled and never composes
+# `--mcp-config` regardless of code state, so a regression in the real
+# splice (lines 825-830) would pass invisibly. The fix: ALSO assert that
+# the REAL cmd argv composed in main() — captured via the claude stub
+# from a behavioral subshell run — DOES contain `--mcp-config` on
+# non-dry-run ui/qa with config files present. The pair of assertions
+# (present in non-dry-run argv, absent from dry-run echo) is the
+# load-bearing structural pin for I-2 / F-8.
 T_dry_run_skips_mcp_config() {
   printf '\n--- T_dry_run_skips_mcp_config ---\n'
   write_target_config true
+
+  # Dry-run absence (pre-loopback assertion, retained).
   local out="$_TEST_STUB_DIR/dryrun-ui-nomcp.out"
   run_dryrun ui "$REAL_HARNESS_ROOT" "$out"
   local line
-  line="$(grep -E '^\[DRY_RUN\] would invoke' "$out" | head -1)"
+  line="$(grep -E '\[DRY_RUN\] would invoke' "$out" | head -1)"
   notcontains "ui dry-run argv omits --mcp-config" '--mcp-config' "$line"
 
   out="$_TEST_STUB_DIR/dryrun-qa-nomcp.out"
   run_dryrun qa "$REAL_HARNESS_ROOT" "$out"
-  line="$(grep -E '^\[DRY_RUN\] would invoke' "$out" | head -1)"
+  line="$(grep -E '\[DRY_RUN\] would invoke' "$out" | head -1)"
   notcontains "qa dry-run argv omits --mcp-config" '--mcp-config' "$line"
+
+  # Non-dry-run presence (behavioral): the only structural counterweight
+  # to the dry-run absence check. If the splice at dispatch.sh:825-830
+  # is silently deleted, this assertion regresses; the dry-run absence
+  # alone would still pass.
+  local prefix="$_TEST_STUB_DIR/behavioral-ui-present"
+  local rc
+  rc="$(run_main_behavioral ui "$REAL_HARNESS_ROOT" "$prefix")"
+  contains "ui non-dry-run argv carries --mcp-config (behavioral)" \
+    '--mcp-config' "$(cat "$prefix.argv")"
+  contains "ui non-dry-run argv names mcp/playwright.json (behavioral)" \
+    'mcp/playwright.json' "$(cat "$prefix.argv")"
+  if [[ "$rc" == "0" ]]; then
+    ok "ui non-dry-run main exits 0 (behavioral)"
+  else
+    ng "ui non-dry-run main exits 0 (behavioral)" "rc=$rc; stderr=$(cat "$prefix.stderr" 2>/dev/null | head -3)"
+  fi
+
+  prefix="$_TEST_STUB_DIR/behavioral-qa-present"
+  rc="$(run_main_behavioral qa "$REAL_HARNESS_ROOT" "$prefix")"
+  contains "qa non-dry-run argv carries --mcp-config (behavioral)" \
+    '--mcp-config' "$(cat "$prefix.argv")"
+  contains "qa non-dry-run argv names mcp/playwright.json (behavioral)" \
+    'mcp/playwright.json' "$(cat "$prefix.argv")"
 }
 
 # ─── T_missing_config_dies ───────────────────────────────────────────────
-# Content-pin: the die() path lives in dispatch.sh::main alongside the
-# --mcp-config splice. Behavioral subprocess invocation would require
-# overriding HARNESS_ROOT inside the subshell that runs `bash bin/
-# dispatch.sh ...`, but common.sh re-derives HARNESS_ROOT on every
-# source; the override does not survive. Greping the dispatch.sh
-# source for the literal die-message + presence-check + actionable
-# remediation hint is a meaningful structural regression catcher: a
-# future edit that drops the `[[ -f ]]` guard or the operator hint
-# fails the test loudly. The behavioral path is exercised end-to-end
-# via the manual smoke (PIPELINE_DRY_RUN=0 dispatch against a temp
-# harness with mcp/ deleted) — out-of-band per Test Strategy §9.
+# Behavioral: drive main() against a HARNESS_ROOT fixture that
+# intentionally does NOT contain mcp/playwright.json, assert main exits
+# non-zero with the operator-actionable hint on stderr. Pre-loopback
+# this test was a content-pin grep — meaningful as a typo guard but
+# silent on a regression that flipped `||` to `&&` or removed the [[ -f ]]
+# guard entirely. The behavioral path closes I-5 / F-1 / F-6. Approach:
+# source-and-invoke-main per the test file header — `bash bin/dispatch.sh`
+# in a fresh subshell would re-source common.sh and re-derive
+# HARNESS_ROOT to the real repo (silently undoing the no-mcp override).
 T_missing_config_dies() {
   printf '\n--- T_missing_config_dies ---\n'
-  local src="$SCRIPT_DIR/dispatch.sh"
-  local body
-  body="$(cat "$src")"
+  write_target_config true
 
-  contains "dispatch.sh carries the missing-config die message" \
-    'MCP config missing at' "$body"
-  contains "dispatch.sh die message names playwright.json" \
-    'playwright.json' "$body"
-  contains "dispatch.sh die message names playwright-headful.json (headful path)" \
-    'playwright-headful.json' "$body"
-  contains "dispatch.sh die message includes operator remediation hint (config flag)" \
-    'config.mcp.playwright.enabled=false' "$body"
-  contains "dispatch.sh die path is gated by [[ -f \"\$mcp_cfg_path\" ]] presence-check" \
-    '[[ -f "$mcp_cfg_path" ]]' "$body"
+  # _TEST_HARNESS_DIR is an empty mktemp — no mcp/ subdir exists, so
+  # the [[ -f $mcp_cfg_path ]] guard at dispatch.sh:828 trips into die().
+  local prefix="$_TEST_STUB_DIR/missing-ui"
+  local rc
+  rc="$(run_main_behavioral ui "$_TEST_HARNESS_DIR" "$prefix")"
+  if [[ "$rc" != "0" ]]; then
+    ok "ui missing-config: main exits non-zero (behavioral)"
+  else
+    ng "ui missing-config: main exits non-zero (behavioral)" \
+      "rc=0 — die path did not fire; argv=$(cat "$prefix.argv" 2>/dev/null | head -1)"
+  fi
+  contains "ui missing-config: stderr names 'MCP config missing at'" \
+    'MCP config missing at' "$(cat "$prefix.stderr")"
+  contains "ui missing-config: stderr names mcp/playwright.json (headless path)" \
+    'mcp/playwright.json' "$(cat "$prefix.stderr")"
+  contains "ui missing-config: stderr includes operator-actionable hint" \
+    'config.mcp.playwright.enabled=false' "$(cat "$prefix.stderr")"
+  # Negative: claude was never invoked → argv capture file is empty.
+  if [[ ! -s "$prefix.argv" ]]; then
+    ok "ui missing-config: claude was not invoked (no argv capture)"
+  else
+    ng "ui missing-config: claude was not invoked" \
+      "argv captured — die-path likely did not fire before exec: $(cat "$prefix.argv" | head -1)"
+  fi
+
+  # Adversarial: PLAYWRIGHT_HEADFUL=1 picks the headful sibling path,
+  # which is also absent in the fixture; die-shape must mention the
+  # headful filename.
+  prefix="$_TEST_STUB_DIR/missing-ui-headful"
+  rc="$(run_main_behavioral ui "$_TEST_HARNESS_DIR" "$prefix" 1)"
+  if [[ "$rc" != "0" ]]; then
+    ok "ui missing-config + HEADFUL=1: main exits non-zero (behavioral)"
+  else
+    ng "ui missing-config + HEADFUL=1: main exits non-zero (behavioral)" "rc=0"
+  fi
+  contains "ui missing-config + HEADFUL=1: stderr names mcp/playwright-headful.json" \
+    'mcp/playwright-headful.json' "$(cat "$prefix.stderr")"
 }
 
 # ─── T_headful_picks_sibling_config ──────────────────────────────────────
-# Content-pin (same rationale as T_missing_config_dies). Greps
-# dispatch.sh::main for the conditional that switches mcp_cfg_path
-# based on PLAYWRIGHT_HEADFUL=1 — the behavioral pin lives in the
-# manual smoke per §9. The literal-string match is byte-strict so
-# accidental renames (e.g. PLAYWRIGHT_HEADLESS=0 instead of
-# PLAYWRIGHT_HEADFUL=1) fail loudly.
+# Behavioral: drive main() against REAL_HARNESS_ROOT (where both mcp/
+# config files exist), toggle PLAYWRIGHT_HEADFUL, assert the --mcp-config
+# arg in the captured argv ends in the correct filename. Pre-loopback
+# this was a content-pin grep; the behavioral path catches a regression
+# that flipped the env-var name (e.g. PLAYWRIGHT_HEADLESS=0) or moved
+# the assignment outside the gate.
 T_headful_picks_sibling_config() {
   printf '\n--- T_headful_picks_sibling_config ---\n'
-  local src="$SCRIPT_DIR/dispatch.sh"
-  local body
-  body="$(cat "$src")"
+  write_target_config true
 
-  contains "dispatch.sh references PLAYWRIGHT_HEADFUL=1 env-var (headful selector)" \
-    'PLAYWRIGHT_HEADFUL-' "$body"
-  contains "dispatch.sh reassigns mcp_cfg_path to the headful sibling under the gate" \
-    'mcp/playwright-headful.json' "$body"
-  contains "dispatch.sh default path is the headless config" \
-    'mcp/playwright.json' "$body"
+  # HEADFUL=1 → playwright-headful.json
+  local prefix="$_TEST_STUB_DIR/headful-on"
+  local rc
+  rc="$(run_main_behavioral ui "$REAL_HARNESS_ROOT" "$prefix" 1)"
+  if [[ "$rc" == "0" ]]; then
+    ok "ui HEADFUL=1: main exits 0 (behavioral)"
+  else
+    ng "ui HEADFUL=1: main exits 0 (behavioral)" "rc=$rc; stderr=$(cat "$prefix.stderr" 2>/dev/null | head -3)"
+  fi
+  contains "ui HEADFUL=1: argv names playwright-headful.json" \
+    'playwright-headful.json' "$(cat "$prefix.argv")"
+
+  # HEADFUL unset → playwright.json (default)
+  prefix="$_TEST_STUB_DIR/headful-off"
+  rc="$(run_main_behavioral ui "$REAL_HARNESS_ROOT" "$prefix")"
+  if [[ "$rc" == "0" ]]; then
+    ok "ui HEADFUL unset: main exits 0 (behavioral)"
+  else
+    ng "ui HEADFUL unset: main exits 0 (behavioral)" "rc=$rc; stderr=$(cat "$prefix.stderr" 2>/dev/null | head -3)"
+  fi
+  # Strict tail-match: argv must end in /mcp/playwright.json, NOT
+  # /mcp/playwright-headful.json. The byte-strict grep guards against
+  # an accidental swap of the default branch.
+  local argv_body
+  argv_body="$(cat "$prefix.argv")"
+  contains "ui HEADFUL unset: argv names /mcp/playwright.json" \
+    '/mcp/playwright.json' "$argv_body"
+  notcontains "ui HEADFUL unset: argv does NOT name playwright-headful.json" \
+    'playwright-headful.json' "$argv_body"
 }
 
 # ─── Drive the suite ─────────────────────────────────────────────────────
