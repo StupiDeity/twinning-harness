@@ -1,0 +1,86 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-180",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "decide --action approve --gate scope clears pipeline:halted; the scope-approval replay then applies the forward transition directly without entering verdict_handler's protocol-violation path.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/pipeline-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "DEC-APPROVE-SCOPE-1"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "SCO-REPLAY-FORWARD-1"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/verdict-handler-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "case-12"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/pipeline.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/run-stage.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline.sh",
+          "pattern": "_pipeline_clear_halt_label",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline.sh",
+          "pattern": "action.*approve.*gate.*scope",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "scope-approval-replay transitioned",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_vh_lookup_forward",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-test.sh",
+          "pattern": "DEC-APPROVE-SCOPE-1",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "SCO-REPLAY-FORWARD-1",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "SCO-REPLAY-CONTINUE-COMPOSITE",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "CLAUDE.md",
+          "pattern": "scope-approval-replay transitioned",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}

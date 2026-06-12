@@ -410,7 +410,7 @@ rc=0; verdict_handler "ENG-911" "implementing" >/dev/null 2>&1 || rc=$?
   && pass_at "case-11 scope-deviation-emits-halt-marker" \
   || fail_at "case-11 scope-deviation-emits-halt-marker" "rc=$rc"
 
-# ─── Case 12: decide-continue-posts-decision-and-clears-halt ─────────
+# ─── Case 12: regression guard — find_fresh_verdict ignores decision events ─────────
 # After `bin/pipeline.sh decide --action continue` posts a decision
 # comment newer than the scope-violation halt, the verdict handler still
 # sees the halt marker as the most recent verdict-shape marker, so rc
@@ -418,6 +418,14 @@ rc=0; verdict_handler "ENG-911" "implementing" >/dev/null 2>&1 || rc=$?
 # not verdict_handler. What this case asserts is that find_fresh_verdict
 # IGNORES decision-event markers
 # comments (they're not a verdict shape).
+#
+# Post-ENG-180 D-002: this case remains the contract guard that
+# find_fresh_verdict treats `<!-- pipeline: decision ... -->` as
+# non-verdict-shape; the production call site previously exposed by this
+# contract (scope-approval replay) is now short-circuited in
+# run-stage.sh::main BEFORE verdict_handler runs, so this case no longer
+# guards a live failure mode — but the verdict-handler contract itself is
+# unchanged and still pinned here.
 reset_calls
 VH_FIXTURE_COMMENTS="$(mk_fixture \
   "<!-- pipeline: transition from=planning to=implementing -->|2026-04-23T09:00:00.000Z" \
