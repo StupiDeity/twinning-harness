@@ -1,0 +1,32 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-34",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Emit a `human-decision` metric event from `bin/pipeline.sh::cmd_decide` on every successful decide invocation, capturing actor / action / current_stage / outcome / before_state via the existing free-form metrics.sh CLI without schema or registry changes.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "docs/plans/2026-06-12-eng-34-track-human-decision-events-as-first-class-metric-records.md" },
+        { "kind": "file_exists", "path": "docs/plans/2026-06-12-eng-34-track-human-decision-events-as-first-class-metric-records.json" },
+        { "kind": "file_exists", "path": "bin/pipeline.sh" },
+        { "kind": "file_exists", "path": "bin/pipeline-test.sh" },
+        { "kind": "file_exists", "path": "bin/metrics.sh" },
+        { "kind": "file_exists", "path": "CLAUDE.md" },
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "_pipeline_resolve_actor", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "_pipeline_resolve_before_state", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "_pipeline_emit_human_decision", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "metrics\\.sh\" human-decision", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PR-HD-1", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PR-HD-2", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PR-HD-3", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PR-HD-DRY", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PR-HD-SAN", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "human-decision ENG-5840", "expect_match": true },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "human-decision", "expect_match": true },
+        { "kind": "smoke", "command": "bash -n bin/pipeline.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/pipeline-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/metrics-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}
