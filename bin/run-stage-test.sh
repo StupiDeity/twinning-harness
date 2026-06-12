@@ -914,6 +914,24 @@ else
     "at=$_at_count vh=$_vh_called"
 fi
 
+# Restore the GLOBAL stubs the SCO-REPLAY block overwrote so subsequent
+# cases see the original shapes. scope-check.sh and branch-name.sh are
+# the only ones not re-created by later cases (case-19 et al. re-create
+# linear.sh, metrics.sh, scan-gotcha-trailers.sh, render-prompt.sh,
+# dispatch.sh themselves).
+cat > "$STUB_DIR/scope-check.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${MOCK_SCOPE_OUT:-}"
+exit "${MOCK_SCOPE_RC:-0}"
+SH
+chmod +x "$STUB_DIR/scope-check.sh"
+
+cat > "$STUB_DIR/branch-name.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'feat/%s-mock-slug\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+SH
+chmod +x "$STUB_DIR/branch-name.sh"
+
 # ─── Case 25: _cost_flags_for tolerates corrupt JSON (review blocker 1) ──
 # Plan failure-mode → test-map row "usage-<stage>.json exists but
 # _cost_flags_for jq parse fails" requires a *malformed file* fixture, not
