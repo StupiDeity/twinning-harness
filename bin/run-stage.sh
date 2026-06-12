@@ -2332,7 +2332,11 @@ main() {
   # protocol-violation path is not entered.
   if (( skip_dispatch )); then
     local _fwd
-    _fwd="$(_vh_lookup_forward "$vh_stage")"
+    # ENG-180 review-iter-2: `|| true` keeps `set -euo pipefail` from
+    # short-circuiting the defensive branch below. _vh_lookup_forward's
+    # body is `grep | head | cut`; pipefail surfaces grep's rc=1 on no-match,
+    # which would abort the script before the empty-_fwd check fires.
+    _fwd="$(_vh_lookup_forward "$vh_stage" || true)"
     if [[ -z "$_fwd" ]]; then
       # Defensive — unreachable in current control flow: scope-approval
       # gate is restricted to implementing|ui (run-stage.sh scope-approval
