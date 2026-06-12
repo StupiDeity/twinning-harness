@@ -904,6 +904,28 @@ _assert_url_class_check "V-26N" "http://10.0.0.1?@x.com"                   "deni
 _assert_url_class_check "V-26O" "http://192.168.1.1#@x.com"                "denied"
 _assert_url_class_check "V-26P" "http://[::1]/@x.com/"                     "denied"
 
+# ─── V-26q/V-26r: real-public-host negative control (iter-9 testing major) ──
+# V-26j/k pin RFC1918 *boundary* hosts (172.15/172.32) as allowed, but no
+# test pinned a genuinely public host. Without one, a regression flipping
+# _url_host_class_denied to deny-all (or a broken normalizer dropping the
+# final `return 1`) would pass every V-24..V-30 deny arm silently. Pin a
+# public DNS name and a public IPv4 literal as 'allowed'.
+_assert_url_class_check "V-26q" "http://example.com/foo"                   "allowed"
+_assert_url_class_check "V-26r" "http://93.184.216.34/foo"                 "allowed"
+
+# ─── V-26s..V-26w: trailing-dot FQDN normalization (iter-9 security major) ──
+# Root-anchored trailing-dot forms (`localhost.`, `0.0.0.0.`, `::1.`, bare
+# `0.`) resolve identically to their dotless spelling via getaddrinfo but
+# bypassed the exact-match / numeric-shorthand arms. The trailing-dot strip
+# in _url_host_class_denied normalizes the whole class before matching; pin
+# one representative per arm-family, plus a public trailing-dot host that
+# must STILL be allowed (normalization must not over-deny).
+_assert_url_class_check "V-26s" "http://localhost./foo"                    "denied"
+_assert_url_class_check "V-26t" "http://0.0.0.0./foo"                      "denied"
+_assert_url_class_check "V-26u" "http://::1./foo"                          "denied"
+_assert_url_class_check "V-26v" "http://0./foo"                            "denied"
+_assert_url_class_check "V-26w" "http://example.com./foo"                  "allowed"
+
 _assert_url_denied "V-30" "http://2130706433/"
 _assert_url_denied "V-31" "http://0x7f000001/"
 _assert_url_denied "V-32" "http://0177.0.0.1/"

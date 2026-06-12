@@ -1716,7 +1716,7 @@ Your task:
    proposed expiry. Retrospective opens the CODEOWNERS-gated PR.
    Never append to qa-patterns.md directly.
 
-8. **Emit dimensional grading payload (verdict-qa.json):**
+9. **Emit dimensional grading payload (verdict-qa.json):**
    Before exiting (on any decision path — A, B, C, or D), write a
    dimensional grading payload to `$(issue_dir {issue_id})/verdict-qa.json`
    describing per-dimension scores. Schema source-of-truth: header comment
@@ -1752,7 +1752,7 @@ Your task:
 
 Quality gates (must all be true to advance):
   - All gate commands pass (or all failures are citation-backed flakes).
-  - Zero P0 findings from §2–6.
+  - Zero P0 findings from §3–6.
   - Every Failure Mode → Test Map row matched by a real test with the right assertion.
   - Every new code path has boundary + failure-mode + concurrency tests per the budget.
   - No regressions without an explicit `Regression-intent:` trailer.
@@ -1765,7 +1765,7 @@ Decision path (apply exactly one):
      (§ loop-back to implementing).
 
   B. **Genuine failures** (any P0 or non-flake fail):
-     - File deduped Linear bugs per §6.
+     - File deduped Linear bugs per §7.
      - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} qa_rejection --reason "<one-line summary of the genuine-failure cause (P0 / non-flake)>"`.
        (Omit `--reason-code` — no token registered for qa-side rejection yet; the prose reason is enough for the audit trail.)
      - Post a Linear comment tagged `<!-- meta: metric name=qa_reject -->` with the
@@ -1792,7 +1792,7 @@ Decision path (apply exactly one):
 
   D. **Back-fill PR** (branch-shape detection above flagged this PR as docs-only — every path under `git diff main..HEAD --name-only` matches `^docs/`):
      - Run the gate commands listed in the Project profile addendum's "Build & test gates" section. The gates protect against a regression on `main` between when the original fix shipped and this PR opened; they must still pass.
-     - SKIP the coverage audit (§3), the regression-intent audit (§4), and the adversarial-testing budget (§5). The new-code-path budget is vacuously satisfied — zero new code paths means zero required tests.
+     - SKIP the coverage audit (§4), the regression-intent audit (§5), and the adversarial-testing budget (§6). The new-code-path budget is vacuously satisfied — zero new code paths means zero required tests.
      - Verify the brainstorm's specification matches the in-tree implementation. Use Read + Grep on `main` to confirm the code described in the brainstorm exists at the paths the brainstorm names. If the brainstorm describes something that is NOT in the tree, this is a P0 finding — treat as Decision-path B (genuine failure, loop back to implementing).
      - Commit no new tests (none required).
      - Post a QA summary comment on the PR (gates green + back-fill confirmation: brainstorm spec ↔ in-tree code match).

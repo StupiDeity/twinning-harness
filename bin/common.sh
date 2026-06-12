@@ -319,6 +319,19 @@ _url_host_class_denied() {
   fi
   # Lowercase for case-insensitive comparison.
   host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  # Strip trailing root-label dot(s) — the FQDN/absolute form. `localhost.`,
+  # `0.0.0.0.`, `::1.`, `0.` are all root-anchored names that getaddrinfo and
+  # curl resolve identically to their dotless spelling, but the exact-match and
+  # numeric-shorthand arms below match the dotless form only. Normalizing the
+  # trailing dot HERE — before every numeric guard and case-arm — closes the
+  # whole trailing-dot representation class in one place (every arm benefits at
+  # once) rather than bolting on a per-literal `localhost.`/`0.0.0.0.` arm. This
+  # is the same normalize-then-match discipline as the case / bracket / zone-id
+  # / userinfo strips above; matching the recurring parser-divergence class
+  # (iter-3 case, iter-5 unbracketed-IPv6, iter-7/8 ::-collapse) at the
+  # normalization layer is what stops the next syntactic variant from slipping
+  # past. The loop also collapses pathological multi-dot suffixes (`localhost..`).
+  while [[ "$host" == *. ]]; do host="${host%.}"; done
   # IPv4 numeric-encoding bypass guard. Single-component hosts (no dot
   # / no colon) that parse as a number — decimal, hex, or octal — are
   # IPv4 shorthand curl resolves.
