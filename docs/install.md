@@ -202,7 +202,26 @@ bash bin/setup.sh /path/to/target validate
 Run this any time you suspect drift — after edits to `config.json`, after
 adding a new `bin/*-test.sh`, after rotating credentials.
 
-## Phase 11: launchd
+## Phase 11: playwright-install
+
+Runs `npx playwright install chromium` so `ui`/`qa` dispatches can drive
+the Playwright MCP browser toolset (ENG-27). The Chromium download is
+≈30–250 MB on first run and cached afterwards; the phase is idempotent.
+
+```bash
+bash bin/setup.sh /path/to/target playwright-install
+```
+
+Skip it on targets that don't need browser verification with
+`PIPELINE_SKIP_PHASES=playwright-install`.
+
+**Failure modes:**
+- "npx not on PATH": install Node.js (`brew install node`) or skip the
+  phase via `PIPELINE_SKIP_PHASES=playwright-install`.
+- "`npx playwright install chromium` exited non-zero": re-run after fixing
+  the underlying error; the phase is idempotent.
+
+## Phase 12: launchd
 
 Renders `launchd/com.twinning.pipeline.plist.template` and
 `launchd/com.twinning.retrospective.plist.template` into

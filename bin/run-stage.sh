@@ -1660,6 +1660,11 @@ main() {
   # Guarantee the per-issue state dir exists before dispatch so an agent's first
   # Write of stage-summary-<stage>.md cannot fail on missing parents.
   mkdir -p "$(issue_dir "$ident")"
+  # ENG-27: per-issue artifacts/ for ui/qa Playwright screenshots. The agent
+  # references this path via {artifacts_dir} (render-prompt.sh resolver) only
+  # on ui/qa, but creating it on every stage keeps the precondition uniform
+  # and the cost is one cheap mkdir per dispatch.
+  mkdir -p "$(issue_dir "$ident")/artifacts/"
   # ENG-109 C2: ensure progress.md exists before dispatch so the agent's Edit
   # tool (append-via-anchor path) succeeds on first dispatch on a fresh issue.
   _ensure_progress_md "$ident"
@@ -2311,18 +2316,54 @@ main() {
     exit 0
   fi
 
-  # Post-dispatch halt apply (ENG-56): orchestrator is the canonical applier
-  # of pipeline:halted. See `_post_dispatch_apply_halt` for the wait-shape
-  # carve-out and why it's structured as a callable.
-  _post_dispatch_apply_halt "$ident" "$stage"
-
   # Resolve the current stage from the Linear label (long form) rather than
   # the short-form $stage argument, because the Verdict Handler tables are
   # keyed on the long form (brainstorming, planning, implementing, ...).
   # current_stage_label was already fetched above in the drift guard (and
   # confirmed equal to dispatched_stage_label, so no second linear.sh call needed).
+  # ENG-180 D-002: hoisted ABOVE _post_dispatch_apply_halt so the new
+  # scope-approval-replay branch below can reference $vh_stage.
   local vh_stage
   vh_stage="${current_stage_label#stage:}"
+
+  # ENG-180 D-002: scope-approval replay applies the forward transition
+  # directly. The replay deliberately skips the agent dispatch (no fresh
+  # verdict marker is emitted), so verdict_handler's find_fresh_verdict
+  # would return empty and _vh_protocol_violation would re-halt. The
+  # source stage's prior clean pass already earned the transition; emit
+  # it here. Runs after post_completion_comment so the orchestrator's
+  # narrative post still lands; runs before _post_dispatch_apply_halt so
+  # the halt label is not re-applied; runs before verdict_handler so the
+  # protocol-violation path is not entered.
+  if (( skip_dispatch )); then
+    local _fwd
+    # ENG-180 review-iter-2: `|| true` keeps `set -euo pipefail` from
+    # short-circuiting the defensive branch below. _vh_lookup_forward's
+    # body is `grep | head | cut`; pipefail surfaces grep's rc=1 on no-match,
+    # which would abort the script before the empty-_fwd check fires.
+    _fwd="$(_vh_lookup_forward "$vh_stage" || true)"
+    if [[ -z "$_fwd" ]]; then
+      # Defensive — unreachable in current control flow: scope-approval
+      # gate is restricted to implementing|ui (run-stage.sh scope-approval
+      # gate above), both of which have forward rows in
+      # _VH_FORWARD_TRANSITIONS. Future stages joining the gate without
+      # a forward row will fall here.
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "scope-approval-replay: no forward transition from $vh_stage" 22
+      exit 22
+    fi
+    apply_transition "$ident" "$vh_stage" "$_fwd" ""
+    t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
+    bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" \
+      "verdict=transitioned scope-approval-replay=1"
+    log "stage $stage complete for $ident (scope-approval-replay transitioned $vh_stage → $_fwd)"
+    exit 0
+  fi
+
+  # Post-dispatch halt apply (ENG-56): orchestrator is the canonical applier
+  # of pipeline:halted. See `_post_dispatch_apply_halt` for the wait-shape
+  # carve-out and why it's structured as a callable.
+  _post_dispatch_apply_halt "$ident" "$stage"
 
   # ENG-87 review-iter-7 M3: verdict_emitted / verdict_target are now
   # derived inside _append_dispatch_end_row (which calls find_fresh_verdict

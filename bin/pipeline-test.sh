@@ -275,6 +275,94 @@ else
 fi
 _ar_clear "ENG-5801"
 
+# ─── ENG-180 D-001: approve --gate scope → halt-label-clear ───
+# After NOTABLE scope-violation halt, a single `decide --action approve --gate scope`
+# invocation removes pipeline:halted so the next launchd tick's scope-approval replay
+# can fire. Five fixtures cover happy path, idempotency on no-halt, gate-narrowing,
+# dry-run suppression, and the D-014 issue-id guard.
+
+# DEC-APPROVE-SCOPE-1: halt-clear fires; remove-label appears BEFORE add-comment.
+# `{ grep ... || true; } | head | cut` guards against grep rc=1 (no match)
+# tripping pipefail and aborting the cmd substitution.
+: > "$_AR_LINEAR_CALLS"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
+  _ar_decide "ENG-1801" --action approve --gate scope || true
+remove_line_n="$( { grep -n "^remove-label ENG-1801 pipeline:halted$" "$_AR_LINEAR_CALLS" || true; } | head -1 | cut -d: -f1)"
+add_line_n="$( { grep -n "^add-comment ENG-1801" "$_AR_LINEAR_CALLS" || true; } | head -1 | cut -d: -f1)"
+remove_count="$(grep -c "^remove-label ENG-1801 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
+add_count="$(grep -c "decision action=approve gate=scope" "$_AR_LINEAR_CALLS" || true)"
+if [[ "$remove_count" == "1" && "$add_count" -ge "1" \
+      && -n "$remove_line_n" && -n "$add_line_n" \
+      && "$remove_line_n" -lt "$add_line_n" ]]; then
+  pass_at "DEC-APPROVE-SCOPE-1: halt-clear fires, ordered before decision comment"
+else
+  fail_at "DEC-APPROVE-SCOPE-1: halt-clear" \
+    "remove=$remove_count add=$add_count remove_line=$remove_line_n add_line=$add_line_n"
+fi
+_ar_clear "ENG-1801"
+
+# DEC-APPROVE-SCOPE-2: idempotent on no-halt — no remove-label, decision still posts.
+: > "$_AR_LINEAR_CALLS"
+LABELS_ON="" STAGE_OF="stage:implementing" \
+  _ar_decide "ENG-1802" --action approve --gate scope || true
+remove_count="$(grep -c "^remove-label ENG-1802 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
+add_count="$(grep -c "decision action=approve gate=scope" "$_AR_LINEAR_CALLS" || true)"
+if [[ "$remove_count" == "0" && "$add_count" -ge "1" ]]; then
+  pass_at "DEC-APPROVE-SCOPE-2: idempotent on no-halt (no remove-label; decision still posts)"
+else
+  fail_at "DEC-APPROVE-SCOPE-2: idempotent" \
+    "remove=$remove_count add=$add_count"
+fi
+_ar_clear "ENG-1802"
+
+# DEC-APPROVE-SCOPE-3: other gate untouched — approve --gate build-cap does NOT clear halt.
+: > "$_AR_LINEAR_CALLS"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
+  _ar_decide "ENG-1803" --action approve --gate build-cap || true
+remove_count="$(grep -c "^remove-label ENG-1803 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
+add_count="$(grep -c "decision action=approve gate=build-cap" "$_AR_LINEAR_CALLS" || true)"
+if [[ "$remove_count" == "0" && "$add_count" -ge "1" ]]; then
+  pass_at "DEC-APPROVE-SCOPE-3: approve --gate build-cap leaves halt label intact"
+else
+  fail_at "DEC-APPROVE-SCOPE-3: gate-narrow" \
+    "remove=$remove_count add=$add_count"
+fi
+_ar_clear "ENG-1803"
+
+# DEC-APPROVE-SCOPE-4: dry-run suppression — PIPELINE_DRY_RUN=1 → zero linear calls.
+# Need to override the in-process PIPELINE_DRY_RUN setting (which is "" for the
+# atomic-reset block). The dry-run branch in cmd_decide short-circuits BOTH the
+# halt-clear (live-path-only guard) AND the add-comment call.
+: > "$_AR_LINEAR_CALLS"
+LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
+  PIPELINE_DRY_RUN=1 _ar_decide "ENG-1804" --action approve --gate scope >/dev/null 2>&1 || true
+linear_count="$(wc -l < "$_AR_LINEAR_CALLS" | tr -d ' ')"
+if [[ "$linear_count" == "0" ]]; then
+  pass_at "DEC-APPROVE-SCOPE-4: dry-run suppresses halt-clear AND decision post"
+else
+  fail_at "DEC-APPROVE-SCOPE-4: dry-run" \
+    "linear_count=$linear_count calls=$(cat "$_AR_LINEAR_CALLS")"
+fi
+_ar_clear "ENG-1804"
+
+# DEC-APPROVE-SCOPE-5: invalid issue id rejected by D-014 guard.
+# cmd_decide should die with the "expected ENG-<digits>" error and post nothing.
+# `$(...)` is a subshell — die's `exit 1` exits that subshell only, not the test.
+# Use `|| _decide_rc=$?` to capture rc without toggling errexit.
+: > "$_AR_LINEAR_CALLS"
+_decide_rc=0
+_decide_out="$( LABELS_ON="pipeline:halted" \
+  _ar_decide "INVALID-ID" --action approve --gate scope 2>&1 )" \
+  || _decide_rc=$?
+linear_count="$(wc -l < "$_AR_LINEAR_CALLS" | tr -d ' ')"
+if [[ "$_decide_rc" != "0" && "$linear_count" == "0" ]]; then
+  pass_at "DEC-APPROVE-SCOPE-5: invalid issue id rejected (nonzero rc, no linear calls)"
+else
+  fail_at "DEC-APPROVE-SCOPE-5: invalid issue id" \
+    "rc=$_decide_rc linear_count=$linear_count out=$_decide_out"
+fi
+_ar_clear "INVALID-ID" 2>/dev/null || true
+
 # ── PR-I: continue + policy=skip-until-code-changes → issue-state.json PRESERVED
 : > "$_AR_LINEAR_CALLS"
 _ar_seed "ENG-5802" "skip-until-code-changes"

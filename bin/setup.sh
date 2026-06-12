@@ -581,7 +581,38 @@ phase_validate() {
 
 is_validate_done() { return 1; }  # always re-run on demand
 
-# ── Phase 11: launchd ─────────────────────────────────────────────────
+# ── Phase 11: playwright-install ─────────────────────────────────────
+# ENG-27: install the Chromium binary that @playwright/mcp needs at
+# runtime. Without this phase, the first ui/qa dispatch would download
+# ~250 MB inline on the dispatch host, blowing the gtimeout budget on
+# slow networks. Phase ordering: after `validate` (which sanity-checks
+# the rest of the pipeline) and before `launchd` (which schedules the
+# tick that would actually fire a dispatch). Idempotent — Playwright's
+# installer is a no-op when the cached browser is already current.
+phase_playwright_install() {
+  print_phase_header "playwright-install"
+  if ! command -v npx >/dev/null 2>&1; then
+    die "playwright-install: npx not on PATH. Install Node.js (e.g. brew install node) or skip this phase via PIPELINE_SKIP_PHASES=playwright-install."
+  fi
+  log "playwright-install: running 'npx playwright install chromium' (≈30-250 MB on first run; cached afterwards)"
+  npx playwright install chromium \
+    || die "playwright-install: 'npx playwright install chromium' exited non-zero. Re-run after fixing the underlying error; the phase is idempotent."
+}
+
+is_playwright_install_done() {
+  # npx must be on PATH for the phase to mean anything.
+  command -v npx >/dev/null 2>&1 || return 1
+  # `playwright install --dry-run` reports what would be installed
+  # without doing the install. When the cached chromium is current it
+  # prints nothing and exits 0; when an install is required it exits
+  # non-zero or prints work-to-do lines. Upstream's --dry-run is
+  # supported as of Playwright 1.43+. If absent on the operator's
+  # Playwright version, the phase falls back to "always re-run" (safe
+  # — the install step itself is idempotent).
+  npx playwright install --dry-run chromium >/dev/null 2>&1
+}
+
+# ── Phase 12: launchd ─────────────────────────────────────────────────
 phase_launchd() {
   print_phase_header "launchd"
   if ! is_project_profile_done; then
@@ -720,7 +751,7 @@ phase_migrate() {
 is_migrate_done() { return 1; }   # always re-run on demand; substeps are individually idempotent
 
 # Phase dispatch.
-ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze project-profile github-app gh-cli slack config-defaults validate launchd)
+ALL_PHASES=(workspace linear-auth linear-identity linear-schema slug-freeze project-profile github-app gh-cli slack config-defaults validate playwright-install launchd)
 run_phase_or_skip() {
   local phase="$1" check_fn run_fn
   check_fn="is_${phase//-/_}_done"

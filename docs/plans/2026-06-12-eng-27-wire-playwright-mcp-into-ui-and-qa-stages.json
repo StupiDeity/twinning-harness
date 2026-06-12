@@ -1,0 +1,107 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-27",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Static MCP config files mcp/playwright.json (headless) and mcp/playwright-headful.json exist at repo root with mcpServers.playwright shape parseable by jq.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "mcp/playwright.json" },
+        { "kind": "file_exists", "path": "mcp/playwright-headful.json" },
+        { "kind": "grep", "path": "mcp/playwright.json", "pattern": "\"@playwright/mcp", "expect_match": true },
+        { "kind": "grep", "path": "mcp/playwright-headful.json", "pattern": "\"@playwright/mcp", "expect_match": true },
+        { "kind": "smoke", "command": "jq -e . mcp/playwright.json >/dev/null && jq -e . mcp/playwright-headful.json >/dev/null", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/dispatch.sh defines _dispatch_mcp_enabled_for(stage) and uses it to gate BOTH the mcp__playwright__* allowlist append and the --mcp-config argv splice.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "_dispatch_mcp_enabled_for\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "mcp__playwright__\\*", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "--mcp-config", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "PLAYWRIGHT_HEADFUL", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "MCP config missing at", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/render-prompt.sh registers the artifacts_dir token resolver, defines _resolve_artifacts_dir, binds _RENDER_ARTIFACTS_DIR in main(), and enumerates artifacts_dir in the rendered-paths sidecar.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "artifacts_dir=_resolve_artifacts_dir", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "_resolve_artifacts_dir\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "_RENDER_ARTIFACTS_DIR=", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "'artifacts_dir\\\\t%s\\\\n'", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "bin/run-stage.sh creates $(issue_dir <ident>)/artifacts/ before dispatch (sibling of the existing per-issue state-dir mkdir).",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "mkdir -p \"\\$\\(issue_dir \"\\$ident\"\\)/artifacts/\"", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "AGENT_PROMPTS.md §4 (UI) carries a MANDATORY Browser verification (per-route gate) block referencing {artifacts_dir} and the D-10 outcome-line tokens; §6 (QA) carries a §3.5 End-to-end verification (browser) block; both add the Browser verification: performed|skipped|failed line to their stage-summary Notes contract.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Browser verification \\(per-route gate\\)", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "End-to-end verification \\(browser\\)", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "\\{artifacts_dir\\}", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Browser verification: performed", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Browser verification: skipped", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Browser verification: failed", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "mcp__playwright__browser_navigate", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "mcp__playwright__browser_take_screenshot", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-6",
+      "summary": "learned-rules/harness/project-profile.md::## File layout lists mcp/, and the ## Build & test gates Test command runs bin/dispatch-playwright-test.sh.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "`mcp/`", "expect_match": true },
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "bash bin/dispatch-playwright-test.sh", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-7",
+      "summary": "bin/setup.sh declares phase_playwright_install + is_playwright_install_done and lists playwright-install in ALL_PHASES between validate and launchd.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/setup.sh", "pattern": "phase_playwright_install\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/setup.sh", "pattern": "is_playwright_install_done\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/setup.sh", "pattern": "validate playwright-install launchd", "expect_match": true },
+        { "kind": "grep", "path": "bin/setup.sh", "pattern": "npx playwright install chromium", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-8",
+      "summary": "bin/dispatch-playwright-test.sh exists and asserts the four-cell gating matrix (stage × config × dry-run), the headful-config selector, and the missing-config die.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/dispatch-playwright-test.sh" },
+        { "kind": "grep", "path": "bin/dispatch-playwright-test.sh", "pattern": "T_mcp_gate_coherent", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-playwright-test.sh", "pattern": "T_other_stages_no_mcp", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-playwright-test.sh", "pattern": "T_missing_config_dies", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-playwright-test.sh", "pattern": "T_headful_picks_sibling_config", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-playwright-test.sh", "pattern": "T_dry_run_keeps_allowlist", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch-playwright-test.sh", "pattern": "T_dry_run_skips_mcp_config", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/dispatch-playwright-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-9",
+      "summary": "bin/profile-allowlist-test.sh carries T_profile_file_layout_lists_mcp that pins I-6 (mcp/ bullet present in profile File layout).",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/profile-allowlist-test.sh", "pattern": "T_profile_file_layout_lists_mcp", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/profile-allowlist-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-10",
+      "summary": "Plan markdown + sibling JSON committed together on the feature branch as chore(pipeline): plan for ENG-27.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "docs/plans/2026-06-12-eng-27-wire-playwright-mcp-into-ui-and-qa-stages.md" },
+        { "kind": "file_exists", "path": "docs/plans/2026-06-12-eng-27-wire-playwright-mcp-into-ui-and-qa-stages.json" }
+      ]
+    }
+  ]
+}

@@ -2190,6 +2190,68 @@ else
 fi
 unset _eng150_prompts_pat
 
+# ─── ENG-27: §4/§6 Browser verification block + smoke-failed token ──────
+# Plan §8 F-5 names bin/agent-prompts-content-test.sh as the structural
+# pin for the MANDATORY outcome-line contract in §4 (UI) and §6 (QA), and
+# for the `smoke-failed` halt token both sections instruct the agent to
+# emit on dev-server / navigation failure. The §4/§6 prompt edits in
+# bin/AGENT_PROMPTS.md (commit 2a1b1c9) are not otherwise covered: a
+# silent deletion of the Browser verification block, the three-outcome
+# enumeration (performed | skipped | failed), or the smoke-failed reason
+# token would land without a failing test.
+#
+# Six assertions per section (§4 / §6):
+#   1. `Browser verification (per-route gate)` header present in §4
+#      OR `End-to-end verification (browser)` header present in §6.
+#   2. `smoke-failed` halt token present.
+#   3. `Browser verification: performed` outcome line present.
+#   4. `Browser verification: skipped` outcome line present.
+#   5. `Browser verification: failed` outcome line present.
+#   6. `MANDATORY: include exactly ONE Browser verification` Notes-slot
+#      directive present (i.e. the stage-summary outcome-line contract
+#      is wired in).
+_browser_assert() {
+  # $1 = section label (e.g. §4), $2 = section body, $3 = expected literal
+  local label="$1" body="$2" needle="$3"
+  if printf '%s\n' "$body" | grep -qF "$needle"; then
+    ok "$label ENG-27 F-5: carries '$needle'"
+  else
+    nope "$label ENG-27 F-5: carries '$needle'" \
+      "literal missing — Browser verification contract or smoke-failed halt token may have been silently deleted"
+  fi
+}
+
+# Re-bind §4 / §6 section bodies — earlier ENG-124 blocks in this file
+# `unset s6` and may rebind s4 too; capture fresh extracts here so the
+# assertions read the current AGENT_PROMPTS.md.
+s4_eng27="$(section_body "## 4. UI Agent (Frontend)")"
+s6_eng27="$(section_body "## 6. QA Agent")"
+
+_browser_assert '§4' "$s4_eng27" 'Browser verification (per-route gate)'
+_browser_assert '§4' "$s4_eng27" 'smoke-failed'
+_browser_assert '§4' "$s4_eng27" 'Browser verification: performed'
+_browser_assert '§4' "$s4_eng27" 'Browser verification: skipped'
+_browser_assert '§4' "$s4_eng27" 'Browser verification: failed'
+_browser_assert '§4' "$s4_eng27" 'MANDATORY: include exactly ONE Browser verification'
+
+_browser_assert '§6' "$s6_eng27" 'End-to-end verification (browser)'
+_browser_assert '§6' "$s6_eng27" 'smoke-failed'
+_browser_assert '§6' "$s6_eng27" 'Browser verification: performed'
+_browser_assert '§6' "$s6_eng27" 'Browser verification: skipped'
+_browser_assert '§6' "$s6_eng27" 'Browser verification: failed'
+_browser_assert '§6' "$s6_eng27" 'MANDATORY: include exactly ONE Browser verification'
+
+# Plan §8 F-5 grep contract: the `{artifacts_dir}` token MUST appear in both
+# §4 and §6 — it is the resolver-backed prefix that keeps screenshots out of
+# the worktree root (the self-leak failure mode). A mis-edit dropping the
+# token from either section silently re-opens that failure mode, so pin its
+# presence per-section here (registry-side coverage lives in render-prompt-test.sh).
+_browser_assert '§4' "$s4_eng27" '{artifacts_dir}'
+_browser_assert '§6' "$s6_eng27" '{artifacts_dir}'
+
+unset -f _browser_assert
+unset s4_eng27 s6_eng27
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

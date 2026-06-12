@@ -14,7 +14,7 @@ Bash 3.2+ orchestration scripts (macOS-compatible). The repo contains no applica
 ## Build & test gates
 
 - Build: `(n/a) — interpreted bash; no compile step`
-- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh && bash bin/stuck-tick-alarm-test.sh && bash bin/review-payload-schema-test.sh && bash bin/retro-shape-tool-denial-trends-test.sh && bash bin/retro-shape-runtime-invariant-audit-test.sh && bash bin/retro-shape-claude-version-drift-test.sh && bash bin/init-sh-validator-test.sh && bash bin/init-sh-validator-adversarial-test.sh && bash bin/verify-qa-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner; bin/eng-81-reproducer-test.sh omitted — KNOWN_BROKEN per .githooks/pre-commit, tracked for a dedicated fix ticket: ENG-154/151/153 fixture drift)*
+- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh && bash bin/stuck-tick-alarm-test.sh && bash bin/review-payload-schema-test.sh && bash bin/retro-shape-tool-denial-trends-test.sh && bash bin/retro-shape-runtime-invariant-audit-test.sh && bash bin/retro-shape-claude-version-drift-test.sh && bash bin/init-sh-validator-test.sh && bash bin/init-sh-validator-adversarial-test.sh && bash bin/dispatch-playwright-test.sh && bash bin/dispatch-playwright-adversarial-test.sh && bash bin/verify-qa-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner; bin/eng-81-reproducer-test.sh omitted — KNOWN_BROKEN per .githooks/pre-commit, tracked for a dedicated fix ticket: ENG-154/151/153 fixture drift)*
 - Lint/check: `bash -n bin/*.sh` *(syntax check only; no shellcheck in CI today)*
 - Integration/E2E: `PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/dry-run.sh`
 
@@ -35,6 +35,8 @@ are implicit and not declared here.
   - `Bash(bash bin/classify-failure-test.sh:*)`
   - `Bash(bash bin/cleanup-worktrees-test.sh:*)`
   - `Bash(bash bin/common-test.sh:*)`
+  - `Bash(bash bin/dispatch-playwright-adversarial-test.sh:*)`
+  - `Bash(bash bin/dispatch-playwright-test.sh:*)`
   - `Bash(bash bin/dispatch-test.sh:*)`
   - `Bash(bash bin/eng-81-reproducer-test.sh:*)`
   - `Bash(bash bin/entry-conditions-test.sh:*)`
@@ -90,6 +92,8 @@ are implicit and not declared here.
   - `Bash(bash bin/classify-failure-test.sh:*)`
   - `Bash(bash bin/cleanup-worktrees-test.sh:*)`
   - `Bash(bash bin/common-test.sh:*)`
+  - `Bash(bash bin/dispatch-playwright-adversarial-test.sh:*)`
+  - `Bash(bash bin/dispatch-playwright-test.sh:*)`
   - `Bash(bash bin/dispatch-test.sh:*)`
   - `Bash(bash bin/eng-81-reproducer-test.sh:*)`
   - `Bash(bash bin/entry-conditions-test.sh:*)`
@@ -145,6 +149,7 @@ are implicit and not declared here.
 - `bin/setup-prompts/` — markdown prompt bodies token-interpolated by setup-time helpers (e.g. `discovery.md`).
 - `learned-rules/<slug>/` — per-slug rule files appended to dispatched stage prompts; `<slug>/project-profile.md` carries stack context (this file), `<slug>/<stage>.md` carries retrospective-curated rules.
 - `launchd/` — `*.plist.template` files rendered by `bin/install-launchd.sh` into `~/Library/LaunchAgents/`.
+- `mcp/` — checked-in MCP server config files (`playwright.json` and `playwright-headful.json`) referenced by `bin/dispatch.sh` via `$HARNESS_ROOT/mcp/`. Per-stage MCP gating lives in `bin/dispatch.sh::_dispatch_mcp_enabled_for`; presence-check + die contract lives in `dispatch.sh::main`.
 - `docs/brainstorms/` and `docs/plans/` — canonical doc locations the orchestrator's reconcile.sh treats as authoritative (frontmatter `linear: ENG-N` is the doc-to-issue ownership signal).
 - `AGENT_PROMPTS.md` — nine numbered H2 sections, one per stage agent; `bin/render-prompt.sh` extracts the fenced block by section header.
 

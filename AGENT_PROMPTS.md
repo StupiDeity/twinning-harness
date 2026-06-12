@@ -1159,6 +1159,39 @@ Per-component UX checklist (MANDATORY — score each NEW or meaningfully-changed
 
 Require ≥7/8 items pass per component. Items 1, 3, 4 are P0 (never merge without them).
 
+Browser verification (per-route gate) (MANDATORY when the profile names a frontend layer):
+  - **Predicate.** This block fires when the profile's Stack section names a frontend layer
+    AND the plan's Frontend Tasks are not 'N/A' AND your work touched at least one route
+    or component. If the predicate is false (no frontend layer at all, or this dispatch is
+    a docs-only / API-only change), SKIP the browser steps but still emit the
+    `Browser verification: skipped · reason=<token>` line described below.
+  - **Workflow** (only when the predicate fires):
+      1. Start the dev server in the background per the profile's "Build & test gates"
+         Integration/E2E command. Capture its PID so you can stop it at exit.
+      2. HTTP-poll the entry URL (curl --head against the configured port) — allow up to
+         30 seconds for the server to become reachable. If it never returns 2xx, halt
+         with `bash bin/pipeline.sh event {issue_id} verdict halt --reason smoke-failed`.
+      3. For each changed route, call `mcp__playwright__browser_navigate` with the route URL.
+         At minimum capture the default state; capture loading and error states whenever
+         the component legitimately renders them.
+      4. Call `mcp__playwright__browser_take_screenshot` with
+         `filename={artifacts_dir}ui-<route-slug>-<state>.png`. The `{artifacts_dir}`
+         token resolves to an absolute path OUTSIDE the worktree (under
+         `$(issue_dir <issue>)/artifacts/`) — never store screenshots at the worktree
+         root; the scope sweep classifies stray `.png` files as self-leak and the dispatch
+         hard-fails.
+      5. Stop the dev server (kill the PID captured in step 1) before exiting.
+  - **Failure shapes** → halt verdict (NOT a P0 finding-loop):
+      - Dev server never returns 2xx → `verdict halt --reason smoke-failed`.
+      - `mcp__playwright__browser_navigate` returns a navigation error → halt as above.
+      - Console errors on the rendered page (the agent's responsibility to flag) → halt
+        as above.
+  - **Stage-summary reference.** In the stage-summary Notes section, list each
+    screenshot by RELATIVE path under `artifacts/` (e.g. `artifacts/ui-home-default.png`),
+    NOT the absolute `{artifacts_dir}` path — the stage-summary is read by humans on the
+    operator host, where the absolute path resolves under `$PROJECT_STATE_DIR/<issue>/`
+    and may not match the dispatch host's layout.
+
 Second-reviewer pass (MANDATORY — independent check):
 After your own self-review, dispatch a cold review via the Agent tool
 (`subagent_type: general-purpose`) with a prompt containing:
@@ -1207,6 +1240,13 @@ Output:
     `K components · second-review: approve · proceeding to reviewing`.
   - Notes (only on deviations / per-component checklist misses / second-reviewer
     request-changes): concise paragraph per miss.
+    - MANDATORY: include exactly ONE Browser verification outcome line within Notes,
+      in one of these three shapes:
+        - `Browser verification: performed · routes=<comma-list> · screenshots=<count> · path=artifacts/`
+        - `Browser verification: skipped · reason=<no-frontend|docs-only-diff|profile-no-e2e-command|no-route-changed>`
+        - `Browser verification: failed · reason=<dev-server-not-up|navigation-error|screenshot-error> · details=<one-line>`
+      A missing line on a ui dispatch is a protocol-violation (caught at brainstorm/
+      review time today; transcript detective deferred per brainstorm D-10).
   Full per-component checklist scores and the second-reviewer verdict go into the
   stage-summary file's Notes section, not this comment. (The orchestrator constructs
   the PR body from these stage summaries.)
@@ -1679,6 +1719,36 @@ Your task:
 4. **Coverage audit (proxy since no line-level tooling is wired):**
    For every new code path identified above, grep the test tree (use the stack's test-discovery idiom — the profile's `Build & test gates` section names the canonical command, and `File layout` names the test-file roots) for a test that names the path directly (function name, handler name, or component name). Missing → P0.
 
+4.5. **End-to-end verification (browser) (MANDATORY when the profile names a frontend layer and the diff touches user-visible routes):**
+   - **Predicate.** Fires when the profile's Stack section names a frontend layer AND
+     the diff under review touches at least one user-visible route or component file.
+     If the predicate is false (docs-only diff, backend-only diff, or no frontend layer
+     at all), SKIP the workflow but still emit the `Browser verification: skipped`
+     outcome line in the stage-summary per the §8 contract.
+   - **Workflow** (only when the predicate fires):
+       1. Start the dev server in the background per the profile's "Build & test gates"
+          Integration/E2E command. Capture its PID so you can stop it at exit.
+       2. HTTP-poll the entry URL (curl --head against the configured port) — allow up
+          to 30 seconds for the server to become reachable. If it never returns 2xx,
+          halt with `bash bin/pipeline.sh event {issue_id} verdict halt --reason smoke-failed`.
+       3. For each Failure Mode → Test Map row that names user-visible behavior, call
+          `mcp__playwright__browser_navigate` against the relevant route and verify the
+          rendered DOM matches the row's acceptance criteria.
+       4. Call `mcp__playwright__browser_take_screenshot` with
+          `filename={artifacts_dir}qa-<route-slug>-<state>.png`. `{artifacts_dir}` is
+          an absolute path OUTSIDE the worktree; saving screenshots at the worktree
+          root self-leaks and hard-fails the dispatch.
+       5. Stop the dev server before exiting.
+   - **Failure shapes** (halt verdict, NOT a regular P0 finding-loop):
+       - Dev server never returns 2xx → `verdict halt --reason smoke-failed`.
+       - `mcp__playwright__browser_navigate` errors → halt as above.
+       - Page renders but acceptance criterion is unmet → file as a Decision-path B
+         finding per §6 (treat as a coverage-audit miss, file deduped bug, loop back
+         to implementing).
+   - **Stage-summary reference.** Same shape as §8: list each screenshot by RELATIVE
+     path under `artifacts/` in the stage-summary Notes section. Absolute paths leak
+     dispatch-host filesystem layout.
+
 5. **Regression-intent audit:**
    Any previously-passing test now failing is a regression by default.
    Escape hatch: the failing commit message must contain the trailer
@@ -1786,6 +1856,13 @@ Decision path (apply exactly one):
        - Status line (clean): `All gates green · K adversarial tests added · proceeding to building`.
        - Notes (only on partial-green / known-flake): one paragraph per flake with the
          rationale for letting it through; bug-issue links if any bugs were filed.
+         - MANDATORY: include exactly ONE Browser verification outcome line within Notes,
+           in one of these three shapes:
+             - `Browser verification: performed · routes=<comma-list> · screenshots=<count> · path=artifacts/`
+             - `Browser verification: skipped · reason=<no-frontend|docs-only-diff|profile-no-e2e-command|no-route-changed>`
+             - `Browser verification: failed · reason=<dev-server-not-up|navigation-error|screenshot-error> · details=<one-line>`
+           A missing line on a qa dispatch is a protocol-violation (caught at brainstorm/
+           review time today; transcript detective deferred per brainstorm D-10).
        The full coverage-audit table and adversarial-test list stay in the PR summary
        comment, not this Linear comment.
      - Orchestrator advances to `stage:building`.
@@ -1801,6 +1878,13 @@ Decision path (apply exactly one):
        - TL;DR: 1–2 sentences confirming this is a back-fill PR and that the brainstorm spec matches the shipped code.
        - Status line (clean): `Back-fill verified · 0 new code paths · 0 adversarial tests added · proceeding to building`.
        - Notes (only on partial-match): one paragraph if the brainstorm spec is partially out of date relative to the shipped code; cite specific drift.
+         - MANDATORY: include exactly ONE Browser verification outcome line within Notes,
+           in one of these three shapes:
+             - `Browser verification: performed · routes=<comma-list> · screenshots=<count> · path=artifacts/`
+             - `Browser verification: skipped · reason=<no-frontend|docs-only-diff|profile-no-e2e-command|no-route-changed>`
+             - `Browser verification: failed · reason=<dev-server-not-up|navigation-error|screenshot-error> · details=<one-line>`
+           A missing line on a qa dispatch is a protocol-violation (caught at brainstorm/
+           review time today; transcript detective deferred per brainstorm D-10).
      - Orchestrator advances to `stage:building`.
 
 Do NOT change the Linear stage label yourself. The orchestrator owns state transitions.
