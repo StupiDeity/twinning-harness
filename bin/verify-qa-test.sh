@@ -83,8 +83,13 @@ _summary_line() { printf '%s\n' "$1" | jq -c 'select(.summary == true)' 2>/dev/n
 _first_crit_line() { printf '%s\n' "$1" | jq -c 'select(.summary != true)' 2>/dev/null | head -1; }
 
 # ─── V-1: predicate file absent → rc=44 ──────────────────────────────
+# Fixture lives under $PROJECT_STATE_DIR so the missing-file (rc=44) and
+# path-prefix (rc=42) axes are orthogonal: pre-fix, the test happened to
+# pass because the missing-file check runs before the path-prefix check,
+# but the ordering is undocumented contract. Keeping the path under
+# $PROJECT_STATE_DIR pins the pure-missing case independently.
 rc=0
-out="$(bash "$VERIFIER" validate "$FIXTURE_DIR/nonexistent.json" 2>&1)" || rc=$?
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/nonexistent.json" 2>&1)" || rc=$?
 if (( rc == 44 )) && [[ "$out" == *"qa-predicate-missing"* ]]; then
   pass_at "V-1: missing file → exit 44 + stdout names qa-predicate-missing"
 else
@@ -180,8 +185,12 @@ else
 fi
 
 # ─── V-7: grep matches when expect_match=true → pass=true ───────────
-mkdir -p "$WT_DIR"  # finding #25: defensive mkdir; do not rely on V-4
-printf 'hello world\n' > "$WT_DIR/sample.txt"
+# Per-case mktemp dir isolates V-7's grep target from V-15/V-15b's
+# symlink residue: a future case forgetting cleanup must not silently
+# shift V-7's assertions onto stale state. WT_V7 is removed at script
+# exit via the FIXTURE_DIR EXIT trap (parent dir).
+WT_V7="$(mktemp -d "$TARGET_REPO/wt-v7-XXXXXX")"
+printf 'hello world\n' > "$WT_V7/sample.txt"
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -192,7 +201,7 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 }
 EOF
 rc=0
-out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_V7" 2>&1)" || rc=$?
 per_criterion_line="$(_first_crit_line "$out")"
 summary_line="$(_summary_line "$out")"
 if (( rc == 0 )) \
@@ -212,11 +221,15 @@ cat > "$STUB_DIR/curl" <<'STUB'
 #!/usr/bin/env bash
 # Minimal curl stub for verify-qa-test V-8/V-8b/V-8c. Honors -w
 # '%{http_code}' AND -o <path> AND asserts argv contract: --max-time 10
-# must be present AND the URL must be the predicate's url. Writes
-# diagnostics to $STUB_LOG so the test can read them post-invocation.
+# must be present, the URL must be the predicate's url, -sS must be
+# present (silent + show-errors — a regression that drops -S silently
+# eats stderr; one that adds -k disables TLS verification), and -k
+# must NOT be present. Writes diagnostics to $STUB_LOG so the test
+# can read them post-invocation.
 # Env knobs: $STUB_BODY (default empty) — bytes written to -o path,
 #            $STUB_STATUS (default 200) — printed to stdout via -w.
 want_code=0 max_time_seen=0 url_seen="" out_path=""
+sS_seen=0 k_seen=0
 # Walk argv pairwise: look for --max-time 10 AND -o <path>.
 i=1
 while [[ $i -le $# ]]; do
@@ -233,6 +246,20 @@ while [[ $i -le $# ]]; do
       out_path="${!next_i}"
       ;;
   esac
+  # Detect -sS (any single-dash flag bundle containing both s and S)
+  # and -k. Real curl accepts -sS as one bundled flag, or -s -S split.
+  case "$cur" in
+    -sS|-Ss) sS_seen=1 ;;
+    -s)
+      # Split -s from -S — accept if a later positional arg is -S.
+      for ((k=i+1; k<=$#; k++)); do
+        kk="${!k}"
+        [[ "$kk" == "-S" ]] && { sS_seen=1; break; }
+      done
+      ;;
+    -k|--insecure) k_seen=1 ;;
+    -*k|-*k*) [[ "$cur" == -*k* && "$cur" != --* ]] && k_seen=1 ;;
+  esac
   # Last positional non-flag is the URL.
   case "$cur" in
     -*) ;;
@@ -248,6 +275,8 @@ fi
 {
   printf 'max_time_seen=%s\n' "$max_time_seen"
   printf 'url_seen=%s\n' "$url_seen"
+  printf 'sS_seen=%s\n' "$sS_seen"
+  printf 'k_seen=%s\n' "$k_seen"
 } >> "$STUB_LOG"
 if (( want_code == 1 )); then
   printf '%s' "${STUB_STATUS:-200}"
@@ -272,19 +301,26 @@ per_criterion_line="$(_first_crit_line "$out")"
 summary_line="$(_summary_line "$out")"
 stub_max="$(grep -c '^max_time_seen=1$' "$STUB_LOG" || true)"
 stub_url="$(grep -c '^url_seen=http://example.test/$' "$STUB_LOG" || true)"
+stub_sS="$(grep -c '^sS_seen=1$' "$STUB_LOG" || true)"
+stub_k="$(grep -c '^k_seen=1$' "$STUB_LOG" || true)"
 total_calls="$(grep -c '^max_time_seen=' "$STUB_LOG" || true)"
-# M5 (review iter-3): pin single-curl invocation. A regression to the
-# pre-M9 two-curl shape (one for status, one for body) logged
-# max_time_seen=1 TWICE; the prior `>= 1` assertion let it pass.
+# Pin single-curl invocation. A regression to the pre-M9 two-curl shape
+# (one for status, one for body) logged max_time_seen=1 TWICE; the prior
+# `>= 1` assertion let it pass.
+# Pin -sS present and -k absent. A regression dropping -S would silently
+# eat curl stderr (triage-friction); a regression adding -k would
+# disable TLS verification (security regression).
 if (( rc == 0 )) \
    && printf '%s\n' "$per_criterion_line" | jq -e '.pass == true' >/dev/null 2>&1 \
    && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1 \
    && (( stub_max == 1 )) \
    && (( stub_url == 1 )) \
+   && (( stub_sS == 1 )) \
+   && (( stub_k == 0 )) \
    && (( total_calls == 1 )); then
-  pass_at "V-8: http_get stubbed 200 → pass=true + EXACTLY one curl call with --max-time 10 + URL"
+  pass_at "V-8: http_get stubbed 200 → pass=true + EXACTLY one curl call with --max-time 10 + URL + -sS present + -k absent"
 else
-  fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl invoked EXACTLY ONCE (M9); got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, total_calls=$total_calls, stub_log=$(cat "$STUB_LOG")"
+  fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl ONCE + -sS present + -k absent; got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, stub_sS=$stub_sS, stub_k=$stub_k, total_calls=$total_calls, stub_log=$(cat "$STUB_LOG")"
 fi
 
 # ─── V-8b: http_get expect_body_match true-path (M2 iter-3) ─────────
@@ -472,8 +508,10 @@ fi
 # Drop a symlink inside the worktree pointing at /etc/passwd. The
 # lexical D-013 guard accepts `path: "leak"` (no ../ no leading /);
 # only the executor's realpath containment check stops the exfiltration
-# oracle.
-ln -sfn /etc/passwd "$WT_DIR/leak"
+# oracle. Per-case mktemp dir isolates the leak symlink so a future
+# case forgetting cleanup cannot silently shift V-15b's chain assertions.
+WT_V15="$(mktemp -d "$TARGET_REPO/wt-v15-XXXXXX")"
+ln -sfn /etc/passwd "$WT_V15/leak"
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -484,7 +522,7 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 }
 EOF
 rc=0
-out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_V15" 2>&1)" || rc=$?
 per_criterion_line="$(_first_crit_line "$out")"
 if (( rc == 0 )) \
    && printf '%s\n' "$per_criterion_line" | jq -e '.pass == false' >/dev/null 2>&1 \
@@ -493,7 +531,6 @@ if (( rc == 0 )) \
 else
   fail_at "V-15: symlink pivot" "expected rc=0 + pass=false + 'escapes worktree' detail; got rc=$rc, per=$per_criterion_line"
 fi
-rm -f "$WT_DIR/leak"
 
 # ─── V-16: predicate file > 64 KiB → rc=42 (M8 file-size cap) ──────
 # M8 replaced the criteria-count cap (which did NOT bound wall-clock — 64×60s
@@ -530,12 +567,14 @@ else
   fail_at "V-17: duration field" "expected duration_s number + no duration_ms; got rc=$rc, summary=$summary_line"
 fi
 
-# ─── V-15b: two-hop symlink chain → pass=false (C2) ───────────────
-# Critical #2: `<wt>/a -> <wt>/b`, `<wt>/b -> /etc/passwd` bypassed the
-# single-hop resolver. realpath -m -- canonicalises the full chain in
-# one call so both hops are followed.
-ln -sfn "$WT_DIR/b_target" "$WT_DIR/a_link"
-ln -sfn /etc/passwd "$WT_DIR/b_target"
+# ─── V-15b: two-hop symlink chain → pass=false ───────────────────────
+# `<wt>/a -> <wt>/b`, `<wt>/b -> /etc/passwd` bypassed the single-hop
+# resolver. realpath -m -- canonicalises the full chain in one call so
+# both hops are followed. Per-case mktemp dir keeps the chain isolated
+# from V-7/V-15 residue (and from any future case forgetting cleanup).
+WT_V15B="$(mktemp -d "$TARGET_REPO/wt-v15b-XXXXXX")"
+ln -sfn "$WT_V15B/b_target" "$WT_V15B/a_link"
+ln -sfn /etc/passwd "$WT_V15B/b_target"
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 {
   "qa_predicate_schema_version": 1,
@@ -546,16 +585,15 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 }
 EOF
 rc=0
-out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_V15B" 2>&1)" || rc=$?
 per_criterion_line="$(_first_crit_line "$out")"
 if (( rc == 0 )) \
    && printf '%s\n' "$per_criterion_line" | jq -e '.pass == false' >/dev/null 2>&1 \
    && printf '%s\n' "$per_criterion_line" | jq -e '.detail | type == "string" and (test("escapes worktree"))' >/dev/null 2>&1; then
-  pass_at "V-15b: two-hop symlink chain → pass=false (C2 chain bypass closed)"
+  pass_at "V-15b: two-hop symlink chain → pass=false (chain bypass closed)"
 else
   fail_at "V-15b: two-hop chain" "expected rc=0 + pass=false + 'escapes worktree' detail; got rc=$rc, per=$per_criterion_line"
 fi
-rm -f "$WT_DIR/a_link" "$WT_DIR/b_target"
 
 # ─── V-23: bare '..' lexical guard → rc=43 (M1) ────────────────────
 cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
@@ -704,6 +742,21 @@ _assert_url_denied "V-31" "http://0x7f000001/"
 _assert_url_denied "V-32" "http://0177.0.0.1/"
 _assert_url_denied "V-33" "http://0/"
 _assert_url_denied "V-34" "http://[::ffff:7f00:1]/"
+# IPv6 long-form expansions of ::1 (loopback). `::1` short form is one
+# denylist arm; the curl resolver also accepts the canonical long form
+# `0:0:0:0:0:0:0:1` plus partial collapses (`0::1`, `::0:1`). Symmetric
+# to V-30..V-34 — the brainstorm D-011 "no out-of-worktree access"
+# intent must hold for every alias curl normalises to ::1.
+_assert_url_denied "V-30b" "http://[0:0:0:0:0:0:0:1]/"
+_assert_url_denied "V-30c" "http://[0::1]/"
+# IPv4-mapped IPv6 long form: 0:0:0:0:0:ffff:7f00:1 = ::ffff:127.0.0.1.
+# The `::ffff:*` short-form arm misses the canonical long form.
+_assert_url_denied "V-30d" "http://[0:0:0:0:0:ffff:7f00:1]/"
+# IPv6 with zone-id (`%`). RFC 6874 allows a `%<zone>` suffix on link-
+# local addresses. Without zone-id stripping, `::1%eth0` skips the `::1`
+# arm and reaches the host. curl accepts the suffix; the denylist must
+# strip it before the case-match.
+_assert_url_denied "V-30e" "http://[::1%eth0]/"
 
 # ─── V-35: case-insensitive scheme test (minor finding iter-3) ─────
 # Pre-fix: ^https?:// was case-sensitive; HTTP://2130706433/ bypassed
@@ -795,9 +848,84 @@ EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
 if (( rc == 43 )) && [[ "$out" == *"must be 1"* ]]; then
-  pass_at "V-39: qa_predicate_schema_version=2 → exit 43 + 'must be 1' (M4 iter-3)"
+  pass_at "V-39: qa_predicate_schema_version=2 → exit 43 + 'must be 1'"
 else
   fail_at "V-39: schema_version value" "expected rc=43 + 'must be 1'; got rc=$rc, out=$out"
+fi
+
+# ─── V-40: snapshot dir creation failure → rc=42 + 'snapshot' ──────
+# The authority phase creates $PROJECT_STATE_DIR/.verify-qa-snap before
+# mktemp'ing the predicate snapshot. If the parent is unwritable
+# (operator perms drift, FS hardening), mkdir fails and the validator
+# must halt with rc=42 + a diagnostic naming the snapshot surface so
+# triage can pinpoint the perms drift. Pin both axes here so a
+# regression dropping the diagnostic naming does not silently shift
+# from rc=42 + 'snapshot' to rc=42 + a less-actionable diagnostic.
+SNAP_PARENT="$PROJECT_STATE_DIR/.verify-qa-snap"
+rm -rf "$SNAP_PARENT" 2>/dev/null || true
+chmod 0500 "$PROJECT_STATE_DIR"
+f="$(write_valid_predicate qa-predicate-ENG-1.json ENG-1)"
+rc=0
+out="$(bash "$VERIFIER" validate "$f" --worktree "$WT_DIR" 2>&1)" || rc=$?
+chmod 0755 "$PROJECT_STATE_DIR"
+if (( rc == 42 )) && [[ "$out" == *"snapshot"* ]]; then
+  pass_at "V-40: $PROJECT_STATE_DIR chmod 0500 → rc=42 + 'snapshot' diagnostic"
+else
+  fail_at "V-40: snapshot dir create-fail" "expected rc=42 + 'snapshot' in diagnostic; got rc=$rc, out=$out"
+fi
+
+# ─── V-41: cd-failure detection inside _exec_smoke ──────────────────
+# When the worktree anchor is removed between fence resolution and
+# smoke execution, the inner `cd "$anchor_real"` fails. Pre-fix, the
+# failed cd's rc (1) populated actual_exit, and the criterion reported
+# a generic exit-mismatch — triage had no signal that the command was
+# never invoked. Post-fix, the validator detects the cd failure and
+# reports CRIT_DETAIL='"failed to cd to anchor"'.
+#
+# Race scaffold: two smoke criteria; the first removes the anchor it
+# just cd'd into (rmdir of cwd is permitted on macOS — the inode stays
+# referenced for the current shell). The second criterion's fresh cd
+# then encounters ENOENT.
+WT_V41="$(mktemp -d "$TARGET_REPO/wt-v41-XXXXXX")"
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<EOF
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "smoke", "command": "rmdir \"$WT_V41\"", "expect_exit": 0, "expect_stdout_match": null },
+    { "kind": "smoke", "command": "true", "expect_exit": 0, "expect_stdout_match": null }
+  ]
+}
+EOF
+rc=0
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_V41" 2>&1)" || rc=$?
+crit_lines="$(printf '%s\n' "$out" | jq -c 'select(.summary != true)' 2>/dev/null)"
+second_crit="$(printf '%s\n' "$crit_lines" | sed -n '2p')"
+if (( rc == 0 )) \
+   && printf '%s\n' "$second_crit" | jq -e '.pass == false and (.detail | type == "string" and test("failed to cd to anchor"))' >/dev/null 2>&1; then
+  pass_at "V-41: anchor removed mid-stream → criterion 1 reports 'failed to cd to anchor'"
+else
+  fail_at "V-41: cd-failure detection" "expected criterion 1 pass=false + 'failed to cd to anchor'; got rc=$rc, second_crit=$second_crit, out=$out"
+fi
+
+# ─── V-42: _parse_validate_argv flag-value collision ────────────────
+# Pre-fix, `--ident --worktree /path` populated ARG_IDENT="--worktree"
+# (the parser blindly consumed $2). Post-fix, a value starting with `--`
+# is rejected with rc=42 + a diagnostic naming the flag.
+f="$(write_valid_predicate qa-predicate-ENG-1.json ENG-1)"
+rc=0
+out="$(bash "$VERIFIER" validate "$f" --ident --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *"--ident"* ]] && [[ "$out" == *"non-flag value"* ]]; then
+  pass_at "V-42: '--ident --worktree …' → rc=42 + '--ident' + 'non-flag value'"
+else
+  fail_at "V-42: --ident flag-value collision" "expected rc=42 + '--ident' + 'non-flag value'; got rc=$rc, out=$out"
+fi
+rc=0
+out="$(bash "$VERIFIER" validate "$f" --worktree --ident ENG-1 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *"--worktree"* ]] && [[ "$out" == *"non-flag value"* ]]; then
+  pass_at "V-42b: '--worktree --ident …' → rc=42 + '--worktree' + 'non-flag value'"
+else
+  fail_at "V-42b: --worktree flag-value collision" "expected rc=42 + '--worktree' + 'non-flag value'; got rc=$rc, out=$out"
 fi
 
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
