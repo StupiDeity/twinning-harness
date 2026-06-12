@@ -677,10 +677,10 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
+if (( rc == 43 )) && [[ "$out" == *"on the denylist"* ]]; then
   pass_at "V-24: http_get to 127.0.0.1 → exit 43 (host-class denylist)"
 else
-  fail_at "V-24: loopback denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
+  fail_at "V-24: loopback denylist" "expected rc=43 + 'on the denylist' in diagnostic; got rc=$rc, out=$out"
 fi
 
 # ─── V-25: http_get IMDS → rc=43 (host-class denylist) ──────────────
@@ -695,10 +695,10 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
+if (( rc == 43 )) && [[ "$out" == *"on the denylist"* ]]; then
   pass_at "V-25: http_get to 169.254.169.254 → exit 43 (cloud-metadata denylist)"
 else
-  fail_at "V-25: IMDS denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
+  fail_at "V-25: IMDS denylist" "expected rc=43 + 'on the denylist' in diagnostic; got rc=$rc, out=$out"
 fi
 
 # ─── V-26: http_get RFC1918 private → rc=43 ─────────────────────────
@@ -713,10 +713,10 @@ cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
 EOF
 rc=0
 out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || rc=$?
-if (( rc == 43 )) && [[ "$out" == *"host"* ]]; then
+if (( rc == 43 )) && [[ "$out" == *"on the denylist"* ]]; then
   pass_at "V-26: http_get to 10.0.0.1 → exit 43 (RFC1918 denylist)"
 else
-  fail_at "V-26: RFC1918 denylist" "expected rc=43 + 'host' in diagnostic; got rc=$rc, out=$out"
+  fail_at "V-26: RFC1918 denylist" "expected rc=43 + 'on the denylist' in diagnostic; got rc=$rc, out=$out"
 fi
 
 # ─── V-27: grep against a directory → distinct diagnostic ──────────
@@ -783,10 +783,14 @@ _assert_url_denied() {
 EOF
   local _rc=0 _out
   _out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" --worktree "$WT_DIR" 2>&1)" || _rc=$?
-  if (( _rc == 43 )) && [[ "$_out" == *"host"* ]]; then
+  # Pin the literal denylist phrase (not just "host") so a regression that
+  # drops the deny-list semantic but still emits "host" (e.g. "connect to
+  # host refused") cannot pass — symmetric to V-10/V-11's
+  # "path must be worktree-relative" phrase pin.
+  if (( _rc == 43 )) && [[ "$_out" == *"on the denylist"* ]]; then
     pass_at "$case_id: $url → exit 43 (numeric-encoding guard)"
   else
-    fail_at "$case_id: $url" "expected rc=43 + 'host' in diagnostic; got rc=$_rc, out=$_out"
+    fail_at "$case_id: $url" "expected rc=43 + 'on the denylist' in diagnostic; got rc=$_rc, out=$_out"
   fi
 }
 # ─── V-26b..V-26i: positive SSRF coverage gap fill ────────────────────
@@ -849,6 +853,11 @@ _assert_url_denied "V-30d" "http://[0:0:0:0:0:ffff:7f00:1]/"
 # arm and reaches the host. curl accepts the suffix; the denylist must
 # strip it before the case-match.
 _assert_url_denied "V-30e" "http://[::1%eth0]/"
+# IPv6 unspecified address. `[::]` resolves to ::1 on Linux for outbound
+# connect, so `http://[::]/internal-service` reaches loopback. Symmetric
+# to V-30b..V-30e for the unspecified axis (parallel to but not covered
+# by V-24's ::1 loopback arm).
+_assert_url_class_check "V-30f" "http://[::]/foo" "denied"
 
 # ─── V-35: case-insensitive scheme test ─────────────────────────────
 # Pre-fix: ^https?:// was case-sensitive; HTTP://2130706433/ bypassed
