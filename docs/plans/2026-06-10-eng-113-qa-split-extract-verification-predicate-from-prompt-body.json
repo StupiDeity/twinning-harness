@@ -4,7 +4,7 @@
   "features": [
     {
       "id": "F-1",
-      "summary": "Land bin/verify-qa.sh runner CLI + JSON predicate contract; QA agent emits qa-predicate-<ident>.json at dispatch start; malformed/incomplete/missing predicates halt via qa-predicate-invalid (exit codes 36/37/38).",
+      "summary": "Land bin/verify-qa.sh runner CLI + JSON predicate contract; QA agent emits qa-predicate-<ident>.json at dispatch start; malformed/incomplete/missing predicates halt via qa-predicate-invalid (exit codes 42/43/44; see §9 for the 36/37/38 → 39/40/41 → 42/43/44 drift).",
       "pass_criteria": [
         {
           "kind": "file_exists",
