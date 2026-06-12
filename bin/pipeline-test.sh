@@ -286,10 +286,10 @@ _ar_clear "ENG-5801"
 # tripping pipefail and aborting the cmd substitution.
 : > "$_AR_LINEAR_CALLS"
 LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
-  _ar_decide "ENG-T-APP1" --action approve --gate scope || true
-remove_line_n="$( { grep -n "^remove-label ENG-T-APP1 pipeline:halted$" "$_AR_LINEAR_CALLS" || true; } | head -1 | cut -d: -f1)"
-add_line_n="$( { grep -n "^add-comment ENG-T-APP1" "$_AR_LINEAR_CALLS" || true; } | head -1 | cut -d: -f1)"
-remove_count="$(grep -c "^remove-label ENG-T-APP1 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
+  _ar_decide "ENG-1801" --action approve --gate scope || true
+remove_line_n="$( { grep -n "^remove-label ENG-1801 pipeline:halted$" "$_AR_LINEAR_CALLS" || true; } | head -1 | cut -d: -f1)"
+add_line_n="$( { grep -n "^add-comment ENG-1801" "$_AR_LINEAR_CALLS" || true; } | head -1 | cut -d: -f1)"
+remove_count="$(grep -c "^remove-label ENG-1801 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
 add_count="$(grep -c "decision action=approve gate=scope" "$_AR_LINEAR_CALLS" || true)"
 if [[ "$remove_count" == "1" && "$add_count" -ge "1" \
       && -n "$remove_line_n" && -n "$add_line_n" \
@@ -299,13 +299,13 @@ else
   fail_at "DEC-APPROVE-SCOPE-1: halt-clear" \
     "remove=$remove_count add=$add_count remove_line=$remove_line_n add_line=$add_line_n"
 fi
-_ar_clear "ENG-T-APP1"
+_ar_clear "ENG-1801"
 
 # DEC-APPROVE-SCOPE-2: idempotent on no-halt — no remove-label, decision still posts.
 : > "$_AR_LINEAR_CALLS"
 LABELS_ON="" STAGE_OF="stage:implementing" \
-  _ar_decide "ENG-T-APP2" --action approve --gate scope || true
-remove_count="$(grep -c "^remove-label ENG-T-APP2 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
+  _ar_decide "ENG-1802" --action approve --gate scope || true
+remove_count="$(grep -c "^remove-label ENG-1802 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
 add_count="$(grep -c "decision action=approve gate=scope" "$_AR_LINEAR_CALLS" || true)"
 if [[ "$remove_count" == "0" && "$add_count" -ge "1" ]]; then
   pass_at "DEC-APPROVE-SCOPE-2: idempotent on no-halt (no remove-label; decision still posts)"
@@ -313,13 +313,13 @@ else
   fail_at "DEC-APPROVE-SCOPE-2: idempotent" \
     "remove=$remove_count add=$add_count"
 fi
-_ar_clear "ENG-T-APP2"
+_ar_clear "ENG-1802"
 
 # DEC-APPROVE-SCOPE-3: other gate untouched — approve --gate build-cap does NOT clear halt.
 : > "$_AR_LINEAR_CALLS"
 LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
-  _ar_decide "ENG-T-APP3" --action approve --gate build-cap || true
-remove_count="$(grep -c "^remove-label ENG-T-APP3 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
+  _ar_decide "ENG-1803" --action approve --gate build-cap || true
+remove_count="$(grep -c "^remove-label ENG-1803 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
 add_count="$(grep -c "decision action=approve gate=build-cap" "$_AR_LINEAR_CALLS" || true)"
 if [[ "$remove_count" == "0" && "$add_count" -ge "1" ]]; then
   pass_at "DEC-APPROVE-SCOPE-3: approve --gate build-cap leaves halt label intact"
@@ -327,7 +327,7 @@ else
   fail_at "DEC-APPROVE-SCOPE-3: gate-narrow" \
     "remove=$remove_count add=$add_count"
 fi
-_ar_clear "ENG-T-APP3"
+_ar_clear "ENG-1803"
 
 # DEC-APPROVE-SCOPE-4: dry-run suppression — PIPELINE_DRY_RUN=1 → zero linear calls.
 # Need to override the in-process PIPELINE_DRY_RUN setting (which is "" for the
@@ -335,7 +335,7 @@ _ar_clear "ENG-T-APP3"
 # halt-clear (live-path-only guard) AND the add-comment call.
 : > "$_AR_LINEAR_CALLS"
 LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
-  PIPELINE_DRY_RUN=1 _ar_decide "ENG-T-APP4" --action approve --gate scope >/dev/null 2>&1 || true
+  PIPELINE_DRY_RUN=1 _ar_decide "ENG-1804" --action approve --gate scope >/dev/null 2>&1 || true
 linear_count="$(wc -l < "$_AR_LINEAR_CALLS" | tr -d ' ')"
 if [[ "$linear_count" == "0" ]]; then
   pass_at "DEC-APPROVE-SCOPE-4: dry-run suppresses halt-clear AND decision post"
@@ -343,7 +343,7 @@ else
   fail_at "DEC-APPROVE-SCOPE-4: dry-run" \
     "linear_count=$linear_count calls=$(cat "$_AR_LINEAR_CALLS")"
 fi
-_ar_clear "ENG-T-APP4"
+_ar_clear "ENG-1804"
 
 # DEC-APPROVE-SCOPE-5: invalid issue id rejected by D-014 guard.
 # cmd_decide should die with the "expected ENG-<digits>" error and post nothing.

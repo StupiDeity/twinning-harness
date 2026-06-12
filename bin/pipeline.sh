@@ -459,6 +459,18 @@ _pipeline_clear_breaker() {
   printf '%s' "$was_paused"
 }
 
+# ENG-180 D-001: shared halt-label-clear used by both continue and
+# approve --gate scope arms of cmd_decide. Idempotent: linear.sh
+# remove-label is a no-op on missing label; the has-label guard
+# short-circuits the call to keep the legacy log noise from the
+# continue arm's prior inline shape.
+_pipeline_clear_halt_label() {
+  local issue="$1"
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then
+    bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted"
+  fi
+}
+
 # _pipeline_emit_resume_metric <issue> <stage> <wf> <sl> <sf> <waypoint_posted> [<breaker_was_paused>] [<auto_commit_count>]
 _pipeline_emit_resume_metric() {
   local issue="$1" stage="$2" wf="$3" sl="$4" sf="$5" wp="$6"
@@ -520,9 +532,8 @@ cmd_decide() {
       sf="$(_pipeline_drain_issue_state "$issue")"
 
       # Remove halt label if present (mirrors halt.sh rc=1 branch behavior).
-      if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then
-        bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted"
-      fi
+      # ENG-180 D-001: shared helper; also called by the approve --gate scope arm below.
+      _pipeline_clear_halt_label "$issue"
 
       # Option B (ENG-60-followup): clear the global circuit breaker. A
       # self-leak halt trips the breaker on the same tick the issue halts,
@@ -551,6 +562,24 @@ cmd_decide() {
       log "pipeline-decide: $issue action=continue (side state reset: wait_files=$wf skip_labels=$sl state_file=$sf breaker_was_paused=$breaker_was per_issue_counter_cleared=true auto_commit_paths=$autocommit_n; operator-transition posted)"
     else
       log "pipeline-decide: $issue action=continue (dry-run — atomic reset suppressed)"
+    fi
+  fi
+
+  # ENG-180 D-001: approve --gate scope must clear pipeline:halted, otherwise
+  # poll.sh::_poll_classify_labels keeps the slot vacated and the replay
+  # never runs. Scope is intentionally narrow: only the halt label, not the
+  # full atomic reset. Mirrors the continue arm's cleanup-before-comment
+  # ordering (see brainstorm OQ-4) so partial-failure is recoverable on a
+  # re-run: halt-clear runs first; the decision comment writes last via
+  # the shared add-comment call at the function tail.
+  if [[ "$action" == "approve" && "$gate" == "scope" ]]; then
+    if [[ "${PIPELINE_DRY_RUN:-}" != "1" ]]; then
+      [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
+        || die "decide: invalid issue id '$issue' (expected ENG-<digits>)"
+      _pipeline_clear_halt_label "$issue"
+      log "pipeline-decide: $issue action=approve gate=scope (halt label cleared)"
+    else
+      log "pipeline-decide: $issue action=approve gate=scope (dry-run — halt-clear suppressed)"
     fi
   fi
 
