@@ -1,43 +1,82 @@
 ---
 linear: ENG-180
 date: 2026-06-12
-topic: Make `decide --action approve --gate scope` self-sufficient (halt-clear + replay forward-transition)
+topic: Make `decide --action approve --gate scope` clear `pipeline:halted` AND make the scope-approval replay apply the forward transition directly.
 ---
 
-# ENG-180 — Make `decide --action approve --gate scope` self-sufficient
+# ENG-180 — Make `decide --action approve --gate scope` self-sufficient (Design A)
 
-> **For agentic workers:** Implement task-by-task in `depends_on` order. Steps use `- [ ]` checkboxes for tracking.
+## Goal
 
-## 1. Goal
+After a NOTABLE `scope-violation` halt, a single
+`bash bin/pipeline.sh decide ENG-N --action approve --gate scope`
+clears `pipeline:halted`, and the next tick's scope-approval replay applies
+the forward transition (`implementing → ui` or `ui → reviewing`) directly,
+without triggering `_vh_protocol_violation`.
 
-After a NOTABLE `scope-violation` halt, a single `bash bin/pipeline.sh decide ENG-N --action approve --gate scope` removes `pipeline:halted` and the next tick's scope-approval replay applies the forward stage transition (`implementing → ui` or `ui → reviewing`) cleanly, with no `_vh_protocol_violation` re-halt.
+## Assumption Inventory
 
-## 2. Assumption Inventory
+**Anti-anchoring check.**
+- Problem restatement: *"Operator runs the command the halt comment literally
+  advertises and the issue does not resume."* The brainstorm's solution
+  (clear halt on approve + replay applies forward transition) is exactly
+  this user-visible problem; no reframing.
+- Solution proportionality: two small in-place edits in two files
+  (`bin/pipeline.sh` + `bin/run-stage.sh`) plus paired test fixtures. No
+  new file, no new exit code, no new failure_outcome entry. Proportional.
 
-Every fact below is verified at the cited `path:line` against this worktree (HEAD = `2edc025`, origin/main = `c6722bc`). Branch-base freshness: `git log --oneline HEAD..origin/main` empty at plan time (origin/main = `c6722bc`).
+**Branch-base freshness.**
+`git log --oneline HEAD..origin/main` is NON-EMPTY at plan time
+(`origin/main` carries the ENG-125 init-sh validator series + the ENG-115
+pivot marker work + the ENG-157 system-invariants H2 series, none of which
+exist on this branch). Task 0 below rebases before any edit; Edit
+boundaries below use CONTENT anchors (not line numbers) so they survive
+the rebase. Every `path:line` reference in this Inventory is informational
+("approximately at line N") and paired with a unique content anchor
+verified against the current worktree HEAD; the line digits may drift
+after rebase. The plan does not stand or fall on those digits.
 
-### Codebase facts (verified against current HEAD)
+**Existing files this plan modifies.**
 
-- `bin/pipeline.sh::cmd_decide` is defined at `bin/pipeline.sh:472` with signature `cmd_decide() { local issue="${1:-}"; shift || true; ... }` — verified `bin/pipeline.sh:472`.
-- The `continue`-only atomic-reset gate opens at `bin/pipeline.sh:503` (`if [[ "$action" == "continue" ]]; then`) and closes at `bin/pipeline.sh:555` (the trailing `fi`) — verified `bin/pipeline.sh:503, 555`.
-- The continue-arm inline halt-clear is at `bin/pipeline.sh:523-525`:
+- `bin/pipeline.sh::cmd_decide` exists; the `continue`-arm halt-clear
+  block is gated on `[[ "$action" == "continue" ]]`. The block is
+  literally:
   ```bash
   if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then
     bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted"
   fi
   ```
-  — verified `bin/pipeline.sh:523-525`.
-- The continue-arm issue-id D-014 guard is at `bin/pipeline.sh:508-509`:
-  ```bash
-  [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
-    || die "decide: invalid issue id '$issue' (expected ENG-<digits>)"
-  ```
-  — verified `bin/pipeline.sh:508-509`.
-- `_pipeline_clear_breaker` sibling helper definition is at `bin/pipeline.sh:452-460` — verified.
-- The decision-comment write (post-arm-fall-through) is at `bin/pipeline.sh:574`: `bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"` — verified `bin/pipeline.sh:574`.
-- The dry-run fork on the decision-comment is at `bin/pipeline.sh:569-572` — verified.
-- No symbol `_pipeline_clear_halt_label` exists anywhere in `bin/` — verified via `grep -rn "_pipeline_clear_halt_label" bin/` returns no rows. The helper is NEW.
-- The scope-approval replay gate is at `bin/run-stage.sh:1612-1620`:
+  (`bin/pipeline.sh:522-525` at plan time, inside the
+  `if [[ "$action" == "continue" ]]; then ... fi` block.) The new
+  approve-arm branch will call a helper that wraps this block; the
+  continue arm will be refactored to call the same helper (mechanical
+  equivalence). **Content anchor for inserting the new approve-arm
+  branch:** *immediately after the closing `fi` of the
+  `if [[ "$action" == "continue" ]]; then ... fi` block (closes around
+  `bin/pipeline.sh:555`), BEFORE the comment block "ENG-112:
+  schema-driven validation + body render."*
+
+- `bin/pipeline.sh::cmd_decide` issue-id sanitisation
+  (`[[ "$issue" =~ ^ENG-[0-9]+$ ]] || die`) lives inside the continue
+  arm at `bin/pipeline.sh:508-509`. The new approve-arm branch reuses
+  the same regex guard (live path only — `PIPELINE_DRY_RUN!=1`).
+
+- `bin/pipeline.sh::cmd_decide`'s decision-comment write call
+  (`bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"`) is the
+  LAST line of the function at `bin/pipeline.sh:574`; it runs for all
+  three action arms (continue|approve|abandon). The new approve-arm
+  branch MUST run BEFORE this line so the halt-clear precedes the
+  decision-comment write (load-bearing per brainstorm OQ-4).
+
+- `bin/pipeline.sh::_pipeline_clear_breaker` is a sibling helper
+  defined at `bin/pipeline.sh:452-460`. The new
+  `_pipeline_clear_halt_label` helper will be sibling-defined
+  immediately after it. **Content anchor:** *immediately AFTER the
+  `_pipeline_clear_breaker` function's closing `}` (~line 460) BEFORE
+  the comment header `# _pipeline_emit_resume_metric` (~line 462).*
+
+- `bin/run-stage.sh::main` exists. The scope-approval replay gate is
+  at `bin/run-stage.sh:1612-1620`:
   ```bash
   local skip_dispatch=0
   if [[ "$stage" == "implementing" || "$stage" == "ui" ]]; then
@@ -49,103 +88,279 @@ Every fact below is verified at the cited `path:line` against this worktree (HEA
     fi
   fi
   ```
-  — verified.
-- `_replay_scope_approval` (the helper called when `skip_dispatch=1`) is defined at `bin/run-stage.sh:312-316`; it `rm -f`s `$(issue_dir <ident>)/usage-<stage>.json` and emits a `stage-start ... scope-approval-replay 0` metric — verified.
-- The dispatch-id allocation block is gated on `(( ! skip_dispatch ))` at `bin/run-stage.sh:1671`; on the replay path `PIPELINE_DISPATCH_ID` stays unset — verified `bin/run-stage.sh:1671-1699`.
-- The post-dispatch scope-check NOTABLE-approved branch fires at `bin/run-stage.sh:1967-1970` (`log "scope-check: notable approved by scope-approve decision; clearing state and proceeding"`) — verified.
-- The post-completion comment fires at `bin/run-stage.sh:2266` (`post_completion_comment "$ident" "$stage"`) — verified.
-- The stage-drift guard at `bin/run-stage.sh:2283-2292` short-circuits when `current_stage_label != dispatched_stage_label` — verified (`local dispatched_stage_label="stage:$stage_label_long"` at `bin/run-stage.sh:2283`; the guard's `exit 0` at `bin/run-stage.sh:2291`).
-- `_post_dispatch_apply_halt "$ident" "$stage"` is called at `bin/run-stage.sh:2297` — verified.
-- `vh_stage` resolution is at `bin/run-stage.sh:2304-2305`: `local vh_stage; vh_stage="${current_stage_label#stage:}"` — verified.
-- `verdict_handler "$ident" "$vh_stage" || vh_rc=$?` is called at `bin/run-stage.sh:2314` — verified.
-- `verdict-handler.sh` is sourced at `bin/run-stage.sh:38` (via `# shellcheck source=verdict-handler.sh` and `source "$SCRIPT_DIR/verdict-handler.sh"`) — verified by grep `^source.*verdict-handler` in `bin/run-stage.sh:38`.
-- `_VH_FORWARD_TRANSITIONS` table at `bin/verdict-handler.sh:19-27` includes rows `implementing=ui` and `ui=reviewing` — verified.
-- `_vh_lookup_forward()` is defined at `bin/verdict-handler.sh:40-43` (not in the `export -f` list at line 606 — it is in scope to `run-stage.sh::main` only because the whole file is `source`d). — verified.
-- `apply_transition()` is defined at `bin/verdict-handler.sh:311-432`; the docstring at `bin/verdict-handler.sh:302-310` declares the 5 steps idempotent ("Each step is idempotent; resume_in_progress_transition can re-enter at any point and finish cleanly"); step 5 at `bin/verdict-handler.sh:430` is `bash "$_VH_SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted" || true` — verified.
-- `apply_transition` is in the exported set at `bin/verdict-handler.sh:606`: `export -f verdict_handler find_fresh_verdict find_fresh_wait_verdict apply_transition resume_in_progress_transition` — verified.
-- `find_fresh_verdict`'s strict-id path at `bin/verdict-handler.sh:175-200` skips wait verdicts and requires a `<!-- meta: dispatch id=$_curr_id` marker on the comment body — verified. With `PIPELINE_DISPATCH_ID` unset on the replay (per the `(( ! skip_dispatch ))` gate above) the strict path returns empty.
-- `find_fresh_verdict`'s legacy-fallback path at `bin/verdict-handler.sh:201-224` computes `last_transition_ts` from `event == "transition"` comments only (decision markers ignored) and filters verdicts older than the most recent transition — verified at `bin/verdict-handler.sh:206-211, 214-215`.
-- `verdict_handler`'s empty-`find_fresh_verdict` branch routes through `_vh_classify_no_fresh_reason` then `_vh_protocol_violation` (`bin/verdict-handler.sh:52-64`), which `add-label "$issue" "pipeline:halted"` — verified `bin/verdict-handler.sh:58`.
-- `bin/scope-check.sh::has_scope_approval` (`bin/scope-check.sh:217-259`) returns 0 iff a `<!-- pipeline: decision action=approve gate=scope -->` marker is newer than the most recent `verdict result=halt reason=scope-violation` marker — verified.
-- `bin/poll.sh::_poll_classify_labels` at `bin/poll.sh:289-314` classifies `pipeline:halted` (no fresh non-halt marker) as `slot:"vacate", advanceable:false, operator_action_required:true` — verified.
-- `pipeline-events.json::decision_gates` registers exactly `["scope", "build-cap"]` — verified `bin/pipeline-events.json:46-49`.
-- The NOTABLE halt comment body at `bin/run-stage.sh:1985-1986` advertises `bash %s/bin/pipeline.sh decide %s --action approve --gate scope` — verified.
-- `failure_outcome_for_exit 22` returns `pr-opened-too-early` — verified `bin/common.sh:322`. (Documented caveat: D-002's defensive unknown-forward branch reuses exit 22; that branch is unreachable in current control flow because the scope-approval gate at `bin/run-stage.sh:1613` restricts to `stage in (implementing, ui)`, both of which have rows in `_VH_FORWARD_TRANSITIONS`.)
-- `_replay_scope_approval` runs at `bin/run-stage.sh:1935` (else-arm of the dispatch-vs-replay if) — verified.
+  The gate is restricted to `implementing` and `ui` — both of which
+  are in the forward-transition table.
 
-### Existing test fixtures (verified)
+- `bin/run-stage.sh::main`'s stage-drift guard sits at
+  `bin/run-stage.sh:2286-2292`; it tests
+  `if [[ "$current_stage_label" != "$dispatched_stage_label" ]]; then`
+  and exits 0 on drift. The new D-002 early-exit MUST sit immediately
+  AFTER this guard so an operator who manually transitioned the issue
+  mid-replay still gets the drift short-circuit.
 
-- `bin/pipeline-test.sh::PR-E` (`bin/pipeline-test.sh:258-276`) asserts the continue-arm atomic reset removes `pipeline:halted` (`grep -c "^remove-label ENG-5801 pipeline:halted$"` ≥ 1). This is the continue-arm regression guard the refactor must keep green.
-- `bin/pipeline-test.sh::PD2` at line `bin/pipeline-test.sh:141-142` covers `decide ENG-PD2 --action approve --gate scope` dry-run body emission. Pre-ENG-180 it does NOT exercise the live-path halt-clear (the dry-run arm returns before any halt-clear code runs); after ENG-180 it still passes (D-001's new branch sits inside the live-path block which is dry-run-suppressed).
-- `bin/pipeline-test.sh::PD4` at `bin/pipeline-test.sh:149-150` covers "approve without --gate → rejected" — unchanged by ENG-180.
-- `bin/pipeline-test.sh::PD6` at `bin/pipeline-test.sh:156-158` covers "bogus gate rejected" — unchanged.
-- `bin/run-stage-test.sh` case-24 (`bin/run-stage-test.sh:649-691`) drives `_replay_scope_approval` directly and asserts (a) the usage-file is gone and (b) the metrics call carries no `--`-prefixed cost flags. D-002's new metrics-end-row inherits the same no-cost-flags property (the empty `cost_flags` array on the replay path is unchanged).
-- `bin/verdict-handler-test.sh` case-12 (`bin/verdict-handler-test.sh:413-434`) asserts `find_fresh_verdict` ignores `decision` markers (scope-approve newer than scope-violation halt → fresh marker stays `pipeline-halt`). D-002 short-circuits the verdict-handler call site on replay, so case-12's premise (verdict_handler runs on replay) no longer holds for the replay path. The verdict-handler contract under case-12 is unchanged; the test is recast as a regression guard for the contract itself (one-line comment edit).
-- `bin/scope-check-test.sh::has_scope_approval` cases (around `bin/scope-check-test.sh:526-545`) are unchanged — D-002 does not modify the helper.
+- `bin/run-stage.sh::main`'s post-dispatch halt-apply call sits at
+  `bin/run-stage.sh:2294-2297`:
+  ```bash
+  # Post-dispatch halt apply (ENG-56): orchestrator is the canonical applier
+  # of pipeline:halted. See `_post_dispatch_apply_halt` for the wait-shape
+  # carve-out and why it's structured as a callable.
+  _post_dispatch_apply_halt "$ident" "$stage"
+  ```
+  The new D-002 early-exit MUST sit immediately BEFORE this call so the
+  halt label is not re-applied on the replay path. **Content anchor for
+  the insertion:** *AFTER the closing `fi` of the stage-drift guard
+  (`if [[ "$current_stage_label" != "$dispatched_stage_label" ]]; then ... exit 0; fi`
+  block, identifiable by the literal `log "post-dispatch: stage drifted"`
+  inside its body) BEFORE the comment block "Post-dispatch halt apply
+  (ENG-56): orchestrator is the canonical applier of pipeline:halted."*
 
-### Test-gate closure sweep (removal side)
+- `bin/run-stage.sh::main` resolves `vh_stage` (long-form stage label)
+  AT `bin/run-stage.sh:2304-2305`:
+  ```bash
+  local vh_stage
+  vh_stage="${current_stage_label#stage:}"
+  ```
+  This sits AFTER the D-002 insertion point. The new branch must
+  compute its own local copy (e.g. `_vh_stage_replay`) by mirroring
+  this expression.
 
-Tokens this plan REMOVES from production code:
-- The inline `if bash "$SCRIPT_DIR/linear.sh" has-label ... ; then bash "$SCRIPT_DIR/linear.sh" remove-label ... ; fi` block at `bin/pipeline.sh:523-525` (replaced by a call to the new `_pipeline_clear_halt_label` helper).
+- `bin/verdict-handler.sh` is sourced by `bin/run-stage.sh` at line 38
+  (`source "$SCRIPT_DIR/verdict-handler.sh"`). Both `_vh_lookup_forward`
+  and `apply_transition` are therefore in scope to the new D-002 branch.
+  `_vh_lookup_forward` is a private helper (underscore-prefixed) and is
+  NOT listed in `bin/verdict-handler.sh:606`'s `export -f`; sourcing
+  the whole file puts it in scope nonetheless.
 
-Grep across all `bin/*-test.sh` for token coupling:
-- `bin/pipeline-test.sh` asserts on `remove-label ENG-5801 pipeline:halted` (PR-E at line 266) and similar siblings (PR-N at 325 captures a metric line, not the literal). The refactor preserves the EXACT same `add-comment` / `remove-label` argv shape because the helper just wraps the same two `bash "$SCRIPT_DIR/linear.sh"` calls — capture-file assertions continue to match. No File Structure addition needed for `bin/pipeline-test.sh` beyond the new DEC-APPROVE-SCOPE-* fixtures.
-- No other `bin/*-test.sh` greps on the inline-block byte sequence; the refactor is mechanical.
+- `bin/verdict-handler.sh::_VH_FORWARD_TRANSITIONS` table contains
+  `implementing=ui` and `ui=reviewing` rows
+  (`bin/verdict-handler.sh:19-27`). `_vh_lookup_forward "implementing"`
+  prints `ui`; `_vh_lookup_forward "ui"` prints `reviewing`.
 
-### Test-gate closure sweep (add side)
+- `bin/verdict-handler.sh::apply_transition` is defined at
+  `bin/verdict-handler.sh:311-432` and is idempotent by contract
+  (header comment at lines 302-310). Its final step removes
+  `pipeline:halted` (`bin/verdict-handler.sh:430`).
 
-This plan adds NO new files under any gate-runnable glob. All new fixtures are added in-place to existing `bin/pipeline-test.sh` and `bin/run-stage-test.sh`, both already listed in `learned-rules/harness/project-profile.md::## Build & test gates` (the gate command line). Therefore `learned-rules/harness/project-profile.md` is NOT modified by this plan — verified by reading the profile's Test command, which already runs `bin/pipeline-test.sh` (implicit via the suite — confirmed by inspecting the gate command at `learned-rules/harness/project-profile.md::## Build & test gates`).
+- `bin/run-stage.sh::_replay_scope_approval` is defined at
+  `bin/run-stage.sh:312-316`:
+  ```bash
+  _replay_scope_approval() {
+    local ident="$1" stage="$2"
+    rm -f "$(issue_dir "$ident")/usage-${stage}.json"
+    bash "$SCRIPT_DIR/metrics.sh" stage-start "$ident" "$stage" "scope-approval-replay" 0
+  }
+  ```
+  It is invoked by `bin/run-stage.sh:1935` on the `skip_dispatch=1`
+  path. It does not affect D-002's branch — the rm-f runs BEFORE the
+  scope-check, the new early-exit runs AFTER the scope-check.
 
-### Branch-base freshness
+- `bin/run-stage.sh`'s NOTABLE-approved branch is at
+  `bin/run-stage.sh:1967-1970`:
+  ```bash
+  if [[ -f "$approval_state_file" ]] \
+     && bash "$SCRIPT_DIR/scope-check.sh" has-scope-approval "$ident" 2>/dev/null; then
+    log "scope-check: notable approved by scope-approve decision; clearing state and proceeding"
+    rm -f "$approval_state_file"
+  fi
+  ```
+  Falls through after deleting the sentinel. The new D-002 branch fires
+  later (after post-dispatch + drift guard).
 
-`git log --oneline HEAD..origin/main` empty at plan time (origin/main = `c6722bc7b147cca2a9611d560332211cd845d021`); HEAD = `2edc0257fbfa5bbd49a221ed61a9520ac8b24491 chore(pipeline): brainstorming for ENG-180`. No Task 0 rebase required.
+- `bin/poll.sh::_poll_classify_labels` halt-arm
+  (`bin/poll.sh:289-314`): any issue with `pipeline:halted` AND no fresh
+  non-halt verdict classifies as
+  `{slot:"vacate",advanceable:false,operator_action_required:true}`.
+  D-001's removal of `pipeline:halted` causes the issue to fall through
+  to the `stage:*` arm at the same function — no poll.sh edit needed.
 
-## 3. System invariants
+- `bin/scope-check.sh::has_scope_approval` is at lines 217-259. Returns
+  0 iff there's a decision marker with `action=approve, gate=scope`
+  newer than the most-recent `verdict result=halt reason=scope-violation`
+  marker. Used by both the replay gate (`bin/run-stage.sh:1616`) and the
+  post-dispatch NOTABLE-approved branch (`bin/run-stage.sh:1968`).
 
-- `pipeline:halted` is the canonical "no agent compute will run" flag — `poll.sh::_poll_classify_labels` classifies the slot as `vacate, operator_action_required:true` whenever the label is present (regardless of `decision` markers). `verified_by: bin/poll-slot-test.sh:AC-2` (the "halt-for-human vacates slot" case at `bin/poll-slot-test.sh:258`).
-- `find_fresh_verdict` only surfaces `event=="verdict"` comments newer than the most recent transition (legacy path) OR carrying the current `dispatch_id` marker (strict path); `decision` markers are ignored by both code paths. `verified_by: bin/verdict-handler-test.sh:case-12`.
-- `apply_transition` is idempotent across all 5 steps and re-entry via `resume_in_progress_transition` completes cleanly. `verified_by: bin/verdict-handler-test.sh:case-9` (the "resume-in-progress-transition" case at `bin/verdict-handler-test.sh:347`, which asserts step-5 `remove pipeline:halted` is idempotently completed after a partial-failure crash mid-transition). D-002's replay-side idempotency is additionally covered by `task:T4` (SCO-REPLAY-IDEMPOTENT).
-- The scope-approval replay path (`bin/run-stage.sh:1671`'s `(( ! skip_dispatch ))` gate) intentionally does NOT allocate `PIPELINE_DISPATCH_ID`; the replay must NEVER post agent-lane Linear comments, only orchestrator-lane ones. `verified_by: task:T3` (SCO-REPLAY-FORWARD-1 asserts `apply_transition`'s transition waypoint is posted via the orchestrator-lane chokepoint, with no `PIPELINE_DISPATCH_ID` envelope violation).
-- `_replay_scope_approval` always runs BEFORE any post-stage scope-check / completion code, removing `usage-<stage>.json` so the replay-path metrics call cannot carry stale cost fields (D-011). `verified_by: bin/run-stage-test.sh:case-24`.
-- The NOTABLE scope-violation halt-comment body's "To approve and resume" text (`bin/run-stage.sh:1985-1986`) MUST stay accurate post-ENG-180: a single `decide --action approve --gate scope` resumes the issue without further operator action. `verified_by: task:T1` (DEC-APPROVE-SCOPE-1 asserts halt-clear fires from approve-arm; combined with task:T3 the full advertised path is exercised end-to-end).
-- The `cmd_decide` "decision comment writes LAST" ordering is load-bearing for partial-failure recoverability: halt-clear precedes decision-comment so a mid-call API failure leaves either both-effects-not-yet-fired or halt-cleared-but-no-marker (both re-runnable). `verified_by: task:T1` (DEC-APPROVE-SCOPE-1 asserts the capture-file's `remove-label` line precedes the `add-comment` line).
+- `bin/verdict-handler.sh::find_fresh_verdict` is at lines 152-252. The
+  strict-id path (`_curr_id` set AND any `<!-- meta: dispatch id=` marker
+  on the issue) requires verdict comments carrying the current
+  dispatch_id marker; the legacy fallback path uses
+  `last_transition_ts` from `transition`-event comments only. Decision
+  markers are NEVER `event == "verdict"`, so they are filtered out at
+  `bin/verdict-handler.sh:183` (strict) and `:218` (legacy).
 
-## 4. File Structure
+- `bin/verdict-handler.sh::verdict_handler` is at lines 517-604. The
+  empty-`find_fresh_verdict` branch (`bin/verdict-handler.sh:527-540`)
+  routes through `_vh_classify_no_fresh_reason` →
+  `_vh_protocol_violation`, which adds `pipeline:halted` at
+  `bin/verdict-handler.sh:58`. Returns 2.
 
-Modify (production):
-- `bin/pipeline.sh` — add `_pipeline_clear_halt_label <issue>` helper (sibling to `_pipeline_clear_breaker`, ~6 lines); refactor the continue-arm inline halt-clear at `bin/pipeline.sh:523-525` to call the helper (mechanical, no behaviour change); add a new branch in `cmd_decide` AFTER the existing continue gate closes at `bin/pipeline.sh:555` and BEFORE the schema-validation block at `bin/pipeline.sh:557-561` that runs `_pipeline_clear_halt_label "$issue"` iff `action == approve && gate == scope`. Decision-comment write at `bin/pipeline.sh:574` is unchanged.
-- `bin/run-stage.sh` — insert a `(( skip_dispatch ))` early-exit branch BETWEEN the stage-drift guard at `bin/run-stage.sh:2283-2292` and `_post_dispatch_apply_halt` at `bin/run-stage.sh:2297`. The new block resolves the forward stage via `_vh_lookup_forward "$vh_stage"`, calls `apply_transition "$ident" "$vh_stage" "$_fwd" ""`, emits the success metric end-row with `verdict=transitioned scope-approval-replay=1`, logs `stage $stage complete for $ident (scope-approval-replay transitioned $vh_stage → $_fwd)`, and `exit 0`. Both `_vh_lookup_forward` and `apply_transition` are in scope via the existing `source "$SCRIPT_DIR/verdict-handler.sh"` at `bin/run-stage.sh:38`. NOTE: `vh_stage` is defined at line 2304 (AFTER the stage-drift guard, BEFORE `_post_dispatch_apply_halt`). The new branch reorders one line — `vh_stage` resolution must move UP to immediately AFTER the stage-drift guard so it is in scope at the new branch's call site. See Task 2 Step 2 for the content-anchored relocation.
+- `bin/common.sh::failure_outcome_for_exit 22` returns
+  `pr-opened-too-early` (`bin/common.sh:322`). The D-002 defensive
+  unknown-forward branch reuses exit 22 (per brainstorm §Architecture);
+  this is semantically misleading but the branch is unreachable in
+  current control flow (the gate at `run-stage.sh:1613` restricts to
+  `implementing|ui`, both of which have forward rows). Marked
+  **assumed-defensive** — the label `pr-opened-too-early` is wrong if
+  the branch ever fires; a follow-up ticket can carve out a dedicated
+  code if it does.
 
-Modify (tests):
-- `bin/pipeline-test.sh` — append five new fixtures after the existing decide-section (DEC-APPROVE-SCOPE-1 through DEC-APPROVE-SCOPE-5) plus the implicit PR-E regression guard (PR-E already exists at lines 258-276 and continues to assert continue-arm halt-clear; no changes needed). New fixtures live in the `_AR_*` live-path test region (after the `_AR_STUB_DIR` setup at ~line 234) so they reuse the existing `_AR_LINEAR_CALLS` capture, `_ar_decide` invoker, and `LABELS_ON` / `STAGE_OF` env-stub mechanism.
-- `bin/run-stage-test.sh` — append SCO-REPLAY-FORWARD-1 (implementing → ui), SCO-REPLAY-FORWARD-2 (ui → reviewing), SCO-REPLAY-DEFENSIVE (unknown-forward → halt), SCO-REPLAY-STAGE-DRIFT (operator transitioned mid-replay), SCO-REPLAY-IDEMPOTENT (re-entry after partial-failure), and SCO-REPLAY-CONTINUE-COMPOSITE (continue after a prior approve resolves). Place after case-24 (`bin/run-stage-test.sh:649-691`) and before the next existing case block. Case-24 itself is UNCHANGED (still asserts no cost flags; D-002's metric end-row inherits this).
-- `bin/verdict-handler-test.sh` — one-line comment edit on case-12 (`bin/verdict-handler-test.sh:413-434`) clarifying that the case is a regression guard for `find_fresh_verdict`'s verdict-vs-decision contract, NOT an end-to-end assertion on the scope-approval replay (D-002 short-circuits the call site upstream).
+- `bin/verdict-handler-test.sh` case-12 is at lines 413-434. Body
+  asserts that with comments `[transition, scope-violation halt,
+  decision approve gate=scope]`, `find_fresh_verdict` still returns
+  `pipeline-halt` (decision is not a verdict marker). This test's
+  premise is verdict-handler's contract, NOT the replay flow; D-002
+  short-circuits the *caller* of `verdict_handler` on the replay path,
+  so this test remains valid as a verdict-handler-contract regression
+  guard. Only the prose comment block above the assertions needs a
+  one-line clarification — the body assertion (`mtype` is
+  `pipeline-halt`) is UNCHANGED.
 
-Modify (docs):
-- `CLAUDE.md` — add a row to the "Failure-mode quick reference" table at `CLAUDE.md:803-820` describing the pre-ENG-180 "approved but stuck" symptom, the post-ENG-180 expected log lines, and the legacy force-apply escape hatch (kept as historical only). Inserted after the existing "Issue at `stage:building` idles with `dispatch-skipped`" row (~line 817) and before the existing "Concurrent dispatches not running" row.
+- `bin/run-stage-test.sh` case-24 D-011 is at lines 649-691. Asserts
+  `_replay_scope_approval` rm's `usage-<stage>.json` AND emits a
+  metrics call carrying NO `--*` cost flags. D-002's metric end-row
+  (`stage-end ... success ... verdict=transitioned
+  scope-approval-replay=1`) is appended LATER on the same dispatch
+  path — case-24 unit-tests `_replay_scope_approval` in isolation,
+  so it's not affected by the new branch.
 
-No new files; no new exit codes; no new ADR.
+- `bin/pipeline-test.sh` exists; its existing PD2 fixture
+  (`run_pipe decide ENG-PD2 --action approve --gate scope`) is a
+  DRY-run dry-printf assertion. The new DEC-APPROVE-SCOPE-1..5
+  fixtures land in the live-path block ("ENG-58 atomic-reset"
+  starting at `bin/pipeline-test.sh:166`) which already sources
+  `bin/pipeline.sh` into the test process and stubs `linear.sh` to
+  the `_AR_STUB_DIR`.
 
-## 5. API Contract
+- `bin/run-stage-test.sh` already has the source-and-stub pattern
+  required for the SCO-REPLAY fixtures: it overrides `SCRIPT_DIR` to
+  `STUB_DIR` after sourcing `bin/run-stage.sh`. New SCO-REPLAY-FORWARD
+  fixtures will extend that pattern.
 
-No new API surface. The harness has no FE↔BE contract; the only "API" affected is `bin/pipeline.sh::cmd_decide`'s argv shape, which is unchanged (`--action approve --gate scope` was already registered in `pipeline-events.json::decision_gates` and was already a valid invocation pre-ENG-180; only its in-process side-effects are widened).
+- `bin/pipeline.sh` and `bin/run-stage.sh` are NOT new files for this
+  plan — they exist; my edits are in-place. **No new file is added by
+  this plan.**
 
-## 6. Backend Tasks
+- The project profile at
+  `learned-rules/harness/project-profile.md` lists
+  `bin/run-stage-test.sh` and `bin/verdict-handler-test.sh` directly
+  in the `## Build & test gates` Test command (`profile:17`).
+  `bin/pipeline-test.sh` is NOT named on the Test line but IS run by
+  `.githooks/pre-commit`'s `bin/*-test.sh` glob (which is the same
+  full suite Task 8 runs). All three files are also enumerated in the
+  Tool allowlist (profile lines ~48 + 100). No new gate-runnable test
+  file is created by this plan, so no project-profile edit is
+  required; the pre-commit glob is the operative gate.
 
-### Task 1: Add `_pipeline_clear_halt_label` helper and wire approve-arm halt-clear
+## System invariants
+
+- D-001 narrows `approve`'s halt-clear to `--gate scope` only; other
+  `--action approve` invocations (e.g. `--gate build-cap` if/when added)
+  do not gain a halt-clear. verified_by: task:T4
+- D-001 preserves the `continue`-arm atomic-reset semantics (drain
+  wait files, drain skip labels, drain issue-state, clear breaker,
+  clear per-issue counter, auto-commit-in-scope, post operator-resume
+  waypoint). verified_by: bin/pipeline-test.sh:PR-E
+- D-002's new early-exit fires ONLY when `skip_dispatch=1` (set
+  exclusively by the replay gate at `bin/run-stage.sh:1612-1620`),
+  guaranteeing fresh dispatches keep their existing post-dispatch
+  flow (apply-halt → verdict_handler). verified_by: task:T5
+- D-002 short-circuits BEFORE `_post_dispatch_apply_halt` so the
+  halt label is not re-applied on the replay path. verified_by: task:T5
+- D-002 short-circuits BEFORE `verdict_handler` so the
+  protocol-violation re-halt path is not entered on the replay path.
+  verified_by: task:T5
+- D-002 short-circuits AFTER the stage-drift guard so an operator's
+  manual mid-replay transition still wins. verified_by: task:T5
+- `apply_transition`'s atomic-transition contract is unchanged
+  (transition waypoint comment → add `stage:<to>` → remove
+  `stage:<from>` → native-state hook → side-effect labels → remove
+  `pipeline:halted`); D-002 invokes it as a caller, does not modify
+  it. verified_by: bin/verdict-handler-test.sh:case-12
+- `find_fresh_verdict`'s freshness semantics are unchanged; D-002
+  bypasses the call site on the replay path rather than altering the
+  helper. verified_by: bin/verdict-handler-test.sh:case-12
+- The scope-approval replay path remains cost-flag-free in metrics
+  (D-011 contract): D-002's metric end-row receives no `--*` cost
+  flags because `_replay_scope_approval` already rm'd
+  `usage-<stage>.json` earlier on the same dispatch.
+  verified_by: bin/run-stage-test.sh:case-24
+- The `dispatch_history.jsonl` start/end pairing invariant is
+  preserved: `skip_dispatch=1` already elides the start-row + EXIT-trap
+  install (`bin/run-stage.sh:1671` `(( ! skip_dispatch ))` gate), so
+  D-002's new exit point emits no end-row by design. verified_by: task:T5
+- The `continue`-arm refactor regression guard: after extracting the
+  inline halt-clear into `_pipeline_clear_halt_label`, every existing
+  `continue` test that greps `remove-label ENG-… pipeline:halted$`
+  still passes. verified_by: bin/pipeline-test.sh:PR-E
+
+## File Structure
+
+Modified:
+
+- `bin/pipeline.sh` — new helper `_pipeline_clear_halt_label`; new
+  approve-arm branch in `cmd_decide`; continue-arm halt-clear inline
+  refactored to call the helper.
+- `bin/run-stage.sh` — new `skip_dispatch` early-exit branch in `main`
+  between stage-drift guard and `_post_dispatch_apply_halt`.
+- `bin/pipeline-test.sh` — new fixtures DEC-APPROVE-SCOPE-1..5; one
+  comment-line edit above the existing PR-E test noting "ENG-180
+  D-001 refactor regression guard."
+- `bin/run-stage-test.sh` — new fixtures SCO-REPLAY-FORWARD-1,
+  SCO-REPLAY-FORWARD-2, SCO-REPLAY-DEFENSIVE, SCO-REPLAY-STAGE-DRIFT,
+  SCO-REPLAY-IDEMPOTENT, SCO-REPLAY-CONTINUE-COMPOSITE.
+- `bin/verdict-handler-test.sh` — one-line comment edit on case-12
+  (re-cast as verdict-handler-contract regression guard).
+- `CLAUDE.md` — new row in `## Failure-mode quick reference`
+  contrasting pre-ENG-180 "approved but stuck" symptom with
+  post-ENG-180 expected behaviour; legacy force-apply escape hatch
+  documented as historical.
+
+No new files. No new exit code. No new failure_outcome entry. No new
+ADR. No project-profile edit.
+
+## API Contract
+
+no new API surface (this is a bash orchestration scripts repo; no FE↔BE
+boundary in the surface this plan touches).
+
+## Backend Tasks
+
+### Task 0: Rebase onto origin/main
 
 - `depends_on: []`
-- `touches: bin/pipeline.sh::_pipeline_clear_halt_label (new), bin/pipeline.sh::cmd_decide`
+- `touches: <branch operation; no in-repo edits in this task>`
+- [ ] Run `git fetch origin main` then `git rebase origin/main` from
+  this branch. None of this plan's edits are expected to conflict —
+  this plan touches `bin/pipeline.sh`, `bin/run-stage.sh`,
+  `bin/verdict-handler-test.sh`, `bin/pipeline-test.sh`,
+  `bin/run-stage-test.sh`, and `CLAUDE.md`; the ENG-125 / ENG-115 /
+  ENG-157 work on main lands in `bin/dispatch.sh`,
+  `bin/render-prompt.sh`, `bin/common.sh::validate_init_sh`,
+  `bin/plan-schema.sh::cmd_validate_md`, and new sibling test files
+  (`bin/init-sh-validator-{,adversarial-}test.sh`) — non-overlapping
+  surface.
+- [ ] After rebase, re-verify Assumption Inventory by grepping for
+  each content anchor (function names + distinctive surrounding
+  strings). If any anchor no longer exists, halt the dispatch and
+  surface as a P0 — the rebase materially changed a load-bearing
+  region.
+- [ ] Run `bash bin/pipeline-test.sh` and `bash bin/run-stage-test.sh`
+  to confirm the rebased base is green before any new edit lands.
 
-- [ ] **Step 1:** In `bin/pipeline.sh`, locate the function `_pipeline_clear_breaker` (content anchor: the comment header line `# ... breaker on the same tick, so resume needed two operator commands. The` immediately above `_pipeline_clear_breaker() {` at `bin/pipeline.sh:452`). Insert a new helper IMMEDIATELY AFTER `_pipeline_clear_breaker`'s closing `}` (content anchor: the line `}` at `bin/pipeline.sh:460`) and BEFORE the next function's header comment (content anchor: `# _pipeline_emit_resume_metric <issue> <stage> <wf> <sl> <sf> <waypoint_posted> [<breaker_was_paused>] [<auto_commit_count>]` at `bin/pipeline.sh:462`). New code:
+### Task 1: Add `_pipeline_clear_halt_label` helper in `bin/pipeline.sh`
 
+- `depends_on: [T0]`
+- `touches: bin/pipeline.sh::_pipeline_clear_halt_label (new)`
+- [ ] In `bin/pipeline.sh`, insert a new helper sibling to
+  `_pipeline_clear_breaker`. **Content anchor:** AFTER the closing `}`
+  of `_pipeline_clear_breaker`'s body (the function whose body ends
+  with `printf '%s' "$was_paused"`), BEFORE the `# _pipeline_emit_resume_metric`
+  header comment.
   ```bash
-  # ENG-180 D-001: factor the continue-arm's inline halt-clear into a
-  # callable helper so the approve --gate scope arm can reuse it without
-  # duplicating the has-label / remove-label pair. linear.sh remove-label
-  # is a no-op on a missing label, so the has-label guard is a log-noise
-  # optimisation (mirrors the continue-arm's pre-existing shape; behaviour
-  # unchanged).
+  # _pipeline_clear_halt_label <issue>
+  # Idempotent. has-label short-circuits the remove-label call on a
+  # missing label so the typical no-halt-present case is a single
+  # read instead of read+write. ENG-180 D-001: extracted from the
+  # continue arm so the approve --gate scope arm can call it too.
   _pipeline_clear_halt_label() {
     local issue="$1"
     if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then
@@ -154,31 +369,48 @@ No new API surface. The harness has no FE↔BE contract; the only "API" affected
   }
   ```
 
-- [ ] **Step 2:** Refactor the continue-arm's inline halt-clear. Locate the three-line block at `bin/pipeline.sh:523-525` (content anchor: the leading comment `# Remove halt label if present (mirrors halt.sh rc=1 branch behavior).` at `bin/pipeline.sh:522`, and the immediately-following `if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then` line). Replace the three lines `if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then` / `  bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted"` / `fi` with a single call:
+### Task 2: Refactor continue arm to call the helper
 
+- `depends_on: [T1]`
+- `touches: bin/pipeline.sh::cmd_decide`
+- [ ] In `cmd_decide`'s continue arm, replace the inline halt-clear
+  block. **Content anchor:** the block matching the literal
+  ```bash
+  # Remove halt label if present (mirrors halt.sh rc=1 branch behavior).
+  if bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted" 2>/dev/null; then
+    bash "$SCRIPT_DIR/linear.sh" remove-label "$issue" "pipeline:halted"
+  fi
+  ```
+  inside the `if [[ "$action" == "continue" ]]; then` arm (after
+  `_pipeline_drain_issue_state`, before `_pipeline_clear_breaker`).
+  Replace the entire `if has-label ... fi` body (preserving the
+  surrounding `# Remove halt label ...` comment) with a single line:
   ```bash
   _pipeline_clear_halt_label "$issue"
   ```
+- [ ] Run `bash bin/pipeline-test.sh`; PR-E (continue + halted) must
+  still pass.
 
-  Keep the leading comment at `bin/pipeline.sh:522` (`# Remove halt label if present (mirrors halt.sh rc=1 branch behavior).`) intact — it now annotates the helper call.
+### Task 3: Add `approve --gate scope` halt-clear branch to `cmd_decide`
 
-- [ ] **Step 3:** Add the approve-arm halt-clear branch. Locate the closing `fi` of the continue gate at `bin/pipeline.sh:555` (content anchor: the line `fi` immediately preceded by `else log "pipeline-decide: $issue action=continue (dry-run — atomic reset suppressed)"` at `bin/pipeline.sh:553`). Locate the next block opener at `bin/pipeline.sh:557-558` (content anchor: the comment `# ENG-112: schema-driven validation + body render. The continue-rejects-gate` followed by `# exclusion above stays inline (D-002 in plan); schema is inclusion-only.`). Insert the new approve-arm branch BETWEEN the continue-gate's closing `fi` and the ENG-112 comment block:
-
+- `depends_on: [T1]`
+- `touches: bin/pipeline.sh::cmd_decide`
+- [ ] Insert the new approve-arm branch. **Content anchor:** AFTER
+  the closing `fi` of the `if [[ "$action" == "continue" ]]; then ... fi`
+  block (identifiable by the trailing else-branch that logs
+  `pipeline-decide: $issue action=continue (dry-run — atomic reset suppressed)`),
+  BEFORE the comment line
+  `# ENG-112: schema-driven validation + body render. The continue-rejects-gate`
+  (this comment sits immediately above the
+  `local _decide_args=("action=$action")` line).
   ```bash
-  # ENG-180 D-001: approve --gate scope must clear pipeline:halted; otherwise
-  # poll.sh::_poll_classify_labels keeps the slot vacated indefinitely and
-  # the replay never runs (the halt comment's "To approve and resume" text
-  # then becomes a lie). Scope is intentionally narrow: only the halt label,
-  # not the full atomic reset — operators wanting the full reset still run
-  # --action continue. Order is load-bearing: halt-clear precedes the
-  # decision-comment write below so a mid-call API failure leaves the
-  # invocation re-runnable in both partial-failure shapes (helper is
-  # idempotent; decision-comment is append-only).
+  # ENG-180 D-001: approve --gate scope clears pipeline:halted so the
+  # poller re-dispatches the replay. Narrow scope — only the halt
+  # label, not the full atomic reset (operator uses continue for that).
+  # Order: halt-clear BEFORE decision-comment write, matching the
+  # continue arm. dry-run suppresses the live linear.sh call.
   if [[ "$action" == "approve" && "$gate" == "scope" ]]; then
     if [[ "${PIPELINE_DRY_RUN:-}" != "1" ]]; then
-      # D-014: validate issue id BEFORE any linear.sh call to guard against
-      # path-interpolation in the helper's stub-test path (mirrors the
-      # continue arm's guard at L508-509).
       [[ "$issue" =~ ^ENG-[0-9]+$ ]] \
         || die "decide: invalid issue id '$issue' (expected ENG-<digits>)"
       _pipeline_clear_halt_label "$issue"
@@ -189,402 +421,262 @@ No new API surface. The harness has no FE↔BE contract; the only "API" affected
   fi
   ```
 
-  Rationale for each piece:
-  - `action == "approve" && gate == "scope"`: narrows to the gate explicitly advertised by the halt-comment body at `bin/run-stage.sh:1985-1986`. The other registered gate `build-cap` (`bin/pipeline-events.json:48`) has no symmetric halt-shape need today.
-  - The `PIPELINE_DRY_RUN` fork mirrors the continue arm's dry-run pattern at `bin/pipeline.sh:552-553`; both arms keep dry-run side-effect-free.
-  - The `[[ $issue =~ ^ENG-[0-9]+$ ]]` guard echoes the continue-arm's D-014 sanitisation at `bin/pipeline.sh:508-509`; the helper itself does no path-interp but the guard is cheap and defends against future helper extensions.
-  - `_pipeline_clear_halt_label` is idempotent: `has-label` returns 1 (false) on missing label, the `remove-label` line never runs, exit 0. Safe to call on issues with no halt label.
+### Task 4: Add `bin/pipeline-test.sh` DEC-APPROVE-SCOPE fixtures
 
-- [ ] **Step 4:** Syntax-check:
-  ```bash
-  bash -n bin/pipeline.sh
-  ```
-  Expect exit 0.
-
-### Task 2: Insert the scope-approval-replay forward-transition early-exit
-
-- `depends_on: []`
-- `touches: bin/run-stage.sh::main (post-completion-comment region)`
-
-- [ ] **Step 1:** In `bin/run-stage.sh`, locate the stage-drift guard (content anchor: the comment `# Stage-drift guard (ENG-41 §4.3): if the stage label changed during the` at `bin/run-stage.sh:2274`). Confirm its `exit 0` line is at `bin/run-stage.sh:2291` and its closing `fi` is at `bin/run-stage.sh:2292`. Confirm `_post_dispatch_apply_halt "$ident" "$stage"` is at `bin/run-stage.sh:2297` and `local vh_stage` is at `bin/run-stage.sh:2304`.
-
-- [ ] **Step 2:** Hoist the `vh_stage` resolution above `_post_dispatch_apply_halt`. Locate the block at `bin/run-stage.sh:2304-2305`:
-
-  ```bash
-  local vh_stage
-  vh_stage="${current_stage_label#stage:}"
-  ```
-
-  Cut both lines. Reinsert them IMMEDIATELY AFTER the stage-drift guard's closing `fi` at `bin/run-stage.sh:2292` (content anchor: the closing `fi` preceded by `exit 0`) and BEFORE the `# Post-dispatch halt apply (ENG-56): orchestrator is the canonical applier` comment at `bin/run-stage.sh:2294`. After this move, the source lines read:
-
-  ```bash
-    fi                                        # closing fi of stage-drift guard
-                                              # (blank line)
-    # Resolve vh_stage (long-form) for both the ENG-180 scope-approval
-    # replay forward-transition branch below AND the existing
-    # verdict_handler call after _post_dispatch_apply_halt. Hoisted out
-    # of the legacy post-_post_dispatch_apply_halt position to make
-    # vh_stage in-scope for the new branch.
-    local vh_stage
-    vh_stage="${current_stage_label#stage:}"
-                                              # (blank line)
-    # Post-dispatch halt apply (ENG-56): orchestrator is the canonical applier
-    # ...
-  ```
-
-  Also DELETE the original `local vh_stage` / `vh_stage="${current_stage_label#stage:}"` lines at the legacy position (the move leaves only one definition; the original comment "Resolve the current stage from the Linear label (long form) rather than ..." at `bin/run-stage.sh:2299-2303` can stay as legacy context above the now-relocated definition's old slot, but since the variable is gone from that slot, prune those four comment lines along with the `vh_stage` block — they read as orphan otherwise).
-
-- [ ] **Step 3:** Insert the D-002 early-exit branch. Locate the new `vh_stage` block from Step 2 (content anchor: the line `vh_stage="${current_stage_label#stage:}"`). Insert AFTER that line and BEFORE the `# Post-dispatch halt apply (ENG-56)` comment:
-
-  ```bash
-  # ENG-180 D-002: scope-approval replay applies the forward transition
-  # directly. The replay deliberately skipped the agent dispatch (no
-  # fresh verdict marker is emitted), so verdict_handler's
-  # find_fresh_verdict would return empty and _vh_protocol_violation
-  # would re-halt. The source stage's prior clean pass already earned
-  # the transition; emit it here. Runs after post_completion_comment so
-  # the orchestrator's narrative post still lands; runs before
-  # _post_dispatch_apply_halt so the halt label is not re-applied; runs
-  # before verdict_handler so the protocol-violation path is not entered.
-  # apply_transition's step 5 (remove pipeline:halted) is idempotent
-  # against D-001's prior clear.
-  if (( skip_dispatch )); then
-    local _fwd
-    _fwd="$(_vh_lookup_forward "$vh_stage")"
-    if [[ -z "$_fwd" ]]; then
-      # Defensive — unreachable in current control flow: the scope-approval
-      # gate at L1613 restricts to (implementing, ui), both of which have
-      # rows in _VH_FORWARD_TRANSITIONS (verdict-handler.sh:19-27). A
-      # future stage that joins the gate without a forward row falls here.
-      # Exit 22 (pr-opened-too-early) is reused for the metric label; the
-      # halt comment's text makes the actual cause recoverable. A
-      # dedicated exit code is follow-up scope.
-      classify_failure "$ident" "$stage" "skip-until-human-acts" \
-        "scope-approval-replay: no forward transition from $vh_stage" 22
-      exit 22
-    fi
-    apply_transition "$ident" "$vh_stage" "$_fwd" ""
-    t1="$(date +%s)"; duration=$(( (t1 - t0) * 1000 ))
-    bash "$SCRIPT_DIR/metrics.sh" stage-end "$ident" "$stage" "success" "$duration" \
-      "verdict=transitioned scope-approval-replay=1" || true
-    log "stage $stage complete for $ident (scope-approval-replay transitioned $vh_stage → $_fwd)"
-    exit 0
-  fi
-  ```
-
-  Rationale for each piece:
-  - `(( skip_dispatch ))`: the replay flag was set at `bin/run-stage.sh:1618` (single source of truth). The branch fires for both `implementing` and `ui` stages by the gate at `bin/run-stage.sh:1613`.
-  - `_vh_lookup_forward`: in scope via `source "$SCRIPT_DIR/verdict-handler.sh"` at `bin/run-stage.sh:38`. Not in the exported set at line 606, but the source line makes the underscore-prefixed helper callable from the same shell.
-  - `apply_transition "$ident" "$vh_stage" "$_fwd" ""`: the empty 4th arg is `side_labels`, matching the forward-transition row in `_VH_FORWARD_TRANSITIONS` (no side labels for forward transitions). The 5th arg `post_waypoint` defaults to `1` (`bin/verdict-handler.sh:313`), so the `<!-- pipeline: transition from=X to=Y -->` waypoint is posted by `apply_transition` step 1. The PR-create hook (`bin/verdict-handler.sh:343-410`) fires idempotently when `to == "reviewing"` (ui→reviewing case).
-  - Metric end-row: `verdict=transitioned scope-approval-replay=1` mirrors `case-24`'s assertion shape; the cost-flags array on the replay path is empty by construction (`_replay_scope_approval` rm'd the usage file at `bin/run-stage.sh:314`), so no `--`-prefixed cost flags are appended.
-  - `exit 0`: matches the success-path semantics of the legacy `vh_rc==0` arm at `bin/run-stage.sh:2343-2346`. The dispatch_history.jsonl pairing invariant is preserved — the start-row was never written (gated on `(( ! skip_dispatch ))` at `bin/run-stage.sh:1671`), so the EXIT trap (also gated on the same flag in `_append_dispatch_end_row`) does not emit an end-row.
-
-- [ ] **Step 4:** Syntax-check:
-  ```bash
-  bash -n bin/run-stage.sh
-  ```
-  Expect exit 0.
-
-### Task 3: Add `bin/pipeline-test.sh` fixtures for approve-arm halt-clear
-
-- `depends_on: [1]`
+- `depends_on: [T2, T3]`
 - `touches: bin/pipeline-test.sh`
+- [ ] Extend the live-path block (already sources `bin/pipeline.sh`
+  and stubs `linear.sh` to `_AR_STUB_DIR`; the block opens at
+  `printf '\n--- bin/pipeline.sh: decide continue → ENG-58 atomic reset ---\n'`).
+  Add a sibling printf banner
+  `--- bin/pipeline.sh: decide approve --gate scope (ENG-180) ---`
+  to delimit the new fixtures from the continue ones.
+- [ ] **DEC-APPROVE-SCOPE-1 (halt-clear fires when halt present):**
+  `: > "$_AR_LINEAR_CALLS"`; `LABELS_ON="pipeline:halted"
+  STAGE_OF="stage:implementing" _ar_decide "ENG-1801" --action approve
+  --gate scope`; assert
+  `grep -c "^remove-label ENG-1801 pipeline:halted$" "$_AR_LINEAR_CALLS"`
+  == 1; assert the decision-comment `add-comment ENG-1801` line appears
+  AFTER the `remove-label` line in the call log (line-order grep with
+  `grep -n` + awk).
+- [ ] **DEC-APPROVE-SCOPE-2 (halt-clear idempotent on no-halt):**
+  `: > "$_AR_LINEAR_CALLS"`; `LABELS_ON="" _ar_decide "ENG-1802"
+  --action approve --gate scope`; assert ZERO
+  `remove-label ENG-1802 pipeline:halted` lines in the call log;
+  assert the decision-comment `add-comment ENG-1802` still appears.
+- [ ] **DEC-APPROVE-SCOPE-3 (other gates unaffected):**
+  `: > "$_AR_LINEAR_CALLS"`; `LABELS_ON="pipeline:halted"
+  _ar_decide "ENG-1803" --action approve --gate build-cap`; assert
+  ZERO `remove-label ENG-1803 pipeline:halted` lines.
+- [ ] **DEC-APPROVE-SCOPE-4 (dry-run suppresses halt-clear):**
+  invoke via the dry-run subshell `run_pipe` helper:
+  `out="$(run_pipe decide ENG-1804 --action approve --gate scope 2>&1)"`;
+  assert `"$out"` contains the log line
+  `dry-run — halt-clear suppressed`; assert ZERO
+  `remove-label ENG-1804` line in `_AR_LINEAR_CALLS` (the dry-run
+  subshell uses the stub-PATH from the dry-run capture block at the
+  top of the file).
+- [ ] **DEC-APPROVE-SCOPE-5 (invalid issue id):**
+  `: > "$_AR_LINEAR_CALLS"`; capture stderr into `out`:
+  `out="$(_ar_decide INVALID-ID --action approve --gate scope 2>&1 || true)"`;
+  assert `"$out"` contains the substring `expected ENG-<digits>`;
+  assert ZERO `add-comment` or `remove-label` lines for `INVALID-ID`
+  in `_AR_LINEAR_CALLS`.
+- [ ] One-line comment edit immediately above the existing PR-E
+  fixture: `# ENG-180 D-001 refactor regression guard: confirms the
+  inline halt-clear → _pipeline_clear_halt_label extraction preserved
+  the remove-label call shape.`
 
-- [ ] **Step 1:** In `bin/pipeline-test.sh`, locate the `_AR_*` live-path test region's last existing case (content anchor: the section header `printf '\n--- bin/pipeline.sh: decide continue → ENG-58 atomic reset ---\n'` at ~`bin/pipeline-test.sh:176`, and the PR-N case at `bin/pipeline-test.sh:320-339`). The new approve-arm fixtures need the same `_AR_STUB_DIR` / `_AR_LINEAR_CALLS` machinery already set up by lines 178-237. Insert a new section header AFTER the LAST existing PR-* fixture's `_ar_clear` line (content anchor: scan downward from line 320 for the last `_ar_clear "ENG-58<N>"` line before any non-PR test section; insert the new section there). Use the section header:
+### Task 5: Add `bin/run-stage-test.sh` SCO-REPLAY fixtures
 
-  ```bash
-  printf '\n--- bin/pipeline.sh: decide approve --gate scope → ENG-180 halt-clear ---\n'
-  ```
-
-- [ ] **Step 2:** Add DEC-APPROVE-SCOPE-1 (halt-clear fires when halt label is present):
-
-  ```bash
-  # DEC-APPROVE-SCOPE-1: approve --gate scope clears pipeline:halted.
-  # The capture file must contain a `remove-label ENG-T-APP1 pipeline:halted`
-  # line AND that line must precede the `add-comment ... decision ... -->`
-  # line (load-bearing order — halt-clear before decision comment).
-  : > "$_AR_LINEAR_CALLS"
-  LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
-    _ar_decide "ENG-T-APP1" --action approve --gate scope || true
-  remove_line_no="$(grep -n "^remove-label ENG-T-APP1 pipeline:halted$" "$_AR_LINEAR_CALLS" | head -1 | cut -d: -f1)"
-  comment_line_no="$(grep -n "^add-comment ENG-T-APP1 .*decision action=approve gate=scope" "$_AR_LINEAR_CALLS" | head -1 | cut -d: -f1)"
-  if [[ -n "$remove_line_no" && -n "$comment_line_no" && "$remove_line_no" -lt "$comment_line_no" ]]; then
-    pass_at "DEC-APPROVE-SCOPE-1: approve --gate scope clears halt before decision comment"
-  else
-    fail_at "DEC-APPROVE-SCOPE-1: approve --gate scope" \
-      "remove_line=$remove_line_no comment_line=$comment_line_no calls=$(cat "$_AR_LINEAR_CALLS")"
-  fi
-  ```
-
-- [ ] **Step 3:** Add DEC-APPROVE-SCOPE-2 (idempotent when no halt label):
-
-  ```bash
-  # DEC-APPROVE-SCOPE-2: idempotent — no halt label present means
-  # has-label returns 1, remove-label is NEVER called, decision-comment
-  # still posts.
-  : > "$_AR_LINEAR_CALLS"
-  LABELS_ON="" STAGE_OF="stage:implementing" \
-    _ar_decide "ENG-T-APP2" --action approve --gate scope || true
-  remove_count="$(grep -c "^remove-label ENG-T-APP2 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
-  comment_count="$(grep -c "^add-comment ENG-T-APP2 .*decision action=approve gate=scope" "$_AR_LINEAR_CALLS" || true)"
-  if [[ "$remove_count" == "0" && "$comment_count" -ge "1" ]]; then
-    pass_at "DEC-APPROVE-SCOPE-2: approve --gate scope idempotent on missing halt label"
-  else
-    fail_at "DEC-APPROVE-SCOPE-2" \
-      "remove_count=$remove_count comment_count=$comment_count calls=$(cat "$_AR_LINEAR_CALLS")"
-  fi
-  ```
-
-- [ ] **Step 4:** Add DEC-APPROVE-SCOPE-3 (other gates unaffected):
-
-  ```bash
-  # DEC-APPROVE-SCOPE-3: --gate build-cap does NOT clear halt (scoped
-  # narrowly to --gate scope per brainstorm §D-001).
-  : > "$_AR_LINEAR_CALLS"
-  LABELS_ON="pipeline:halted" STAGE_OF="stage:building" \
-    _ar_decide "ENG-T-APP3" --action approve --gate build-cap || true
-  remove_count="$(grep -c "^remove-label ENG-T-APP3 pipeline:halted$" "$_AR_LINEAR_CALLS" || true)"
-  comment_count="$(grep -c "^add-comment ENG-T-APP3 .*decision action=approve gate=build-cap" "$_AR_LINEAR_CALLS" || true)"
-  if [[ "$remove_count" == "0" && "$comment_count" -ge "1" ]]; then
-    pass_at "DEC-APPROVE-SCOPE-3: approve --gate build-cap does NOT clear halt"
-  else
-    fail_at "DEC-APPROVE-SCOPE-3" \
-      "remove_count=$remove_count comment_count=$comment_count calls=$(cat "$_AR_LINEAR_CALLS")"
-  fi
-  ```
-
-- [ ] **Step 5:** Add DEC-APPROVE-SCOPE-4 (dry-run suppresses halt-clear). This fixture uses the EARLIER dry-run-only `run_pipe` helper (`bin/pipeline-test.sh:50-53`) rather than the live-path `_ar_decide`, because dry-run mode is verified by checking the printed stderr/stdout, not the capture file:
-
-  ```bash
-  # DEC-APPROVE-SCOPE-4: PIPELINE_DRY_RUN=1 suppresses halt-clear AND
-  # the decision-comment write; both ride the same dry-run log
-  # printf path.
-  out="$(run_pipe decide ENG-T-APP4 --action approve --gate scope 2>&1)"
-  if [[ "$out" == *"action=approve gate=scope (dry-run — halt-clear suppressed)"* ]] \
-     && [[ "$out" == *"would post on ENG-T-APP4"* ]]; then
-    pass_at "DEC-APPROVE-SCOPE-4: dry-run suppresses halt-clear"
-  else
-    fail_at "DEC-APPROVE-SCOPE-4" "out=$out"
-  fi
-  ```
-
-- [ ] **Step 6:** Add DEC-APPROVE-SCOPE-5 (invalid issue id dies):
-
-  ```bash
-  # DEC-APPROVE-SCOPE-5: D-014 issue-id guard dies BEFORE any
-  # linear.sh call; mirrors continue-arm's guard at L508-509.
-  : > "$_AR_LINEAR_CALLS"
-  rc=0
-  LABELS_ON="pipeline:halted" STAGE_OF="stage:implementing" \
-    _ar_decide "INVALID-ID" --action approve --gate scope 2>/dev/null || rc=$?
-  call_count="$(wc -l < "$_AR_LINEAR_CALLS" | tr -d ' ')"
-  if [[ "$rc" -ne 0 && "$call_count" == "0" ]]; then
-    pass_at "DEC-APPROVE-SCOPE-5: invalid issue id dies before linear.sh call"
-  else
-    fail_at "DEC-APPROVE-SCOPE-5" "rc=$rc call_count=$call_count"
-  fi
-  ```
-
-- [ ] **Step 7:** Syntax-check:
-  ```bash
-  bash -n bin/pipeline-test.sh
-  ```
-  Expect exit 0.
-
-### Task 4: Add `bin/run-stage-test.sh` fixtures for scope-approval replay forward-transition
-
-- `depends_on: [2]`
+- `depends_on: [T3]`
 - `touches: bin/run-stage-test.sh`
+- [ ] Extend the source-and-stub region (already overrides
+  `SCRIPT_DIR` to `STUB_DIR` after sourcing `bin/run-stage.sh`). Add a
+  delimiting printf banner
+  `--- bin/run-stage.sh: scope-approval-replay forward-transition (ENG-180) ---`.
+- [ ] **SCO-REPLAY-FORWARD-1 (implementing → ui):** Per-issue stub
+  setup: `mkdir -p "$(issue_dir ENG-T-SR1)"; touch "$(issue_dir
+  ENG-T-SR1)/scope-approval"`. Stub `scope-check.sh` to return rc=1
+  with one `notable\t<file>` line (sentinel + has-scope-approval=0
+  drives `skip_dispatch=1`). Stub `linear.sh stage-of` returning
+  `stage:implementing`. Override `apply_transition`,
+  `_post_dispatch_apply_halt`, and `verdict_handler` in the running
+  shell to write their argv to capture files (same pattern
+  `verdict-handler-test.sh` uses for `mk_fixture`). Drive
+  `main ENG-T-SR1 implementing`. Assert:
+  - capture-file for `apply_transition` contains exactly one row
+    matching `ENG-T-SR1 implementing ui ` (trailing empty side-csv).
+  - capture-file for `_post_dispatch_apply_halt` is empty.
+  - capture-file for `verdict_handler` is empty.
+  - dispatch exit code is 0.
+  - the metrics-call capture contains a `stage-end` row matching
+    `ENG-T-SR1 implementing success ... verdict=transitioned scope-approval-replay=1`.
+- [ ] **SCO-REPLAY-FORWARD-2 (ui → reviewing):** same shape as -1 but
+  start with `stage-of` returning `stage:ui` and dispatch
+  `main ENG-T-SR2 ui`. Assert `apply_transition` capture contains
+  `ENG-T-SR2 ui reviewing `.
+- [ ] **SCO-REPLAY-DEFENSIVE (unknown forward → halt):** override
+  `_vh_lookup_forward()` in the running shell to print nothing
+  unconditionally; drive the SCO-REPLAY-FORWARD-1 fixture; assert the
+  defensive `classify_failure` capture contains a row matching
+  `ENG-T-SR3 implementing skip-until-human-acts scope-approval-replay:
+  no forward transition from implementing`; assert dispatch exit code
+  is 22.
+- [ ] **SCO-REPLAY-STAGE-DRIFT (operator mid-replay transitioned):**
+  stub `linear.sh stage-of` returning `stage:reviewing` while
+  `main` was invoked with `implementing` as the dispatched stage —
+  the existing drift guard MUST short-circuit BEFORE D-002. Assert
+  the `apply_transition` capture is EMPTY (D-002 didn't fire); assert
+  the `metrics.sh stage-end` capture contains a row with outcome
+  `stage-drift` (matches the existing drift-guard emit).
+- [ ] **SCO-REPLAY-IDEMPOTENT (re-entry after partial-failure):**
+  run the SCO-REPLAY-FORWARD-1 fixture twice in sequence with the
+  same per-issue state; assert both runs exit 0 AND the
+  `apply_transition` capture contains TWO rows (idempotent re-entry).
+- [ ] **SCO-REPLAY-CONTINUE-COMPOSITE (continue after a prior approve
+  resolves):** seed the issue-state stub with `pipeline:halted` label
+  ON, plus a `get-comments` stub returning a fixture sequence
+  `[transition planning→implementing, verdict halt
+  reason=scope-violation, decision approve gate=scope]`, plus the
+  sentinel file at `$(issue_dir ENG-T-CCC)/scope-approval`. Source
+  `bin/pipeline.sh`'s `cmd_decide` (same pattern as PR-E) and call
+  `_ar_decide ENG-T-CCC --action continue`. Assert
+  `remove-label ENG-T-CCC pipeline:halted` AND a comment matching
+  `from=implementing to=implementing` (the operator-resume waypoint)
+  appear in the `_AR_LINEAR_CALLS` log. Then re-source the
+  run-stage-test.sh harness and drive `main ENG-T-CCC implementing`.
+  Assert: scope-approval gate fires (sentinel present + decision
+  marker still present — continue did NOT touch them); D-002
+  transitions forward; zero `_vh_protocol_violation` capture rows.
+  Drives AC #4.
 
-- [ ] **Step 1:** In `bin/run-stage-test.sh`, locate the closing of case-24 (content anchor: the `fail_at "case-24 D-011 replay" ...` block at `bin/run-stage-test.sh:689-691`, terminated by the next case header `# ─── Case 25: _cost_flags_for tolerates corrupt JSON (review blocker 1) ──` at `bin/run-stage-test.sh:693`). Insert the new SCO-REPLAY-* block AFTER case-24's closing `fi` and BEFORE case-25's section header.
+### Task 6: Re-cast `bin/verdict-handler-test.sh` case-12 as a regression guard
 
-- [ ] **Step 2:** Add SCO-REPLAY-FORWARD-1 (implementing → ui). The test drives `bin/run-stage.sh::main` end-to-end against a stubbed environment: stubs `scope-check.sh` (returns rc=1 plus `has-scope-approval` rc=0), `linear.sh` (stage-of returns `stage:implementing`; capture every write), `metrics.sh` (capture every write). The sentinel file `$(issue_dir ENG-T-SR1)/scope-approval` is pre-created so the replay gate at `bin/run-stage.sh:1612-1620` fires.
-
-  ```bash
-  # ─── ENG-180 SCO-REPLAY-FORWARD-1 (implementing → ui via apply_transition) ─
-  # Drives the full bin/run-stage.sh::main path under PIPELINE_DRY_RUN=0 with
-  # stubbed claude / linear / scope-check / metrics. Asserts:
-  #   (a) apply_transition's transition-waypoint comment was posted with
-  #       from=implementing to=ui shape.
-  #   (b) stage:ui label was added; stage:implementing was removed.
-  #   (c) metrics.sh stage-end was called with success + scope-approval-replay=1.
-  #   (d) _post_dispatch_apply_halt was NOT reached (no extra add-label
-  #       pipeline:halted line beyond apply_transition's step-5 remove).
-  #   (e) verdict_handler was NOT reached (no protocol-violation comment).
-  printf '\n--- ENG-180 SCO-REPLAY-FORWARD-1: implementing → ui ---\n'
-  # [seed sentinel, stub scope-check.sh / linear.sh / metrics.sh / claude,
-  #  invoke bash bin/run-stage.sh ENG-T-SR1 implementing, scan captures]
-  # (Implementation detail: reuse the existing case-24 stubbing pattern
-  #  for metrics.sh capture; extend with linear.sh + scope-check.sh stubs
-  #  mirroring the _AR_* shape from bin/pipeline-test.sh. Full literal
-  #  source omitted from this plan to keep it under ~5 functions per task;
-  #  the agent reuses the case-24 idiom plus bin/pipeline-test.sh's
-  #  _AR_STUB_DIR / _AR_LINEAR_CALLS pattern.)
+- `depends_on: [T3]`
+- `touches: bin/verdict-handler-test.sh::case-12 (comment edit only)`
+- [ ] Locate case-12. **Content anchor:** the header
+  `# ─── Case 12: decide-continue-posts-decision-and-clears-halt ─────────`.
+  Replace the prose block immediately below it (starting
+  `# After bin/pipeline.sh decide ...` through
+  `# comments (they're not a verdict shape).`) with a clarifying
+  one-paragraph rewrite:
   ```
-
-  Fixture structure: pre-create `$(issue_dir ENG-T-SR1)/scope-approval`; PATH-prepend a stub dir whose `linear.sh` echoes invocations to `$SR_LINEAR_CALLS` and whose `stage-of` returns `stage:implementing`; whose `scope-check.sh` returns rc=1 + has-scope-approval rc=0; whose `metrics.sh` captures argv; invoke `bash "$SCRIPT_DIR/run-stage.sh" ENG-T-SR1 implementing`; assert:
-  - `grep -q "^add-comment ENG-T-SR1 .*transition from=implementing to=ui" "$SR_LINEAR_CALLS"`
-  - `grep -q "^add-label ENG-T-SR1 stage:ui$" "$SR_LINEAR_CALLS"`
-  - `grep -q "^remove-label ENG-T-SR1 stage:implementing$" "$SR_LINEAR_CALLS"`
-  - `grep -q "^stage-end ENG-T-SR1 implementing success .*scope-approval-replay=1" "$SR_METRICS_CALLS"`
-  - `! grep -q "verdict result=halt reason=protocol-violation" "$SR_LINEAR_CALLS"`
-
-- [ ] **Step 3:** Add SCO-REPLAY-FORWARD-2 (ui → reviewing). Mirror SCO-REPLAY-FORWARD-1 with `stage-of` returning `stage:ui` and the dispatched stage argument `ui`. Add a `gh` stub (under `$SR_STUB_DIR/gh`) that captures invocations to `$SR_GH_CALLS` and returns 0. Assert transition is `ui → reviewing`; the PR-create hook fires (`grep -q "^pr create --head .* --title 'fix\\(eng-t-sr2\\)" "$SR_GH_CALLS"` — verify a `pr create` capture line exists with a properly-cased title scope); add-label is `stage:reviewing`; remove-label is `stage:ui`. The `gh pr create` assertion guards AC #6 (PR-create idempotency); without it, a future refactor that drops the hook on the replay path would regress silently.
-
-- [ ] **Step 4:** Add SCO-REPLAY-DEFENSIVE (unknown forward → halt). Override the in-process `_vh_lookup_forward` by sourcing a stub before invoking — the simplest path is to use a stub `verdict-handler.sh` (under the test's STUB_DIR) whose `_vh_lookup_forward` returns empty. Assert exit code 22 and a `classify_failure ... skip-until-human-acts` capture line.
-
-- [ ] **Step 5:** Add SCO-REPLAY-STAGE-DRIFT (operator transitioned mid-replay). Stub `linear.sh stage-of` to return `stage:reviewing` while the dispatched stage is `implementing`. Assert the stage-drift guard's `exit 0` fires BEFORE the D-002 branch (no `apply_transition` capture line; metric end-row outcome is `stage-drift`, not `success`).
-
-- [ ] **Step 6:** Add SCO-REPLAY-IDEMPOTENT (re-entry after partial-failure). Run the SCO-REPLAY-FORWARD-1 fixture TWICE in sequence; on the second run the issue is already at `stage:ui` (per the first run's apply_transition) so the dispatched-stage `implementing` no longer matches `stage-of` → stage-drift guard fires on the second run. Acceptable; this asserts apply_transition's idempotent re-entry is structurally invisible (no double-transition, no duplicate stage:ui label add beyond what add-label idempotency permits).
-
-- [ ] **Step 7:** Add SCO-REPLAY-CONTINUE-COMPOSITE (continue after a prior approve resolves). Two-stage fixture: (a) seed sentinel + decision approve comment + halt label, run `_ar_decide ENG-T-COMP --action continue` (from `bin/pipeline-test.sh`'s machinery, copied to the run-stage-test.sh stub dir or invoked via subprocess), assert halt cleared + operator-resume transition waypoint posted; (b) invoke `bash bin/run-stage.sh ENG-T-COMP implementing`, assert the SCO-REPLAY-FORWARD-1 success captures. Drives AC #5.
-
-- [ ] **Step 8:** Syntax-check:
-  ```bash
-  bash -n bin/run-stage-test.sh
+  # ENG-180 regression guard for verdict-handler's contract.
+  # post-ENG-180, D-002 in bin/run-stage.sh::main short-circuits the
+  # *caller* of verdict_handler on the scope-approval replay path, so
+  # the empirical "approve clears halt" recovery no longer enters this
+  # codepath. The CONTRACT this case pins is unchanged: find_fresh_verdict
+  # must continue to treat `decision` markers as non-verdicts (they have
+  # event != "verdict"), so the most-recent verdict-shape marker — the
+  # scope-violation halt — must still surface as `pipeline-halt`.
   ```
-  Expect exit 0.
+  The assertion body (`mtype` is `pipeline-halt`) is UNCHANGED.
 
-### Task 5: Recast `bin/verdict-handler-test.sh` case-12 as a contract regression guard
+### Task 7: Add `CLAUDE.md` failure-mode row
 
-- `depends_on: []`
-- `touches: bin/verdict-handler-test.sh`
-
-- [ ] **Step 1:** In `bin/verdict-handler-test.sh`, locate case-12 (content anchor: the comment header `# ─── Case 12: decide-continue-posts-decision-and-clears-halt ─────────` at `bin/verdict-handler-test.sh:413`). The case body (lines 414-434) is structurally unchanged; only the docstring is updated.
-
-- [ ] **Step 2:** Replace the docstring block at `bin/verdict-handler-test.sh:414-420`:
-
-  ```
-  # After `bin/pipeline.sh decide --action continue` posts a decision
-  # comment newer than the scope-violation halt, the verdict handler still
-  # sees the halt marker as the most recent verdict-shape marker, so rc
-  # stays 1. decide itself is the actor that removes pipeline:halted —
-  # not verdict_handler. What this case asserts is that find_fresh_verdict
-  # IGNORES decision-event markers
-  # comments (they're not a verdict shape).
-  ```
-
-  with:
-
-  ```
-  # ENG-180 (recast): regression guard for find_fresh_verdict's contract —
-  # decision-event markers are NEVER surfaced as a fresh verdict, regardless
-  # of the timestamp window. After ENG-180 D-002 the scope-approval replay
-  # path no longer reaches verdict_handler at all (the new branch in
-  # bin/run-stage.sh::main short-circuits before _post_dispatch_apply_halt
-  # and verdict_handler), so this case no longer covers the end-to-end
-  # "approve clears halt" flow. The verdict-handler internal contract
-  # (find_fresh_verdict ignores `event == decision`) is still load-bearing
-  # for find_fresh_wait_verdict and for any future caller, so the assertion
-  # stays as a pure contract guard.
-  ```
-
-- [ ] **Step 3:** No other lines in case-12 are modified. Run the test file:
-  ```bash
-  bash bin/verdict-handler-test.sh
-  ```
-  Expect case-12 to PASS unchanged.
-
-### Task 6: Document the new "approved but stuck (pre-ENG-180)" failure-mode row in CLAUDE.md
-
-- `depends_on: [1, 2]`
+- `depends_on: [T2, T3]`
 - `touches: CLAUDE.md::## Failure-mode quick reference`
-
-- [ ] **Step 1:** In `CLAUDE.md`, locate the "Failure-mode quick reference" table (content anchor: the H2 `## Failure-mode quick reference` at `CLAUDE.md:793`, and the row header `| Symptom | Where to look |` at `CLAUDE.md:803`). Identify the row immediately preceding the `| Concurrent dispatches not running (expected K=2, observed K=1) |` row (content anchor: the row starting `| Issue at \`stage:building\` idles with \`dispatch-skipped\` events and no halt label |` at ~CLAUDE.md:817).
-
-- [ ] **Step 2:** Insert a new table row IMMEDIATELY AFTER the `dispatch-skipped` row and BEFORE the `Concurrent dispatches not running` row (preserve table structure — no blank line between rows):
-
+- [ ] In `CLAUDE.md`, locate `## Failure-mode quick reference`. The
+  table is markdown-pipe-delimited with `Symptom | Where to look`
+  columns. **Content anchor:** the row beginning
+  `| Per-issue halt (self-leak / leaked-in-scope at threshold / N×same-issue failure)`.
+  Insert a NEW row directly after that row (clustering halt-diagnosis
+  rows together):
   ```markdown
-  | Issue at `stage:implementing` or `stage:ui` with `pipeline:halted` after a NOTABLE scope-violation halt; operator ran `bash bin/pipeline.sh decide <ENG-N> --action approve --gate scope` but the slot sits at `vacate, operator_action_required=true` for ≥ 1 tick | Pre-ENG-180 bug. Post-ENG-180: grep the per-stage transcript for the **terminal success line** `stage <stage> complete for <ENG-N> (scope-approval-replay transitioned <src> → <fwd>)` (e.g., `implementing → ui`). If that line is present the resume worked. Earlier-in-the-tick lines you will see: `scope-check: notable approved by scope-approve decision; clearing state and proceeding` (scope-check arm), and the `apply_transition` waypoint comment in Linear. **Pre-ENG-180 legacy symptom (host not yet updated):** the second-to-last log line was `post-dispatch: applying pipeline:halted (orchestrator-managed, ENG-56)` followed by `verdict-handler: protocol violation (no-marker): no fresh verdict marker on the issue (current_dispatch_id=<unset>)`. **Legacy recovery (pre-ENG-180 only):** source `bin/verdict-handler.sh` and run `apply_transition <ENG-N> implementing ui` (or `ui reviewing`); then `bash bin/linear.sh remove-label <ENG-N> pipeline:halted`. Post-ENG-180 this escape hatch is unnecessary. |
+  | Issue at `stage:implementing` or `stage:ui` with `pipeline:halted` after a NOTABLE scope-violation halt; operator ran `bash bin/pipeline.sh decide <ENG-N> --action approve --gate scope` but the slot did not recall within one tick | **Post-ENG-180 expected:** next tick's replay logs `scope-check: notable approved by scope-approve decision; clearing state and proceeding` followed by `stage <stage> complete for <ENG-N> (scope-approval-replay transitioned <src> → <fwd>)` and the issue advances. **Pre-ENG-180 signature (legacy hosts only):** `post-dispatch: applying pipeline:halted (orchestrator-managed, ENG-56)` followed by `verdict-handler: protocol violation (no-marker): no fresh verdict marker on the issue (current_dispatch_id=<unset>)`. **Legacy-only recovery:** export `TARGET_REPO`, then `source bin/verdict-handler.sh; apply_transition <ENG-N> implementing ui` (or `ui reviewing`), then `bash bin/linear.sh remove-label <ENG-N> pipeline:halted`. This escape hatch is unnecessary post-ENG-180. |
   ```
 
-- [ ] **Step 3:** Verify the table renders correctly by counting `|` characters: each row has exactly 3 pipes (start, between, end). Verify no rows were displaced by a stray newline.
+### Task 8: Run the full test suite
 
-## 7. Frontend Tasks
+- `depends_on: [T4, T5, T6, T7]`
+- `touches: <verification only; no edits>`
+- [ ] Run `bash bin/pipeline-test.sh` — DEC-APPROVE-SCOPE-1..5 +
+  PR-E continue regression all PASS.
+- [ ] Run `bash bin/run-stage-test.sh` — SCO-REPLAY-FORWARD-1,
+  SCO-REPLAY-FORWARD-2, SCO-REPLAY-DEFENSIVE, SCO-REPLAY-STAGE-DRIFT,
+  SCO-REPLAY-IDEMPOTENT, SCO-REPLAY-CONTINUE-COMPOSITE, plus
+  case-24 D-011 (unaffected) all PASS.
+- [ ] Run `bash bin/verdict-handler-test.sh` — case-12 (re-cast as
+  regression guard) PASS.
+- [ ] Run `bash .githooks/pre-commit` (the full suite per
+  `learned-rules/harness/project-profile.md::Test`) green.
+- [ ] If any test fails, fix the test or the implementation — do NOT
+  commit until green.
 
-No frontend tasks — harness has no UI. The harness is bash orchestration scripts only.
+## Frontend Tasks
 
-## 8. Failure Mode → Test Map
+(none — this is a bash orchestration scripts repo with no FE)
+
+## Failure Mode → Test Map
 
 | Failure mode | Trigger | Expected behavior | Test layer | Test name |
 |---|---|---|---|---|
-| `approve --gate scope` does not clear `pipeline:halted` (Layer 1) | NOTABLE scope-violation halt + operator runs `decide ENG-N --action approve --gate scope` | `pipeline:halted` removed; decision comment posted; halt-clear precedes decision-comment | integration | `bin/pipeline-test.sh::DEC-APPROVE-SCOPE-1` |
-| Halt-clear runs against an already-clean issue | `decide --action approve --gate scope` on issue with no halt label | `remove-label` NOT called (has-label guard short-circuits); decision comment still posts | integration | `bin/pipeline-test.sh::DEC-APPROVE-SCOPE-2` |
-| Halt-clear over-fires on `--gate build-cap` | `decide --action approve --gate build-cap` | `remove-label` NOT called; decision comment still posts | integration | `bin/pipeline-test.sh::DEC-APPROVE-SCOPE-3` |
-| Halt-clear runs under dry-run | `PIPELINE_DRY_RUN=1 decide --action approve --gate scope` | `[DRY_RUN]` log line; NO `remove-label` call; NO `add-comment` call | integration | `bin/pipeline-test.sh::DEC-APPROVE-SCOPE-4` |
-| Halt-clear with invalid issue id path-interp | `decide INVALID-ID --action approve --gate scope` | `die` BEFORE any `linear.sh` call | unit | `bin/pipeline-test.sh::DEC-APPROVE-SCOPE-5` |
-| Scope-approval replay reaches `_vh_protocol_violation` (Layer 2) | Sentinel + decision marker + halt cleared → replay tick → no fresh `pass` verdict | New D-002 branch fires; `apply_transition implementing → ui` posts waypoint + label flip; no protocol-violation re-halt | integration | `bin/run-stage-test.sh::SCO-REPLAY-FORWARD-1` |
-| Scope-approval replay on UI stage forwards to reviewing | Sentinel + decision marker + `stage:ui` label | `apply_transition ui → reviewing`; PR-create hook fires idempotently | integration | `bin/run-stage-test.sh::SCO-REPLAY-FORWARD-2` |
-| Forward stage lookup returns empty (future stages joining the gate) | `_vh_lookup_forward` returns empty for the source stage | `classify_failure skip-until-human-acts`; exit 22 | unit | `bin/run-stage-test.sh::SCO-REPLAY-DEFENSIVE` |
-| Operator manually transitioned mid-replay | `stage-of` returns a stage label different from the dispatched-stage label | Stage-drift guard's `exit 0` fires BEFORE D-002 branch; no `apply_transition` call | integration | `bin/run-stage-test.sh::SCO-REPLAY-STAGE-DRIFT` |
-| Replay re-runs after partial-failure (apply_transition crashed mid-flight) | Two consecutive SCO-REPLAY-FORWARD-1 dispatches against the same fixture | Second run sees `stage:ui` from first run's apply_transition; stage-drift guard fires; no double-transition, no duplicate waypoint at the same `(from, to)` pair beyond Linear's append-only ledger | integration | `bin/run-stage-test.sh::SCO-REPLAY-IDEMPOTENT` |
-| `continue` after a prior `approve --gate scope` (composite recovery) | Halt + decision-approve marker + sentinel; operator runs `--action continue`, then next tick's replay fires | `continue`'s atomic reset clears halt + posts operator-resume transition; next replay sees sentinel + has-scope-approval → D-002 transitions forward; no protocol-violation | integration | `bin/run-stage-test.sh::SCO-REPLAY-CONTINUE-COMPOSITE` |
-| `find_fresh_verdict` regression: someone makes `decision` markers visible | Test fixture posts `decision action=approve gate=scope` newer than scope-violation halt | `find_fresh_verdict` returns marker shape `pipeline-halt` (NOT a decision-shape marker) | unit | `bin/verdict-handler-test.sh::case-12` (recast as contract guard) |
-| Continue-arm regression: refactor breaks the inline halt-clear | `--action continue` on a halted issue | `remove-label pipeline:halted` capture line ≥ 1 (existing assertion) | integration | `bin/pipeline-test.sh::PR-E` (unchanged; serves as refactor-guard) |
-| Replay-path metrics carry stale cost flags (D-011 regression) | `_replay_scope_approval` runs against a fixture with an existing `usage-<stage>.json` | usage file removed; metrics call carries zero `--`-prefixed cost flags | integration | `bin/run-stage-test.sh::case-24` (unchanged; serves as D-011 guard for the new D-002 metric end-row) |
+| `approve --gate scope` does not clear `pipeline:halted` | Operator runs `decide --action approve --gate scope` on a halted scope-violation issue | `pipeline:halted` is removed from Linear; decision comment posts | unit | `bin/pipeline-test.sh:DEC-APPROVE-SCOPE-1` |
+| `approve --gate scope` regresses on no-halt-present | Operator runs the same command on an issue with no halt label | No `remove-label` call; decision comment still posts (idempotent) | unit | `bin/pipeline-test.sh:DEC-APPROVE-SCOPE-2` |
+| `approve --gate build-cap` accidentally also clears halt | Operator approves a non-scope gate | No `remove-label` call (scope is the only gate that clears halt) | unit | `bin/pipeline-test.sh:DEC-APPROVE-SCOPE-3` |
+| `approve --gate scope` mutates state under PIPELINE_DRY_RUN | Operator runs the same command with `PIPELINE_DRY_RUN=1` | Halt-clear suppressed; log line says so | unit | `bin/pipeline-test.sh:DEC-APPROVE-SCOPE-4` |
+| `approve --gate scope` with shell-meta in issue id | Operator passes `INVALID-ID` (or worse) | Die with `expected ENG-<digits>` before any linear.sh call | unit | `bin/pipeline-test.sh:DEC-APPROVE-SCOPE-5` |
+| Continue-arm halt-clear breaks after refactor | Refactor moves the inline halt-clear into `_pipeline_clear_halt_label` | Existing PR-E `^remove-label ENG-5801 pipeline:halted$` grep still passes | unit | `bin/pipeline-test.sh:PR-E continue + halted + full side state → atomic reset` |
+| Scope-approval replay re-halts because no fresh verdict | Replay runs on a sentinel + approved issue at `stage:implementing` | `apply_transition` invoked with `(implementing, ui)`; no `_post_dispatch_apply_halt`; no `verdict_handler` call; exit 0; metric `verdict=transitioned scope-approval-replay=1` | integration | `bin/run-stage-test.sh:SCO-REPLAY-FORWARD-1` |
+| Scope-approval replay re-halts at `stage:ui` | Replay runs on a sentinel + approved issue at `stage:ui` | `apply_transition` invoked with `(ui, reviewing)`; exit 0 | integration | `bin/run-stage-test.sh:SCO-REPLAY-FORWARD-2` |
+| Scope-approval replay hits an unknown forward stage | Future stage joins replay gate without a forward row | `classify_failure skip-until-human-acts` fires; exit 22 | integration | `bin/run-stage-test.sh:SCO-REPLAY-DEFENSIVE` |
+| Operator transitions issue mid-replay | `linear.sh stage-of` returns a label different from dispatched-stage label | Stage-drift guard short-circuits BEFORE D-002 branch; no `apply_transition` from D-002 | integration | `bin/run-stage-test.sh:SCO-REPLAY-STAGE-DRIFT` |
+| Replay restarted after partial-failure | Same fixture replayed twice | Both runs complete without error; `apply_transition` idempotent | integration | `bin/run-stage-test.sh:SCO-REPLAY-IDEMPOTENT` |
+| Operator runs `continue` (not `approve`) on an issue with scope-approval already posted | Halt + scope-violation halt verdict + decision approve + sentinel all present | `continue` clears halt + posts operator-resume waypoint; next dispatch's replay still transitions forward via D-002 | integration | `bin/run-stage-test.sh:SCO-REPLAY-CONTINUE-COMPOSITE` |
+| Verdict-handler treats `decision` markers as verdict markers (regression) | Comments stream `[transition, scope-violation halt, decision approve gate=scope]` | `find_fresh_verdict` still surfaces the `pipeline-halt` (decision is filtered out) | unit | `bin/verdict-handler-test.sh:case-12` |
+| Replay path leaks cost flags through D-002's metric end-row | `_replay_scope_approval` ran (rm'd usage-file) but downstream emits cost flags | D-002's metric call carries no `--*` cost flags (no usage-file to read) | unit | `bin/run-stage-test.sh:case-24 D-011 replay: usage-<stage>.json removed and metrics carries no cost flags` |
 
-## 9. Test Strategy
+## Test Strategy
 
-### Unit-layer focus
+**Unit (per-function).** `bin/pipeline-test.sh` runs `cmd_decide`
+in-process via the existing source-and-stub harness; the new fixtures
+DEC-APPROVE-SCOPE-1..5 cover the D-001 surface plus the dry-run + bad
+issue-id paths. The refactor regression guard is the existing PR-E
+run; passing it after the helper extraction proves the refactor is
+mechanical. Case-12 of `bin/verdict-handler-test.sh` stays as a
+regression guard for `find_fresh_verdict`'s decision-marker filter.
 
-- `bin/pipeline.sh::_pipeline_clear_halt_label` — covered indirectly by DEC-APPROVE-SCOPE-1..3 (the helper is too small to merit a standalone unit test; capture-file assertions exercise its `has-label` + `remove-label` chokepoint shape).
-- `bin/pipeline.sh::cmd_decide` approve-arm D-014 guard — DEC-APPROVE-SCOPE-5 asserts the guard dies BEFORE any `linear.sh` call.
-- `_vh_lookup_forward "unknown"` returning empty — SCO-REPLAY-DEFENSIVE asserts the D-002 defensive branch fires; the helper's behaviour itself is pinned by its existing in-place definition (`bin/verdict-handler.sh:40-43`).
+**Integration (cross-function inside a single shell).**
+`bin/run-stage-test.sh`'s source-and-stub harness drives the new
+SCO-REPLAY-FORWARD-1/2/DEFENSIVE/STAGE-DRIFT/IDEMPOTENT/CONTINUE-COMPOSITE
+fixtures. Each fixture stubs `scope-check.sh`, `linear.sh`, and
+overrides `apply_transition`, `_post_dispatch_apply_halt`,
+`verdict_handler` in the running shell so the assertion can match the
+exact `(from, to)` pair passed to `apply_transition` and confirm the
+other two are NOT invoked.
 
-### Integration-layer focus
+**Adversarial.** The IDEMPOTENT and STAGE-DRIFT fixtures are
+adversarial-shaped. STAGE-DRIFT proves the existing drift guard still
+wins over the new D-002 branch; IDEMPOTENT proves twice-run replays
+don't double-transition (relies on `apply_transition`'s idempotency
+contract).
 
-- Full `bin/run-stage.sh::main` path under the replay flag — SCO-REPLAY-FORWARD-1 and -2 drive the entry-to-exit flow with stubbed external dependencies (claude, linear, scope-check, metrics). The assertions cross-validate D-002 against (a) `apply_transition`'s 5-step contract, (b) `_post_dispatch_apply_halt` being unreachable on this path, and (c) `verdict_handler` being unreachable.
-- Composite operator flow `approve → continue → replay` — SCO-REPLAY-CONTINUE-COMPOSITE chains `cmd_decide --action continue` into a `run-stage.sh` invocation on the same per-issue state to assert the documented operator escape ramp still works post-ENG-180 (AC #5).
-- Stage-drift survival — SCO-REPLAY-STAGE-DRIFT confirms D-002 does not bypass the existing stage-drift safety; this is critical because D-002's branch sits IMMEDIATELY AFTER the drift guard and could be miswritten to skip it.
+**Smoke / e2e.** None added. The bash orchestration repo has no
+end-to-end harness beyond `PIPELINE_DRY_RUN=1 bash bin/dry-run.sh`,
+and the new branch fires only on a sentinel + has-scope-approval
+state that dry-run does not synthesise. The integration coverage
+above is the appropriate ceiling.
 
-### Smoke-layer focus
+**Explicit waivers (brainstorm-acknowledged out-of-scope edge
+cases).** Two brainstorm §Edge cases entries are deliberately NOT
+added as Failure Mode → Test Map rows:
 
-- End-to-end on a real Linear-stubbed worktree via `PIPELINE_DRY_RUN=1 bash bin/pipeline.sh decide ENG-PD2 --action approve --gate scope` (PD2 in `bin/pipeline-test.sh:141-142`) — already exists; serves as the dry-run smoke test for the new approve-arm log line.
+- Brainstorm edge case 7 ("Multiple stale `stage:*` labels survive
+  `apply_transition`"): `apply_transition`'s existing semantics do
+  not sweep stale `stage:*` labels — that is true today and remains
+  true under D-002 because D-002 calls `apply_transition` unchanged.
+  Out of scope per brainstorm.
+- Brainstorm edge case 8 (PIPELINE_WRITER lane warning on
+  `approve --gate scope`): `cmd_decide`'s existing
+  `PIPELINE_WRITER != "human"` warn-only check at the bottom of the
+  function is unchanged by D-001. The new approve-arm branch fires
+  BEFORE the warn site (it sits inside the action-arm matrix, the
+  warn sits in the post-arm body-render block), so behaviour on the
+  warn surface is unchanged. Out of scope per brainstorm.
 
-### Adversarial coverage intent
+**Test-gate closure (additions side).** No new gate-runnable file is
+created. New fixtures land inside `bin/pipeline-test.sh`,
+`bin/run-stage-test.sh`, and `bin/verdict-handler-test.sh`. The
+project profile's `## Build & test gates` Test line directly names
+the last two; `bin/pipeline-test.sh` is run via
+`.githooks/pre-commit`'s `bin/*-test.sh` glob (Task 8 invokes the
+pre-commit gate). All three files are also in the Tool allowlist. No
+project-profile edit required.
 
-- DEC-APPROVE-SCOPE-3 verifies the narrow `--gate scope` scoping is NOT accidentally widened to `--gate build-cap` (an operator approving a build-cap halt with `approve --gate build-cap` must NOT have `pipeline:halted` cleared as a side-effect, because the build-cap halt has different semantics).
-- SCO-REPLAY-DEFENSIVE asserts the unknown-forward defensive branch fires cleanly even though it is unreachable in current control flow; this guards against a future stage joining the scope-approval gate at `bin/run-stage.sh:1613` without a row in `_VH_FORWARD_TRANSITIONS`.
-- SCO-REPLAY-IDEMPOTENT exercises the operator-resume scenario where `apply_transition` partially succeeded then was re-driven; this guards against the case-24 D-011 contract (no double-counted cost / no double-emitted metrics) regressing in the presence of D-002.
-- The `bin/verdict-handler-test.sh::case-12` recast leaves the assertion shape unchanged — it specifically guards against a future "make decision markers freshness-aware" refactor regressing the `find_fresh_verdict` ignore-decision contract that D-002 relies on for partial-failure recoverability.
+**Test-gate closure (removals side).** This plan does NOT remove any
+token (no allowlist entry dropped, no function renamed, no enum
+variant deleted, no default changed). Only additions and a single
+helper extraction. `bin/pipeline.sh`'s `_pipeline_clear_halt_label`
+adds a new symbol; all callers of the removed inline block now route
+through it (continue arm refactored in-place — same effective
+behaviour). The DEC-CONTINUE-REGRESSION check (PR-E grep on
+`^remove-label ... pipeline:halted$`) catches any silent regression.
 
-### Removed-token closure (post-implement gate readiness)
-
-Tokens this plan removes from production code (re-stated for the implement agent's grep-validation pass after Task 1 lands):
-- The three-line block at `bin/pipeline.sh:523-525` (replaced by `_pipeline_clear_halt_label "$issue"`).
-
-Grep across all `bin/*-test.sh` after Task 1:
-- `grep -F 'bash "$SCRIPT_DIR/linear.sh" has-label "$issue" "pipeline:halted"' bin/*-test.sh` should return zero matches outside of any test that intentionally fixtures the helper's chokepoint (currently zero such tests; the assertion is on the capture-file argv shape, not the source-text literal).
-
-The full `bin/*-test.sh` suite (the pre-commit gate at `.githooks/pre-commit` — `for t in bin/*-test.sh; do ...`) must run green before commit. The pre-commit hook iterates the `bin/*-test.sh` glob, so `bin/pipeline-test.sh`, `bin/run-stage-test.sh`, and `bin/verdict-handler-test.sh` are all covered in practice even though the documented Test command line in `learned-rules/harness/project-profile.md::## Build & test gates` does not enumerate every test by name.
-
-### Regression-guard intent: halt-comment body text
-
-AC #3 (the NOTABLE halt comment's "To approve and resume" text remains accurate) is implicitly verified by the SCO-REPLAY-* fixtures (they only succeed against the unchanged advertised-command shape) and by the §2 Assumption Inventory's `verified` claim against `bin/run-stage.sh:1985-1986`. No standalone grep-pin is added — modifying the halt body would also require flipping every approve-arm fixture in `bin/pipeline-test.sh`, so the regression chain is structurally closed without an explicit body-text assertion. (If a future ticket softens this chain, file a follow-up to add a `grep -F "decide %s --action approve --gate scope" bin/run-stage.sh` assertion in `bin/run-stage-test.sh`.)
-
-## Persona review summary
-
-Five personas reviewed this plan in parallel (feasibility, scope, coherence, design, product). All five returned **PASS** with zero P0 findings.
-
-| Persona | Verdict | P0 | P1 | P2 |
-|---|---|---|---|---|
-| feasibility | PASS | 0 | 3 | 3 |
-| scope | PASS | 0 | 1 | 3 |
-| coherence | PASS | 0 | 2 | 3 |
-| design | PASS | 0 | 2 | 3 |
-| product | PASS | 0 | 1 | 2 |
-
-P1 fixes applied in-iteration:
-
-1. System Invariants `verified_by:` tokens hardened to real anchors: `bin/poll-slot-test.sh:AC-2` (verified at `bin/poll-slot-test.sh:258`) and `bin/verdict-handler-test.sh:case-9` (verified at `bin/verdict-handler-test.sh:347`) — closes feasibility P1 #1 / coherence P1 #2.
-2. Task 4 Step 3 (SCO-REPLAY-FORWARD-2) gained an explicit `gh pr create` capture assertion — closes coherence P2 (AC #6 was nominally covered, now explicitly).
-3. CLAUDE.md row (Task 6) reworded so the terminal success log line is the primary grep target — closes product P1.
-4. Added Test Strategy section "Regression-guard intent: halt-comment body text" addressing coherence P1 #1 (AC #3 was implicitly covered; now documented).
-
-P2 nits left as-is (each justified):
-
-- Exit-22 reuse for D-002's defensive unknown-forward branch (design P2) — unreachable in current control flow; dedicated exit code is follow-up scope.
-- "Brainstorm-drafted row text vs plan-collapsed cell" (scope P1) — plan row is denser but semantically equivalent; honors all 5 operator-promise checks.
-- Other line-anchor minor drifts (feasibility P1 #2 — `bin/pipeline-test.sh` coverage is via pre-commit glob, not via the profile's Test command line) — clarified in Test Strategy.
-
-Gate result: **5/5 PASS AND zero P0 → clean gate, proceeding to implementing.**
+**System-invariants resolution.** Eleven bullets in `## System
+invariants`. Six reference existing tests
+(`bin/pipeline-test.sh:PR-E`, `bin/verdict-handler-test.sh:case-12`,
+`bin/run-stage-test.sh:case-24`); five reference in-plan tasks
+(`task:T4`, `task:T5`) whose `touches:` fields name gate-runnable
+files in the Build & test gates Test command
+(`bin/pipeline-test.sh`, `bin/run-stage-test.sh`).
