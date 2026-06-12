@@ -154,6 +154,20 @@ else
     "expected \"plan-contract-invalid\" in .halt_reasons array of $REG"
 fi
 
+# ─── ENG-113: qa-predicate-invalid in halt_reasons registry ─────────
+# Verifies that the new halt reason token added by ENG-113 is present in
+# the closed vocabulary so that `bash bin/pipeline.sh event ... verdict
+# halt --reason qa-predicate-invalid` passes registry validation. Mirror
+# of ENG-122 case-4 above. Reviewer iter-6 M3: previous closure was an
+# inline jq assertion in Task 4 (implement-time only); the durable pin
+# guards against silent regression.
+if jq -e '.halt_reasons | index("qa-predicate-invalid") != null' "$REG" >/dev/null 2>&1; then
+  pass_at "ENG-113 case-4b: qa-predicate-invalid in halt_reasons registry"
+else
+  fail_at "ENG-113 case-4b: qa-predicate-invalid in halt_reasons registry" \
+    "expected \"qa-predicate-invalid\" in .halt_reasons array of $REG"
+fi
+
 # ─── ENG-115: plan-structural-defect in pivot_reasons registry ──────
 # Verifies that the new pivot reason token added by ENG-115 is present
 # in the closed vocabulary so that `bash bin/pipeline.sh event ... verdict

@@ -124,6 +124,27 @@ else
   fail_at "V-3: missing pass_criteria" "expected rc=43 + 'qa-predicate-incomplete' + 'pass_criteria must be an array'; got rc=$rc, out=$out"
 fi
 
+# ─── V-3b: empty pass_criteria array → rc=43 ────────────────────────
+# Covers verify-qa.sh:275 — the `pc_len == 0` arm of _validate_predicate_schema.
+# V-3 covers pass_criteria absent (type check fails); V-3b covers the
+# array-present-but-empty branch which is otherwise unhit by the suite.
+cat > "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" <<'EOF'
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": []
+}
+EOF
+rc=0
+out="$(bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json" 2>&1)" || rc=$?
+if (( rc == 43 )) \
+   && [[ "$out" == *"qa-predicate-incomplete"* ]] \
+   && [[ "$out" == *"pass_criteria must contain at least 1 entry"* ]]; then
+  pass_at "V-3b: empty pass_criteria array → exit 43 + 'pass_criteria must contain at least 1 entry'"
+else
+  fail_at "V-3b: empty pass_criteria" "expected rc=43 + 'pass_criteria must contain at least 1 entry'; got rc=$rc, out=$out"
+fi
+
 # ─── V-4: valid, all pass → rc=0, summary failed=0 ──────────────────
 f="$(write_valid_predicate qa-predicate-ENG-1.json ENG-1)"
 rc=0
@@ -504,6 +525,36 @@ if (( rc == 0 )) \
 else
   fail_at "V-14c: auto-derive --worktree" "expected rc=0 + summary failed=0; got rc=$rc, out=$out"
 fi
+
+# ─── V-14d: auto-derive worktree fence — symlink-pivot via PIPELINE_ISSUE_ID
+# Reviewer iter-6 M1 (verify-qa.sh:177-188): the auto-derive branch
+# previously bypassed the in_target/in_state fence. Plant a symlink at
+# $(issue_dir ENG-VICTIM)/worktree → /etc; if the fence runs on the
+# auto-derive branch, RESOLVED_WORKTREE (after `cd && pwd -P`) lands
+# at /etc which is neither under TARGET_REPO nor PROJECT_STATE_DIR
+# → rc=43 with fence diagnostic. Pre-fix: auto-derive set
+# RESOLVED_WORKTREE=/etc unchecked, and a file_exists criterion for
+# `passwd` would pass — confirming the D-011 trust anchor was broken.
+mkdir -p "$PROJECT_STATE_DIR/ENG-VICTIM"
+ln -sfn /etc "$PROJECT_STATE_DIR/ENG-VICTIM/worktree"
+# Place the predicate under the per-issue state dir (D-011 path-prefix surface).
+cat > "$PROJECT_STATE_DIR/ENG-VICTIM/qa-predicate-ENG-VICTIM.json" <<'EOF'
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-VICTIM",
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "passwd" }
+  ]
+}
+EOF
+rc=0
+out="$(PIPELINE_ISSUE_ID=ENG-VICTIM bash "$VERIFIER" validate "$PROJECT_STATE_DIR/ENG-VICTIM/qa-predicate-ENG-VICTIM.json" --ident ENG-VICTIM 2>&1)" || rc=$?
+if (( rc == 43 )) && [[ "$out" == *"must be a subpath of"* ]]; then
+  pass_at "V-14d: auto-derive --worktree → fence applies, symlink to /etc rejected"
+else
+  fail_at "V-14d: auto-derive fence" "expected rc=43 + 'must be a subpath of'; got rc=$rc, out=$out"
+fi
+rm -f "$PROJECT_STATE_DIR/ENG-VICTIM/worktree"
 
 # ─── V-15: file_exists with symlink-pivot → pass=false
 # Drop a symlink inside the worktree pointing at /etc/passwd. The
@@ -1006,6 +1057,31 @@ rm -f "$SYMLINK"
 # that matched no denylist arm. The fix detects multi-colon hosts and
 # skips the port-strip arm so the literal `::1` arm fires.
 _assert_url_class_check "V-43b" "http://::1/foo" "denied"
+
+# ─── V-44: oversize predicate (>64 KiB) → rc=42 ────────────────────
+# Reviewer iter-6 M2: the 64 KiB DoS cap was previously checked on
+# `wc -c < "$ARG_FILE"` BEFORE the snapshot cp. Post-iter-2 M5, snap_file
+# is the canonical source — checking the original opens a TOCTOU window
+# (attacker swaps the file between size check and cp; the snapshot is
+# arbitrarily large). Fix bounds the snapshot via head -c MAX+1 and
+# re-checks size on the snapshot. The test writes a 70 KiB predicate
+# (well above the 64 KiB cap) and asserts the size-cap diagnostic
+# still fires.
+BIG_FILE="$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
+{
+  printf '{\n  "qa_predicate_schema_version": 1,\n  "issue_id": "ENG-1",\n  "pass_criteria": [\n    { "kind": "smoke", "command": "true", "expect_exit": 0, "expect_stdout_match": null,\n      "padding": "'
+  # 70 KiB of padding to push the file decisively over the 64 KiB cap.
+  head -c 71680 < /dev/zero | tr '\0' 'x'
+  printf '" }\n  ]\n}\n'
+} > "$BIG_FILE"
+rc=0
+out="$(bash "$VERIFIER" validate "$BIG_FILE" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *"exceeds cap"* ]]; then
+  pass_at "V-44: oversize predicate (>64 KiB) → rc=42 + 'exceeds cap' diagnostic"
+else
+  fail_at "V-44: size cap" "expected rc=42 + 'exceeds cap'; got rc=$rc, out=$out (size=$(wc -c < "$BIG_FILE"))"
+fi
+rm -f "$BIG_FILE"
 
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
