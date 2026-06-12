@@ -343,21 +343,25 @@ _render_and_capture_stream() {
       return 29
     fi
   done
-  # ENG-106: filesystem detective — confirm the plan agent appended
-  # one well-formed progress.md H2 entry stamped with the current
-  # PIPELINE_DISPATCH_ID. Stage-gated to "planning" only (other stages
-  # have no contractual writer yet — see brainstorm OQ-3). Unlike the
-  # transcript-scan detectives above, this is a FILESYSTEM check
-  # (brainstorm D-005). Helper defined directly below this function;
-  # writes its diagnostic to $violation_file and returns 0 / 31.
+  # ENG-106 + ENG-125: filesystem detectives — plan agent must produce
+  # progress.md (ENG-106) and init.sh (ENG-125). Stage-gated to "planning"
+  # only (brainstorm OQ-3); other stages have no contractual writer yet.
+  # Both are FILESYSTEM checks (brainstorm D-005). Helpers defined directly
+  # below this function; each writes its diagnostic to $violation_file and
+  # returns 0 / typed rc (31 for progress-md, 45/46/47 for init.sh).
   #
   # M2 guard: skip if no result event so rc=124 (gtimeout) wins; with result
-  # event, missing progress.md is a real protocol violation — rc=31 is correct
-  # even when SIGKILL races post-result (agent completed its turn).
+  # event, a missing/malformed artifact is a real protocol violation — rc
+  # is correct even when SIGKILL races post-result (agent completed its turn).
+  #
+  # Ordering: progress.md detective runs FIRST and short-circuits; init.sh
+  # detective is never reached when both fail. Pinned end-to-end by
+  # bin/dispatch-test.sh::IS5.
   if [[ "$stage" == "planning" && -n "$last_result" ]]; then
     if ! _assert_progress_md_entry "$issue_dir" "$violation_file" "$stage"; then
       return 31
     fi
+    _assert_init_sh_well_formed "$issue_dir" "$violation_file" "$stage" || return $?
   fi
 }
 
@@ -382,6 +386,21 @@ _assert_progress_md_entry() {
       "${PIPELINE_DISPATCH_ID-<empty>}" "$stage" "$entry_count" > "$violation_file"
     log "[assert] plan-stage progress.md entry count for ${PIPELINE_DISPATCH_ID-<empty>} stage=${stage}: $entry_count (expected 1)"
     return 31
+  fi
+  return 0
+}
+
+# ENG-125 — stage-gated to planning; rc=45/46/47 map to
+# init-sh-{malformed,incomplete,missing} in failure_outcome_for_exit.
+_assert_init_sh_well_formed() {
+  local issue_dir="$1" violation_file="$2" stage="$3"
+  local init_path="${issue_dir}/init.sh"
+  local diag rc=0
+  diag="$(validate_init_sh "$init_path")" || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "$diag" > "$violation_file"
+    log "[assert] plan-stage init.sh validate rc=${rc} for ${PIPELINE_DISPATCH_ID-<empty>}: ${diag}"
+    return "$rc"
   fi
   return 0
 }

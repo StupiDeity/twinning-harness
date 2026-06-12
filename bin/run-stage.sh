@@ -21,6 +21,9 @@
 #             39=qa-payload-malformed (verdict-qa.json fails jq parse; ENG-117),
 #             40=qa-payload-incomplete (verdict-qa.json parses but missing required field; ENG-117),
 #             41=qa-payload-missing (no verdict-qa.json post-qa-dispatch; ENG-117),
+#             45=init-sh-malformed   (init.sh fails bash -n syntax check; ENG-125),
+#             46=init-sh-incomplete  (init.sh present + parses but missing shape marker; ENG-125),
+#             47=init-sh-missing     (no init.sh at $issue_dir/init.sh; ENG-125),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
@@ -1924,6 +1927,23 @@ main() {
         "plan-stage progress.md entry missing or malformed: $_viol_msg_31" 31
       rm -f "$_viol_file_31" "$prompt_file"
       exit 31
+    elif (( dispatch_rc == 45 || dispatch_rc == 46 || dispatch_rc == 47 )); then
+      # ENG-125: plan-stage init.sh detective halt. rc=45=malformed (bash -n
+      # fails), 46=incomplete (missing shape marker), 47=missing (no file).
+      # Mirrors the rc=31 sibling above — sidecar shape, policy, and recovery
+      # are identical (skip-until-human-acts; `--action continue` after fix).
+      # All three rc values route to the same arm because the policy is
+      # identical and the diagnostic in the sidecar carries the disambiguator
+      # (init-sh-{malformed,incomplete,missing} prefix). Linear's outcome is
+      # set by classify_failure → failure_outcome_for_exit which routes each
+      # rc to its specific token.
+      local _viol_file_init _viol_msg_init
+      _viol_file_init="$(issue_dir "$ident")/.transcript-violation-${stage}"
+      _viol_msg_init="$(cat "$_viol_file_init" 2>/dev/null || printf '<violation-detail-unavailable>')"
+      classify_failure "$ident" "$stage" "skip-until-human-acts" \
+        "plan-stage init.sh: $_viol_msg_init" "$dispatch_rc"
+      rm -f "$_viol_file_init" "$prompt_file"
+      exit "$dispatch_rc"
     elif (( dispatch_rc != 0 )); then
       classify_failure "$ident" "$stage" "retry-immediately" \
         "dispatch failed (see $log_file)" 20

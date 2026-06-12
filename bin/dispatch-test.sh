@@ -1744,6 +1744,21 @@ cat > "$ISSUE_DIR/progress.md" <<'MD'
 
 - AT2 test entry satisfying the progress.md detective
 MD
+# ENG-125: AT2 runs planning stage; provide a well-formed init.sh so the
+# init.sh detective (planning-gated) passes. AT2 tests the gh-pr-create
+# cross-stage gate, not the init.sh detective.
+cat > "$ISSUE_DIR/init.sh" <<'INIT'
+#!/usr/bin/env bash
+set -euo pipefail
+# ─── smoke ───
+:
+# ─── typecheck ───
+:
+# ─── lint ───
+:
+# ─── test ───
+:
+INIT
 
 at2_rc=0
 _render_and_capture_stream "$USAGE_AT2" "$ISSUE_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || at2_rc=$?
@@ -1759,7 +1774,7 @@ if [[ "$at2_rc" == "0" ]] \
 else
   fail_at "AT2 cross-stage gating" "rc=$at2_rc viol_impl=$([[ -f $VIOLATION_AT2_IMPL ]] && echo y || echo n) viol_plan=$([[ -f $VIOLATION_AT2_PLAN ]] && echo y || echo n)"
 fi
-rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN" "$ISSUE_DIR/progress.md"
+rm -f "$VIOLATION_AT2_IMPL" "$VIOLATION_AT2_PLAN" "$ISSUE_DIR/progress.md" "$ISSUE_DIR/init.sh"
 unset PIPELINE_DISPATCH_ID
 
 # ─── AT3: renderer pre-cleans stale sidecar from prior crashed dispatch ───
@@ -3282,6 +3297,220 @@ MD
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
 fi
 
+# ─── ENG-125 IS1–IS6: init.sh detective fixtures ─────────────────────────────
+# Each fixture invokes _assert_init_sh_well_formed directly. Mirrors the
+# PG1–PG6 progress.md detective block above. IS5 pins ORDER (progress-md
+# detective runs BEFORE init.sh detective); IS6 is a structural pin that
+# both detectives sit inside a planning-gated `if` block.
+printf '\n--- ENG-125 IS1-IS6: init.sh detective fixtures ---\n'
+
+_IS_HELPER_PRESENT=1
+if ! declare -f _assert_init_sh_well_formed >/dev/null 2>&1; then
+  fail_at "precondition: _assert_init_sh_well_formed defined in dispatch.sh" \
+          "function not found after sourcing — ENG-125 Task 4 implementation missing"
+  _IS_HELPER_PRESENT=0
+fi
+
+# Helper: write a well-formed init.sh fixture to the given path.
+_is_write_well_formed() {
+  cat > "$1" <<'EOF'
+#!/usr/bin/env bash
+# ENG-125: per-issue init.sh.
+set -euo pipefail
+
+# ─── smoke ───
+:
+
+# ─── typecheck ───
+:
+
+# ─── lint ───
+:
+
+# ─── test ───
+:
+EOF
+}
+
+if [[ "$_IS_HELPER_PRESENT" == "1" ]]; then
+  # IS1 — well-formed → rc=0, no violation
+  IS1_DIR="$_TEST_STUB_DIR/IS1"; mkdir -p "$IS1_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS1-d0001"
+  _is_write_well_formed "$IS1_DIR/init.sh"
+  rm -f "$IS1_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS1_DIR" "$IS1_DIR/.transcript-violation-planning" "planning" \
+    && rc_is1=0 || rc_is1=$?
+  if [[ "$rc_is1" == "0" && ! -s "$IS1_DIR/.transcript-violation-planning" ]]; then
+    pass_at "IS1: well-formed init.sh → rc=0, no violation"
+  else
+    fail_at "IS1" "rc=$rc_is1 violation=$(cat "$IS1_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS2 — file missing → rc=47, "init-sh-missing"
+  IS2_DIR="$_TEST_STUB_DIR/IS2"; mkdir -p "$IS2_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS2-d0001"
+  rm -f "$IS2_DIR/init.sh" "$IS2_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS2_DIR" "$IS2_DIR/.transcript-violation-planning" "planning" \
+    && rc_is2=0 || rc_is2=$?
+  if [[ "$rc_is2" == "47" ]] && grep -q "init-sh-missing" "$IS2_DIR/.transcript-violation-planning"; then
+    pass_at "IS2: init.sh missing → rc=47 + 'init-sh-missing' diagnostic"
+  else
+    fail_at "IS2" "rc=$rc_is2 violation=$(cat "$IS2_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS3 — malformed (bash -n fails) → rc=45, "init-sh-malformed"
+  IS3_DIR="$_TEST_STUB_DIR/IS3"; mkdir -p "$IS3_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS3-d0001"
+  printf '#!/usr/bin/env bash\necho "unterminated\n' > "$IS3_DIR/init.sh"
+  rm -f "$IS3_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS3_DIR" "$IS3_DIR/.transcript-violation-planning" "planning" \
+    && rc_is3=0 || rc_is3=$?
+  if [[ "$rc_is3" == "45" ]] && grep -q "init-sh-malformed" "$IS3_DIR/.transcript-violation-planning"; then
+    pass_at "IS3: malformed (bash -n fails) → rc=45 + 'init-sh-malformed'"
+  else
+    fail_at "IS3" "rc=$rc_is3 violation=$(cat "$IS3_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS4 — incomplete (missing typecheck marker) → rc=46, "init-sh-incomplete"
+  IS4_DIR="$_TEST_STUB_DIR/IS4"; mkdir -p "$IS4_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-IS4-d0001"
+  _is_write_well_formed "$IS4_DIR/init.sh"
+  # Strip the typecheck marker.
+  sed -i.bak 's|^# ─── typecheck ───$|# (removed)|' "$IS4_DIR/init.sh"
+  rm -f "$IS4_DIR/init.sh.bak"
+  rm -f "$IS4_DIR/.transcript-violation-planning"
+  _assert_init_sh_well_formed "$IS4_DIR" "$IS4_DIR/.transcript-violation-planning" "planning" \
+    && rc_is4=0 || rc_is4=$?
+  if [[ "$rc_is4" == "46" ]] && grep -q "init-sh-incomplete" "$IS4_DIR/.transcript-violation-planning"; then
+    pass_at "IS4: incomplete (no typecheck marker) → rc=46 + 'init-sh-incomplete'"
+  else
+    fail_at "IS4" "rc=$rc_is4 violation=$(cat "$IS4_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # IS5 — ORDER pin (BEHAVIORAL): drive _render_and_capture_stream end-to-end
+  # with stage=planning, NO progress.md, NO init.sh, and a result event so the
+  # planning detectives' last_result gate fires. The progress.md detective sits
+  # FIRST inside _render_and_capture_stream and short-circuits with rc=31; the
+  # init.sh detective is never reached. Pin both the rc and the diagnostic so
+  # a future refactor that swaps the two detective slots' order trips this test.
+  # AT2 (bin/dispatch-test.sh:1729) is the renderer-end-to-end template.
+  if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+    IS5_DIR="$_TEST_STUB_DIR/IS5"; mkdir -p "$IS5_DIR"
+    export PIPELINE_DISPATCH_ID="ENG-T-IS5-d0001"
+    rm -f "$IS5_DIR/progress.md" "$IS5_DIR/init.sh" "$IS5_DIR/.transcript-violation-planning"
+    _is5_usage="$IS5_DIR/usage-planning.json"
+    rc_is5=0
+    _render_and_capture_stream "$_is5_usage" "$IS5_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_is5=$?
+{"type":"system","subtype":"init","session_id":"is5sess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+    if [[ "$rc_is5" == "31" ]] \
+       && grep -q "progress.md missing" "$IS5_DIR/.transcript-violation-planning"; then
+      pass_at "IS5: both missing → progress.md detective wins (rc=31 + 'progress.md missing' diagnostic; ordering pinned)"
+    else
+      fail_at "IS5" "rc=$rc_is5 (expected 31) violation=$(cat "$IS5_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+    fi
+  else
+    fail_at "IS5 precondition: _render_and_capture_stream defined" "function not found"
+  fi
+
+  # IS6 — non-planning gate pin (BEHAVIORAL): drive _render_and_capture_stream
+  # across every non-planning stage with NO init.sh. The planning-gated init.sh
+  # detective MUST NOT fire — renderer returns rc=0 and writes no
+  # .transcript-violation-<stage> sidecar. Subsumes both the "Detective fires
+  # only on planning stage" Failure Mode row's positive case AND the legacy
+  # structural grep — a refactor swapping the `stage == "planning"` guard for
+  # `stage != "implementing"` would PASS at implementing but break every other
+  # non-planning stage; parameterising catches that exact regression.
+  # NOTE: the sidecar shape is `.transcript-violation-<stage>` per
+  # bin/dispatch.sh's `$violation_file=${issue_dir}/.transcript-violation-${stage}`
+  # — the dispatch-stage suffix tracks the dispatched stage, not the gated stage.
+  if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+    for _is6_stage in brainstorming implementing ui reviewing qa building released; do
+      IS6_DIR="$_TEST_STUB_DIR/IS6-${_is6_stage}"; mkdir -p "$IS6_DIR"
+      export PIPELINE_DISPATCH_ID="ENG-T-IS6-${_is6_stage}-d0001"
+      rm -f "$IS6_DIR/init.sh" "$IS6_DIR/progress.md" \
+            "$IS6_DIR/.transcript-violation-planning" \
+            "$IS6_DIR/.transcript-violation-${_is6_stage}"
+      _is6_usage="$IS6_DIR/usage-${_is6_stage}.json"
+      rc_is6=0
+      # Clean transcript — no forbidden tool invocations (e.g. gh pr create
+      # via bin/dispatch.sh's implementing-stage gate at :173-182 would trip
+      # rc=22). Each non-planning stage iterates the same clean payload.
+      _render_and_capture_stream "$_is6_usage" "$IS6_DIR" "$_is6_stage" >/dev/null 2>&1 <<'NDJSON' || rc_is6=$?
+{"type":"system","subtype":"init","session_id":"is6sess","model":"claude-test"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"benign work"}]}}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+      if [[ "$rc_is6" == "0" ]] \
+         && [[ ! -f "$IS6_DIR/.transcript-violation-${_is6_stage}" ]]; then
+        pass_at "IS6[${_is6_stage}]: missing init.sh → rc=0, no .transcript-violation-${_is6_stage} sidecar (init.sh detective gates only on planning)"
+      else
+        fail_at "IS6[${_is6_stage}]" "rc=$rc_is6 sidecar=$([[ -f $IS6_DIR/.transcript-violation-${_is6_stage} ]] && echo y || echo n)"
+      fi
+    done
+    unset _is6_stage
+  else
+    fail_at "IS6 precondition: _render_and_capture_stream defined" "function not found"
+  fi
+
+  # IS7 — run-stage.sh routing pin (STRUCTURAL): grep the run-stage.sh source
+  # for the rc=45/46/47 dispatch_rc arm. The IS1-IS4 cases pin
+  # _assert_init_sh_well_formed's typed-rc contract out of dispatch.sh, but the
+  # halt contract documented in AGENT_PROMPTS.md §2 (skip-until-human-acts +
+  # `bash bin/pipeline.sh decide … --action continue` recovery) is enforced by
+  # run-stage.sh's dispatch_rc switch, NOT by dispatch.sh. A refactor that
+  # drops the arm (or routes it to retry-immediately policy) would otherwise
+  # ship green — see the review-iter-1 critical finding. Strategy: grep for
+  # the literal arm header AND the classify_failure call shape with
+  # skip-until-human-acts and the dispatch-stage init.sh diagnostic prefix.
+  _RS_SH="$SCRIPT_DIR/run-stage.sh"
+  if [[ -f "$_RS_SH" ]]; then
+    # The single combined arm handles all three rc values; assert its presence
+    # and its classify_failure call shape.
+    if grep -q 'dispatch_rc == 45 || dispatch_rc == 46 || dispatch_rc == 47' "$_RS_SH" \
+       && grep -q 'classify_failure "\$ident" "\$stage" "skip-until-human-acts" \\' "$_RS_SH" \
+       && grep -q '"plan-stage init.sh:' "$_RS_SH"; then
+      pass_at "IS7: run-stage.sh routes rc=45/46/47 to skip-until-human-acts (halt contract pinned)"
+    else
+      fail_at "IS7" "rc=45/46/47 arm missing or mis-shaped in $_RS_SH"
+    fi
+  else
+    fail_at "IS7 precondition" "$_RS_SH not found"
+  fi
+  unset _RS_SH
+
+  # IS5b — behavioral: progress.md present (dispatch entry matched) + init.sh absent
+  # → _render_and_capture_stream returns rc=47 (init.sh detective fires after
+  # progress.md detective passes). Gap filled: IS5 tests "both missing → rc=31
+  # wins"; IS1-IS4 call _assert_init_sh_well_formed directly. IS5b is the only
+  # test driving the full chain with a PASSING progress.md detective followed by
+  # a FAILING init.sh detective through _render_and_capture_stream.
+  if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+    IS5b_DIR="$_TEST_STUB_DIR/IS5b"; mkdir -p "$IS5b_DIR"
+    export PIPELINE_DISPATCH_ID="ENG-T-IS5b-d0001"
+    printf '## ENG-T-IS5b-d0001 - planning - 2026-01-01T00:00:00Z\n- step\n' \
+      > "$IS5b_DIR/progress.md"
+    rm -f "$IS5b_DIR/init.sh" "$IS5b_DIR/.transcript-violation-planning"
+    _is5b_usage="$IS5b_DIR/usage-planning.json"
+    rc_is5b=0
+    _render_and_capture_stream "$_is5b_usage" "$IS5b_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_is5b=$?
+{"type":"system","subtype":"init","session_id":"is5bsess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+    if [[ "$rc_is5b" == "47" ]] \
+       && grep -q "init-sh-missing" "$IS5b_DIR/.transcript-violation-planning" 2>/dev/null; then
+      pass_at "IS5b: progress.md present (dispatch entry matched) + init.sh absent → rc=47 (init.sh detective fires)"
+    else
+      fail_at "IS5b" "rc=$rc_is5b (expected 47) violation=$(cat "$IS5b_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+    fi
+  else
+    fail_at "IS5b precondition: _render_and_capture_stream defined" "function not found"
+  fi
+
+  unset PIPELINE_DISPATCH_ID
+fi
+
 # ─── ENG-106 QA adversarial: progress.md detective edge cases ────────────────
 # Written by QA agent to cover sub-agent-identified breakages not in PG1-PG7.
 # Each fixture exercises _assert_progress_md_entry directly.
@@ -3455,6 +3684,97 @@ MD
   fi
 
   unset PIPELINE_DISPATCH_ID PIPELINE_ISSUE_ID
+fi
+
+# ─── ENG-125 QA adversarial: validate_init_sh boundary cases ─────────────────
+# Written by QA agent to cover boundary cases not in IS1-IS7 or the plan's FM map.
+# QA-ADV-IS-A pins that [[ -f ]] (not [[ -e ]]) is the guard — so a directory,
+# symlink, or device node all route to rc=47 rather than being passed to bash -n
+# or the grep loop.
+# QA-ADV-IS-B pins empty-string safety (defensive boundary; can't happen in prod
+# but documents the contract).
+printf '\n--- ENG-125 QA adversarial: validate_init_sh boundary cases ---\n'
+
+if declare -f validate_init_sh >/dev/null 2>&1; then
+  # QA-ADV-IS-A: directory path (not a regular file) → rc=47 (init-sh-missing).
+  rc_qa_is_a=0; out_qa_is_a=""
+  out_qa_is_a="$(validate_init_sh "/tmp" 2>&1)" || rc_qa_is_a=$?
+  if (( rc_qa_is_a == 47 )) && [[ "$out_qa_is_a" == *"init-sh-missing"* ]]; then
+    pass_at "QA-ADV-IS-A: directory path /tmp → rc=47 (init-sh-missing; [[ -f ]] rejects non-regular-file)"
+  else
+    fail_at "QA-ADV-IS-A" "rc=$rc_qa_is_a out='$out_qa_is_a'"
+  fi
+
+  # QA-ADV-IS-B: empty path string → rc=47 (init-sh-missing).
+  # [[ ! -f "" ]] is true in bash (empty filename is never a valid file).
+  rc_qa_is_b=0; out_qa_is_b=""
+  out_qa_is_b="$(validate_init_sh "" 2>&1)" || rc_qa_is_b=$?
+  if (( rc_qa_is_b == 47 )) && [[ "$out_qa_is_b" == *"init-sh-missing"* ]]; then
+    pass_at "QA-ADV-IS-B: empty path '' → rc=47 (init-sh-missing)"
+  else
+    fail_at "QA-ADV-IS-B" "rc=$rc_qa_is_b out='$out_qa_is_b'"
+  fi
+else
+  fail_at "QA-ADV-IS precondition: validate_init_sh defined" "function not found"
+fi
+
+# ─── ENG-125 QA adversarial: full-chain rc=45/rc=46 propagation ──────────────
+# IS5b covers rc=47 through _render_and_capture_stream. QA-ADV-IS-C and
+# QA-ADV-IS-D cover the symmetric rc=45 (malformed) and rc=46 (incomplete)
+# paths with a valid progress.md entry — pinning that _assert_init_sh_well_formed
+# propagates non-47 codes back through _render_and_capture_stream.
+printf '\n--- ENG-125 QA adversarial: full-chain rc=45/46 propagation ---\n'
+
+if declare -f _render_and_capture_stream >/dev/null 2>&1; then
+  # QA-ADV-IS-C: malformed init.sh (bash -n fails) + valid progress.md →
+  # _render_and_capture_stream must return rc=45 and write init-sh-malformed
+  # to violation_file. Symmetric with IS5b (rc=47).
+  QA_ISC_DIR="$_TEST_STUB_DIR/QA-ISC"; mkdir -p "$QA_ISC_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-ISC-d0001"
+  printf '## ENG-T-QA-ISC-d0001 - planning - 2026-01-01T00:00:00Z\n- step\n' \
+    > "$QA_ISC_DIR/progress.md"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n# ─── smoke ───\nif true; then\n  :\n' \
+    > "$QA_ISC_DIR/init.sh"  # unclosed if/then without fi → bash -n fails
+  rm -f "$QA_ISC_DIR/.transcript-violation-planning"
+  _isc_usage="$QA_ISC_DIR/usage-planning.json"
+  rc_qa_isc=0
+  _render_and_capture_stream "$_isc_usage" "$QA_ISC_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_qa_isc=$?
+{"type":"system","subtype":"init","session_id":"qaiscsess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+  if [[ "$rc_qa_isc" == "45" ]] \
+     && grep -q "init-sh-malformed" "$QA_ISC_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-IS-C: malformed init.sh + valid progress.md → rc=45 propagates from _render_and_capture_stream"
+  else
+    fail_at "QA-ADV-IS-C" "rc=$rc_qa_isc (expected 45) violation=$(cat "$QA_ISC_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  # QA-ADV-IS-D: incomplete init.sh (missing lint marker) + valid progress.md →
+  # _render_and_capture_stream must return rc=46 and write init-sh-incomplete
+  # to violation_file.
+  QA_ISD_DIR="$_TEST_STUB_DIR/QA-ISD"; mkdir -p "$QA_ISD_DIR"
+  export PIPELINE_DISPATCH_ID="ENG-T-QA-ISD-d0001"
+  printf '## ENG-T-QA-ISD-d0001 - planning - 2026-01-01T00:00:00Z\n- step\n' \
+    > "$QA_ISD_DIR/progress.md"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n# ─── smoke ───\n:\n# ─── typecheck ───\n:\n# ─── test ───\n:\n' \
+    > "$QA_ISD_DIR/init.sh"  # lint marker absent
+  rm -f "$QA_ISD_DIR/.transcript-violation-planning"
+  _isd_usage="$QA_ISD_DIR/usage-planning.json"
+  rc_qa_isd=0
+  _render_and_capture_stream "$_isd_usage" "$QA_ISD_DIR" "planning" >/dev/null 2>&1 <<'NDJSON' || rc_qa_isd=$?
+{"type":"system","subtype":"init","session_id":"qaisdsess","model":"claude-test"}
+{"type":"result","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"modelUsage":{"claude-test":{}}}
+NDJSON
+  if [[ "$rc_qa_isd" == "46" ]] \
+     && grep -q "init-sh-incomplete" "$QA_ISD_DIR/.transcript-violation-planning" 2>/dev/null; then
+    pass_at "QA-ADV-IS-D: incomplete init.sh (missing lint) + valid progress.md → rc=46 propagates from _render_and_capture_stream"
+  else
+    fail_at "QA-ADV-IS-D" "rc=$rc_qa_isd (expected 46) violation=$(cat "$QA_ISD_DIR/.transcript-violation-planning" 2>/dev/null || echo '<none>')"
+  fi
+
+  unset PIPELINE_DISPATCH_ID
+else
+  fail_at "QA-ADV-IS-C/D precondition: _render_and_capture_stream defined" "function not found"
 fi
 
 # ─── ENG-146 — strip_state_preserve_alloc + stage-scoped detective ────

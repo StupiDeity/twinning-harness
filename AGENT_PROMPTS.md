@@ -463,6 +463,37 @@ Your task:
   Missing or malformed JSON halts the dispatch with `plan-contract-invalid` (detected in
   `bin/run-stage.sh::_validate_plan_contract`); recovery: `bash bin/pipeline.sh decide
   {issue_id} --action continue`.
+- Also produce `{init_sh_path}` — a per-issue smoke-discipline script.
+  Required shape (column-0 markers; any of the four invocations may be
+  a one-liner or a multi-line block, but the marker MUST appear
+  verbatim above its block):
+
+      #!/usr/bin/env bash
+      # ENG-125: per-issue init.sh — smoke discipline for {issue_id}.
+      # Authored by plan stage; consumed by other stages in the next
+      # sub-ticket. Must run cleanly under `bash $0` on the target's
+      # worktree.
+      set -euo pipefail
+
+      # ─── smoke ───
+      <smoke command for this target — discover from package.json
+       scripts / Makefile / cargo manifest / pyproject.toml>
+
+      # ─── typecheck ───
+      <type-check command, or `:` if the stack has none>
+
+      # ─── lint ───
+      <lint command, or `:` if the stack has none>
+
+      # ─── test ───
+      <unit-test invocation>
+
+  The dispatch detective will halt this dispatch with
+  `init-sh-missing` (rc=41), `init-sh-malformed` (rc=39, fails
+  `bash -n`), or `init-sh-incomplete` (rc=40, missing a column-0
+  `# ─── <gate> ───` marker). Recovery: fix the script (or the
+  prompt's emission step), then
+  `bash bin/pipeline.sh decide {issue_id} --action continue`.
 - Follow the format of existing plans (see docs/plans/ for examples)
 - Required sections, in this order:
   1. Goal — one sentence, a verifiable outcome
@@ -602,7 +633,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
   - **product** — plan actually delivers what the Linear issue asked for, in language
     the user would recognise. Flag plans that solve an adjacent technical problem.
 
-## Completion checklist (ordered — do every step in order, and do NOT exit before step 6)
+## Completion checklist (ordered — do every step in order, and do NOT exit before step 8)
 
 1. **Write the plan doc** at `docs/plans/{date}-{issue_id_lower}-{slug}.md` with required YAML frontmatter
    (`linear`, `date`, `topic`). The `{issue_id_lower}` token in the basename mirrors the §2 directive
@@ -637,7 +668,14 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    Plans and brainstorms stay on the feature branch and reach main via the normal merge flow;
    do not attempt direct-to-main pushes. Only knowledge-file changes go through PRs with
    CODEOWNERS. Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
-5. **Append a progress.md entry** at `{progress_md_path}`. ONE H2 entry per
+5. **Write `{init_sh_path}`** with the shape documented in §2 above.
+   Use `Write` (overwrite-on-every-dispatch — like the stage summary
+   file). The file lives in `$issue_dir/`, which is granted to the
+   plan agent's sandbox via `--add-dir` (ENG-155 D-001). The
+   `bin/dispatch.sh::_assert_init_sh_well_formed` detective halts
+   this dispatch with rc=39/40/41 if the file is malformed,
+   incomplete, or missing.
+6. **Append a progress.md entry** at `{progress_md_path}`. ONE H2 entry per
    dispatch; this is the ONLY mutation you make to the file. Use `Edit` with
    append-via-anchor (or `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`).
    **NEVER use `Write`** (truncates — the dispatch.sh detective halts with
@@ -656,7 +694,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    detective scans this file: a missing entry, more than one entry stamped
    with your `{dispatch_id}`, or a prior entry that's been removed → halt with
    `progress-md-entry-missing` (rc=31, see `docs/runbooks/recovery.md`).
-6. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
+7. **Write the stage summary file** at `{stage_summary_path}` — LAST step, MANDATORY.
    Overwrite-on-every-dispatch contract per §0; orchestrator posts it to Linear as
    `completion/plan/{issue_id}`.
    Follow the Stage summary comment format contract (preamble above). Stage-specific slots:
@@ -672,7 +710,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    Full persona verdicts and finding lists stay in the plan doc itself. Do NOT call
    `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "completion/plan/{issue_id}" …`
    yourself — that path is orchestrator-owned.
-7. **Post the verdict marker** (MANDATORY). Post exactly ONE additional
+8. **Post the verdict marker** (MANDATORY). Post exactly ONE additional
    append-only comment carrying the verdict for your outcome:
 
    On clean exit, run:

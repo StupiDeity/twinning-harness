@@ -248,6 +248,21 @@ else
     "expected='/tmp/test-state/ENG-119/verdict-review.json' got='$out_vrp'"
 fi
 
+# Case ENG-125: {init_sh_path} token resolves from _RENDER_INIT_SH_PATH.
+# Pins the resolver so a refactor that drops _RENDER_INIT_SH_PATH or renames
+# the token breaks here rather than silently shipping a literal {init_sh_path}
+# to the plan agent.
+out_isp="$(run_resolver_body '
+  _RENDER_INIT_SH_PATH="/tmp/test-state/ENG-125/init.sh"
+  resolve_block_tokens "{init_sh_path}"
+' 2>&1)"
+if [[ "$out_isp" == "/tmp/test-state/ENG-125/init.sh" ]]; then
+  pass_at "ENG-125: {init_sh_path} resolves from _RENDER_INIT_SH_PATH"
+else
+  fail_at "ENG-125: {init_sh_path} token resolves" \
+    "expected='/tmp/test-state/ENG-125/init.sh' got='$out_isp'"
+fi
+
 # Case 87-R2: unknown {token} dies with token name in message.
 err="$(run_resolver_body '
   resolve_block_tokens "Hello {nonexistent_token_xyz} world" 2>&1

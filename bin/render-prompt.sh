@@ -55,6 +55,7 @@ qa_findings=_resolve_qa_findings
 progress_md_path=_resolve_progress_md_path
 plan_json=_resolve_plan_json
 verdict_review_path=_resolve_verdict_review_path
+init_sh_path=_resolve_init_sh_path
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -271,6 +272,7 @@ _resolve_branch_name() { printf '%s' "$_RENDER_BRANCH_NAME"; }
 _resolve_stage_summary_path() { printf '%s' "$_RENDER_STAGE_SUMMARY_PATH"; }
 _resolve_progress_md_path() { printf '%s' "$_RENDER_PROGRESS_MD_PATH"; }
 _resolve_verdict_review_path() { printf '%s' "$_RENDER_VERDICT_REVIEW_PATH"; }
+_resolve_init_sh_path() { printf '%s' "$_RENDER_INIT_SH_PATH"; }
 _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
 # ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
 # resolvers (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
@@ -571,6 +573,11 @@ main() {
   # the review agent must Write to. No stage-conditional check —
   # the validator (run-stage.sh) catches missing payloads.
   _RENDER_VERDICT_REVIEW_PATH="$(issue_dir "$issue_id")/verdict-review.json"
+  # ENG-125: per-issue init.sh path. Composed from issue_dir per
+  # common.sh::issue_dir. Resolver returns the absolute path the plan
+  # agent must Write to. Plan-stage filesystem detective in dispatch.sh
+  # validates shape post-stream.
+  _RENDER_INIT_SH_PATH="$(issue_dir "$issue_id")/init.sh"
   # ENG-87 review-iter-7 M9: bind _RENDER_DISPATCH_ID like the sibling
   # _RENDER_* globals so resolver test isolation is uniform across the
   # registry. Falls through to empty when PIPELINE_DISPATCH_ID is unset

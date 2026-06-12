@@ -1310,6 +1310,20 @@ eng106_rc31_taxonomy() {
 }
 eng106_rc31_taxonomy
 
+# ENG-125: failure_outcome_for_exit rc=45/46/47 arms — pins the taxonomy so
+# a refactor renumbering or dropping them routes the outcome to
+# unknown-exit-N and breaks retrospective §1 classification.
+eng125_rc_taxonomy() {
+  local got
+  got="$(failure_outcome_for_exit 45 '')"
+  assert_eq "eng125_failure_outcome_for_exit_45" "init-sh-malformed" "$got"
+  got="$(failure_outcome_for_exit 46 '')"
+  assert_eq "eng125_failure_outcome_for_exit_46" "init-sh-incomplete" "$got"
+  got="$(failure_outcome_for_exit 47 '')"
+  assert_eq "eng125_failure_outcome_for_exit_47" "init-sh-missing" "$got"
+}
+eng125_rc_taxonomy
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

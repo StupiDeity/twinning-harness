@@ -287,6 +287,53 @@ assert_no_write_to_path() {
   assert_no_tool_with_input_path "$transcript" "Write" "file_path" "$forbidden_path_suffix"
 }
 
+# ENG-125: validate $issue_dir/init.sh shape. Returns:
+#   0  — well-formed (file exists, bash -n clean, all 4 shape markers present)
+#   45 — malformed (file exists but bash -n fails)
+#   46 — incomplete (file exists, syntax-clean, but ≥1 shape marker absent)
+#   47 — missing  (no file at the given path)
+# Caller writes the rc-specific diagnostic to its violation_file;
+# this helper writes diagnostics to STDOUT (caller captures).
+# Shape markers: column-0 comments matching `^# ─── <gate> ───$` (see for-loop
+# below for the authoritative gate list).
+validate_init_sh() {
+  local path="$1"
+  if [[ ! -f "$path" ]]; then
+    printf 'init-sh-missing: %s\n' "$path"
+    return 47
+  fi
+  local bash_n_err
+  if ! bash_n_err="$(bash -n "$path" 2>&1)"; then
+    # Include bash -n stderr (line + parse error detail) so the operator
+    # triage doesn't have to re-run bash -n manually against the halted
+    # worktree's init.sh.
+    printf 'init-sh-malformed: bash -n failed for %s: %s\n' "$path" "$bash_n_err"
+    return 45
+  fi
+  # CRLF tolerance: an init.sh authored on Windows or via a CRLF-defaulting
+  # editor will end every marker line with `…─\r\n`. The `$`-anchor would
+  # otherwise reject `# ─── smoke ───\r` even though the marker is present
+  # byte-for-byte modulo trailing CR. Pre-normalise CR out of the matched
+  # stream rather than complicating the regex.
+  local normalized gate missing=()
+  normalized="$(tr -d '\r' < "$path")"
+  for gate in smoke typecheck lint test; do
+    if ! grep -Eq "^# ─── ${gate} ───$" <<<"$normalized"; then
+      missing+=("# ─── ${gate} ───")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    # Collect-all-missing: pre-fix the validator short-circuited on the first
+    # missing gate, so an agent omitting all four markers got "missing smoke"
+    # → fixed smoke → next dispatch "missing typecheck" → and so on. Each
+    # iteration burned a ~5-10 minute plan dispatch on one marker at a time.
+    # Naming every missing marker in a single diagnostic collapses the loop.
+    printf 'init-sh-incomplete: missing shape marker %s\n' "${missing[*]}"
+    return 46
+  fi
+  return 0
+}
+
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
@@ -338,6 +385,9 @@ failure_outcome_for_exit() {
     39) printf 'qa-payload-malformed' ;;
     40) printf 'qa-payload-incomplete' ;;
     41) printf 'qa-payload-missing' ;;
+    45) printf 'init-sh-malformed' ;;
+    46) printf 'init-sh-incomplete' ;;
+    47) printf 'init-sh-missing' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac
@@ -495,7 +545,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
