@@ -53,7 +53,7 @@ trap 'case "$FIXTURE_DIR" in /var/folders/*|/tmp/*|/private/var/folders/*|/priva
 
 VERIFIER="$SCRIPT_DIR/verify-qa.sh"
 
-printf '\n--- verify-qa-test: V-1..V-12 + V-13..V-17 + V-15b/V-14b/V-10b + V-23..V-28 ---\n'
+printf '\n--- verify-qa-test: V-1..V-44 (44 cases + sub-cases) ---\n'
 
 # Helper — write a valid predicate fixture (single file_exists criterion).
 # Usage: write_valid_predicate <relpath-under-PROJECT_STATE_DIR/ENG-1> [issue_id]
@@ -247,13 +247,21 @@ cat > "$STUB_DIR/curl" <<'STUB'
 # '%{http_code}' AND -o <path> AND asserts argv contract: --max-time 10
 # must be present, the URL must be the predicate's url, -sS must be
 # present (silent + show-errors — a regression that drops -S silently
-# eats stderr; one that adds -k disables TLS verification), and -k
-# must NOT be present. Writes diagnostics to $STUB_LOG so the test
-# can read them post-invocation.
+# eats stderr; one that adds -k disables TLS verification), -k must
+# NOT be present, AND --proto '=http,https' / --proto-redir
+# '=http,https' MUST be present (without these flags curl honors
+# file://, scp://, dict:// schemes which a 30x redirect attack could
+# exploit even though -L isn't passed today — preventive defense),
+# AND --max-filesize MUST be present (bounds the body byte count so a
+# legitimate or attacker URL streaming hundreds of MB within --max-time
+# 10s cannot exhaust disk before the EXIT trap cleans body_tmp — same
+# DoS-byte-cap intent as the predicate-file 64 KiB cap).
+# Writes diagnostics to $STUB_LOG so the test can read them
+# post-invocation.
 # Env knobs: $STUB_BODY (default empty) — bytes written to -o path,
 #            $STUB_STATUS (default 200) — printed to stdout via -w.
 want_code=0 max_time_seen=0 url_seen="" out_path=""
-sS_seen=0 k_seen=0
+sS_seen=0 k_seen=0 proto_seen=0 proto_redir_seen=0 max_filesize_seen=0
 # Walk argv pairwise: look for --max-time 10 AND -o <path>.
 i=1
 while [[ $i -le $# ]]; do
@@ -268,6 +276,35 @@ while [[ $i -le $# ]]; do
     -o)
       next_i=$((i+1))
       out_path="${!next_i}"
+      ;;
+    --proto)
+      # Real curl: `--proto '=http,https'` restricts the initial-URL
+      # scheme to http/https. The leading `=` is the "exact set" form
+      # (no inheritance from default). Accept either '=http,https' or
+      # 'http,https' to keep the assertion shape-tolerant.
+      next_i=$((i+1))
+      next="${!next_i}"
+      if [[ "$next" == *http* && "$next" == *https* ]]; then proto_seen=1; fi
+      ;;
+    --proto-redir)
+      # Same shape as --proto but applies to the redirect target. Even
+      # though -L is not used today (preventive), curl honors this for
+      # default-on redirects if someone adds -L without removing the
+      # flag, and a regression that drops it re-opens the file://
+      # redirect window.
+      next_i=$((i+1))
+      next="${!next_i}"
+      if [[ "$next" == *http* && "$next" == *https* ]]; then proto_redir_seen=1; fi
+      ;;
+    --max-filesize)
+      # Real curl: `--max-filesize <bytes>` aborts the transfer when the
+      # body exceeds <bytes>. Accept any positive integer — the exact
+      # value is a defense-in-depth tuning parameter, not a contract;
+      # a regression that drops the flag entirely is the failure mode
+      # this pin guards against.
+      next_i=$((i+1))
+      next="${!next_i}"
+      if [[ "$next" =~ ^[0-9]+$ ]] && (( next > 0 )); then max_filesize_seen=1; fi
       ;;
   esac
   # Detect -sS (any single-dash flag bundle containing both s and S)
@@ -301,6 +338,9 @@ fi
   printf 'url_seen=%s\n' "$url_seen"
   printf 'sS_seen=%s\n' "$sS_seen"
   printf 'k_seen=%s\n' "$k_seen"
+  printf 'proto_seen=%s\n' "$proto_seen"
+  printf 'proto_redir_seen=%s\n' "$proto_redir_seen"
+  printf 'max_filesize_seen=%s\n' "$max_filesize_seen"
 } >> "$STUB_LOG"
 if (( want_code == 1 )); then
   printf '%s' "${STUB_STATUS:-200}"
@@ -327,12 +367,20 @@ stub_max="$(grep -c '^max_time_seen=1$' "$STUB_LOG" || true)"
 stub_url="$(grep -c '^url_seen=http://example.test/$' "$STUB_LOG" || true)"
 stub_sS="$(grep -c '^sS_seen=1$' "$STUB_LOG" || true)"
 stub_k="$(grep -c '^k_seen=1$' "$STUB_LOG" || true)"
+stub_proto="$(grep -c '^proto_seen=1$' "$STUB_LOG" || true)"
+stub_proto_redir="$(grep -c '^proto_redir_seen=1$' "$STUB_LOG" || true)"
+stub_max_filesize="$(grep -c '^max_filesize_seen=1$' "$STUB_LOG" || true)"
 total_calls="$(grep -c '^max_time_seen=' "$STUB_LOG" || true)"
 # Pin single-curl invocation. A two-curl shape (one for status, one for
 # body) would log max_time_seen=1 TWICE; a `>= 1` assertion would let
 # it pass silently. Also pin -sS present and -k absent: dropping -S
 # silently eats curl stderr (triage friction); adding -k disables TLS
-# verification (security regression).
+# verification (security regression). Pin --proto / --proto-redir
+# present: dropping either re-opens the file:// / scp:// scheme
+# escape window through a 30x redirect (preventive defense — V-13
+# pins the initial-URL scheme gate only). Pin --max-filesize present:
+# dropping it lets a hundred-MB body stream into body_tmp before the
+# --max-time wall-clock fires, exhausting disk.
 if (( rc == 0 )) \
    && printf '%s\n' "$per_criterion_line" | jq -e '.pass == true' >/dev/null 2>&1 \
    && printf '%s\n' "$summary_line" | jq -e '.summary == true and .failed == 0' >/dev/null 2>&1 \
@@ -340,10 +388,13 @@ if (( rc == 0 )) \
    && (( stub_url == 1 )) \
    && (( stub_sS == 1 )) \
    && (( stub_k == 0 )) \
+   && (( stub_proto == 1 )) \
+   && (( stub_proto_redir == 1 )) \
+   && (( stub_max_filesize == 1 )) \
    && (( total_calls == 1 )); then
-  pass_at "V-8: http_get stubbed 200 → pass=true + EXACTLY one curl call with --max-time 10 + URL + -sS present + -k absent"
+  pass_at "V-8: http_get stubbed 200 → pass=true + EXACTLY one curl call with --max-time 10 + URL + -sS + --proto + --proto-redir + --max-filesize + -k absent"
 else
-  fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl ONCE + -sS present + -k absent; got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, stub_sS=$stub_sS, stub_k=$stub_k, total_calls=$total_calls, stub_log=$(cat "$STUB_LOG")"
+  fail_at "V-8: http_get" "expected pass=true + summary failed=0 + curl ONCE + -sS + --proto + --proto-redir + --max-filesize + -k absent; got rc=$rc, per=$per_criterion_line, summary=$summary_line, stub_max=$stub_max, stub_url=$stub_url, stub_sS=$stub_sS, stub_k=$stub_k, stub_proto=$stub_proto, stub_proto_redir=$stub_proto_redir, stub_max_filesize=$stub_max_filesize, total_calls=$total_calls, stub_log=$(cat "$STUB_LOG")"
 fi
 
 # ─── V-8b: http_get expect_body_match true-path ─────────────────────
@@ -833,6 +884,26 @@ _assert_url_class_check() {
 _assert_url_class_check "V-26j" "http://172.15.0.1/foo" "allowed"
 _assert_url_class_check "V-26k" "http://172.32.0.1/foo" "allowed"
 
+# ─── V-26L..V-26P: SSRF bypass via `@` in path/query/fragment ──────────
+# `_url_host_class_denied` strips userinfo (`${rest##*@}`) with greedy
+# match. RFC 3986 puts `@` only inside the authority component, but curl
+# parses path/query/fragment as data — any `@` there belongs to the
+# request, not userinfo. Pre-fix the validator stripped userinfo BEFORE
+# isolating the authority, so `http://127.0.0.1/@public.com/` had its
+# host parsed as `public.com` (greedy strip ate through the path) while
+# curl connected to `127.0.0.1`. Same parser-divergence class as the
+# iter-3 case-insensitive scheme and iter-5 unbracketed-IPv6 truncation.
+# Cases below cover the five attack surfaces named in the iter-8
+# critical finding: path-segment, IMDS-via-path, IPv6-via-path, query,
+# fragment. _url_host_class_denied is the SoT for the deny decision —
+# invoking it directly (via _assert_url_class_check) keeps these tests
+# off the curl path so they remain hermetic.
+_assert_url_class_check "V-26L" "http://127.0.0.1/@attacker.com/"          "denied"
+_assert_url_class_check "V-26M" "http://169.254.169.254/latest/@x.com"     "denied"
+_assert_url_class_check "V-26N" "http://10.0.0.1?@x.com"                   "denied"
+_assert_url_class_check "V-26O" "http://192.168.1.1#@x.com"                "denied"
+_assert_url_class_check "V-26P" "http://[::1]/@x.com/"                     "denied"
+
 _assert_url_denied "V-30" "http://2130706433/"
 _assert_url_denied "V-31" "http://0x7f000001/"
 _assert_url_denied "V-32" "http://0177.0.0.1/"
@@ -858,6 +929,12 @@ _assert_url_denied "V-30e" "http://[::1%eth0]/"
 # to V-30b..V-30e for the unspecified axis (parallel to but not covered
 # by V-24's ::1 loopback arm).
 _assert_url_class_check "V-30f" "http://[::]/foo" "denied"
+# V-30g: long canonical form `0:0:0:0:0:0:0:0` and one partial-collapse
+# arm `[0::]` for the unspecified address. V-30f pins only the
+# short-form `[::]`; a regression that dropped the long-form / partial-
+# collapse arms from `_url_host_class_denied` would not trip V-30f.
+_assert_url_class_check "V-30g" "http://[0:0:0:0:0:0:0:0]/foo" "denied"
+_assert_url_class_check "V-30h" "http://[0::]/foo"             "denied"
 
 # ─── V-35: case-insensitive scheme test ─────────────────────────────
 # Pre-fix: ^https?:// was case-sensitive; HTTP://2130706433/ bypassed
@@ -1089,6 +1166,32 @@ if (( rc == 42 )) && [[ "$out" == *"exceeds cap"* ]]; then
   pass_at "V-44: oversize predicate (>64 KiB) → rc=42 + 'exceeds cap' diagnostic"
 else
   fail_at "V-44: size cap" "expected rc=42 + 'exceeds cap'; got rc=$rc, out=$out (size=$(wc -c < "$BIG_FILE"))"
+fi
+rm -f "$BIG_FILE"
+
+# ─── V-44b: snap_file is the canonical source — diagnostic pins the
+# snapshot's bounded size (MAX+1=65537), not the original ARG_FILE size.
+# Pre-iter-6 the check was `wc -c < "$ARG_FILE"` which trips at the
+# original size (e.g. 1048576 for a 1 MiB ARG_FILE). The post-fix code
+# bounds the snapshot via `head -c MAX+1 < ARG_FILE > snap_file` and
+# runs `wc -c < snap_file`, so the diagnostic reports MAX+1 regardless
+# of original size. A regression that reverts to `wc -c < "$ARG_FILE"`
+# would emit "size 1048576 exceeds cap 65536" — this assertion would
+# catch it.
+BIG_FILE="$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
+{
+  printf '{\n  "qa_predicate_schema_version": 1,\n  "issue_id": "ENG-1",\n  "pass_criteria": [\n    { "kind": "smoke", "command": "true", "expect_exit": 0, "expect_stdout_match": null,\n      "padding": "'
+  # 1 MiB of padding — well above the 64 KiB cap; pre-fix would report
+  # size 1048576, post-fix reports the snap-bounded 65537.
+  head -c 1048576 < /dev/zero | tr '\0' 'x'
+  printf '" }\n  ]\n}\n'
+} > "$BIG_FILE"
+rc=0
+out="$(bash "$VERIFIER" validate "$BIG_FILE" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *"size 65537 exceeds cap 65536"* ]]; then
+  pass_at "V-44b: snap_file canonical-source bound → diagnostic reports MAX+1 (not original size)"
+else
+  fail_at "V-44b: snap-bound TOCTOU closure" "expected rc=42 + 'size 65537 exceeds cap 65536'; got rc=$rc, out=$out (orig_size=$(wc -c < "$BIG_FILE"))"
 fi
 rm -f "$BIG_FILE"
 
