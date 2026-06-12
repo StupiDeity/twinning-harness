@@ -68,11 +68,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# M8 (review iter-2): file-size cap at the authority phase. Replaces the
-# prior _QA_PREDICATE_MAX_CRITERIA cap, which didn't actually bound
-# wall-clock (64 × 60s smoke = 64 min, past the 30 min dispatch
-# watchdog). Bytes-per-parse is the cost that matters for DoS.
+# File-size cap at the authority phase. Earlier iterations used a
+# per-criterion count cap, which didn't actually bound wall-clock
+# (64 × 60s smoke = 64 min, past the 30 min dispatch watchdog).
+# Bytes-per-parse is the cost that matters for DoS.
 _QA_PREDICATE_MAX_BYTES=65536
+
+# Predicate snapshot path (set by cmd_validate; cleaned by EXIT trap).
+# Script-scope so the trap can see it even when cmd_validate dies via
+# a downstream `die` call (_canonical_path / _exec_smoke require
+# grealpath / gtimeout; absence is a host misconfig that hits exit 1
+# without cmd_validate's success-path `rm -f`). Pre-trap, the snapshot
+# leaked under $PROJECT_STATE_DIR/.verify-qa-snap/ on every die path.
+_VERIFY_QA_SNAP_FILE=""
+_verify_qa_cleanup_snap() {
+  [[ -n "${_VERIFY_QA_SNAP_FILE:-}" ]] && rm -f "$_VERIFY_QA_SNAP_FILE"
+  _VERIFY_QA_SNAP_FILE=""
+}
+trap '_verify_qa_cleanup_snap' EXIT
 
 # ─── Phase 1: parse argv ──────────────────────────────────────────────
 # Returns 0 with parsed values in ARG_FILE/ARG_IDENT/ARG_WORKTREE
@@ -86,10 +99,20 @@ _parse_validate_argv() {
         if [[ $# -lt 2 ]]; then
           printf 'verify-qa.sh: --ident requires a value\n' >&2; return 42
         fi
+        # Reject `--ident --worktree /path` — the parser would otherwise
+        # consume the next flag as ARG_IDENT and silently misroute the
+        # `/path` value. A value beginning with `--` is unambiguously a
+        # caller mistake.
+        if [[ "$2" == --* ]]; then
+          printf 'verify-qa.sh: --ident requires a non-flag value, got: %s\n' "$2" >&2; return 42
+        fi
         ARG_IDENT="$2"; shift 2 ;;
       --worktree)
         if [[ $# -lt 2 ]]; then
           printf 'verify-qa.sh: --worktree requires a value\n' >&2; return 42
+        fi
+        if [[ "$2" == --* ]]; then
+          printf 'verify-qa.sh: --worktree requires a non-flag value, got: %s\n' "$2" >&2; return 42
         fi
         ARG_WORKTREE="$2"; shift 2 ;;
       --*)     printf 'verify-qa.sh: unknown flag %s\n' "$1" >&2; return 42 ;;
@@ -359,11 +382,22 @@ _exec_smoke() {
   # PATH for launchd; absence is a host misconfig the operator must fix.
   command -v gtimeout >/dev/null 2>&1 \
     || die "verify-qa.sh: gtimeout required (brew install coreutils); refusing to run smoke without wall-clock cap"
-  # M4 (review iter-2): smoke runs at the worktree anchor cwd, not
-  # the runner's PWD. Brainstorm D-011 promises "Commands execute with
-  # cwd = <worktree-from-flag-or-inferred>".
+  # Smoke runs at the worktree anchor cwd, not the runner's PWD.
+  # Brainstorm D-011 promises "Commands execute with cwd =
+  # <worktree-from-flag-or-inferred>".
   local out actual_exit=0
-  out="$( (cd "$anchor_real" 2>/dev/null && gtimeout 60 bash -c "$cmd") 2>&1)" || actual_exit=$?
+  # Detect cd failure up-front so the diagnostic distinguishes
+  # "anchor disappeared between fence and exec" (race against a prior
+  # criterion that removed the worktree, broken-symlink anchor, perms
+  # drift) from a plain exit-mismatch. Pre-fix, a failed cd silently
+  # populated actual_exit with cd's rc and the criterion reported a
+  # generic exit-mismatch with no signal that the command never ran.
+  if ! ( cd "$anchor_real" 2>/dev/null ); then
+    CRIT_PASS=false
+    CRIT_DETAIL='"failed to cd to anchor"'
+    return 0
+  fi
+  out="$( (cd "$anchor_real" && gtimeout 60 bash -c "$cmd") 2>&1)" || actual_exit=$?
   local exit_ok=false stdout_ok=true
   [[ "$actual_exit" == "$expect_exit" ]] && exit_ok=true
   if [[ "$expect_stdout_match" != "null" ]]; then
@@ -546,13 +580,14 @@ cmd_validate() {
   _parse_validate_argv "$@" || return $?
   _authority_check "$ARG_FILE" || return $?
   _worktree_fence "$ARG_WORKTREE" || return $?
-  # M5 (review iter-2): snapshot the predicate to a mktemp inside
-  # $PROJECT_STATE_DIR so schema validation and execution operate on
-  # the SAME bytes — closes a confused-deputy TOCTOU where a malicious
-  # smoke command could mutate the predicate file between validate and
-  # execute (the executor would then read different bytes than what
-  # the validator approved). Cleanup is explicit on every return path
-  # to avoid `trap … RETURN` quirks under `set -u`.
+  # Snapshot the predicate to a mktemp inside $PROJECT_STATE_DIR so
+  # schema validation and execution operate on the SAME bytes — closes
+  # a confused-deputy TOCTOU where a malicious smoke command could
+  # mutate the predicate file between validate and execute (the executor
+  # would then read different bytes than what the validator approved).
+  # Cleanup is explicit on every success/return path AND a script-level
+  # EXIT trap (_verify_qa_cleanup_snap) covers the die-path leak from
+  # downstream helpers (_canonical_path / _exec_smoke).
   local snap_dir snap_file rc=0
   snap_dir="$PROJECT_STATE_DIR/.verify-qa-snap"
   mkdir -p "$snap_dir" 2>/dev/null || {
@@ -564,10 +599,12 @@ cmd_validate() {
     printf 'qa-predicate-malformed: mktemp failed under %s\n' "$snap_dir"
     return 42
   fi
+  _VERIFY_QA_SNAP_FILE="$snap_file"
   # Single-pass cp: the bytes the validator and executor see are
   # whatever was on disk at this instant.
   if ! cp -f "$ARG_FILE" "$snap_file" 2>/dev/null; then
     rm -f "$snap_file"
+    _VERIFY_QA_SNAP_FILE=""
     printf 'qa-predicate-malformed: failed to snapshot predicate to %s\n' "$snap_file"
     return 42
   fi
@@ -576,6 +613,7 @@ cmd_validate() {
     _execute_predicate "$snap_file" "$RESOLVED_WORKTREE" "$PC_LEN" || rc=$?
   fi
   rm -f "$snap_file"
+  _VERIFY_QA_SNAP_FILE=""
   return "$rc"
 }
 

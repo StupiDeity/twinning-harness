@@ -92,7 +92,8 @@ qa_predicate_path() {
   printf '%s/qa-predicate-%s.json' "$(issue_dir "$issue")" "$issue"
 }
 
-# ENG-113 D-007: shared per-pass_criterion validator; lifted from
+# Shared per-pass_criterion validator (brainstorm D-007 — single source
+# of truth for plan.json and qa-predicate JSON validation). Lifted from
 # bin/plan-schema.sh:181-260. Callers: plan-schema.sh::cmd_validate
 # (plan.json) and verify-qa.sh::cmd_validate (qa-predicate JSON). The
 # --kinds CSV restricts the allowed kind set; plan-schema passes
@@ -106,12 +107,23 @@ qa_predicate_path() {
 # not filesystem paths). Returns rc=34 on any failure with a
 # diagnostic shape. The helper writes the body of its diagnostic into the
 # `_VALIDATE_CRIT_DIAG` global on rc=34; the caller is responsible for
-# prepending its own `<contract>-incomplete:` prefix and emitting. M7
-# (review iter-2): the prior `--caller <name>` flag was YAGNI — the
-# helper only flipped a prefix string the caller already knows. The
-# `--shape flat|nested` flag picks the jq index expression — `nested`
+# prepending its own `<contract>-incomplete:` prefix and emitting.
+# The `--shape flat|nested` flag picks the jq index expression — `nested`
 # (default) is plan-schema's `features[$i].pass_criteria[$j]`, `flat`
 # is verify-qa's top-level `pass_criteria[$j]`.
+#
+# Deliberate behaviour change vs the pre-lift code (bin/plan-schema.sh@ce8df8d):
+# the per-kind unknown-field warning loop (smoke_unknown / fe_unknown /
+# grep_unknown) was NOT lifted. Original plan-schema emitted a stderr
+# `log "[plan-schema] warning: unknown pass_criteria[<kind>] field: <f>"`
+# for every field outside the allowed set. The warning was advisory
+# (exit 0 path), pinned no test, and would have become misleading when
+# called from verify-qa (the prefix would still read "[plan-schema]").
+# Caller-tag plumbing for a never-pinned advisory was rejected as
+# YAGNI. The top-level `keys - [allowed]` unknown-field warning at
+# plan-schema.sh's pre-feature gate still fires; only the per-criterion
+# warning was dropped. If a future caller needs per-criterion unknown-
+# field signal, restore via a `--warn-tag <caller>` flag here.
 #
 # Usage: _validate_pass_criterion <file> <fi> <ci> [--kinds <csv>] [--shape flat|nested]
 #   <file>  — JSON file under inspection
@@ -287,6 +299,10 @@ _url_host_class_denied() {
   # IPv6 form is [::1]:8080 — keep the inner address; strip brackets.
   if [[ "$host" == \[*\]* ]]; then
     host="${host%%\]*}"; host="${host#\[}"
+    # Strip IPv6 zone-id (RFC 6874): `[::1%eth0]` → `::1`. curl accepts
+    # `%<zone>` suffixes on link-local addresses; without this strip,
+    # the case-arms below miss the literal denylist match.
+    host="${host%%%*}"
   else
     # IPv4/hostname:port — strip the port.
     host="${host%%:*}"
@@ -321,11 +337,22 @@ _url_host_class_denied() {
     192.168.*) return 0 ;;
     169.254.*) return 0 ;;
     172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
-    # IPv6 form. ::ffff:* is IPv4-mapped — by definition an IPv4
-    # address; rejecting all such forms closes the hex-encoding bypass
-    # (::ffff:7f00:1 → 127.0.0.1, ::ffff:0a00:1 → 10.0.0.1, …) without
-    # enumerating each /8. fe80::/10 = link-local; fc00::/7 = ULA.
-    ::1|::ffff:*) return 0 ;;
+    # IPv6 loopback. ::1 is the canonical short form; curl's resolver
+    # also accepts the long form 0:0:0:0:0:0:0:1 plus partial-collapse
+    # variants (0::1, 0:0::1, …, ::0:1, ::0:0:1, …). Each form below
+    # resolves to ::1 at the OS level; the literal arms close them all.
+    ::1) return 0 ;;
+    0:0:0:0:0:0:0:1) return 0 ;;
+    0::1|0:0::1|0:0:0::1|0:0:0:0::1|0:0:0:0:0::1|0:0:0:0:0:0::1) return 0 ;;
+    ::0:1|::0:0:1|::0:0:0:1|::0:0:0:0:1|::0:0:0:0:0:1|::0:0:0:0:0:0:1) return 0 ;;
+    # IPv6 IPv4-mapped. ::ffff:* is the canonical short form; curl
+    # accepts long form 0:0:0:0:0:ffff:* and partial collapses. Rejects
+    # every form regardless of the trailing IPv4 value (::ffff:7f00:1
+    # = 127.0.0.1, ::ffff:0a00:1 = 10.0.0.1, …) without enumerating /8.
+    ::ffff:*) return 0 ;;
+    0:0:0:0:0:ffff:*) return 0 ;;
+    0::ffff:*|0:0::ffff:*|0:0:0::ffff:*|0:0:0:0::ffff:*|0:0:0:0:0::ffff:*) return 0 ;;
+    # fe80::/10 = link-local; fc00::/7 = ULA.
     fe80:*|fc[0-9a-f][0-9a-f]:*|fd[0-9a-f][0-9a-f]:*) return 0 ;;
   esac
   return 1
