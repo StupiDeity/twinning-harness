@@ -165,8 +165,14 @@ _validate_event_payload() {
     v="${values[$i]}"
     grep -Fxq "$k" <<<"$known" \
       || die "schema: unknown field '$k' on event '$event' (known: $(tr '\n' ' ' <<<"$known"))"
+    # ENG-115: arm-specific override wins when present. Lets verdict.pivot
+    # validate `reason` against pivot_reasons (single registry — clean
+    # "not in pivot_reasons" error) instead of widening the top-level
+    # field_registry.reason union, which would also relax halt/wait reasons.
     local reg
-    reg="$(jq -r --arg k "$k" '.field_registry[$k] // empty' <<<"$schema")"
+    reg="$(jq -r --arg a "$arm" --arg k "$k" '
+      (.field_registry_by_arm // {})[$a][$k] // .field_registry[$k] // empty
+    ' <<<"$schema")"
     [[ -z "$reg" || "$reg" == "null" ]] && continue
     if [[ "$reg" == *"|"* ]]; then
       _validate_registry_union "$v" "$reg"

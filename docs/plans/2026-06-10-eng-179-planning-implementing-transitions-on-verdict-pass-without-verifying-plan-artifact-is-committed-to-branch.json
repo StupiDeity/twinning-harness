@@ -1,0 +1,85 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-179",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/run-stage.sh::_validate_plan_contract switches from worktree `find docs/plans` to `git ls-tree -r HEAD -- docs/plans/` and removes the absent-md fail-open, halting with plan-contract-missing (rc=35) when no committed plan .md matches the loosened ISO-date-prefixed ident pattern.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "git ls-tree --name-only -r HEAD -- docs/plans/", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "_post_plan_contract_halt \"\\$ident\" \"plan-contract-missing\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "no plan \\.md found for \\$ident matching \\$\\{today\\}", "expect_match": false },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "find docs/plans -maxdepth 1 -type f -iname", "expect_match": false },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "\\^docs/plans/\\[0-9\\]\\{4\\}-\\[0-9\\]\\{2\\}-\\[0-9\\]\\{2\\}-\\.\\*\\$\\{ident_lower\\}-\\.\\*\\\\\\.md\\$", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/run-stage.sh::_validate_plan_contract also gates the sibling plan_json on HEAD (git ls-tree check) before invoking plan-schema.sh, halting with plan-contract-missing when the .json is uncommitted.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "git ls-tree --name-only -r HEAD -- \"\\$plan_json\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "Sibling plan JSON not committed to HEAD", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/run-stage-test.sh INT-Q is rewritten from fail-open to strict-halt: with git-init worktree + HEAD lacking any plan .md, _validate_plan_contract returns rc=35 and posts halt comment carrying plan-contract-invalid marker + Defect: plan-contract-missing.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG-179 INT-Q: plan \\.md missing in HEAD", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG-179: was fail-open", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG122Q_WT.*issue_dir ENG-122-NOMD", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "bin/run-stage-test.sh gains ENG-179 INT-R (committed pair → rc=0), INT-T (written-but-uncommitted → rc=35, the discriminating test that pins HEAD-tree query as load-bearing), and INT-U (committed plan with yesterday's date prefix → rc=0, cross-midnight resume guard).",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG-179 INT-R: committed pair → rc=0", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG-179 INT-T: written-but-uncommitted → rc=35", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG-179 INT-U: cross-midnight committed plan → rc=0", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "date -u -v-1d \\+%Y-%m-%d", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "bin/run-stage-test.sh ENG-122 INT1/INT2/INT3/INT5 fixtures are retrofitted with `git init -b main`, initial empty commit, and a `git add docs/plans && git commit` of the plan files so the tightened HEAD-tree gate finds them.",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG12201_WT=\"\\$\\(issue_dir ENG-12201\\)/worktree\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG122L_WT=\"\\$\\(issue_dir ENG-122L\\)/worktree\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG122M_WT=\"\\$\\(issue_dir ENG-122M\\)/worktree\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG122O_WT=\"\\$\\(issue_dir ENG-122O\\)/worktree\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "plan for ENG-12201", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "plan \\.md only for ENG-122L", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "plan for ENG-122M \\(malformed json\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "plan for ENG-122O \\(injected json\\)", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-6",
+      "summary": "CLAUDE.md Failure-mode quick reference gains a row for the plan-contract-missing halt that contrasts it explicitly with the downstream scope-check rc=2 symptom and names operator recovery (decide --action continue after fixing the session-limit cause).",
+      "pass_criteria": [
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "Issue halts at `stage:planning` with `plan-contract-missing`", "expect_match": true },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "ENG-179 gate.*_validate_plan_contract", "expect_match": true },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "session-limit-false-halts", "expect_match": true },
+        { "kind": "grep", "path": "CLAUDE.md", "pattern": "Contrast.*scope-check rc=2", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-7",
+      "summary": "Full bin/*-test.sh sweep (the pre-commit gate) passes against the changed run-stage.sh + run-stage-test.sh + CLAUDE.md set.",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash -n bin/run-stage.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-8",
+      "summary": "Plan + sibling JSON committed together on the feature branch as chore(pipeline): plan for ENG-179.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "docs/plans/2026-06-10-eng-179-planning-implementing-transitions-on-verdict-pass-without-verifying-plan-artifact-is-committed-to-branch.md" },
+        { "kind": "file_exists", "path": "docs/plans/2026-06-10-eng-179-planning-implementing-transitions-on-verdict-pass-without-verifying-plan-artifact-is-committed-to-branch.json" }
+      ]
+    }
+  ]
+}

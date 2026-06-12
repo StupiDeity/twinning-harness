@@ -88,18 +88,18 @@ rc=0; validate_init_sh "$INIT" >/dev/null 2>&1 || rc=$?
 
 # ─── T_missing_file ─────────────────────────────────────────────────
 rc=0; validate_init_sh "$FIXTURE_DIR/nonexistent.sh" >/dev/null 2>&1 || rc=$?
-(( rc == 41 )) \
-  && pass_at "T_missing_file: absent file → rc=41" \
-  || fail_at "T_missing_file" "expected rc=41, got rc=$rc"
+(( rc == 47 )) \
+  && pass_at "T_missing_file: absent file → rc=47" \
+  || fail_at "T_missing_file" "expected rc=47, got rc=$rc"
 
 # ─── T_malformed_bash_n ─────────────────────────────────────────────
 INIT="$FIXTURE_DIR/t-malformed.sh"
 # Unbalanced quote → bash -n fails.
 printf '#!/usr/bin/env bash\nset -euo pipefail\necho "unterminated\n' > "$INIT"
 rc=0; validate_init_sh "$INIT" >/dev/null 2>&1 || rc=$?
-(( rc == 39 )) \
-  && pass_at "T_malformed_bash_n: unbalanced quote → rc=39" \
-  || fail_at "T_malformed_bash_n" "expected rc=39, got rc=$rc"
+(( rc == 45 )) \
+  && pass_at "T_malformed_bash_n: unbalanced quote → rc=45" \
+  || fail_at "T_malformed_bash_n" "expected rc=45, got rc=$rc"
 
 # Tighter assertion shared across the four T_incomplete_missing_* cases:
 # match BOTH the literal 'init-sh-incomplete: missing shape marker' prefix
@@ -113,9 +113,9 @@ rc=0; validate_init_sh "$INIT" >/dev/null 2>&1 || rc=$?
 INIT="$FIXTURE_DIR/t-no-smoke.sh"
 write_missing_marker "$INIT" smoke
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
-  pass_at "T_incomplete_missing_smoke: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── smoke ───'"
+  pass_at "T_incomplete_missing_smoke: → rc=46 + 'init-sh-incomplete: missing shape marker # ─── smoke ───'"
 else
   fail_at "T_incomplete_missing_smoke" "rc=$rc out='$out'"
 fi
@@ -124,9 +124,9 @@ fi
 INIT="$FIXTURE_DIR/t-no-typecheck.sh"
 write_missing_marker "$INIT" typecheck
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── typecheck ───"* ]]; then
-  pass_at "T_incomplete_missing_typecheck: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── typecheck ───'"
+  pass_at "T_incomplete_missing_typecheck: → rc=46 + 'init-sh-incomplete: missing shape marker # ─── typecheck ───'"
 else
   fail_at "T_incomplete_missing_typecheck" "rc=$rc out='$out'"
 fi
@@ -135,9 +135,9 @@ fi
 INIT="$FIXTURE_DIR/t-no-lint.sh"
 write_missing_marker "$INIT" lint
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── lint ───"* ]]; then
-  pass_at "T_incomplete_missing_lint: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── lint ───'"
+  pass_at "T_incomplete_missing_lint: → rc=46 + 'init-sh-incomplete: missing shape marker # ─── lint ───'"
 else
   fail_at "T_incomplete_missing_lint" "rc=$rc out='$out'"
 fi
@@ -146,16 +146,16 @@ fi
 INIT="$FIXTURE_DIR/t-no-test.sh"
 write_missing_marker "$INIT" test
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── test ───"* ]]; then
-  pass_at "T_incomplete_missing_test: → rc=40 + 'init-sh-incomplete: missing shape marker # ─── test ───'"
+  pass_at "T_incomplete_missing_test: → rc=46 + 'init-sh-incomplete: missing shape marker # ─── test ───'"
 else
   fail_at "T_incomplete_missing_test" "rc=$rc out='$out'"
 fi
 
 # ─── T_marker_at_indent_rejected ────────────────────────────────────
 # Marker indented (col 4) instead of col 0 → matcher requires `^# ─── <gate> ───$`,
-# so the indented form is treated as ABSENT → rc=40.
+# so the indented form is treated as ABSENT → rc=46.
 INIT="$FIXTURE_DIR/t-indent.sh"
 cat > "$INIT" <<'EOF'
 #!/usr/bin/env bash
@@ -170,9 +170,9 @@ set -euo pipefail
 :
 EOF
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
-  pass_at "T_marker_at_indent_rejected: indented marker → rc=40 (column-0 anchor pins ^)"
+  pass_at "T_marker_at_indent_rejected: indented marker → rc=46 (column-0 anchor pins ^)"
 else
   fail_at "T_marker_at_indent_rejected" "rc=$rc out='$out'"
 fi
@@ -195,8 +195,8 @@ ISSUE_DIR="$FIXTURE_DIR/detective-missing"; mkdir -p "$ISSUE_DIR"
 rm -f "$ISSUE_DIR/init.sh"
 VIOL="$ISSUE_DIR/.transcript-violation-planning"; rm -f "$VIOL"
 rc=0; _assert_init_sh_well_formed "$ISSUE_DIR" "$VIOL" "planning" || rc=$?
-if (( rc == 41 )) && grep -q "init-sh-missing" "$VIOL"; then
-  pass_at "T_detective_missing: → rc=41 + 'init-sh-missing' diagnostic"
+if (( rc == 47 )) && grep -q "init-sh-missing" "$VIOL"; then
+  pass_at "T_detective_missing: → rc=47 + 'init-sh-missing' diagnostic"
 else
   fail_at "T_detective_missing" "rc=$rc violation=$(cat "$VIOL" 2>/dev/null || echo '<none>')"
 fi
@@ -206,8 +206,8 @@ ISSUE_DIR="$FIXTURE_DIR/detective-malformed"; mkdir -p "$ISSUE_DIR"
 printf '#!/usr/bin/env bash\necho "unterminated\n' > "$ISSUE_DIR/init.sh"
 VIOL="$ISSUE_DIR/.transcript-violation-planning"; rm -f "$VIOL"
 rc=0; _assert_init_sh_well_formed "$ISSUE_DIR" "$VIOL" "planning" || rc=$?
-if (( rc == 39 )) && grep -q "init-sh-malformed" "$VIOL"; then
-  pass_at "T_detective_malformed: → rc=39 + 'init-sh-malformed' diagnostic"
+if (( rc == 45 )) && grep -q "init-sh-malformed" "$VIOL"; then
+  pass_at "T_detective_malformed: → rc=45 + 'init-sh-malformed' diagnostic"
 else
   fail_at "T_detective_malformed" "rc=$rc violation=$(cat "$VIOL" 2>/dev/null || echo '<none>')"
 fi
@@ -217,8 +217,8 @@ ISSUE_DIR="$FIXTURE_DIR/detective-incomplete"; mkdir -p "$ISSUE_DIR"
 write_missing_marker "$ISSUE_DIR/init.sh" lint
 VIOL="$ISSUE_DIR/.transcript-violation-planning"; rm -f "$VIOL"
 rc=0; _assert_init_sh_well_formed "$ISSUE_DIR" "$VIOL" "planning" || rc=$?
-if (( rc == 40 )) && grep -q "init-sh-incomplete" "$VIOL"; then
-  pass_at "T_detective_incomplete: → rc=40 + 'init-sh-incomplete' diagnostic"
+if (( rc == 46 )) && grep -q "init-sh-incomplete" "$VIOL"; then
+  pass_at "T_detective_incomplete: → rc=46 + 'init-sh-incomplete' diagnostic"
 else
   fail_at "T_detective_incomplete" "rc=$rc violation=$(cat "$VIOL" 2>/dev/null || echo '<none>')"
 fi

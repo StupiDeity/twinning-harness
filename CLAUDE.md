@@ -78,21 +78,35 @@ Mac. `ANTHROPIC_API_KEY` is intentionally never set.
 ## Retrospective shapes (ENG-129)
 
 The weekly retrospective binary (`bin/run-retrospective-local.sh`) is
-being split into "shapes" — independently invocable sub-behaviors,
+a deterministic bash coordinator that iterates a hard-coded `SHAPES`
+array of twelve "shapes" — independently-invocable sub-behaviors,
 each with its own prompt body under `bin/retro-prompts/<name>.md`,
 its own driver at `bin/retro-shape-<name>.sh`, and its own sibling
 test at `bin/retro-shape-<name>-test.sh`. Shapes write a markdown
 artifact under `$PROJECT_STATE_DIR/retrospective-${date}/<name>.md`;
-the parent retrospective Reads each artifact via a
-`{<name>_path}` token interpolated into AGENT_PROMPTS.md §9.
+the coordinator concatenates succeeded shapes' artifacts under a
+`## Period` preamble + `## Failed shapes` footer to compose the PR
+body (no claude dispatch at the coordinator level — AC #1).
 
-ENG-129 ships the first shape (`stage-failure-summary`). The other
-§9 sub-behaviors stay inline in §9 until the coordinator ticket
-ships. To add a shape: drop a new prompt body under `bin/retro-prompts/`,
-write a driver + sibling test mirroring the `stage-failure-summary`
-pair, and invoke the driver from `run-retrospective-local.sh::main`
-before the §9 dispatch. Shapes reuse `dispatch.sh retrospective`'s
-allowed-tools (no new arm in `allowed_tools_for`).
+Per-shape failures are non-blocking: rc != 0 is logged and the loop
+continues; surviving shapes still contribute to the PR. After all
+shapes run, the coordinator opens exactly one PR iff `git diff --cached`
+shows tracked-file changes. To add a shape: drop a new prompt body
+under `bin/retro-prompts/`, write a driver + sibling test mirroring
+`bin/retro-shape-stage-failure-summary.sh`, append the name to
+`SHAPES` in `bin/run-retrospective-local.sh`. Shapes reuse
+`dispatch.sh retrospective`'s allowed-tools (no new arm in
+`allowed_tools_for`).
+
+ENG-158 ships three additional shapes: `tool-denial-trends` (reads
+`events.jsonl::sandbox_denial` rows, requires the sandbox-denial
+detective ticket to be deployed before findings appear),
+`runtime-invariant-audit` (cross-checks AGENT_PROMPTS.md ↔
+`dispatch.sh` allow-lists ↔ `render-prompt.sh` resolver paths;
+always runnable), and `claude-version-drift` (compares `claude
+--version` against `$HARNESS_ROOT/.claude-cli-version`; requires
+the pin-claude-version ticket). Each shape carves out gracefully
+when its upstream dependency is absent.
 
 ## Common commands
 
@@ -322,6 +336,16 @@ orchestrator never reads or writes the file. Schema and the
 canonical heading shape (`## <dispatch-id> - <stage> -
 <ISO-8601-UTC>`) live in `docs/runbooks/progress-md.md`. Path
 resolves through `bin/common.sh::progress_md_path <ident>`.
+
+`verdict-qa.json` (ENG-117) is a per-dispatch dimensional-grading
+payload written by the qa agent under `$(issue_dir <ident>)/`. Schema
+source-of-truth lives in `bin/qa-payload-schema.sh`'s header comment;
+the post-dispatch detective scan in `bin/run-stage.sh::_validate_qa_payload`
+halts the dispatch with `qa-payload-invalid` on missing/malformed
+payloads. Cleared on every qa-stage dispatch-start by
+`_clear_current_stage_slots` (same per-medium primitive as
+`stage-summary-<stage>.md`, `wait-<stage>.json`, and ENG-119's
+`verdict-review.json`).
 
 The orchestrator NEVER dispatches into `$TARGET_REPO` — every dispatch resolves
 a per-issue worktree first (ENG-67). If you see the canonical operator-recognition
@@ -697,10 +721,17 @@ and freshness contract" is the prompt-side defense.
 - `source "$SCRIPT_DIR/common.sh"` first. It enforces `TARGET_REPO` and exports
   canonical paths.
 - Use `log` / `die` / `require_env` / `require_bin` from common.sh.
-- Linear writes go through `bin/linear.sh` so dry-run + `meta: dedup`
-  (`add-or-update-comment <sig> <ident> <body>`) work uniformly. The function
-  emits `<!-- meta: dedup key=... -->` and looks up in-flight comments by both
-  new and legacy shapes.
+- Linear writes go through `bin/linear.sh add-comment`, which is
+  append-only — every emission produces a fresh chronological
+  comment. Callers needing a discoverability tag pass
+  `--sig <category>/<stage>/<issue>`; the chokepoint suffixes
+  `/d<NNNN>` (the dispatch sequence from `PIPELINE_DISPATCH_ID`)
+  and emits `<!-- meta: dedup key=… -->` on the body for operator
+  grep (legacy marker name; semantic is "ledger discoverability
+  tag", not deduplication). The pre-ENG-150 sig-based
+  commentUpdate API and its in-place rewrite behaviour were retired
+  (see docs/runbooks/operator-mental-model.md §3 for the operator
+  grep recipe).
 - Metric writes go through `bin/metrics.sh` (lands in `events.jsonl`).
 - Per-stage allowed tool lists are centralized in
   `dispatch.sh::allowed_tools_for`. New stages must add a case there.
@@ -781,6 +812,7 @@ inspect each surface.
 | Halt at rc=29 with sidecar `.transcript-violation-<stage>` naming a path ending in `/issue-state.json`, `/wait-*.json`, `/dispatch_history.jsonl`, `/usage-*.json`, or one of the dispatch sidecars (`/.raw-stream.ndjson.tmp`, `/.cmd-capture-*`, `/.envelope-transcript-*`, `/.transcript-violation-*`, `/.allocate.lock`), or one of the scheduler-invariant files (`/.consecutive-failures`, `/.in-flight.lock`, `/scope-approval`) | ENG-155 D-003 detective tripped: agent's transcript shows `Write` / `Edit` against an orchestrator-owned file inside `$issue_state_dir`. The same rc=29 is also used by ENG-87's envelope-validator (forbidden `mcp__plugin_linear` / `curl https://api.linear.app` / `gh api graphql` / `wget https://api.linear.app` / `unset PIPELINE_DISPATCH_ID` in transcript) — the sidecar's matched-string disambiguates. Recovery: `bash bin/pipeline.sh decide <ENG-N> --action continue`. |
 | Kill switch | `bash bin/pipeline.sh decide <ENG-N> --action continue` (atomic reset) or set `orchestrator.paused=true` (next tick) |
 | Brainstorm halts at iteration 2 with `iteration-exhausted` | ENG-65: voluntarily halts after 2 persona-review iterations with unresolved P0. Resume via `--action continue` or fix underlying P0. Bounded worst-case spend; one extra operator touch on slow-converging brainstorms. |
+| Issue halts at `stage:planning` with `plan-contract-missing` defect immediately after a planning dispatch | ENG-179 gate (`bin/run-stage.sh::_validate_plan_contract`) — the planning agent emitted `verdict=pass` but the canonical plan artifact (`docs/plans/<date>-*<eng-n>-*.md` + sibling `.json`) is NOT in the branch HEAD tree. Common cause: `claude -p` session-limit / `out_of_credits` death after the agent posted its Linear markers but before it committed the plan files (operator memory: `session-limit-false-halts`). **Contrast** with the downstream `scope-check rc=2` "plan not found" symptom — that one fires at `stage:implementing` AFTER the transition and burns the `implement_rejection` budget; the ENG-179 gate halts BEFORE the transition with zero implement dispatches consumed. **Recovery:** inspect `$PROJECT_STATE_DIR/<slug>/logs/<ident>-planning-*.log` for the session-limit signature, fix the underlying cause (credits/quota), then `bash bin/pipeline.sh decide <ENG-N> --action continue`. Operator may alternatively commit the plan pair by hand on the feature branch and resume; the gate honours an operator-committed plan. |
 | scope-check halts on files from a recent upstream merge | Pre-ENG-59 bug; post-ENG-59 (`bin/scope-check.sh:155-…`) fetches `origin main` per run. If symptom persists, check transcript for `scope-check: fetch origin main failed` — fetch unreachable + no `refs/remotes/origin/main` falls back to local `main` (degraded mode with warning). |
 | Issue at `stage:building` idles with `dispatch-skipped` events and no halt label | Inspect `wait-building.json::attempts` — ENG-86 entry-conditions gate firing skip per `gh pr view`. If PR is approved by a non-bot Code Owner, check whether `gh` is on PATH for launchd. If not approved, operator action is the underlying remedy. |
 | Concurrent dispatches not running (expected K=2, observed K=1) | `bash bin/status.sh` "Concurrent dispatches active" row + "Dispatch resource baseline" tail; check `_resolve_K` resolved value in `$PROJECT_STATE_DIR/<slug>/logs/local-*.log` (look for `scheduler: K=…`); inspect `CLAUDE_MAX_CONCURRENT` env in the launchd plist; inspect `orchestrator.max_concurrent_features` in the target's `.pipeline-config/config.json`. |

@@ -1,0 +1,32 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-157",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Plan docs require ## System invariants H2 section with parseable verified_by: tokens; bin/plan-schema.sh validate-md sub-command enforces the structure post-dispatch and feasibility persona resolves the references at agent-time.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "docs/plans/2026-06-10-eng-157-plan-docs-require-system-invariants-section-feasibility-persona-p0-on-unverified-bullets.md" },
+        { "kind": "file_exists", "path": "docs/plans/2026-06-10-eng-157-plan-docs-require-system-invariants-section-feasibility-persona-p0-on-unverified-bullets.json" },
+        { "kind": "file_exists", "path": "bin/plan-schema.sh" },
+        { "kind": "file_exists", "path": "bin/run-stage.sh" },
+        { "kind": "file_exists", "path": "AGENT_PROMPTS.md" },
+        { "kind": "grep", "path": "bin/plan-schema.sh", "pattern": "cmd_validate_md", "expect_match": true },
+        { "kind": "grep", "path": "bin/plan-schema.sh", "pattern": "validate-md\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "plan-schema\\.sh\" validate-md", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "plan-md-incomplete", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "## System invariants", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "verified_by:", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "ENG-157", "expect_match": true },
+        { "kind": "grep", "path": "bin/plan-schema-test.sh", "pattern": "T_validate_md", "expect_match": true },
+        { "kind": "grep", "path": "bin/plan-schema-adversarial-test.sh", "pattern": "T_adv_md", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "ENG-157 INT6", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/plan-schema-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/plan-schema-adversarial-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/agent-prompts-content-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/common-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}

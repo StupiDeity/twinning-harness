@@ -273,7 +273,7 @@ fi
 reset_state; reset_linear
 MOCK_PIPELINE_HASH="hashJ" MOCK_BRANCH_SHA="shaJ" \
   classify_failure "ENG-923" "implement" "retry-immediately" "API-529" 20 ""
-last_aoc="$(linear_calls | grep '^add-or-update-comment' | tail -1)"
+last_aoc="$(linear_calls | grep '^add-comment ' | tail -1)"
 # Sig must contain retry-pending/, body must NOT contain halt verdict marker,
 # body must contain meta:metric transient-retry header.
 if [[ "$last_aoc" == *"retry-pending/implement/ENG-923"* ]] \
@@ -316,12 +316,12 @@ fi
 reset_state; reset_linear
 MOCK_PIPELINE_HASH="hashL" MOCK_BRANCH_SHA="shaL" \
   classify_failure "ENG-924b" "implement" "retry-immediately" "API-529" 20 ""
-last_aoc="$(linear_calls | grep '^add-or-update-comment' | tail -1)"
-# Strip the leading `add-or-update-comment <sig> <ident> ` to recover body.
+last_aoc="$(linear_calls | grep '^add-comment ' | tail -1)"
+# Strip the leading `add-comment <ident> --sig <sig> --body ` to recover body.
 # The body is the remaining args concatenated with single spaces (linear
 # capture-stub uses `$*`). parse_pipeline_marker only needs the marker
 # substring, which survives whitespace re-collapse.
-body="${last_aoc#add-or-update-comment retry-pending/implement/ENG-924b ENG-924b }"
+body="${last_aoc#add-comment ENG-924b --sig retry-pending/implement/ENG-924b --body }"
 ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
 ev_event="$(jq -r '.event // ""' <<<"$ev" 2>/dev/null || printf '')"
 ev_kind="$(jq -r '.kind // ""'  <<<"$ev" 2>/dev/null || printf '')"

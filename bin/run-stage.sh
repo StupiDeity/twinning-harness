@@ -18,9 +18,12 @@
 #             33=plan-contract-malformed (plan.json exists but fails jq parse; ENG-122),
 #             34=plan-contract-incomplete (plan.json parses but missing required field; ENG-122),
 #             35=plan-contract-missing (no sibling .json alongside plan .md; ENG-122),
-#             39=init-sh-malformed   (init.sh fails bash -n syntax check; ENG-125),
-#             40=init-sh-incomplete  (init.sh present + parses but missing shape marker; ENG-125),
-#             41=init-sh-missing     (no init.sh at $issue_dir/init.sh; ENG-125),
+#             39=qa-payload-malformed (verdict-qa.json fails jq parse; ENG-117),
+#             40=qa-payload-incomplete (verdict-qa.json parses but missing required field; ENG-117),
+#             41=qa-payload-missing (no verdict-qa.json post-qa-dispatch; ENG-117),
+#             45=init-sh-malformed   (init.sh fails bash -n syntax check; ENG-125),
+#             46=init-sh-incomplete  (init.sh present + parses but missing shape marker; ENG-125),
+#             47=init-sh-missing     (no init.sh at $issue_dir/init.sh; ENG-125),
 #             124=dispatch-timeout (gtimeout SIGTERM'd a wedged claude -p — ENG-48).
 #             (See bin/common.sh::failure_outcome_for_exit for the canonical mapping.)
 #
@@ -372,7 +375,7 @@ post_completion_comment() {
   # `pipeline` and the event) is preserved.
   #
   # ENG-96: also strip `<!-- meta: dispatch id=... -->` lines. The
-  # chokepoint at bin/linear.sh::add_or_update_comment owns this marker
+  # chokepoint at bin/linear.sh::add_comment owns this marker
   # (auto-injects from PIPELINE_DISPATCH_ID); an agent-emitted marker —
   # whether a literal-placeholder `$PIPELINE_DISPATCH_ID` (the ENG-96
   # case), a stale prior-dispatch id, or a syntactically valid current id —
@@ -423,12 +426,14 @@ post_completion_comment() {
     comment_body="$(printf '%s\n\n%s%s%s' "$header" "$body" "$cost_footer" "$pr_tail")"
   fi
 
-  # Retry once on failure. add-or-update-comment appends the canonical sig itself.
-  if bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"; then
+  # Retry once on failure. add-comment --sig stamps the dispatch-
+  # suffixed dedup marker; each retry posts a fresh chronological
+  # comment if the first one didn't land.
+  if bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "$sig" --body "$comment_body"; then
     return 0
   fi
   sleep 5
-  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "$sig" --body "$comment_body"
 }
 
 # Push the current worktree branch to origin if HEAD is ahead of origin/<branch>.
@@ -664,7 +669,7 @@ _post_dispatch_check_worktree_head() {
 
   # Operator-visibility: post a non-halting Linear comment so an operator
   # skimming the issue thread sees the detach without grepping events.jsonl
-  # or per-stage transcripts. Sig-deduped via add-or-update-comment so
+  # or per-stage transcripts. Append-only via add-comment --sig so
   # re-fires on retry collapse to one comment per issue. ENG-71 m5 (review
   # iter-2): sig prefix `worktree-mutation/<issue>` is functionally named
   # (mirrors the existing `completion/<stage>/<issue>` and
@@ -680,9 +685,9 @@ _post_dispatch_check_worktree_head() {
   local _body
   _body="$(printf '<!-- meta: metric name=worktree-mutated-by-agent -->\n\nBuild agent left this worktree on `%s` (expected `%s`) post-dispatch. %s' \
     "$current_branch" "$expected_branch" "$_detach_status")"
-  bash "$SCRIPT_DIR/linear.sh" add-or-update-comment \
-    "worktree-mutation/$ident" "$ident" "$_body" \
-    || log "linear.sh add-or-update-comment failed for worktree-mutation/$ident (non-blocking)"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
+    --sig "worktree-mutation/$ident" --body "$_body" \
+    || log "linear.sh add-comment failed for worktree-mutation/$ident (non-blocking)"
 }
 
 # Idempotent counter mutation + budget check for wait exits. All Linear writes
@@ -925,6 +930,10 @@ _entry_conditions_gate() {
 # Generalises the wait-exit clear at lines 497-499 (build-only) to all
 # stages. Cleared:
 #   stage-summary-${stage}.md  (read by post_completion_comment)
+#   .rendered-paths-${stage}   (rewritten by render-prompt.sh at dispatch
+#                               render; clearing here avoids stale-from-
+#                               prior-attempt contamination on retry —
+#                               OQ-5)
 #   wait-${stage}.json         (overwritten by _handle_wait when the
 #                               agent emits a wait verdict; clearing
 #                               here ensures a fresh dispatch doesn't
@@ -941,6 +950,7 @@ _clear_current_stage_slots() {
   local d; d="$(issue_dir "$ident")"
   rm -f "$d/stage-summary-${stage}.md" 2>/dev/null || true
   rm -f "$d/wait-${stage}.json"        2>/dev/null || true
+  rm -f "$d/.rendered-paths-${stage}" 2>/dev/null || true
   # ENG-119: pre-clean verdict-review.json on reviewing-stage dispatch
   # start. Per-medium primitive (CLAUDE.md ENG-87) for the new agent-owned
   # writer file. Stage-gated to reviewing because the file is review-
@@ -948,6 +958,14 @@ _clear_current_stage_slots() {
   # payloads that ENG-118 / the retrospective may read during loopback.
   if [[ "$stage" == "reviewing" ]]; then
     rm -f "$d/verdict-review.json" 2>/dev/null || true
+  fi
+  # ENG-117: pre-clean verdict-qa.json on qa-stage dispatch start.
+  # Stage-gated to qa for the same reason as ENG-119's reviewing-gated
+  # clear: the file is qa-specific; clearing on other stages would erase
+  # prior-iteration payloads the threshold / retrospective sub-tickets
+  # may read during loopback.
+  if [[ "$stage" == "qa" ]]; then
+    rm -f "$d/verdict-qa.json" 2>/dev/null || true
   fi
   return 0
 }
@@ -1078,6 +1096,172 @@ _validate_dispatch_envelope() {
   return 0
 }
 
+# ENG-156 D-001 (Phase A) + D-004 (Phase B): post-dispatch sandbox-denial
+# detective. Scans .envelope-transcript-<stage> for
+# `tool_result.is_error:true` rows matching a 2-entry signature table.
+# Phase A: always log-only — one events.jsonl row per dispatch when
+# denial count > 0. Phase B: when orchestrator.sandbox_contract_halt is
+# true AND a denied path matches a path resolved by PROMPT_RESOLVERS
+# (read from .rendered-paths-<stage>), promotes to rc=29 halt with
+# reason=sandbox-contract-violation. Mirror of _validate_dispatch_envelope
+# at a different axis (tool_result vs tool_use). Sidecar fail-open: missing
+# or empty file returns 0 silently (matches the envelope-validator's
+# `[[ -s "$sidecar" ]] || return 0` shape).
+# Returns: 0 (Phase A log-only) | 29 (Phase B halt on matched path).
+_emit_sandbox_denial_metric() {
+  # Force orchestrator-lane attribution for the metric + halt-comment write;
+  # PIPELINE_WRITER is otherwise set to agent by dispatch.sh's parent env
+  # and bin/linear.sh refuses orchestrator-namespace writes from the agent
+  # lane (ENG-49 trust-model).
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2"
+  local d; d="$(issue_dir "$ident")"
+  local sidecar="${d}/.envelope-transcript-${stage}"
+  [[ -s "$sidecar" ]] || return 0
+
+  # Walk the transcript twice via a single jq invocation:
+  #  Pass 1: build tool_use_id → (file_path // command-trailing-token) map.
+  #  Pass 2: for each user.tool_result with is_error==true, classify
+  #    content via the 2-entry signature table; emit one TSV row per
+  #    denial: <signature>\t<path>.
+  # Substring match (no regex compilation inside --arg-bound jq strings —
+  # awkward to test). Aggregation to count + comma-separated signatures
+  # + comma-separated paths happens in shell post-jq for clarity.
+  local denials_tsv
+  # tool_use ids are assumed unique per dispatch (claude allocates them
+  # sequentially via the streaming protocol); `from_entries` keeps LAST
+  # on duplicate keys. The path token via `split(" ") | last` is
+  # best-effort labelling for the metric — consumers MUST NOT rely on
+  # this being a real path (OQ-6 bash-classifier commands like
+  # `bash bin/secret-probe-lint.sh` resolve to the .sh basename).
+  denials_tsv="$(jq -Rrn '
+    [inputs | (fromjson? // empty)] as $events
+    | ($events
+      | map(select(.type == "assistant")
+            | .message.content[]?
+            | select(.type == "tool_use")
+            | {key: .id, value: (.input.file_path // (.input.command // "" | split(" ") | last // ""))})
+      | from_entries) as $tu_map
+    | $events[]
+    | select(.type == "user")
+    | .message.content[]?
+    | select(.type == "tool_result" and (.is_error == true))
+    | (.content // "" | if type == "array" then map(.text // "") | join(" ") else tostring end) as $body
+    | (if ($body | contains("may only list files in the allowed working directories")) then "sandbox-path"
+       elif ($body | contains("This command requires approval")) then "bash-classifier"
+       else "" end) as $sig
+    | select($sig != "")
+    | ($tu_map[.tool_use_id] // "") as $p
+    | "\($sig)\t\($p)"
+  ' "$sidecar" 2>/dev/null)" || {
+    log "[sandbox-denial] jq scan failed for $ident/$stage; assuming no denials"
+    denials_tsv=""
+  }
+
+  [[ -n "$denials_tsv" ]] || return 0
+  # `printf '%s\n' "$x" | wc -l` relies on $() stripping trailing
+  # newlines from "$x" so the per-denial-row count matches `wc -l`. A
+  # future swap to `echo "$x"` would silently double-count on bash
+  # versions that echo a trailing newline differently — keep printf.
+  # count is deduplicated symmetrically with signatures and paths so
+  # `count=N signatures=… paths=…` reads coherently to operators
+  # (count = distinct (sig, path) pairs, not raw row count).
+  local count signatures paths
+  count="$(printf '%s\n' "$denials_tsv" | sort -u | wc -l | awk '{print $1}')"
+  signatures="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '{print $1}' | sort -u | paste -sd, -)"
+  paths="$(printf '%s\n' "$denials_tsv" | awk -F'\t' '$2 != "" {print $2}' | sort -u | paste -sd, -)"
+  # Sanitise paths for the metric notes blob AND for the Phase B
+  # contract-match comparison below. paths is agent-controlled (denied
+  # paths come from the agent's tool_use); the metric notes line is
+  # space-separated `k=v` fields, so an embedded space or `=` inside a
+  # denied path would split the notes fields and let
+  # `show_sandbox_denials`'s `capture("claude_version=…")` see a forged
+  # version. Replace both characters with underscores before
+  # interpolation. Side-effect: the Phase B `*"$_val"*` test (~line
+  # 1191) compares the sanitised paths against the un-sanitised sidecar
+  # resolver value — any future resolver whose value contains a literal
+  # space or `=` would silently miss in Phase B while Phase A still
+  # records. Acceptable today (no path-shaped resolver emits such
+  # values); revisit if a new resolver does. Brainstorm §D-002 flags
+  # paths as agent-controlled best-effort.
+  paths="${paths//[ =]/_}"
+
+  # Extract only the version token (first whitespace-delimited field).
+  # `claude --version` emits e.g. `1.0.93 (Claude Code)` with an embedded
+  # space + parenthesised suffix; without `awk '{print $1}'` the embedded
+  # space would split the metric notes' space-delimited fields and
+  # `show_sandbox_denials`'s `capture("claude_version=(?<v>\\S+)")` selector
+  # would silently truncate, leaking `(Claude` into the next pseudo-field.
+  local claude_version
+  claude_version="$(claude --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
+  [[ -n "$claude_version" ]] || claude_version="unknown"
+
+  # Phase B: read .rendered-paths-<stage> (if present) and check whether
+  # any denied path contains a resolved path-string. Gated on the
+  # orchestrator.sandbox_contract_halt config flag (default false).
+  local phase_b_enabled=0
+  if [[ -f "$CONFIG" ]]; then
+    local _cfg
+    _cfg="$(jq -r '.orchestrator.sandbox_contract_halt // false' "$CONFIG" 2>/dev/null || true)"
+    [[ "$_cfg" == "true" ]] && phase_b_enabled=1
+  fi
+
+  local outcome="detected"
+  local matched_token="" matched_path=""
+  local rp="${d}/.rendered-paths-${stage}"
+  if (( phase_b_enabled )) && [[ -s "$rp" ]] && [[ -n "$paths" ]]; then
+    # paths is a comma-separated single-line set. Split into an array
+    # once via here-string, then iterate denied paths against each
+    # resolved-path line. First match wins.
+    local _dp _denied _tok _val
+    IFS=, read -ra _denied <<< "$paths"
+    for _dp in "${_denied[@]}"; do
+      [[ -n "$_dp" ]] || continue
+      while IFS=$'\t' read -r _tok _val; do
+        [[ -n "$_val" ]] || continue
+        if [[ "$_dp" == *"$_val"* ]]; then
+          matched_token="$_tok"
+          matched_path="$_dp"
+          break 2
+        fi
+      done < "$rp"
+    done
+  fi
+
+  if [[ -n "$matched_token" ]]; then
+    outcome="contract-violation"
+  fi
+
+  # Always emit the metric row (Phase A behavior preserved even when
+  # Phase B fires — operator gets both the halt comment and the
+  # events.jsonl row for retrospective consumption).
+  bash "$SCRIPT_DIR/metrics.sh" sandbox_denial "$ident" "$stage" "$outcome" 0 \
+    "count=$count signatures=$signatures paths=$paths claude_version=$claude_version" \
+    || log "[sandbox-denial] metric emit failed for $ident/$stage"
+
+  if [[ -n "$matched_token" ]]; then
+    # Phase B halt path. Sidecar carries matched_path drawn from the
+    # space/`=` sanitised `paths` set (operator-read only; never parsed
+    # by parse_pipeline_marker) — the original attacker bytes survive
+    # in the raw `.envelope-transcript-<stage>` for forensic recovery.
+    # Linear comment body uses ONLY $matched_token (closed enumeration
+    # from PROMPT_RESOLVERS path-shaped allowlist) and orchestrator-
+    # generated $ident / $PIPELINE_DISPATCH_ID. Matches ENG-87
+    # review-iter-7 Critical 3 / ENG-155 D-004 sanitisation precedent.
+    printf 'sandbox-contract-violation: token=%s path=%s\n' \
+      "$matched_token" "$matched_path" \
+      > "${d}/.transcript-violation-${stage}"
+    local body
+    body="$(printf '<!-- pipeline: verdict result=halt reason=sandbox-contract-violation -->\n\nSandbox blocked agent write to a harness-contract path on dispatch_id=%s stage=%s.\n\nResolver token: `%s`\n\nThe orchestrator rendered this resolver value into the agent prompt and the sandbox denied the agent'\''s tool call against it. Inspect `%s/.transcript-violation-%s` for the denied path; expected fix is the project profile / `--add-dir` / tool-allowlist (NOT the agent prompt).\n\n**Resume:** fix the contract drift, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+      "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$matched_token" "$d" "$stage" "$ident")"
+    bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" \
+      || log "[sandbox-denial] halt-comment post failed for $ident/$stage; rc=29 still emitted"
+    return 29
+  fi
+  return 0
+}
+
 # ENG-122: plan-contract validator. Runs after dispatch for stage=planning only.
 # Locates the sibling .json alongside the prose .md in docs/plans/, then shells
 # out to bin/plan-schema.sh validate. Returns 0 = valid, 33 = malformed,
@@ -1094,24 +1278,67 @@ _validate_plan_contract() {
   today="$(date +%Y-%m-%d)"
   local plan_md plan_json schema_out schema_rc=0
 
-  # Trailing hyphen after ident_lower prevents eng-12 from matching eng-122
-  # or eng-1234. The pattern is bound to `today` so a cross-midnight
-  # re-dispatch on a plan written the day before will fail-open (correct:
-  # the plan is the prior day's; no false halt, just a benign skip).
-  plan_md="$(cd "$wt" && find docs/plans -maxdepth 1 -type f -iname "${today}-*${ident_lower}-*.md" 2>/dev/null | sort | head -1)"
-  # Fail-open if no plan .md for today: the exit-25 agent-contract validator
-  # handles the absent-md case upstream; double-halting here would be noise.
+  # ENG-179: gate planning→implementing on a HEAD-COMMITTED plan artifact.
+  # Worktree `find` (pre-ENG-179) saw dirty-but-uncommitted files; that
+  # let a session-limit death post verdict=pass + write files into the
+  # worktree but die before commit, and the transition would still fire
+  # because the orchestrator's partition-sweep runs AFTER verdict_handler.
+  # `git ls-tree -r HEAD` returns only committed paths, matching the
+  # issue's acceptance criterion ("present in the branch's commits, not
+  # just the dirty worktree"). Agent self-commit (AGENT_PROMPTS.md §2
+  # step 4) is now LOAD-BEARING for this gate's correctness; if that
+  # contract is ever softened, this gate must be reordered behind the
+  # partition-sweep commit (a structural change, not a softening here).
+  #
+  # Trailing hyphen after ident_lower preserves the existing eng-12 vs
+  # eng-122 boundary guard. The today-only date prefix was DROPPED
+  # (vs pre-ENG-179) so a cross-midnight planning re-dispatch on
+  # yesterday's committed plan still satisfies the gate; the schema
+  # validator's `issue_id` field check (^ENG-[0-9]+$ matched against
+  # --ident) re-asserts the artifact belongs to this ident, so the
+  # looser filename pattern cannot let a foreign plan satisfy the gate.
+  plan_md="$(cd "$wt" && git ls-tree --name-only -r HEAD -- docs/plans/ 2>/dev/null \
+    | grep -iE "^docs/plans/[0-9]{4}-[0-9]{2}-[0-9]{2}-.*${ident_lower}-.*\.md$" \
+    | sort | tail -1)"
   if [[ -z "$plan_md" ]]; then
-    log "plan-contract: no plan .md found for $ident matching ${today}-*${ident_lower}-*.md; fail-open"
-    return 0
+    _post_plan_contract_halt "$ident" "plan-contract-missing" \
+      "$(printf 'No committed plan artifact at docs/plans/<date>-*-%s-*.md in branch HEAD. The planning agent emitted verdict=pass but did not commit the canonical plan .md (and sibling .json).\n\nCommon cause: claude -p session-limit / out_of_credits death after marker emission but before file commit (operator memory: session-limit-false-halts). Inspect the dispatch log at $PROJECT_STATE_DIR/<slug>/logs/%s-planning-*.log to confirm before re-running.\n\nResume: bash bin/pipeline.sh decide %s --action continue' "$ident_lower" "$ident" "$ident")"
+    return 35
   fi
 
   plan_json="${plan_md%.md}.json"
 
+  # ENG-179: also gate the sibling .json on HEAD. plan-schema.sh's
+  # rc=35 (missing-file) reads the worktree filesystem and would accept
+  # a written-but-uncommitted .json; querying HEAD here closes that
+  # gap with the same shape used for the .md above.
+  if ! (cd "$wt" && git ls-tree --name-only -r HEAD -- "$plan_json" 2>/dev/null | grep -qxF "$plan_json"); then
+    _post_plan_contract_halt "$ident" "plan-contract-missing" \
+      "$(printf 'Sibling plan JSON not committed to HEAD at %s. The .md is in HEAD but the .json is not — schema validation cannot proceed.\n\nResume: bash bin/pipeline.sh decide %s --action continue' "$plan_json" "$ident")"
+    return 35
+  fi
+
   schema_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate "$wt/$plan_json" \
     --ident "$ident")" || schema_rc=$?
   case "$schema_rc" in
-    0)  return 0 ;;
+    0)
+      # ENG-157: JSON-clean → run MD-side validator on the sibling .md.
+      # Reuses the rc=33/34/35 taxonomy with a `plan-md-*` defect prefix
+      # (D-003) so operator triage can discriminate JSON- vs MD-side
+      # failures. _post_plan_contract_halt's <!-- → <\!-- sanitisation
+      # (verified by I-3 / ENG-122 INT5) covers the new strings unchanged.
+      # Short-circuit ordering pinned by I-5 / ENG-157 INT6.
+      local md_out md_rc=0
+      md_out="$(bash "$SCRIPT_DIR/plan-schema.sh" validate-md "$wt/$plan_md")" || md_rc=$?
+      case "$md_rc" in
+        0)  return 0 ;;
+        33) _post_plan_contract_halt "$ident" "plan-md-malformed"  "$md_out" ; return 33 ;;
+        34) _post_plan_contract_halt "$ident" "plan-md-incomplete" "$md_out" ; return 34 ;;
+        35) _post_plan_contract_halt "$ident" "plan-md-missing"    "$md_out" ; return 35 ;;
+        *)  _post_plan_contract_halt "$ident" "unexpected-md-rc" \
+              "md-validator returned unexpected rc=$md_rc; stdout: $md_out" ; return 33 ;;
+      esac
+      ;;
     33) _post_plan_contract_halt "$ident" "plan-contract-malformed"  "$schema_out" ; return 33 ;;
     34) _post_plan_contract_halt "$ident" "plan-contract-incomplete" "$schema_out" ; return 34 ;;
     35) _post_plan_contract_halt "$ident" "plan-contract-missing"    "$schema_out" ; return 35 ;;
@@ -1170,6 +1397,44 @@ _post_review_payload_halt() {
   local payload; payload="$(issue_dir "$ident")/verdict-review.json"
   local body
   body="$(printf '<!-- pipeline: verdict result=halt reason=review-payload-invalid -->\n\nReview-payload validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §11.' \
+    "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$payload" "$safe" "$ident" "$payload" "$ident")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+}
+
+# ENG-117: qa-payload validator. Filesystem detective — checks that the qa
+# agent wrote a well-formed $issue_dir/verdict-qa.json with current
+# dispatch_id. Returns 0=valid, 39=malformed, 40=incomplete,
+# 41=missing-file (caller halts).
+_validate_qa_payload() {
+  local ident="$1"
+  local payload; payload="$(issue_dir "$ident")/verdict-qa.json"
+  if [[ ! -f "$payload" ]]; then
+    _post_qa_payload_halt "$ident" "qa-payload-missing" \
+      "no verdict-qa.json at $payload"
+    return 41
+  fi
+  local out rc=0
+  out="$(bash "$SCRIPT_DIR/qa-payload-schema.sh" validate "$payload" \
+         --ident "$ident" --dispatch-id "${PIPELINE_DISPATCH_ID-}" 2>&1)" || rc=$?
+  case "$rc" in
+    0)  return 0 ;;
+    39) _post_qa_payload_halt "$ident" "qa-payload-malformed"  "$out" ; return 39 ;;
+    40) _post_qa_payload_halt "$ident" "qa-payload-incomplete" "$out" ; return 40 ;;
+    41) _post_qa_payload_halt "$ident" "qa-payload-missing"    "$out" ; return 41 ;;
+    *)  _post_qa_payload_halt "$ident" "unexpected-rc" \
+          "validator returned unexpected rc=$rc; stdout: $out" ; return 39 ;;
+  esac
+}
+
+# Posts a halt comment for a qa-payload violation. Mirrors
+# _post_review_payload_halt sanitisation: <!-- → <\!-- + tilde-fence wrap
+# so agent-controlled diagnostic strings can't hijack the marker parser.
+_post_qa_payload_halt() {
+  local ident="$1" defect="$2" raw="$3"
+  local safe="${raw//<!--/<\\!--}"
+  local payload; payload="$(issue_dir "$ident")/verdict-qa.json"
+  local body
+  body="$(printf '<!-- pipeline: verdict result=halt reason=qa-payload-invalid -->\n\nQA-payload validation failed on dispatch_id=%s stage=qa:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/qa-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage qa`. See `docs/runbooks/recovery.md` §11.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$payload" "$safe" "$ident" "$payload" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
@@ -1662,9 +1927,9 @@ main() {
         "plan-stage progress.md entry missing or malformed: $_viol_msg_31" 31
       rm -f "$_viol_file_31" "$prompt_file"
       exit 31
-    elif (( dispatch_rc == 39 || dispatch_rc == 40 || dispatch_rc == 41 )); then
-      # ENG-125: plan-stage init.sh detective halt. rc=39=malformed (bash -n
-      # fails), 40=incomplete (missing shape marker), 41=missing (no file).
+    elif (( dispatch_rc == 45 || dispatch_rc == 46 || dispatch_rc == 47 )); then
+      # ENG-125: plan-stage init.sh detective halt. rc=45=malformed (bash -n
+      # fails), 46=incomplete (missing shape marker), 47=missing (no file).
       # Mirrors the rc=31 sibling above — sidecar shape, policy, and recovery
       # are identical (skip-until-human-acts; `--action continue` after fix).
       # All three rc values route to the same arm because the policy is
@@ -1933,6 +2198,18 @@ main() {
           # continue` is the operator's recovery path.
           exit 29
         fi
+        # ENG-156: Phase A detective (always log-only); Phase B halt
+        # when config flag is on AND a PROMPT_RESOLVERS path is denied.
+        local _sd_rc=0
+        _emit_sandbox_denial_metric "$ident" "$stage" || _sd_rc=$?
+        if (( _sd_rc == 29 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "sandbox-contract-violation: orchestrator rendered a path the sandbox denied (inspect $(issue_dir "$ident")/.transcript-violation-${stage})" 29
+          # ENG-87 review C3 precedent: preserve the envelope-transcript
+          # sidecar on the halt path for forensic review. The next clean
+          # dispatch's pre-clean removes it.
+          exit 29
+        fi
         rm -f "$(issue_dir "$ident")/.envelope-transcript-${stage}" 2>/dev/null || true
         ;;
     esac
@@ -1969,6 +2246,24 @@ main() {
           classify_failure "$ident" "$stage" "skip-until-human-acts" \
             "review-payload-invalid: $(failure_outcome_for_exit "$_rev_rc")" "$_rev_rc"
           exit "$_rev_rc"
+        fi
+        ;;
+    esac
+  fi
+
+  # ENG-117: qa-payload validator. Post-dispatch; qa stage only.
+  # Halts with qa-payload-invalid if $issue_dir/verdict-qa.json is absent,
+  # malformed, or fails schema-v1 validation. Exit codes 39/40/41 map to
+  # the failure_outcome_for_exit taxonomy entries added in 75d2866.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      qa)
+        local _qa_payload_rc=0
+        _validate_qa_payload "$ident" || _qa_payload_rc=$?
+        if (( _qa_payload_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "qa-payload-invalid: $(failure_outcome_for_exit "$_qa_payload_rc")" "$_qa_payload_rc"
+          exit "$_qa_payload_rc"
         fi
         ;;
     esac

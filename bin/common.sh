@@ -289,9 +289,9 @@ assert_no_write_to_path() {
 
 # ENG-125: validate $issue_dir/init.sh shape. Returns:
 #   0  — well-formed (file exists, bash -n clean, all 4 shape markers present)
-#   39 — malformed (file exists but bash -n fails)
-#   40 — incomplete (file exists, syntax-clean, but ≥1 shape marker absent)
-#   41 — missing  (no file at the given path)
+#   45 — malformed (file exists but bash -n fails)
+#   46 — incomplete (file exists, syntax-clean, but ≥1 shape marker absent)
+#   47 — missing  (no file at the given path)
 # Caller writes the rc-specific diagnostic to its violation_file;
 # this helper writes diagnostics to STDOUT (caller captures).
 # Shape markers: column-0 comments matching `^# ─── <gate> ───$` (see for-loop
@@ -300,7 +300,7 @@ validate_init_sh() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
     printf 'init-sh-missing: %s\n' "$path"
-    return 41
+    return 47
   fi
   local bash_n_err
   if ! bash_n_err="$(bash -n "$path" 2>&1)"; then
@@ -308,7 +308,7 @@ validate_init_sh() {
     # triage doesn't have to re-run bash -n manually against the halted
     # worktree's init.sh.
     printf 'init-sh-malformed: bash -n failed for %s: %s\n' "$path" "$bash_n_err"
-    return 39
+    return 45
   fi
   # CRLF tolerance: an init.sh authored on Windows or via a CRLF-defaulting
   # editor will end every marker line with `…─\r\n`. The `$`-anchor would
@@ -329,7 +329,7 @@ validate_init_sh() {
     # iteration burned a ~5-10 minute plan dispatch on one marker at a time.
     # Naming every missing marker in a single diagnostic collapses the loop.
     printf 'init-sh-incomplete: missing shape marker %s\n' "${missing[*]}"
-    return 40
+    return 46
   fi
   return 0
 }
@@ -382,9 +382,12 @@ failure_outcome_for_exit() {
     36) printf 'review-payload-malformed' ;;
     37) printf 'review-payload-incomplete' ;;
     38) printf 'review-payload-missing' ;;
-    39) printf 'init-sh-malformed' ;;
-    40) printf 'init-sh-incomplete' ;;
-    41) printf 'init-sh-missing' ;;
+    39) printf 'qa-payload-malformed' ;;
+    40) printf 'qa-payload-incomplete' ;;
+    41) printf 'qa-payload-missing' ;;
+    45) printf 'init-sh-malformed' ;;
+    46) printf 'init-sh-incomplete' ;;
+    47) printf 'init-sh-missing' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac

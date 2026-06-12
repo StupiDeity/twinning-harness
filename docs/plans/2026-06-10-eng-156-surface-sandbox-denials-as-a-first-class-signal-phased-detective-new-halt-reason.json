@@ -1,0 +1,97 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-156",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/run-stage.sh gains _emit_sandbox_denial_metric: post-dispatch scan of .envelope-transcript-<stage> for tool_result.is_error:true rows matching the 2-entry signature table (sandbox-path, bash-classifier); emits one events.jsonl::sandbox_denial row per dispatch with count, signatures, paths, claude_version",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "^_emit_sandbox_denial_metric\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "may only list files in the allowed working directories", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "This command requires approval", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "metrics\\.sh sandbox_denial", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "claude --version 2>/dev/null", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/run-stage.sh post-dispatch site calls _emit_sandbox_denial_metric between the envelope validator clean-exit branch and the .envelope-transcript-<stage> rm -f; rc=29 from the detective triggers classify_failure with sandbox-contract-violation message and exits 29",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "_emit_sandbox_denial_metric \"\\$ident\" \"\\$stage\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "sandbox-contract-violation: orchestrator rendered a path the sandbox denied", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "if \\(\\( _sd_rc == 29 \\)\\)", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/run-stage.sh::_clear_current_stage_slots removes $d/.rendered-paths-${stage} alongside existing stage-summary and wait-json clears; function doc-comment block enumerates the new sidecar under Cleared",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "rm -f \"\\$d/\\.rendered-paths-\\$\\{stage\\}\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "\\.rendered-paths-\\$\\{stage\\}.*rewritten by render-prompt\\.sh", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "bin/render-prompt.sh gains _write_rendered_paths_sidecar emitting one TSV line per path-shaped resolver (brainstorm_file, plan_file, stage_summary_path, learned_rules_dir, progress_md_path, plan_json) and only path-shaped resolvers; main() invokes it after _RENDER_STAGE binding and before resolve_block_tokens",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "^_write_rendered_paths_sidecar\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "printf 'brainstorm_file\\\\t%s\\\\n'", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "printf 'plan_file\\\\t%s\\\\n'", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "printf 'progress_md_path\\\\t%s\\\\n'", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "_write_rendered_paths_sidecar \"\\$\\(issue_dir \"\\$issue_id\"\\)/\\.rendered-paths-\\$\\{stage\\}\"", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "bin/pipeline-events.json halt_reasons array gains sandbox-contract-violation; docs/pipeline-vocabulary.md regenerated to include the new token",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/pipeline-events.json", "pattern": "\"sandbox-contract-violation\"", "expect_match": true },
+        { "kind": "grep", "path": "docs/pipeline-vocabulary.md", "pattern": "sandbox-contract-violation", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-6",
+      "summary": "bin/status.sh gains show_sandbox_denials section function aggregating events.jsonl::sandbox_denial rows over the last 7 days bucketed by claude_version x stage x signatures; main() wires the new section between show_resource_baseline and show_cost_summary",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/status.sh", "pattern": "^show_sandbox_denials\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/status.sh", "pattern": "Sandbox denials \\(last 7d", "expect_match": true },
+        { "kind": "grep", "path": "bin/status.sh", "pattern": "select\\(\\.event == \"sandbox_denial\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/status.sh", "pattern": "show_sandbox_denials\\s*\\|\\| true", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-7",
+      "summary": "Test coverage: bin/run-stage-test.sh contains ENG-156 Case 156-A..G; bin/render-prompt-test.sh contains Case 156-W1..W3; bin/pipeline-test.sh contains ENG-156 registry-accept fixture",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "Case 156-A", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "Case 156-D", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "Case 156-G", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt-test.sh", "pattern": "Case 156-W1", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt-test.sh", "pattern": "Case 156-W3", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "ENG-156: sandbox-contract-violation accepted by registry", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-8",
+      "summary": "Full project-profile Test gate green: dispatch-test, run-stage-test, render-prompt-test, pipeline-test, common-test, metrics-test, classify-failure-test, plus pre-commit hook",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash bin/dispatch-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/render-prompt-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/pipeline-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/common-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/metrics-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/classify-failure-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-9",
+      "summary": "Plan and sibling JSON committed together on the feature branch as chore(pipeline): plan for ENG-156",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "docs/plans/2026-06-10-eng-156-surface-sandbox-denials-as-a-first-class-signal-phased-detective-new-halt-reason.md" },
+        { "kind": "file_exists", "path": "docs/plans/2026-06-10-eng-156-surface-sandbox-denials-as-a-first-class-signal-phased-detective-new-halt-reason.json" }
+      ]
+    }
+  ]
+}

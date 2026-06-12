@@ -270,9 +270,20 @@ _render_and_capture_stream() {
   if _matched_write="$(assert_no_write_to_path "$raw_capture" "/progress.md")"; then
     :   # rc 0: no match, fall through
   else
+    # SB-2 fix: a progress.md Write is a tool-choice mistake (Edit / `cat >>`
+    # was the correct append shape), NOT a correctness failure of the stage's
+    # actual work. When the agent ALSO posted a valid pass verdict / completion
+    # claim for THIS stage, the real work succeeded — returning rc=29 here would
+    # spuriously halt a clean pass (observed on ENG-150 reviewing, ENG-130 qa).
+    # Downgrade to a warning in that case; still hard-halt (rc=29) when no pass
+    # marker exists, which indicates a genuinely confused / no-verdict dispatch.
     printf '%s\n' "$_matched_write" > "$violation_file"
-    log "[assert] stage=$stage transcript invoked forbidden Write on progress.md: ${_matched_write}"
-    return 29
+    if grep -qE "result=pass stage=${stage}" <<<"${raw_capture:-}"; then
+      log "[assert] stage=$stage progress.md Write after a clean pass — downgrading to warning (append-only convention violated; not halting): ${_matched_write}"
+    else
+      log "[assert] stage=$stage transcript invoked forbidden Write on progress.md: ${_matched_write}"
+      return 29
+    fi
   fi
   # ENG-155 D-003: forbid agent Write/Edit against orchestrator-owned files
   # inside $issue_state_dir. D-001 widens the sandbox to include
@@ -337,7 +348,7 @@ _render_and_capture_stream() {
   # only (brainstorm OQ-3); other stages have no contractual writer yet.
   # Both are FILESYSTEM checks (brainstorm D-005). Helpers defined directly
   # below this function; each writes its diagnostic to $violation_file and
-  # returns 0 / typed rc (31 for progress-md, 39/40/41 for init.sh).
+  # returns 0 / typed rc (31 for progress-md, 45/46/47 for init.sh).
   #
   # M2 guard: skip if no result event so rc=124 (gtimeout) wins; with result
   # event, a missing/malformed artifact is a real protocol violation — rc
@@ -379,7 +390,7 @@ _assert_progress_md_entry() {
   return 0
 }
 
-# ENG-125 — stage-gated to planning; rc=39/40/41 map to
+# ENG-125 — stage-gated to planning; rc=45/46/47 map to
 # init-sh-{malformed,incomplete,missing} in failure_outcome_for_exit.
 _assert_init_sh_well_formed() {
   local issue_dir="$1" violation_file="$2" stage="$3"
@@ -555,9 +566,9 @@ allowed_tools_for() {
     planning)       base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git log:*),Bash(git diff:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
     implementing)   base='Read,Write,Edit,Grep,Glob,TaskCreate,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/metrics.sh:*),Bash(bash bin/metrics.sh:*)' ;;
     ui)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git add:*),Bash(git rm:*),Bash(git mv:*),Bash(git restore:*),Bash(git commit:*),Bash(git checkout:*),Bash(git switch:*),Bash(git fetch:*),Bash(git pull:*),Bash(git push:*),Bash(git rebase:*),Bash(git merge:*),Bash(git branch:*),Bash(git stash:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git rev-list:*),Bash(git for-each-ref:*),Bash(git tag:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*)' ;;
-    reviewing)      base='Read,Write,Grep,Glob,TaskCreate,Agent,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
+    reviewing)      base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr review:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
     qa)             base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git:*),Bash(jq:*),Bash(awk:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*)' ;;
-    building)       base='Read,Write,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*)' ;;
+    building)       base='Read,Write,Edit,Grep,Glob,Bash(git fetch:*),Bash(git clone:*),Bash(git rebase:*),Bash(gh run:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(gh pr edit:*),Bash(gh pr merge:*),Bash(jq:*),Bash(mktemp:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*)' ;;
     released)       base='Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(gh release view:*),Bash(gh release list:*),Bash(jq:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/slack.sh:*),Bash(bash bin/slack.sh:*),Bash(bash .pipeline/bin/metrics.sh:*),Bash(bash bin/metrics.sh:*)' ;;
     retrospective)  base='Read,Write,Edit,Grep,Glob,TaskCreate,Agent,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-list:*),Bash(git describe:*),Bash(jq:*),Bash(awk:*),Bash(bash .pipeline/bin/linear.sh:*),Bash(bash bin/linear.sh:*),Bash(bash .pipeline/bin/pipeline.sh:*),Bash(bash bin/pipeline.sh:*),Bash(bash .pipeline/bin/guards.sh:*),Bash(bash bin/guards.sh:*),Bash(bash .pipeline/bin/metrics.sh:*),Bash(bash bin/metrics.sh:*)' ;;
     *)              die "no allowed-tools profile for stage: $1" ;;

@@ -51,9 +51,9 @@ echo "# ─── smoke ───"
 :
 EOF
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
-  pass_at "T_adv_marker_in_double_quoted_argument: \`echo \"# ─── smoke ───\"\` (line starts with 'e') → rc=40 (^# anchor rejects)"
+  pass_at "T_adv_marker_in_double_quoted_argument: \`echo \"# ─── smoke ───\"\` (line starts with 'e') → rc=46 (^# anchor rejects)"
 else
   fail_at "T_adv_marker_in_double_quoted_argument" "rc=$rc out='$out'"
 fi
@@ -76,22 +76,22 @@ INIT="$FIXTURE_DIR/t-trailing-ws.sh"
   printf '%s\n' ':'
 } > "$INIT"
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
-  pass_at "T_adv_marker_with_trailing_whitespace: trailing spaces → rc=40 (\$-anchor pinned)"
+  pass_at "T_adv_marker_with_trailing_whitespace: trailing spaces → rc=46 (\$-anchor pinned)"
 else
   fail_at "T_adv_marker_with_trailing_whitespace" "rc=$rc out='$out'"
 fi
 
 # ─── T_adv_zero_byte_file ───────────────────────────────────────────
 # Empty init.sh → bash -n is clean on empty input; ALL four markers are
-# missing; detective returns rc=40 with the collect-all-missing diagnostic.
+# missing; detective returns rc=46 with the collect-all-missing diagnostic.
 INIT="$FIXTURE_DIR/t-empty.sh"
 : > "$INIT"
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
-  pass_at "T_adv_zero_byte_file: empty file → rc=40 (incomplete, not malformed)"
+  pass_at "T_adv_zero_byte_file: empty file → rc=46 (incomplete, not malformed)"
 else
   fail_at "T_adv_zero_byte_file" "rc=$rc out='$out'"
 fi
@@ -137,9 +137,9 @@ COMMENT
 :
 EOF
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
-  pass_at "T_adv_marker_inside_comment_block: heredoc-indented marker → rc=40 (column-0 anchor pinned)"
+  pass_at "T_adv_marker_inside_comment_block: heredoc-indented marker → rc=46 (column-0 anchor pinned)"
 else
   fail_at "T_adv_marker_inside_comment_block" "rc=$rc out='$out'"
 fi
@@ -214,12 +214,12 @@ set -euo pipefail
 :
 EOF
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"# ─── smoke ───"* ]] \
    && [[ "$out" == *"# ─── typecheck ───"* ]] \
    && [[ "$out" == *"# ─── lint ───"* ]] \
    && [[ "$out" == *"# ─── test ───"* ]]; then
-  pass_at "T_adv_collect_all_missing: all four markers absent → rc=40 + diagnostic names every missing marker"
+  pass_at "T_adv_collect_all_missing: all four markers absent → rc=46 + diagnostic names every missing marker"
 else
   fail_at "T_adv_collect_all_missing" "rc=$rc out='$out'"
 fi
@@ -257,7 +257,7 @@ fi
 # of `# ─── smoke ───` (three U+2500 BOX DRAWINGS LIGHT HORIZONTAL glyphs).
 # The two render almost identically in many fonts but are different bytes
 # entirely. The matcher's `^# ─── <gate> ───$` regex requires the unicode
-# triple-dash on both sides; the ASCII form must be treated as ABSENT → rc=40.
+# triple-dash on both sides; the ASCII form must be treated as ABSENT → rc=46.
 # Most likely real-world emission failure for this contract.
 INIT="$FIXTURE_DIR/t-ascii-em-dash.sh"
 cat > "$INIT" <<'EOF'
@@ -273,9 +273,9 @@ set -euo pipefail
 :
 EOF
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) \
+if (( rc == 46 )) \
    && [[ "$out" == *"init-sh-incomplete: missing shape marker"* && "$out" == *"# ─── smoke ───"* ]]; then
-  pass_at "T_adv_ascii_em_dash: ASCII '# --- smoke ---' → rc=40 (unicode box-drawing required)"
+  pass_at "T_adv_ascii_em_dash: ASCII '# --- smoke ---' → rc=46 (unicode box-drawing required)"
 else
   fail_at "T_adv_ascii_em_dash" "rc=$rc out='$out'"
 fi
@@ -283,15 +283,15 @@ fi
 # ─── T_adv_shebang_only_file ────────────────────────────────────────
 # A file with only a shebang (and possibly set -euo pipefail) but NO
 # shape markers → bash -n is clean (valid syntax) but all four markers
-# are absent → expected rc=40. This differs from the zero-byte test:
+# are absent → expected rc=46. This differs from the zero-byte test:
 # the file is non-empty and syntactically valid but structurally empty.
 # Pins that a structurally minimal but marker-free file takes the
 # "incomplete" path, not the "malformed" path.
 INIT="$FIXTURE_DIR/t-shebang-only.sh"
 printf '#!/usr/bin/env bash\nset -euo pipefail\n' > "$INIT"
 rc=0; out="$(validate_init_sh "$INIT" 2>&1)" || rc=$?
-if (( rc == 40 )) && [[ "$out" == *"init-sh-incomplete: missing shape marker"* ]]; then
-  pass_at "T_adv_shebang_only_file: shebang + set -e, no markers → rc=40 (incomplete, not malformed)"
+if (( rc == 46 )) && [[ "$out" == *"init-sh-incomplete: missing shape marker"* ]]; then
+  pass_at "T_adv_shebang_only_file: shebang + set -e, no markers → rc=46 (incomplete, not malformed)"
 else
   fail_at "T_adv_shebang_only_file" "rc=$rc out='$out'"
 fi

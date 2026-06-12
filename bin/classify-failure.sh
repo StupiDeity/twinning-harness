@@ -185,7 +185,7 @@ classify_failure() {
           ;;
       esac
       comment_body+="$(printf '\n\n**Evidence:**\n- pipeline_content_hash: `%s`\n- branch_head_sha: `%s`\n' "$current_hash" "${current_sha:-<none>}")"
-      bash "$_CFS_SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body" || true
+      bash "$_CFS_SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "$sig" --body "$comment_body" || true
       ;;
     retry-immediately)
       local sig="retry-pending/$stage/$issue"
@@ -193,7 +193,7 @@ classify_failure() {
       local comment_body
       comment_body="$(printf '<!-- meta: metric name=transient-retry stage=%s attempt=%d -->\n\nPipeline: transient `%s`-stage failure — %s\n\n**Status:** retry-pending (attempt %d of 2 before auto-escalation to `skip-until-code-changes`).\n**Recorded at:** %s\n**Branch:** %s\n\nThe pipeline will re-dispatch this stage on the next tick. If the same evidence reproduces this failure %d more time(s), the orchestrator will halt the issue with `pipeline:skip-until-code-changes` for operator visibility.\n\n**Evidence:**\n- pipeline_content_hash: `%s`\n- branch_head_sha: `%s`\n' \
         "$stage" "$retry_count" "$stage" "$effective_reason" "$retry_count" "$recorded_at" "${branch:-none}" "$remaining" "$current_hash" "${current_sha:-<none>}")"
-      bash "$_CFS_SCRIPT_DIR/linear.sh" add-or-update-comment "$sig" "$issue" "$comment_body" || true
+      bash "$_CFS_SCRIPT_DIR/linear.sh" add-comment "$issue" --sig "$sig" --body "$comment_body" || true
       ;;
   esac
 

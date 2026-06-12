@@ -1,0 +1,64 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-117",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/qa-payload-schema.sh validator CLI exists, ends with the source-and-test sentinel, and rejects schema-v2 documents",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/qa-payload-schema.sh" },
+        { "kind": "grep", "path": "bin/qa-payload-schema.sh", "pattern": "BASH_SOURCE\\[0\\]", "expect_match": true },
+        { "kind": "grep", "path": "bin/qa-payload-schema.sh", "pattern": "qa_payload_schema_version", "expect_match": true },
+        { "kind": "grep", "path": "bin/qa-payload-schema.sh", "pattern": "--dispatch-id", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/run-stage.sh has _validate_qa_payload + _post_qa_payload_halt wired into the post-dispatch hook block, and _clear_current_stage_slots clears verdict-${stage}.json",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "^_validate_qa_payload", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "^_post_qa_payload_halt", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "ENG-117: qa-payload validator", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "rm -f \"\\$d/verdict-\\$\\{stage\\}\\.json\"", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "Exit-code taxonomy includes 36/37/38 and halt_reasons registry includes qa-payload-invalid",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "36\\) printf 'qa-payload-malformed'", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "37\\) printf 'qa-payload-incomplete'", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "38\\) printf 'qa-payload-missing'", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-events.json", "pattern": "qa-payload-invalid", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "AGENT_PROMPTS.md §6 QA Agent instructs emission of verdict-qa.json (step 8 + Output bullet)",
+      "pass_criteria": [
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Emit dimensional grading payload", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "verdict-qa\\.json", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "qa_payload_schema_version", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "Tests cover well-formed, missing, malformed, incomplete payloads + adversarial corner cases + integration with run-stage's detective scan",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/qa-payload-schema-test.sh" },
+        { "kind": "file_exists", "path": "bin/qa-payload-schema-adversarial-test.sh" },
+        { "kind": "smoke", "command": "bash bin/qa-payload-schema-test.sh", "expect_exit": 0 },
+        { "kind": "smoke", "command": "bash bin/qa-payload-schema-adversarial-test.sh", "expect_exit": 0 },
+        { "kind": "smoke", "command": "bash bin/run-stage-test.sh", "expect_exit": 0 }
+      ]
+    },
+    {
+      "id": "F-6",
+      "summary": "Project profile tool allowlist lists the new test scripts in both implementing and qa blocks",
+      "pass_criteria": [
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "Bash\\(bash bin/qa-payload-schema-test\\.sh:\\*\\)", "expect_match": true },
+        { "kind": "grep", "path": "learned-rules/harness/project-profile.md", "pattern": "Bash\\(bash bin/qa-payload-schema-adversarial-test\\.sh:\\*\\)", "expect_match": true }
+      ]
+    }
+  ]
+}

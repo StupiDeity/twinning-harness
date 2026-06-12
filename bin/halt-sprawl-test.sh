@@ -64,7 +64,7 @@ case "$1" in
     f="$FIXTURE_DIR/comments-$2.json"
     [[ -f "$f" ]] && cat "$f" || printf '[]'
     ;;
-  remove-label|add-label|swap-stage|transition-state|add-comment|add-or-update-comment|refresh-cache|stage-of|has-label)
+  remove-label|add-label|swap-stage|transition-state|add-comment|refresh-cache|stage-of|has-label)
     exit 0 ;;
   *) exit 0 ;;
 esac

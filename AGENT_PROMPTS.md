@@ -31,18 +31,18 @@
 
 ## Pipeline comment dedup convention
 
-**Comment dedup (ENG-15):** Use `.pipeline/bin/linear.sh add-or-update-comment <sig> <ident> --body - <<'EOF' ... EOF` (heredoc piped via stdin; ENG-55) for any comment that is a logical "latest state" update — TDD-evidence, completion-checklist, progress notes. The `<sig>` is `tdd-evidence/<stage>/<issue>` for TDD-evidence, `completion/<stage>/<issue>` for completion-checklist, and should follow the pattern `<class>/<stage>/<issue>` for new classes. Ad-hoc one-shot comments may continue to use `add-comment` — the hash-dedup safety net suppresses exact-content duplicates automatically. Multi-line bodies MUST go through stdin (`--body -`) — do NOT write scratch `.md` files at the worktree root (they leak into `partition_dirty_paths` and cannot be `rm`'d, since no stage allow-lists `Bash(rm:*)`).
+**Comment ledger (ENG-15, ENG-150):** Use `.pipeline/bin/linear.sh add-comment <ident> --sig <category>/<stage>/<issue> --body - <<'EOF' ... EOF` (heredoc piped via stdin; ENG-55) for any comment that is a logical "latest state" update — TDD-evidence, completion-checklist, progress notes. The `<sig>` shape is `tdd-evidence/<stage>/<issue>` for TDD-evidence, `completion/<stage>/<issue>` for completion-checklist, and should follow the pattern `<class>/<stage>/<issue>` for new classes. The chokepoint suffixes `/d<NNNN>` (from `PIPELINE_DISPATCH_ID`) and appends `<!-- meta: dedup key=<full-sig> -->` for operator grep. **Every emission appends a fresh chronological comment** — there is no in-place update path. Ad-hoc one-shot comments may continue to use `add-comment` without `--sig`; the hash-dedup safety net still suppresses exact-content duplicates on that no-sig path. Multi-line bodies MUST go through stdin (`--body -`) — do NOT write scratch `.md` files at the worktree root (they leak into `partition_dirty_paths` and cannot be `rm`'d, since no stage allow-lists `Bash(rm:*)`).
 
-**Retry with the same sig — never mutate (ENG-57).** `add-or-update-comment` is idempotent: if a comment with the given sig already exists, the body is overwritten in place; no new comment is created. If a post appears to have failed (no confirmation echoed in tool output, transient error, etc.), **retry with the exact same sig**. Do NOT escape the sig with `-v2`, `-v3`, `-trial`, `-retry`, or any other suffix variant — those mutations defeat dedup and produce permanent duplicate comments on the Linear thread (Linear has no comment-delete mechanism, so the litter accumulates forever). ENG-44's dogfood produced 6 such mutated-sig duplicates on a single ticket; do not reproduce that pattern.
+**Retry with the same sig — never mutate (ENG-57, ENG-150).** Post-ENG-150 `add-comment --sig` is append-only: each emission posts a fresh chronological comment carrying `<!-- meta: dedup key=<sig>/d<NNNN> -->` for operator grep. If a post appears to have failed (no confirmation echoed in tool output, transient error, etc.), **retry with the exact same sig**. Do NOT escape the sig with `-v2`, `-v3`, `-trial`, `-retry`, or any other suffix variant — those mutations defeat the operator's prefix-match recipe (and a successful first post followed by a mutated-sig retry still leaves two comments on the thread). Linear has no comment-delete mechanism, so the litter accumulates forever. ENG-44's dogfood produced 6 such mutated-sig duplicates on a single ticket; do not reproduce that pattern.
 
 **Marker shapes — only two families exist (ENG-60).** Every HTML-comment marker you emit MUST be one of:
 
 - `<!-- pipeline: <event> [k=v]... -->` — verdicts/decisions/transitions (post via `bash bin/pipeline.sh event ...`, never hand-crafted; see the Verdict-marker protocol section below).
 - `<!-- meta: <kind> [k=v]... -->` — bookkeeping (`dedup`, `metric`). Only `dedup` is agent-emitted: `<!-- meta: dedup key=<class>/<stage>/<issue> -->`, written into the stage-summary file's first line.
 
-The legacy hyphenated shapes — `<!-- pipeline-stage-summary: ... -->`, `<!-- pipeline-rejection: ... -->`, `<!-- pipeline-halt: ... -->`, `<!-- pipeline-wait: ... -->`, `<!-- pipeline-decision: ... -->`, `<!-- pipeline-sig: ... -->`, `<!-- pipeline-metric: ... -->`, `<!-- pipeline-transition: ... -->` — are **REMOVED**. `bin/linear.sh::add_or_update_comment` has a lane-fence (PR #44) that **rejects any comment body containing a legacy `<!-- pipeline-<word>: ... -->` marker** with rc=14, and the orchestrator strips them defensively from your stage summary as a last resort. Do not emit them. If your training memory recalls these shapes, override it: the new vocabulary is the only one the harness reads or writes. ENG-64 implementing halted on 2026-05-05 because the agent prefixed the stage-summary file with both shapes — only emit the `<!-- meta: dedup ... -->` form.
+The legacy hyphenated shapes — `<!-- pipeline-stage-summary: ... -->`, `<!-- pipeline-rejection: ... -->`, `<!-- pipeline-halt: ... -->`, `<!-- pipeline-wait: ... -->`, `<!-- pipeline-decision: ... -->`, `<!-- pipeline-sig: ... -->`, `<!-- pipeline-metric: ... -->`, `<!-- pipeline-transition: ... -->` — are **REMOVED**. `bin/linear.sh::add_comment` has a lane-fence (PR #44) that **rejects any comment body containing a legacy `<!-- pipeline-<word>: ... -->` marker** with rc=14, and the orchestrator strips them defensively from your stage summary as a last resort. Do not emit them. If your training memory recalls these shapes, override it: the new vocabulary is the only one the harness reads or writes. ENG-64 implementing halted on 2026-05-05 because the agent prefixed the stage-summary file with both shapes — only emit the `<!-- meta: dedup ... -->` form.
 
-**Header line (ENG-151).** Every `add-comment` / `add-or-update-comment` you post is auto-prepended with `[<ident> · <stage> · <dispatch-id-tail> · <iso-ts> · <actor>]` by the chokepoint, followed by a derived `<EVENT-TYPE> — <summary>` line (the event-type is derived from the body's pipeline/meta marker or the sig). You do NOT manage these lines — the chokepoint owns them. Do NOT emit your own bracketed `[ENG-N · …]` first line; the chokepoint's agent-lane detective REJECTS hand-rolled headers with rc=14 (`legacy-marker-write`). If `PIPELINE_DISPATCH_ID` or `PIPELINE_STAGE` is missing in an agent-lane invocation, the chokepoint exits rc=15 (`header-missing-inputs`). Both are configured by `bin/dispatch.sh::main` before your subshell starts; you do not set them yourself.
+**Header line (ENG-151).** Every `add-comment` you post is auto-prepended with `[<ident> · <stage> · <dispatch-id-tail> · <iso-ts> · <actor>]` by the chokepoint, followed by a derived `<EVENT-TYPE> — <summary>` line (the event-type is derived from the body's pipeline/meta marker or the `--sig` value). You do NOT manage these lines — the chokepoint owns them. Do NOT emit your own bracketed `[ENG-N · …]` first line; the chokepoint's agent-lane detective REJECTS hand-rolled headers with rc=14 (`legacy-marker-write`). If `PIPELINE_DISPATCH_ID` or `PIPELINE_STAGE` is missing in an agent-lane invocation, the chokepoint exits rc=15 (`header-missing-inputs`). Both are configured by `bin/dispatch.sh::main` before your subshell starts; you do not set them yourself.
 
 ---
 
@@ -92,7 +92,8 @@ Hard rules:
 **Freshness rule:** the Verdict Handler considers only markers newer than the
 most recent `<!-- pipeline: transition ... -->` comment, and picks the latest
 verdict-shaped marker among those. Verdict comments are append-only — use
-`linear.sh add-comment`, NOT `add-or-update-comment`.
+`linear.sh add-comment` (no `--sig` for verdict markers; the pipeline-marker
+body content carries the discoverability tag).
 
 ### Label vocabulary — lane-aware write matrix (ENG-41)
 
@@ -222,9 +223,9 @@ below. The slot list is additive to this contract — always follow the contract
 ```
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-or-update-comment` appears to have failed, retry with the same sig — never mutate it (ENG-57).** `add-or-update-comment` is idempotent: same sig + new body overwrites in place. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat dedup and produce permanent duplicate Linear comments. **Do NOT prepend env-var assignments** (e.g. `PIPELINE_WRITER=agent`, `LINEAR_API_KEY=...`) **to your `bash bin/...` invocations** — the sandbox allowlist matcher anchors on the FIRST token of the command line, and an env-var assignment is not `bash`, so the `Bash(bash bin/pipeline.sh:*)` / `Bash(bash bin/linear.sh:*)` patterns fail to match. The orchestrator already exports `PIPELINE_WRITER=agent` into your dispatch via `bin/dispatch.sh::main`; the prefix is redundant AND unmatchable. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-comment --sig` appears to have failed, retry with the same sig — never mutate it (ENG-57, ENG-150).** Post-ENG-150 `add-comment --sig` is append-only: same sig + new body posts a fresh chronological comment carrying the dispatch-suffixed `<!-- meta: dedup key=… -->` marker. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat the operator's prefix-match recipe and produce permanent stray comments. **Do NOT prepend env-var assignments** (e.g. `PIPELINE_WRITER=agent`, `LINEAR_API_KEY=...`) **to your `bash bin/...` invocations** — the sandbox allowlist matcher anchors on the FIRST token of the command line, and an env-var assignment is not `bash`, so the `Bash(bash bin/pipeline.sh:*)` / `Bash(bash bin/linear.sh:*)` patterns fail to match. The orchestrator already exports `PIPELINE_WRITER=agent` into your dispatch via `bin/dispatch.sh::main`; the prefix is redundant AND unmatchable. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
-**Dispatch identifier and freshness contract (ENG-87):** **Contract:** Every Linear comment your dispatch authors MUST carry the auto-injected `<!-- meta: dispatch id=... stage=... -->` marker on the wire. Because `bash bin/linear.sh` is the only allow-listed Linear write path and the chokepoint injects the marker unconditionally when `PIPELINE_DISPATCH_ID` is set, you get the marker automatically — no agent action required. A post-dispatch detective halts the dispatch with `dispatch-envelope-violation` if any transcript-visible bypass attempt is found (see Rules 1-3 below). The orchestrator allocates a per-dispatch identifier `{dispatch_id}` of the form `ENG-N-d<NNNN>` (monotonic per issue) before invoking your `claude -p` subprocess. It is rendered into your prompt via `render-prompt.sh` and exported as `PIPELINE_DISPATCH_ID` so every `bash bin/linear.sh add-comment` or `add-or-update-comment` call you make auto-stamps a `<!-- meta: dispatch id={dispatch_id} stage=<your stage> -->` marker on the comment body. You do NOT manage this marker; the chokepoint owns it. Rules: (1) **Do NOT manually emit `<!-- meta: dispatch id=... -->` markers** — the chokepoint at `bin/linear.sh::add_comment` / `add_or_update_comment` auto-injects them when `PIPELINE_DISPATCH_ID` is set; manual emission is a contract violation, the injector is idempotent and silently de-duplicates, but the convention is "the chokepoint owns this marker." (2) **Do NOT post Linear comments via `mcp__plugin_linear_*` or `curl https://api.linear.app`** — both forms bypass the auto-injection; the post-dispatch envelope validator scans your transcript and halts with `verdict halt --reason dispatch-envelope-violation` (exit 29) on either invocation. (3) **Do NOT read the `dispatch_id` of a previous cycle to "carry forward" any state** — each dispatch is a fresh slate; loopback inputs come from the SOURCE stage's stage-summary file (which the orchestrator preserves; YOUR stage-summary file is cleared at THIS dispatch's start, so re-emitting it via `Write` with full content is mandatory — see the per-stage Output bullets and the §5 ENG-71/ENG-77 precedent).
+**Dispatch identifier and freshness contract (ENG-87):** **Contract:** Every Linear comment your dispatch authors MUST carry the auto-injected `<!-- meta: dispatch id=... stage=... -->` marker on the wire. Because `bash bin/linear.sh` is the only allow-listed Linear write path and the chokepoint injects the marker unconditionally when `PIPELINE_DISPATCH_ID` is set, you get the marker automatically — no agent action required. A post-dispatch detective halts the dispatch with `dispatch-envelope-violation` if any transcript-visible bypass attempt is found (see Rules 1-3 below). The orchestrator allocates a per-dispatch identifier `{dispatch_id}` of the form `ENG-N-d<NNNN>` (monotonic per issue) before invoking your `claude -p` subprocess. It is rendered into your prompt via `render-prompt.sh` and exported as `PIPELINE_DISPATCH_ID` so every `bash bin/linear.sh add-comment` call you make auto-stamps a `<!-- meta: dispatch id={dispatch_id} stage=<your stage> -->` marker on the comment body. You do NOT manage this marker; the chokepoint owns it. Rules: (1) **Do NOT manually emit `<!-- meta: dispatch id=... -->` markers** — the chokepoint at `bin/linear.sh::add_comment` auto-injects them when `PIPELINE_DISPATCH_ID` is set; manual emission is a contract violation, the injector is idempotent and silently de-duplicates, but the convention is "the chokepoint owns this marker." (2) **Do NOT post Linear comments via `mcp__plugin_linear_*` or `curl https://api.linear.app`** — both forms bypass the auto-injection; the post-dispatch envelope validator scans your transcript and halts with `verdict halt --reason dispatch-envelope-violation` (exit 29) on either invocation. (3) **Do NOT read the `dispatch_id` of a previous cycle to "carry forward" any state** — each dispatch is a fresh slate; loopback inputs come from the SOURCE stage's stage-summary file (which the orchestrator preserves; YOUR stage-summary file is cleared at THIS dispatch's start, so re-emitting it via `Write` with full content is mandatory — see the per-stage Output bullets and the §5 ENG-71/ENG-77 precedent).
 
 **Stage summary file — overwrite-on-every-dispatch contract (ENG-77/ENG-71):** Every per-stage Output section instructs you to write the stage summary file at `{stage_summary_path}` as the LAST step. **MANDATORY — overwrite on every dispatch.** Use `Write` with the full report content; do not read-then-conditionally-skip. The orchestrator reads this file verbatim and posts it as the Linear `completion/<stage>/{issue_id}` summary; a stale file means stale Linear posts and stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised the ENG-71 (May 2026) review-loop incident: any stage-summary file going unwritten on a re-dispatch is a structural staleness hazard, not just a §5 problem. Per-stage bullets retain the file path + slot list (artifact link, TL;DR, status, notes); the overwrite contract here is the single source of truth — do not re-state it in §§1-7.
 
@@ -342,9 +343,9 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    brainstorm doc itself (under an "## Persona review" section) — that's the durable
    record. The Linear comment is the headline, not the audit trail.
 
-   Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/brainstorm/{issue_id}" …` yourself —
+   Do NOT call `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "completion/brainstorm/{issue_id}" …` yourself —
    that path is now orchestrator-owned. Exception-path markers (`meta: metric name=contract_gap`,
-   etc.) continue to use `linear.sh add-comment` as before.
+   etc.) continue to use `linear.sh add-comment` (without `--sig`) as before.
 6. **Post the verdict marker** (MANDATORY). Before exiting, post exactly ONE
    additional append-only comment carrying the verdict for your outcome:
 
@@ -360,9 +361,11 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
      scope-violation | protocol-violation | dispatch-timeout | pr-opened-too-early
 
    `bin/pipeline.sh event` validates the token against the registry and posts the
-   comment via `linear.sh add-comment` (append-only). Do NOT hand-craft marker
-   bodies or use `add-or-update-comment` for verdicts. Do NOT touch `pipeline:halted`
-   — orchestrator applies it after dispatch (ENG-56).
+   comment via `linear.sh add-comment` (append-only; pipeline-marker bodies bypass
+   hash dedup so retries land as fresh chronological comments). Do NOT hand-craft
+   marker bodies or use `linear.sh add-comment --sig` for verdicts — verdict markers
+   ride in the body itself. Do NOT touch `pipeline:halted` — orchestrator applies it
+   after dispatch (ENG-56).
 ```
 
 ## 2. Plan Agent
@@ -495,12 +498,13 @@ Your task:
 - Required sections, in this order:
   1. Goal — one sentence, a verifiable outcome
   2. Assumption Inventory — see "Codebase-fact verification" below
-  3. File Structure — new + modified files, one line per entry
-  4. API Contract — machine-readable block (see below) if the project has an FE↔BE API surface and any of it changes (skip with "no new API surface" otherwise)
-  5. Backend Tasks — for the Implementation Agent
-  6. Frontend Tasks — for the UI Agent
-  7. Failure Mode → Test Map — see below
-  8. Test Strategy — unit / integration / smoke / adversarial coverage intent
+  3. System invariants — REQUIRED H2 section. One bullet per runtime assumption this plan depends on; each bullet MUST carry a `verified_by:` token of the form `<path>:<test-name>` (existing test pinning the assumption) OR `task:T<N>` (a task in THIS plan that adds the pinning test). Validator: `bin/plan-schema.sh validate-md`; defect tokens `plan-md-incomplete:` / `plan-md-malformed:` / `plan-md-missing:` route through `_post_plan_contract_halt` and halt with `plan-contract-invalid`.
+  4. File Structure — new + modified files, one line per entry
+  5. API Contract — machine-readable block (see below) if the project has an FE↔BE API surface and any of it changes (skip with "no new API surface" otherwise)
+  6. Backend Tasks — for the Implementation Agent
+  7. Frontend Tasks — for the UI Agent
+  8. Failure Mode → Test Map — see below
+  9. Test Strategy — unit / integration / smoke / adversarial coverage intent
 
 Codebase-fact verification (MANDATORY):
 For every file in File Structure that is being *modified* (not newly created), the
@@ -617,6 +621,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
     `learned-rules/harness/project-profile.md`, so the agent-side gate list
     silently drifted from the on-disk test set and the post-merge review's
     minor #4 caught it only after an implement-loopback edit halted on scope.
+    Then run the **System invariants resolution** sweep (ENG-157): for every bullet in the plan's `## System invariants` H2 section, parse the `verified_by:` token. If the token is `<path>:<test-name>`, open `<path>` and verify `<test-name>` appears literally (function definition, test-block label, or grep-anchored assertion); unresolved reference is a P0. If the token is `task:T<N>`, locate `### Task <N>:` in this same plan markdown and verify its `touches:` field names at least one file matching the project's gate-runnable glob (per the profile's "Build & test gates" Test command); unresolved task, missing task, or task that touches no gate-runnable test file is a P0. The structural shape (presence of the H2 section, ≥1 bullet, parseable `verified_by:`) is pinned by the post-dispatch `cmd_validate_md`; this persona's role is semantic resolution.
   - **scope** — every task and every File Structure entry must trace to a brainstorm
     decision or an accepted ADR. Flag gold-plating; flag any task whose `touches` list
     strays outside the declared File Structure.
@@ -652,6 +657,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    - a non-empty `git log --oneline HEAD..origin/main` at plan time AND no Task 0
      "Rebase onto origin/main" in Backend Tasks (see "Branch-base freshness check"
      above) — the plan is drafting against a stale branch base.
+   - a `## System invariants` section bullet whose `verified_by:` token doesn't resolve to a real test (`<path>:<test-name>` not found in `<path>`) or to a real in-plan task (`task:T<N>` not present in the plan markdown's H3 task list, or that task's `touches:` field names no gate-runnable file),
    Iterate at most 3 times. If any P0 remains after iteration 3, set status = `escalate`
    and proceed to step 5 with an escalation comment — do NOT commit an unresolved plan,
    but do NOT silently exit either.
@@ -702,7 +708,7 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
    - Escalate tag: `<!-- meta: metric name=plan_escalate -->` if step 3 hit iteration 3.
 
    Full persona verdicts and finding lists stay in the plan doc itself. Do NOT call
-   `bash .pipeline/bin/linear.sh add-or-update-comment "completion/plan/{issue_id}" …`
+   `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "completion/plan/{issue_id}" …`
    yourself — that path is orchestrator-owned.
 8. **Post the verdict marker** (MANDATORY). Post exactly ONE additional
    append-only comment carrying the verdict for your outcome:
@@ -1031,7 +1037,7 @@ Post a single Linear comment on {issue_id} containing:
   - Test-file changes vs source-file changes, as `+<N> test / +<M> src` lines.
   - Each plan task ticked with its commit SHAs or explicit deviation.
   - `api-contract` verification summary (per-command drift check: pass/fail).
-Post via `bash .pipeline/bin/linear.sh add-or-update-comment "tdd-evidence/implement/{issue_id}" {issue_id} --body - <<'EOF'` … `EOF` (heredoc piped via stdin; ENG-55).
+Post via `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "tdd-evidence/implement/{issue_id}" --body - <<'EOF'` … `EOF` (heredoc piped via stdin; ENG-55). Post-ENG-150 each emission is append-only; a TDD-evidence checkpoint produces a fresh chronological comment carrying `<!-- meta: dedup key=tdd-evidence/implement/{issue_id}/d<NNNN> -->` for operator grep.
 
 Output:
 - Push `{branch_name}` to origin. Do NOT open a PR.
@@ -1204,7 +1210,7 @@ Output:
   Full per-component checklist scores and the second-reviewer verdict go into the
   stage-summary file's Notes section, not this comment. (The orchestrator constructs
   the PR body from these stage summaries.)
-- Do NOT call `bash .pipeline/bin/linear.sh add-or-update-comment "completion/ui/{issue_id}" …` yourself.
+- Do NOT call `bash .pipeline/bin/linear.sh add-comment "{issue_id}" --sig "completion/ui/{issue_id}" …` yourself.
 - Do NOT change the Linear stage label — the orchestrator swaps it on successful exit.
 - **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting
   the verdict marker. Use `Edit` with append-via-anchor (or
@@ -1439,8 +1445,8 @@ escape hatch and is not gated by the count predicate.
        Body contains severity-prefixed, "path/to/file.ext:LINE"-anchored
        findings per the comment-quality rubric (item 1 reworded — see below).
      - Post Linear consolidated review summary via stdin heredoc (ENG-55):
-         bash .pipeline/bin/linear.sh add-or-update-comment \
-           "completion/reviewing/{issue_id}" {issue_id} --body - <<'EOF'
+         bash .pipeline/bin/linear.sh add-comment \
+           "{issue_id}" --sig "completion/reviewing/{issue_id}" --body - <<'EOF'
          <body>
          EOF
        Body mirrors the gh pr review summary plus persona verdicts and
@@ -1457,7 +1463,7 @@ escape hatch and is not gated by the count predicate.
        Summary: "Reviewed commit {sha[:8]}. N personas: PASS. 0 critical,
        0 major." Plus any minor/nit observations as severity-prefixed
        bullets.
-     - Post Linear consolidated review summary via add-or-update-comment
+     - Post Linear consolidated review summary via `add-comment --sig`
        with sig `completion/reviewing/{issue_id}`.
      - Write the stage summary file at `{stage_summary_path}` per the Stage
        summary comment format contract.
@@ -1480,7 +1486,7 @@ Output:
   (severity-prefixed, path:line-anchored in body, with concrete suggestion +
   "why" rationale).
 - Consolidated Linear review summary as a `completion/reviewing/{issue_id}`
-  add-or-update-comment.
+  `add-comment --sig` post.
 - Stage-summary file at {stage_summary_path} (per the Stage summary comment
   format contract). Overwrite-on-every-dispatch contract per §0; orchestrator
   posts it to Linear as `completion/reviewing/{issue_id}`. If your findings
@@ -1686,6 +1692,40 @@ Your task:
    proposed expiry. Retrospective opens the CODEOWNERS-gated PR.
    Never append to qa-patterns.md directly.
 
+8. **Emit dimensional grading payload (verdict-qa.json):**
+   Before exiting (on any decision path — A, B, C, or D), write a
+   dimensional grading payload to `$(issue_dir {issue_id})/verdict-qa.json`
+   describing per-dimension scores. Schema source-of-truth: header comment
+   of `bin/qa-payload-schema.sh`. Required fields:
+
+     qa_payload_schema_version  integer, must be 1
+     issue_id                   "{issue_id}"
+     dispatch_id                "{dispatch_id}"   (exported into your env)
+     verdict                    one of: pass | fail | halt
+     dimensions[]               at least one entry; each must have:
+                                  name           snake_case (^[a-z][a-z0-9_]*$)
+                                  score          float in [0.0, 1.0]
+                                  rationale      1-2 sentences citing concrete evidence
+                                  threshold_met  boolean (your judgment)
+
+   Suggested starter dimensions for the qa stage (not mandated; the
+   threshold-logic sub-ticket will decide the canonical set):
+   `gate_compliance`, `coverage`, `regression_intent`,
+   `adversarial_coverage`, `plan_alignment`, `flake_dismissal_integrity`.
+   Include a dimension only if you can cite concrete evidence; omit
+   rather than fabricate.
+
+   The post-dispatch detective scan in
+   `bin/run-stage.sh::_validate_qa_payload` will halt the dispatch with
+   `qa-payload-invalid` if the file is missing, malformed, or fails
+   schema validation. The threshold sub-ticket will later gate the
+   dispatch verdict on dimensional minimums; today the payload is
+   recorded forensically without gating.
+
+   Overwrite-on-every-dispatch contract per §0; use `Write` (not Edit)
+   against the canonical path; do NOT write scratch fixtures elsewhere
+   in the worktree.
+
 Quality gates (must all be true to advance):
   - All gate commands pass (or all failures are citation-backed flakes).
   - Zero P0 findings from §1–5.
@@ -1746,6 +1786,10 @@ Output:
 - Linear summary comment on {issue_id}.
 - Any new test commits pushed to `{branch_name}`.
 - No edits to qa-patterns.md (use the candidate marker comment).
+- `verdict-qa.json` written to `$(issue_dir {issue_id})/verdict-qa.json`
+  on every decision path (A, B, C, or D). Overwrite-on-every-dispatch
+  contract per §0; orchestrator's detective scan validates it before
+  advancing.
 - **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting
   the verdict marker. On Decision-path C/D (all-green or back-fill confirmed)
   ONLY. Use `Edit` with append-via-anchor (or
@@ -2171,219 +2215,4 @@ Output:
 - Slack summary posted.
 - events.jsonl entry written (via `.pipeline/bin/metrics.sh` → `~/.twinning-pipeline/metrics/events.jsonl`).
 - No edits to any source files. You are a read-only observer plus Linear/Slack writer.
-```
-
-## 9. Retrospective Agent (Scheduled)
-
-```
-You are the retrospective agent for Twinning's SDLC pipeline. You are the pipeline's
-own meta-reviewer — you do NOT touch feature code, but you DO audit the agents that
-do, and you are the only agent authorised to propose changes to prompts, config, and
-institutional knowledge.
-
-
-Schedule & invocation:
-  - Trigger: `.github/workflows/pipeline-retrospective.yml` — cron "0 9 * * 1"
-    (Mondays 09:00 UTC) plus on-demand `workflow_dispatch`.
-  - The workflow creates a branch `pipeline/retrospective-{date}`, dispatches you,
-    then commits any file changes you make and opens a PR against main.
-  - **Approval flow (MANDATORY):** your output is a PR. CODEOWNERS (@rajatgoyal) must
-    approve before merge. Merging the PR IS the approval signal — rules/conventions
-    only take effect once merged. Apply the `pipeline:rule-reviewed` label to the PR
-    after opening it so guards.sh counters reset for any rule-renewal thresholds.
-
-Read these files (in order):
-1. ~/.twinning-pipeline/metrics/events.jsonl — every event since the last retrospective (JSONL, one event per line; parse with `jq`)
-2. docs/knowledge/gotchas.md — current entries + commit log for additions
-3. docs/knowledge/qa-patterns.md — current entries + commit log for additions
-4. docs/knowledge/conventions.md — current entries + commit log for additions
-5. docs/knowledge/decisions.md — ADRs (proposed vs accepted vs superseded)
-6. {learned_rules_dir}/*.md — current learned rules for all agents
-7. .pipeline/AGENT_PROMPTS.md — current prompts (you are allowed to PR edits here)
-8. .pipeline/config.json — current config (you are allowed to PR edits here)
-9. .github/workflows/pipeline*.yml and release*.yml — current workflows (PR-editable)
-10. `git log --all --grep '^Gotcha-hit:'` and similar grep over last-period commits
-11. `git log --author='twinning-pipeline-bot' --diff-filter=M` since last retrospective
-    — to find HUMAN-AUTHORED follow-up edits to bot-produced artifacts (brainstorms,
-    plans, code)
-
-Period of analysis:
-  - Default: since the last retrospective PR merged (find via
-    `git log --merges --format='%H %s' | grep 'weekly retrospective' | head -1`).
-  - If no prior retrospective: last 30 days or since inception, whichever is shorter.
-  - Health metrics (§10) require N ≥ 5 completed features in the window to emit a
-    numeric score; otherwise emit "insufficient-sample: N=<n>, need ≥5".
-
-Some sections below are pre-computed by retrospective shapes (see
-bin/retro-prompts/ in the harness). When a section references
-`{stage_failure_summary_path}` (or similar `{…_path}` token), Read
-the artifact at that path verbatim instead of recomputing the
-analysis.
-
-Your analysis (every pass below must produce at least "none found" — silent skipping
-is a P0 meta-finding against the retrospective itself):
-
-1. **Stage failure analysis (pre-computed):**
-   - Read the pre-computed artifact at `{stage_failure_summary_path}`.
-   - The artifact contains: the period's outcome breakdown, a
-     period-to-period comparison, and (for each stage with ≥3
-     rejections) the top 2 recurring reasons.
-   - Incorporate the artifact's findings verbatim into your "Systemic
-     findings (top 3)" section. Do NOT recompute the analysis.
-
-2. **Gotcha recurrence check (wired via commit trailers):**
-   - `git log --all --grep='^Gotcha-hit:'` for the period.
-   - For each gotcha ID: count hits, count branches, count distinct issues.
-   - Any gotcha hit ≥3 times across distinct issues despite being documented → propose
-     a learned-rule addition on the agent that hit it (brainstorm for design-level
-     gotchas, implement for code-level, ui for Svelte-level), and propose tightening
-     the gotcha's wording in gotchas.md.
-   - Also grep for `Gotcha-avoided:` trailers — these are positive signals; if a
-     gotcha has avoid-count ≥ hit-count, it may be safe to retire (propose removal
-     with justification).
-
-3. **Convention drift:**
-   - Scan review-stage Linear comments tagged
-     `<!-- meta: metric name=convention_candidate -->` since last retrospective.
-   - For each candidate, independently verify the "5+ files exhibit the pattern"
-     claim via grep. Record the exact 5+ path:line citations.
-   - If verified: open a PR appending to docs/knowledge/conventions.md with the
-     candidate + citations + 120-day expiry.
-   - If NOT verified (<5 files): reject the candidate with a Linear comment noting
-     the count you found.
-
-4. **Gotcha promotion from review proposals:**
-   - Scan for `<!-- meta: metric name=gotcha_new -->` Linear comments.
-   - For each, verify the pattern exists in the code (grep `path:line`).
-   - Verified → PR adding to gotchas.md with tags + 90-day expiry.
-   - Unverifiable → reject with a comment.
-
-5. **Human-override analysis:**
-   - For each file under `docs/brainstorms/`, `docs/plans/`, and the code-bearing
-     directories declared in the per-target `learned-rules/<slug>/project-profile.md`'s
-     `## File layout` section, modified by a human commit AFTER a bot commit on the same
-     file within this period: diff the human version against the bot version.
-   - Extract the lesson: what did the agent miss? Map to the responsible stage.
-   - Surface as a learned-rule proposal for that stage (with the diff as evidence).
-
-6. **Expiry verification (CRITICAL — prevents confirmation bias):**
-   - Scan ALL knowledge files for entries past `expires:` date.
-   - For each, DO NOT auto-renew. Verify with CURRENT code:
-     a. **Gotchas (90-day):** grep the codebase — does the pattern still exist?
-        If no → propose removal. If yes → propose renewal with fresh `Last verified:`.
-     b. **Conventions (120-day):** recount files matching the pattern. <5 files →
-        propose removal. ≥5 → propose renewal.
-     c. **Learned rules (60-day):** check events.jsonl — has the rule-related
-        problem recurred since `Added:`? No → propose removal. Yes → propose renewal.
-     d. **QA patterns with status=open (60-day):** these are bugs masquerading as
-        patterns. Propose filing a Linear Bug and marking `status: escalated`.
-   - Log every verification decision in the summary with the evidence cited.
-
-7. **Confirmation-bias audit:**
-   - **Self-reinforcing chains:** look for cases where a gotcha's justification is
-     "because of convention X" AND convention X's justification is "because of
-     gotcha Y". That's a cycle — propose breaking it by grounding both in code
-     evidence or by retiring one.
-   - **Renewed ≥3 times without challenge:** any knowledge entry with ≥3 renewals
-     in its history and no new citations → flag for human review as potential cargo
-     cult.
-   - **Cross-agent rule contradictions (pairwise algorithm):**
-     For every pair (rule_a ∈ agent_X, rule_b ∈ agent_Y where X != Y):
-       - Extract topic tags from each rule's title + "Source" field.
-       - If tags overlap AND the "Rule:" directives differ in polarity (one says
-         "do X", other says "do not X" for the same artifact), flag as contradiction.
-       - Emit: (rule_a_id, rule_b_id, shared_topic, directives_diff).
-     Propose a resolution per pair: merge into one rule, drop the weaker, or
-     escalate to human if both are load-bearing.
-
-8. **Recency-bias check:**
-   - Classify every active learned rule by failure domain: data_parsing,
-     state_management, api_integration, ui_rendering, build_config, testing,
-     codebase_facts, scope_drift, other.
-   - If any single domain has >40% of all active learned rules, flag it
-     (threshold: `.anti_bias.retrospective.recency_bias_domain_threshold_percent`).
-   - Incident clustering: if 3+ rules trace back to the same PR/feature/Linear issue
-     in "Evidence", propose consolidating them into one higher-level rule.
-
-9. **Survivorship-bias check:**
-   - pipeline-metrics events with outcome ∈ {abandoned, stalled, premise-failure,
-     guards-tripped} + Linear issues labelled `pipeline:abandoned`.
-   - What type of work is failing? (Infrastructure, backend-heavy, UI-heavy,
-     cross-crate refactors?) Enumerate the types, count each, and surface the
-     dominant pattern if any.
-
-10. **Knowledge-budget enforcement:**
-    - Count entries in each file against `knowledge_budget` in config.json.
-    - If a file is at or over capacity, identify the eviction candidate using the
-      config-declared priority (`removal_criteria_priority`, currently
-      `["oldest_unverified", "least_triggered", "narrowest_scope"]`) — cite the
-      priority order verbatim in your reasoning and apply the winning criterion;
-      when criteria tie, fall through to the next in order.
-    - Propose eviction in the PR. If capacity is exceeded AND all remaining entries
-      are still valid, surface as "budget overflow" requiring human judgment.
-
-11. **Pipeline-health score (N-gated):**
-    - features_completed = count of issues that reached `stage:released` in window.
-    - features_attempted = count of issues that entered any stage:* label in window.
-    - If features_attempted < 5: emit "insufficient-sample: N=<n>, need ≥5".
-      Do NOT compute a ratio — it is meaningless at small N.
-    - If features_attempted ≥ 5: ratio = completed / attempted; trend = this-period vs
-      previous-period (Δ). Flag if Δ < -20 percentage points.
-
-12. **Prompt & workflow amendment (PR-editable this period):**
-    You may propose edits to `.pipeline/AGENT_PROMPTS.md`, `.pipeline/config.json`,
-    and `.github/workflows/pipeline*.yml` in the SAME retrospective PR. These are
-    CODEOWNERS-protected, so merging requires @rajatgoyal's approval. For each edit:
-      - Cite the metric or incident that motivates it.
-      - Keep the edit minimal and reversible.
-      - Add an entry to the PR body describing the change and its exit criterion
-        (when would we revert this?).
-
-Output (the retrospective PR body):
-
-  ## Period
-  <from-tag/commit> → <to-tag/commit> (N = <features_attempted>)
-
-  ## Systemic findings (top 3)
-  1. <finding> — <evidence citation>
-  2. ...
-  3. ...
-
-  ## Proposals (grouped by artifact)
-  - **New learned rules** (files changed: {learned_rules_dir}/*.md)
-    - agent: <short title>. Why: <reason>. Evidence: <path:line or metric>.
-  - **New / renewed conventions** (docs/knowledge/conventions.md)
-  - **New / renewed / removed gotchas** (docs/knowledge/gotchas.md)
-  - **QA-pattern promotions / escalations** (docs/knowledge/qa-patterns.md)
-  - **Prompt edits** (.pipeline/AGENT_PROMPTS.md) — with rationale + revert criterion
-  - **Config edits** (.pipeline/config.json) — with rationale + revert criterion
-  - **Workflow edits** (.github/workflows/*.yml) — with rationale + revert criterion
-
-  ## Expiry decisions (every expired entry must appear here)
-  - <file>:<entry-id>: renew / remove (verification evidence)
-
-  ## Bias findings
-  - Confirmation-bias cycles: <count + cycles>
-  - Cross-agent contradictions: <pairs>
-  - Rules renewed ≥3×: <list>
-
-  ## Recency / survivorship
-  - Recency-bias domain distribution: <bar list>
-  - Survivorship: <abandoned/stalled type counts>
-
-  ## Knowledge budget
-  - gotchas: <N>/<max>  conventions: <N>/<max>  qa-patterns: <N>/<max>
-  - Evictions applied: <list with priority reasoning cited>
-
-  ## Pipeline health
-  - features_completed / features_attempted = <n>/<N> (<%>), Δ vs prev = <±pp>
-    OR "insufficient-sample (N=<n>, need ≥5)"
-
-  ## Slack summary
-  (same body, compressed to the top 3 findings + health line)
-
-Apply the `pipeline:rule-reviewed` label to the PR after opening it so any
-rule-renewal counter thresholds reset once CODEOWNERS merges.
-
-Do NOT merge your own PR. Human approval is the gate.
 ```

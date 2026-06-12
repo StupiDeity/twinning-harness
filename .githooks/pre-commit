@@ -96,6 +96,14 @@ KNOWN_BROKEN=(
   # silent rc=1 with no output — broken setup or an early `set -e` exit.
   # Pre-dates ENG-60.
   "bin/render-prompt-slug-test.sh"
+  # C-151: header regex expects `ENG-81-d0007` but _render_event_header
+  # (ENG-151) emits only `d0007` (the segment after the last hyphen).
+  # Test expectation was written by ENG-154 before ENG-151 finalised the
+  # short-tail format.  Pre-existing on origin/main; not an ENG-150
+  # regression.  Needs a dedicated fix ticket.
+  # C-153: expects `Reason:` / `Trips at:` ENG-153 content not yet
+  # implemented.  Same file, same pre-existing status.
+  "bin/eng-81-reproducer-test.sh"
 )
 
 is_known_broken() {

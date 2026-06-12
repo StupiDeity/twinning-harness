@@ -31,7 +31,7 @@ export VH_CURRENT_LABELS=""
 
 # linear.sh stub: handles get-comments (returns $VH_FIXTURE_COMMENTS),
 # add-comment, add-label, remove-label, swap-stage, transition-state,
-# stage-of (returns $VH_CURRENT_STAGE_LABEL), has-label, add-or-update-comment.
+# stage-of (returns $VH_CURRENT_STAGE_LABEL), has-label, add-comment.
 cat > "$STUB_DIR/linear.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "linear.sh $*" >> "$STUB_LOG"
@@ -225,7 +225,7 @@ VH_CURRENT_STAGE_LABEL="stage:qa"
 VH_CURRENT_LABELS="stage:qa pipeline:halted"
 rc=0; verdict_handler "ENG-905" "qa" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/no-marker/ENG-905 ENG-905" \
+   && calls_contains "add-comment ENG-905 --sig protocol-violation/no-marker/ENG-905" \
    && ! calls_contains "remove-label ENG-905 pipeline:halted"; then
   pass_at "case-5 no-marker-protocol-violation"
 else
@@ -241,7 +241,7 @@ VH_CURRENT_STAGE_LABEL="stage:reviewing"
 VH_CURRENT_LABELS="stage:reviewing pipeline:halted"
 rc=0; verdict_handler "ENG-906" "reviewing" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/stage-mismatch/ENG-906 ENG-906"; then
+   && calls_contains "add-comment ENG-906 --sig protocol-violation/stage-mismatch/ENG-906"; then
   pass_at "case-6 stage-mismatch-protocol-violation"
 else
   fail_at "case-6 stage-mismatch-protocol-violation" "rc=$rc calls=$(cat "$STUB_LOG")"
@@ -258,7 +258,7 @@ VH_CURRENT_STAGE_LABEL="stage:ui"
 VH_CURRENT_LABELS="stage:ui pipeline:halted"
 rc=0; verdict_handler "ENG-907" "ui" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/unknown-loopback/ENG-907 ENG-907"; then
+   && calls_contains "add-comment ENG-907 --sig protocol-violation/unknown-loopback/ENG-907"; then
   pass_at "case-7 unknown-loopback-protocol-violation"
 else
   fail_at "case-7 unknown-loopback-protocol-violation" "rc=$rc calls=$(cat "$STUB_LOG")"
@@ -278,7 +278,7 @@ rc=0; verdict_handler "ENG-907a" "qa" >/dev/null 2>&1 || rc=$?
 # the halt body is multi-line and extract_call_body | head -1 would
 # truncate to the first line only.
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/no-marker/ENG-907a ENG-907a" \
+   && calls_contains "add-comment ENG-907a --sig protocol-violation/no-marker/ENG-907a" \
    && calls_contains "current_dispatch_id" \
    && calls_contains "Resolution" \
    && calls_contains "pipeline.sh decide ENG-907a"; then
@@ -309,7 +309,7 @@ VH_CURRENT_STAGE_LABEL="stage:planning"
 VH_CURRENT_LABELS="stage:planning"
 rc=0; verdict_handler "ENG-907b" "planning" >/dev/null 2>&1 || rc=$?
 if [[ "$rc" == "2" ]] \
-   && calls_contains "add-or-update-comment protocol-violation/dispatch-id-mismatch/ENG-907b ENG-907b" \
+   && calls_contains "add-comment ENG-907b --sig protocol-violation/dispatch-id-mismatch/ENG-907b" \
    && calls_contains "ENG-907b-d0002" \
    && calls_contains '$PIPELINE_DISPATCH_ID' \
    && calls_contains "Resolution"; then
@@ -977,7 +977,7 @@ case "\$1" in
   get-comments) printf '%s' '$COMMENTS_JSON' ;;
   get-issue)    printf '%s' '$ISSUE_JSON' ;;
   stage-of)     printf 'stage:reviewing\n' ;;
-  add-label|remove-label|add-comment|add-or-update-comment) printf 'ok' ;;
+  add-label|remove-label|add-comment) printf 'ok' ;;
   *) printf '' ;;
 esac
 EOF
@@ -1310,6 +1310,90 @@ else
   unset _iter7_m1_filter_line
 fi
 unset _iter7_m1_line _iter7_m1_lineno
+
+# ─── case-ENG-115-pivot-detected ─────────────────────────────────────
+# Fresh pivot verdict (full three-field body) after a transition.
+# verdict_handler dispatches the pipeline-pivot arm: logs and rc=1,
+# NO transition applied, NO protocol-violation comment posted.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect -->|2026-06-10T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+VH_CURRENT_LABELS="stage:implementing pipeline:halted"
+rc=0; log_output="$(verdict_handler "ENG-911" "implementing" 2>&1)" || rc=$?
+if [[ "$rc" == "1" ]] \
+   && [[ "$log_output" == *"pivot-detected"* ]] \
+   && [[ "$log_output" == *"source=implementing"* ]] \
+   && [[ "$log_output" == *"target=planning"* ]] \
+   && [[ "$log_output" == *"reason=plan-structural-defect"* ]] \
+   && ! calls_contains "add-or-update-comment protocol-violation/" \
+   && ! calls_contains "add-label ENG-911 stage:planning" \
+   && ! calls_contains "remove-label ENG-911 stage:implementing" \
+   && ! calls_contains "add-comment ENG-911"; then
+  pass_at "case-ENG-115-pivot-detected"
+else
+  fail_at "case-ENG-115-pivot-detected" "rc=$rc log=$log_output calls=$(cat "$STUB_LOG")"
+fi
+
+# ─── case-ENG-115-pivot-find-fresh-projection ────────────────────────
+# Same fixture, direct find_fresh_verdict — assert the projected JSON
+# shape: marker=pipeline-pivot, source_stage/target_stage/reason all set
+# from the registry-validated fields.
+reset_calls
+VH_CURRENT_LABELS=""
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect -->|2026-06-10T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+proj="$(find_fresh_verdict "ENG-912")"
+if [[ "$(jq -r '.marker' <<<"$proj")" == "pipeline-pivot" ]] \
+   && [[ "$(jq -r '.source_stage' <<<"$proj")" == "implementing" ]] \
+   && [[ "$(jq -r '.target_stage' <<<"$proj")" == "planning" ]] \
+   && [[ "$(jq -r '.reason' <<<"$proj")" == "plan-structural-defect" ]]; then
+  pass_at "case-ENG-115-pivot-find-fresh-projection"
+else
+  fail_at "case-ENG-115-pivot-find-fresh-projection" "proj=$proj"
+fi
+
+# ─── case-ENG-115-pivot-id-match ─────────────────────────────────────
+# QA adversarial: pivot verdict picked via ENG-87 strict id-match path.
+# Comments carry <!-- meta: dispatch id=... --> markers; find_fresh_verdict
+# must still return pipeline-pivot (not empty) when the id-match filter fires.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-115-adv-d0001"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=ENG-115-adv-d0001 stage=planning -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect --><!-- meta: dispatch id=ENG-115-adv-d0001 stage=implementing -->|2026-06-10T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+proj="$(find_fresh_verdict "ENG-115-adv-1" 2>/dev/null || printf '')"
+if [[ "$(jq -r '.marker' <<<"$proj")" == "pipeline-pivot" ]] \
+   && [[ "$(jq -r '.source_stage' <<<"$proj")" == "implementing" ]] \
+   && [[ "$(jq -r '.target_stage' <<<"$proj")" == "planning" ]] \
+   && [[ "$(jq -r '.reason' <<<"$proj")" == "plan-structural-defect" ]]; then
+  pass_at "case-ENG-115-pivot-id-match: pivot returned via strict id-match path"
+else
+  fail_at "case-ENG-115-pivot-id-match" "proj=$proj"
+fi
+
+# ─── case-ENG-115-wait-no-shadow-pivot ───────────────────────────────
+# QA adversarial: wait at T2 (newer) must NOT shadow pivot at T1 (older)
+# under the id-match path. The wait-skip filter must apply before
+# newest-marker selection. Guards the FV5 wait-skip logic extends to pivot.
+reset_calls
+_VH_TEST_DISPATCH_ID="ENG-115-adv-d0002"
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=planning to=implementing --><!-- meta: dispatch id=ENG-115-adv-d0002 stage=planning -->|2026-06-10T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect --><!-- meta: dispatch id=ENG-115-adv-d0002 stage=implementing -->|2026-06-10T11:00:00.000Z" \
+  "<!-- pipeline: verdict result=wait reason=awaiting-ci --><!-- meta: dispatch id=ENG-115-adv-d0002 stage=implementing -->|2026-06-10T12:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:implementing"
+proj="$(find_fresh_verdict "ENG-115-adv-2" 2>/dev/null || printf '')"
+if [[ "$(jq -r '.marker' <<<"$proj")" == "pipeline-pivot" ]] \
+   && [[ "$(jq -r '.source_stage' <<<"$proj")" == "implementing" ]]; then
+  pass_at "case-ENG-115-wait-no-shadow-pivot: wait at T2 does not shadow pivot at T1"
+else
+  fail_at "case-ENG-115-wait-no-shadow-pivot" "proj=$proj (expected pivot not shadowed by wait)"
+fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
 echo

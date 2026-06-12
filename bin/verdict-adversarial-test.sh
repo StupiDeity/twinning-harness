@@ -196,7 +196,7 @@ got="$(count_marker_since_last_operator_resume ENG-811 qa_rejection)"
 # ─── A12: classify-failure applies pipeline:halted + halt marker body ─
 # This is the canonical case-10 from the plan's Failure Mode → Test Map,
 # which the existing classify-failure-test.sh skipped.
-# Replay add-or-update-comment body through stdin capture by enhancing the
+# Replay add-comment --sig body through stdin capture by enhancing the
 # linear.sh stub to echo its full argv to the call log. The stub already
 # does that above — assert via calls_contains on the full arg vector.
 cat > "$STUB_DIR/linear.sh" <<'SH'
@@ -240,7 +240,7 @@ if calls_contains "linear.sh [add-label] [ENG-812] [pipeline:halted]"; then
 else
   fail_at "A12 classify-failure applies pipeline:halted" "calls=$(cat "$STUB_LOG")"
 fi
-if calls_contains "linear.sh [add-or-update-comment] [halt/implement/ENG-812] [ENG-812]" \
+if calls_contains "linear.sh [add-comment] [ENG-812] [--sig] [halt/implement/ENG-812] [--body]" \
    && grep -qF '<!-- pipeline: verdict result=halt reason=agent-blocked -->' "$STUB_LOG"; then
   pass_at "A12 classify-failure halt comment body contains new-shape halt marker (agent-blocked)"
 else
@@ -407,26 +407,27 @@ else
   fail_at "A22 legacy-transition-invisibility" "unexpected fresh marker=$mtype (expected pipeline-stage-summary)"
 fi
 
-# ─── A23: classify-failure double-apply idempotency ─────────────────
-# Two consecutive failures should each add-label pipeline:halted. Linear
-# itself is idempotent on duplicate add-label, but the halt-comment uses
-# add-or-update-comment keyed on sig "halt/$stage/$issue" so the body is
-# upserted rather than duplicated. Assert:
+# ─── A23: classify-failure double-apply uses sig'd add-comment ──────
+# Two consecutive failures should each add-label pipeline:halted AND
+# emit a fresh sig'd halt-comment. Post-ENG-150 the halt-comment is
+# append-only: every emission posts a new chronological comment carrying
+# `<!-- meta: dedup key=halt/<stage>/<issue>[/d<NNNN>] -->` for operator
+# grep; the chokepoint suffixes /d<NNNN> from PIPELINE_DISPATCH_ID when
+# set. Assert:
 #   - add-label pipeline:halted called each time (orchestrator relies on
 #     label being present even after remove happens on forward transition)
-#   - only ONE sig'd halt-comment upsert per failure (add-or-update-comment,
-#     not add-comment)
+#   - TWO add-comment invocations with the halt sig (one per failure
+#     re-emission; append-only ledger semantic, not upsert-dedup)
 reset_calls
 classify_failure "ENG-823" "implement" "skip-until-code-changes" "err" 21 2 >/dev/null 2>&1 || true
 classify_failure "ENG-823" "implement" "skip-until-code-changes" "err" 21 2 >/dev/null 2>&1 || true
 halted_count="$(calls_grep_count "linear.sh [add-label] [ENG-823] [pipeline:halted]")"
-sig_halt_count="$(calls_grep_count "linear.sh [add-or-update-comment] [halt/implement/ENG-823] [ENG-823]")"
-add_comment_count="$(calls_grep_count "linear.sh [add-comment] [ENG-823]")"
-if [[ "$halted_count" == "2" ]] && [[ "$sig_halt_count" == "2" ]] && [[ "$add_comment_count" == "0" ]]; then
-  pass_at "A23 classify-failure: double-apply uses add-or-update-comment (not add-comment), so halt markers do not accumulate as duplicates"
+sig_halt_count="$(calls_grep_count "linear.sh [add-comment] [ENG-823] [--sig] [halt/implement/ENG-823] [--body]")"
+if [[ "$halted_count" == "2" ]] && [[ "$sig_halt_count" == "2" ]]; then
+  pass_at "A23 classify-failure: double-apply emits TWO sig'd add-comment posts (ENG-150 append-only ledger; the dispatch-suffixed dedup marker tags each chronological entry for operator grep)"
 else
-  fail_at "A23 classify-failure double-apply idempotency" \
-    "halted_add=$halted_count sig_halt=$sig_halt_count add_comment=$add_comment_count"
+  fail_at "A23 classify-failure double-apply append-only" \
+    "halted_add=$halted_count sig_halt=$sig_halt_count"
 fi
 
 # ─── A24: halt markers inside classify-failure's halt body do NOT trick ─

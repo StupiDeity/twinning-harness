@@ -1,0 +1,64 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-115",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/pipeline-events.json carries a new top-level pivot_reasons registry field whose initial vocabulary is ['plan-structural-defect']",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/pipeline-events.json" },
+        { "kind": "grep", "path": "bin/pipeline-events.json", "pattern": "\"pivot_reasons\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-events.json", "pattern": "plan-structural-defect", "expect_match": true },
+        { "kind": "smoke", "command": "jq -e '.pivot_reasons | index(\"plan-structural-defect\") != null' bin/pipeline-events.json", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    },
+    {
+      "id": "F-2",
+      "summary": "bin/pipeline.sh::cmd_event_verdict pivot arm requires + registry-validates --target, --stage, and --reason; bogus or missing values die at the writer",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "event verdict pivot: --stage required", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "event verdict pivot: --reason required", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "_validate_registry pivot_reasons \"\\$reason\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline.sh", "pattern": "_validate_registry stages \"\\$stage\"", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-3",
+      "summary": "bin/verdict-handler.sh::find_fresh_verdict projects fresh pivot verdicts to {marker:'pipeline-pivot', source_stage, target_stage, reason, ...}; verdict_handler dispatches the pipeline-pivot arm to a log+rc=1 stub (no routing, no protocol violation)",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/verdict-handler.sh", "pattern": "marker:\"pipeline-pivot\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/verdict-handler.sh", "pattern": "elif \\$r == \"pivot\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/verdict-handler.sh", "pattern": "pipeline-pivot\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/verdict-handler.sh", "pattern": "pivot-detected on \\$issue", "expect_match": true },
+        { "kind": "grep", "path": "bin/verdict-handler.sh", "pattern": "routing deferred to ENG-NEXT", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-4",
+      "summary": "docs/pipeline-vocabulary.md is regenerated from the template+registry and contains both the new pivot_reasons prose paragraph and the new pivot_reasons generated registry block",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/generate-vocabulary-doc.sh", "pattern": "pivot_targets pivot_reasons", "expect_match": true },
+        { "kind": "grep", "path": "docs/pipeline-vocabulary.template.md", "pattern": "\\*\\*`pivot_reasons`\\*\\*", "expect_match": true },
+        { "kind": "grep", "path": "docs/pipeline-vocabulary.md", "pattern": "### `pivot_reasons`", "expect_match": true },
+        { "kind": "grep", "path": "docs/pipeline-vocabulary.md", "pattern": "plan-structural-defect", "expect_match": true }
+      ]
+    },
+    {
+      "id": "F-5",
+      "summary": "bin/pipeline-test.sh covers PE7 (full happy body), PE7a (missing --reason), PE7b (bogus --reason), PE7c (missing --stage), PE7d (bogus --stage); bin/vocabulary-cleanliness-test.sh registry list includes pivot_reasons and asserts plan-structural-defect; bin/verdict-handler-test.sh adds case-ENG-115-pivot-detected and case-ENG-115-pivot-find-fresh-projection; full pre-commit gate is green",
+      "pass_criteria": [
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PE7a: pivot requires --reason", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PE7b: bogus pivot reason rejected", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PE7c: pivot requires --stage", "expect_match": true },
+        { "kind": "grep", "path": "bin/pipeline-test.sh", "pattern": "PE7d: bogus pivot stage rejected", "expect_match": true },
+        { "kind": "grep", "path": "bin/vocabulary-cleanliness-test.sh", "pattern": "pivot_targets pivot_reasons decision_actions", "expect_match": true },
+        { "kind": "grep", "path": "bin/vocabulary-cleanliness-test.sh", "pattern": "ENG-115 case-5: plan-structural-defect in pivot_reasons registry", "expect_match": true },
+        { "kind": "grep", "path": "bin/verdict-handler-test.sh", "pattern": "case-ENG-115-pivot-detected", "expect_match": true },
+        { "kind": "grep", "path": "bin/verdict-handler-test.sh", "pattern": "case-ENG-115-pivot-find-fresh-projection", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/pipeline-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/verdict-handler-test.sh", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/vocabulary-cleanliness-test.sh", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}

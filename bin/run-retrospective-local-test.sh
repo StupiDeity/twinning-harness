@@ -1,0 +1,713 @@
+#!/usr/bin/env bash
+# Tests for bin/run-retrospective-local.sh — coordinator-level SHAPES
+# iteration, PR-body composition, and slack/gh notification semantics.
+#
+# Source-and-stub pattern per CLAUDE.md "How tests work".
+
+set -uo pipefail
+HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+export PIPELINE_DRY_RUN=1
+: "${LINEAR_API_KEY:=test-mock-key}"
+export LINEAR_API_KEY
+export PROJECT_SLUG="${PROJECT_SLUG:-test-slug}"
+
+PASS=0
+FAIL=0
+FAILURES=""
+
+_pass() { printf 'PASS: %s\n' "$1"; (( PASS++ )) || true; }
+_fail() { printf 'FAIL: %s\n' "$1"; FAILURES="${FAILURES}  - $1\n"; (( FAIL++ )) || true; }
+
+# ---------------------------------------------------------------------------
+# Per-test setup helper: prepare a disposable TARGET_REPO + PROJECT_STATE_DIR,
+# stub the SHAPES drivers under STUB_BIN, stub gh + slack, then source the
+# coordinator and override SCRIPT_DIR.
+#
+# Globals set:
+#   STUB_BIN, ARGV_LOG, SLACK_LOG, GH_LOG, TARGET_REPO, PROJECT_STATE_DIR,
+#   PR_BODY_PATH (after running main())
+# ---------------------------------------------------------------------------
+_new_test_env() {
+  STUB_BIN="$(mktemp -d)"
+  TARGET_REPO_BASE="$(mktemp -d)"
+  PROJECT_STATE_DIR_BASE="$(mktemp -d)"
+  HARNESS_STATE_DIR_BASE="$(mktemp -d)"
+  ARGV_LOG="$STUB_BIN/argv.log"
+  SLACK_LOG="$STUB_BIN/slack.log"
+  GH_LOG="$STUB_BIN/gh.log"
+  : > "$ARGV_LOG"
+  : > "$SLACK_LOG"
+  : > "$GH_LOG"
+
+  export TARGET_REPO="$TARGET_REPO_BASE"
+  export PROJECT_STATE_DIR="$PROJECT_STATE_DIR_BASE"
+  export HARNESS_STATE_DIR="$HARNESS_STATE_DIR_BASE"
+
+  # Initialize disposable git repo as TARGET_REPO.
+  (
+    cd "$TARGET_REPO"
+    git init -q -b main
+    git -c user.email=t@t -c user.name=t commit --allow-empty -q -m "init"
+    # Establish 'origin' that points at ourselves so fetch origin main works.
+    git remote add origin "$TARGET_REPO" 2>/dev/null || true
+    git -c user.email=t@t -c user.name=t commit --allow-empty -q -m "noop2"
+    git update-ref refs/remotes/origin/main HEAD
+  )
+
+  # Stub slack.sh — record argv to SLACK_LOG.
+  cat > "$STUB_BIN/slack.sh" <<SLACK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$SLACK_LOG"
+exit 0
+SLACK
+  chmod +x "$STUB_BIN/slack.sh"
+
+  # Stub dispatch.sh — should never be called by coordinator (each shape stub
+  # is invoked directly; coordinator does not call dispatch.sh).
+  cat > "$STUB_BIN/dispatch.sh" <<DISPATCH
+#!/usr/bin/env bash
+printf 'dispatch.sh invoked: %s\n' "\$*" >> "$ARGV_LOG"
+exit 0
+DISPATCH
+  chmod +x "$STUB_BIN/dispatch.sh"
+
+  # Stub gh in PATH — record argv to GH_LOG.
+  cat > "$STUB_BIN/gh" <<GHSTUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$GH_LOG"
+# If --body-file is present, capture the body content too.
+for ((i=1; i<=\$#; i++)); do
+  if [[ "\${!i}" == "--body-file" ]]; then
+    next=\$((i+1))
+    if [[ -f "\${!next}" ]]; then
+      cp "\${!next}" "$STUB_BIN/gh-body-file.md"
+    fi
+  fi
+done
+exit 0
+GHSTUB
+  chmod +x "$STUB_BIN/gh"
+
+  ORIG_PATH="$PATH"
+  export PATH="$STUB_BIN:$PATH"
+
+  unset PIPELINE_DRY_RUN
+}
+
+_teardown_test_env() {
+  export PIPELINE_DRY_RUN=1
+  export PATH="$ORIG_PATH"
+  rm -rf "$STUB_BIN" "$TARGET_REPO_BASE" "$PROJECT_STATE_DIR_BASE" "$HARNESS_STATE_DIR_BASE"
+}
+
+# Write a per-shape stub. Args:
+#   $1 = shape name
+#   $2 = rc to return
+#   $3 = "yes" to write artifact, "no" to skip
+#   $4 = "yes" to write a tracked file in TARGET_REPO, "no" to skip
+#   $5 = optional artifact body (default: "## <Shape>\n\nMARKER-<name>\n")
+_write_shape_stub() {
+  local shape="$1" rc="$2" write_artifact="$3" write_tracked="$4"
+  local artifact_body="${5:-}"
+  cat > "$STUB_BIN/retro-shape-${shape}.sh" <<SHAPESTUB
+#!/usr/bin/env bash
+shape="$shape"
+printf 'shape=%s argv=%s\n' "\$shape" "\$*" >> "$ARGV_LOG"
+artifact_path=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --artifact-path) artifact_path="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ "$write_artifact" == "yes" ]]; then
+  if [[ -n "$artifact_body" ]]; then
+    printf '%s' "$artifact_body" > "\$artifact_path"
+  else
+    printf '## %s\n\nMARKER-%s\n' "\$shape" "\$shape" > "\$artifact_path"
+  fi
+fi
+if [[ "$write_tracked" == "yes" ]]; then
+  printf 'tracked-by-%s\n' "\$shape" >> "$TARGET_REPO/tracked-from-shapes.txt"
+fi
+exit $rc
+SHAPESTUB
+  chmod +x "$STUB_BIN/retro-shape-${shape}.sh"
+}
+
+_write_all_shape_stubs() {
+  local rc="$1" write_artifact="$2" write_tracked="$3"
+  for shape in "${SHAPES[@]}"; do
+    _write_shape_stub "$shape" "$rc" "$write_artifact" "$write_tracked"
+  done
+}
+
+# Source coordinator once at top — sentinel-guarded so main() does not fire.
+# The coordinator's top-level `require_bin claude gh git jq` fires at source
+# time; stub claude + gh in PATH BEFORE sourcing so the existence check passes
+# even in CI/dev environments without claude installed.
+export TARGET_REPO="$HARNESS_DIR/.."
+PRESOURCE_STUB_DIR="$(mktemp -d)"
+for stub_bin in claude gh; do
+  cat > "$PRESOURCE_STUB_DIR/$stub_bin" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$PRESOURCE_STUB_DIR/$stub_bin"
+done
+ORIG_PATH_PRESOURCE="$PATH"
+export PATH="$PRESOURCE_STUB_DIR:$PATH"
+source "$HARNESS_DIR/run-retrospective-local.sh"
+export PATH="$ORIG_PATH_PRESOURCE"
+# common.sh + run-retrospective-local.sh both `set -euo pipefail` at sourcing;
+# the `e` flag persists into our test scope and would abort the script on the
+# first fixture failure. Reset to `uo pipefail` so we can catch+report fixture
+# failures via `_fail` instead of aborting.
+set +e
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# cf-1: all shapes succeed, every shape writes a tracked file → PR opened.
+# ---------------------------------------------------------------------------
+{
+  name="cf-1-all-shapes-succeed-pr-opened"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes yes
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  body_has_period=$([[ -f "$STUB_BIN/gh-body-file.md" ]] && grep -q '^## Period' "$STUB_BIN/gh-body-file.md" && echo yes || echo no)
+  all_shapes_present=yes
+  for shape in "${SHAPES[@]}"; do
+    if ! grep -qF "MARKER-${shape}" "$STUB_BIN/gh-body-file.md" 2>/dev/null; then
+      all_shapes_present=no
+      break
+    fi
+  done
+  if (( rc == 0 )) && [[ "$gh_called" == "yes" ]] && [[ "$body_has_period" == "yes" ]] && [[ "$all_shapes_present" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc gh_called=$gh_called body_has_period=$body_has_period all_shapes_present=$all_shapes_present)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-2: some shapes fail, others succeed (with edits) → PR opened with
+#       failed shapes footer; final slack call is `error` (not info).
+# ---------------------------------------------------------------------------
+{
+  name="cf-2-some-shapes-skip-pr-opened"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # 3 fail (first three), 9 succeed. Plan §7 row 9 designates cf-2 as the
+  # rc=124 (gtimeout SIGTERM) variant — vary one failing stub to rc=124 so
+  # the coordinator's catch-and-continue path exercises that exit code too.
+  i=0
+  for shape in "${SHAPES[@]}"; do
+    if (( i == 0 )); then
+      _write_shape_stub "$shape" 124 no no   # gtimeout SIGTERM
+    elif (( i < 3 )); then
+      _write_shape_stub "$shape" 1 no no
+    else
+      _write_shape_stub "$shape" 0 yes yes
+    fi
+    (( i++ )) || true
+  done
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  footer_present=$(grep -q '^## Failed shapes' "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  failed_listed=yes
+  for ((j=0; j<3; j++)); do
+    fshape="${SHAPES[$j]}"
+    if ! grep -q "^- ${fshape}" "$STUB_BIN/gh-body-file.md" 2>/dev/null; then
+      failed_listed=no
+      break
+    fi
+  done
+  # Plan §7 row 9 — assert the rc=124 variant lands in the body as
+  # `(rc=124, ...)` for the first failed shape.
+  rc124_listed=$(grep -qE "^- ${SHAPES[0]} \(rc=124," "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  # ENG-130 review n2: PR-body footer lines must NOT contain a literal `*`
+  # glob; coordinator resolves the actual log path (or names the dir).
+  no_literal_glob=yes
+  if grep -qE '^- .*\*' "$STUB_BIN/gh-body-file.md" 2>/dev/null; then
+    no_literal_glob=no
+  fi
+  last_slack="$(tail -1 "$SLACK_LOG")"
+  slack_error=$(printf '%s' "$last_slack" | grep -q '^error' && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$gh_called" == "yes" ]] && [[ "$footer_present" == "yes" ]] \
+       && [[ "$failed_listed" == "yes" ]] && [[ "$rc124_listed" == "yes" ]] \
+       && [[ "$no_literal_glob" == "yes" ]] && [[ "$slack_error" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc gh_called=$gh_called footer=$footer_present failed_listed=$failed_listed rc124_listed=$rc124_listed no_literal_glob=$no_literal_glob slack_error=$slack_error last_slack=$last_slack)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-3: every shape succeeds but none writes a tracked file → no PR; info slack.
+# ---------------------------------------------------------------------------
+{
+  name="cf-3-no-shape-produces-changes-no-pr"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes no  # write artifacts but no tracked-file edits
+  rc=0
+  out="$(main 2>&1)" || rc=$?
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  no_changes_logged=$(printf '%s' "$out" | grep -q "no changes proposed" && echo yes || echo no)
+  slack_info=$(grep -q '^info' "$SLACK_LOG" && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$gh_called" == "no" ]] && [[ "$no_changes_logged" == "yes" ]] && [[ "$slack_info" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc gh_called=$gh_called no_changes_logged=$no_changes_logged slack_info=$slack_info)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-3b: degenerate-period variant (plan §7 row 6). When _compute_retro_period
+#        emits identical start and end timestamps, each shape's
+#        `## Insufficient-sample carve-out` produces a stub artifact; no
+#        tracked-file changes; no PR opens; info slack.
+# ---------------------------------------------------------------------------
+{
+  name="cf-3b-no-shape-produces-changes-degenerate-period"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes no  # artifacts but no tracked-file edits
+  # Save and override _compute_retro_period so start_iso == end_iso. The
+  # coordinator's per-shape argv-log records both timestamps; we assert they
+  # are byte-equal.
+  _saved_compute_retro_period="$(declare -f _compute_retro_period)"
+  _compute_retro_period() {
+    printf '%s\n%s\n' '2026-05-16T00:00:00Z' '2026-05-16T00:00:00Z'
+  }
+  rc=0
+  out="$(main 2>&1)" || rc=$?
+  start_iso="$(grep -oE '\-\-period-start-iso [^ ]+' "$ARGV_LOG" | awk '{print $2}' | head -1)"
+  end_iso="$(grep -oE '\-\-period-end-iso [^ ]+' "$ARGV_LOG" | awk '{print $2}' | head -1)"
+  degenerate=$([[ -n "$start_iso" && "$start_iso" == "$end_iso" ]] && echo yes || echo no)
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  no_changes_logged=$(printf '%s' "$out" | grep -q "no changes proposed" && echo yes || echo no)
+  slack_info=$(grep -q '^info' "$SLACK_LOG" && echo yes || echo no)
+  # Restore the original function so other fixtures see the production helper.
+  eval "$_saved_compute_retro_period"
+  unset _saved_compute_retro_period
+  if (( rc == 0 )) && [[ "$degenerate" == "yes" ]] && [[ "$gh_called" == "no" ]] \
+       && [[ "$no_changes_logged" == "yes" ]] && [[ "$slack_info" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc degenerate=$degenerate start=$start_iso end=$end_iso gh_called=$gh_called no_changes_logged=$no_changes_logged slack_info=$slack_info)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-4: every shape fails → no PR; slack error listing all 12 failures.
+# ---------------------------------------------------------------------------
+{
+  name="cf-4-all-shapes-fail-no-pr"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 1 no no
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  slack_last="$(tail -1 "$SLACK_LOG")"
+  slack_error=$(printf '%s' "$slack_last" | grep -q '^error' && echo yes || echo no)
+  failed_count_listed=$(printf '%s' "$slack_last" | grep -qE "${#SHAPES[@]} of ${#SHAPES[@]} shapes failed" && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$gh_called" == "no" ]] && [[ "$slack_error" == "yes" ]] && [[ "$failed_count_listed" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc gh_called=$gh_called slack_error=$slack_error failed_count_listed=$failed_count_listed slack_last=$slack_last)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-5: SHAPES array is the source of truth — every name resolves to a
+#       bin/retro-shape-<name>.sh on disk in the live repo.
+# ---------------------------------------------------------------------------
+{
+  name="cf-5-shape-array-is-the-source-of-truth"
+  expected=(
+    stage-failure-summary gotcha-recurrence convention-drift gotcha-promotion
+    human-override expiry-verification confirmation-bias-audit recency-bias
+    survivorship-bias knowledge-budget pipeline-health-score
+    prompt-workflow-amendment
+  )
+  array_matches=yes
+  if (( ${#SHAPES[@]} != ${#expected[@]} )); then
+    array_matches=no
+  else
+    for ((i=0; i<${#expected[@]}; i++)); do
+      if [[ "${SHAPES[$i]}" != "${expected[$i]}" ]]; then
+        array_matches=no
+        break
+      fi
+    done
+  fi
+  drivers_exist=yes
+  for shape in "${SHAPES[@]}"; do
+    if [[ ! -f "$HARNESS_DIR/retro-shape-${shape}.sh" ]]; then
+      drivers_exist=no
+      break
+    fi
+  done
+  # Reverse direction (plan §7 row 17): every bin/retro-shape-*.sh on disk
+  # MUST appear in SHAPES — otherwise a driver could be added without
+  # registry update and silently never run.
+  no_orphans=yes
+  for f in "$HARNESS_DIR"/retro-shape-*.sh; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f" .sh)"
+    name_on_disk="${base#retro-shape-}"
+    # Exclude *-test.sh siblings — those are test files, not drivers.
+    case "$name_on_disk" in
+      *-test) continue ;;
+    esac
+    found=no
+    for shape in "${SHAPES[@]}"; do
+      if [[ "$shape" == "$name_on_disk" ]]; then
+        found=yes
+        break
+      fi
+    done
+    if [[ "$found" != "yes" ]]; then
+      no_orphans=no
+      break
+    fi
+  done
+  if [[ "$array_matches" == "yes" ]] && [[ "$drivers_exist" == "yes" ]] && [[ "$no_orphans" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (array_matches=$array_matches drivers_exist=$drivers_exist no_orphans=$no_orphans)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# cf-6: period passed identically to every shape.
+# ---------------------------------------------------------------------------
+{
+  name="cf-6-period-passed-to-every-shape"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes yes
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  # Each shape's argv line in $ARGV_LOG should carry --period-start-iso and
+  # --period-end-iso. Extract start/end values per shape; verify all 12 share
+  # the same values.
+  starts="$(grep -oE '\-\-period-start-iso [^ ]+' "$ARGV_LOG" | awk '{print $2}' | sort -u | wc -l | tr -d ' ')"
+  ends="$(grep -oE '\-\-period-end-iso [^ ]+' "$ARGV_LOG" | awk '{print $2}' | sort -u | wc -l | tr -d ' ')"
+  if (( rc == 0 )) && [[ "$starts" == "1" ]] && [[ "$ends" == "1" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc unique_starts=$starts unique_ends=$ends)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-7: previous-period helper fallback returns "(none)" when no prior dir.
+# ---------------------------------------------------------------------------
+{
+  name="cf-7-previous-period-helper-fallback"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  result="$(_resolve_previous_period_artifact stage-failure-summary 2026-05-16)"
+  if [[ "$result" == "(none)" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (got: $result)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-7b: previous-period helper tolerates "/retrospective-" substring in the
+#        ancestor path. Plan m1 review finding: an `awk -F'/retrospective-'`
+#        split mis-attributes fields when PROJECT_STATE_DIR's ancestor
+#        directory carries a `retrospective-` segment. A basename-anchored
+#        parse must still pick the inner dated dir.
+# ---------------------------------------------------------------------------
+{
+  name="cf-7b-previous-period-helper-tolerates-substring-in-ancestor-path"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # Construct a PROJECT_STATE_DIR whose ancestor contains a literal
+  # "retrospective-Atest" segment. With FS='/retrospective-', awk's $2
+  # becomes "Atest/state" — lexically greater than any YYYY-MM-DD value,
+  # so the brittle predicate `$2 < today` is FALSE and the inner dated
+  # dir gets silently dropped. The basename-anchored fix sees only
+  # "retrospective-2026-05-09" and accepts it.
+  ancestor="$(mktemp -d)/retrospective-Atest"
+  mkdir -p "$ancestor/state"
+  export PROJECT_STATE_DIR="$ancestor/state"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-05-09"
+  printf 'prior\n' > "$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  result="$(_resolve_previous_period_artifact stage-failure-summary 2026-05-16)"
+  expected="$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  if [[ "$result" == "$expected" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (got: '$result' expected: '$expected')"
+  fi
+  rm -rf "$ancestor"
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-8: previous-period helper finds prior artifact when present.
+# ---------------------------------------------------------------------------
+{
+  name="cf-8-previous-period-helper-finds-prior"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-05-09"
+  printf 'prior\n' > "$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  result="$(_resolve_previous_period_artifact stage-failure-summary 2026-05-16)"
+  expected="$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  if [[ "$result" == "$expected" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (got: $result expected: $expected)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-9: PIPELINE_DRY_RUN=1 — no git commit, no gh pr create.
+#       (Note: coordinator itself does NOT branch on DRY_RUN — the shapes do.
+#       With dry-run, shapes produce placeholder artifacts but no tracked-file
+#       changes, so the coordinator's "no diff → no PR" branch fires.)
+# ---------------------------------------------------------------------------
+{
+  name="cf-9-dry-run-no-git-commit-no-gh-pr"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes no   # artifacts but no tracked-file edits
+  export PIPELINE_DRY_RUN=1
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$gh_called" == "no" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc gh_called=$gh_called)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-10: PR body omits zero-byte artifacts.
+# ---------------------------------------------------------------------------
+{
+  name="cf-10-pr-body-omits-empty-artifacts"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # First shape writes a zero-byte artifact; others write normal content.
+  i=0
+  for shape in "${SHAPES[@]}"; do
+    if (( i == 0 )); then
+      # Custom stub: write empty file
+      cat > "$STUB_BIN/retro-shape-${shape}.sh" <<EMPTYSHAPE
+#!/usr/bin/env bash
+artifact_path=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --artifact-path) artifact_path="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+: > "\$artifact_path"
+printf 'tracked-empty\n' >> "$TARGET_REPO/tracked-from-shapes.txt"
+exit 0
+EMPTYSHAPE
+      chmod +x "$STUB_BIN/retro-shape-${shape}.sh"
+    else
+      _write_shape_stub "$shape" 0 yes yes
+    fi
+    (( i++ )) || true
+  done
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  # The empty shape's MARKER must NOT appear; the rest must appear.
+  empty_shape="${SHAPES[0]}"
+  empty_in_body=$(grep -qF "MARKER-${empty_shape}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  second_in_body=$(grep -qF "MARKER-${SHAPES[1]}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$empty_in_body" == "no" ]] && [[ "$second_in_body" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc empty_in_body=$empty_in_body second_in_body=$second_in_body)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-11: aggregator orders by SHAPES array, not filesystem.
+# ---------------------------------------------------------------------------
+{
+  name="cf-11-aggregator-orders-by-shapes-array"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes yes
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  # Extract MARKER-* lines in body order, then compare order against SHAPES.
+  body_markers="$(grep -oE 'MARKER-[a-z-]+' "$STUB_BIN/gh-body-file.md" 2>/dev/null | sed 's/^MARKER-//')"
+  expected_markers="$(printf '%s\n' "${SHAPES[@]}")"
+  if (( rc == 0 )) && [[ "$body_markers" == "$expected_markers" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc; body_markers=$body_markers; expected=$expected_markers)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# cf-12: gh pr create fails → slack error + exit 20.
+# ---------------------------------------------------------------------------
+{
+  name="cf-12-gh-pr-create-fails-slack-error"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  _write_all_shape_stubs 0 yes yes
+  # Override gh to fail
+  cat > "$STUB_BIN/gh" <<'GHFAIL'
+#!/usr/bin/env bash
+exit 1
+GHFAIL
+  chmod +x "$STUB_BIN/gh"
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  slack_last="$(tail -1 "$SLACK_LOG")"
+  slack_error=$(printf '%s' "$slack_last" | grep -q '^error.*gh pr create failed' && echo yes || echo no)
+  if (( rc == 20 )) && [[ "$slack_error" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc slack_error=$slack_error last_slack=$slack_last)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# qa-adv-r1: _resolve_previous_period_artifact picks the most-recent dir
+#            when multiple prior retrospective dirs exist.
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r1-previous-period-picks-most-recent"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-04-25"
+  printf 'old\n' > "$PROJECT_STATE_DIR/retrospective-2026-04-25/stage-failure-summary.md"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-05-02"
+  printf 'middle\n' > "$PROJECT_STATE_DIR/retrospective-2026-05-02/stage-failure-summary.md"
+  mkdir -p "$PROJECT_STATE_DIR/retrospective-2026-05-09"
+  printf 'most-recent\n' > "$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  result="$(_resolve_previous_period_artifact stage-failure-summary 2026-05-16)"
+  expected="$PROJECT_STATE_DIR/retrospective-2026-05-09/stage-failure-summary.md"
+  if [[ "$result" == "$expected" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (got: '$result' expected: '$expected')"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# qa-adv-r2: missing shape driver (rc=127) is treated as a per-shape failure
+#            (non-blocking); surviving shapes still compose the PR.
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r2-missing-driver-is-nonblocking"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # Write stubs for all shapes except the first; leave SHAPES[0] with no driver.
+  i=0
+  for shape in "${SHAPES[@]}"; do
+    if (( i > 0 )); then
+      _write_shape_stub "$shape" 0 yes yes
+    fi
+    (( i++ )) || true
+  done
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  gh_called=$([[ -s "$GH_LOG" ]] && echo yes || echo no)
+  footer_present=$(grep -q '^## Failed shapes' "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  missing_shape="${SHAPES[0]}"
+  missing_in_footer=$(grep -qE "^- ${missing_shape}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$gh_called" == "yes" ]] && [[ "$footer_present" == "yes" ]] && [[ "$missing_in_footer" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc gh_called=$gh_called footer=$footer_present missing_in_footer=$missing_in_footer)"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# qa-adv-r3: _compute_retro_period falls back to 30-day window when git
+#            emits a non-numeric merge timestamp (robustness guard).
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r3-period-fallback-on-non-numeric-git-output"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  cat > "$STUB_BIN/git" <<'GITSTUB_R3'
+#!/usr/bin/env bash
+is_log=false
+for a in "$@"; do [[ "$a" == "log" ]] && is_log=true; done
+if $is_log; then printf 'not-a-number weekly retrospective merge\n'; exit 0; fi
+command git "$@"
+GITSTUB_R3
+  chmod +x "$STUB_BIN/git"
+  period_output="$(_compute_retro_period 2>/dev/null)" || true
+  start="$(printf '%s' "$period_output" | sed -n '1p')"
+  end="$(printf '%s' "$period_output" | sed -n '2p')"
+  if [[ -n "$start" ]] && [[ "$start" != "$end" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (start='$start' end='$end')"
+  fi
+  _teardown_test_env
+}
+
+# ---------------------------------------------------------------------------
+# qa-adv-r4: failed-shape artifact content is absent from PR body even when
+#            the shape wrote an artifact before exiting non-zero.
+# ---------------------------------------------------------------------------
+{
+  name="qa-adv-r4-failed-shape-content-absent-from-pr-body"
+  _new_test_env
+  SCRIPT_DIR="$STUB_BIN"
+  # SHAPES[0] fails (rc=1) but writes artifact and tracked file; rest succeed.
+  _write_shape_stub "${SHAPES[0]}" 1 yes yes
+  for ((i=1; i<${#SHAPES[@]}; i++)); do
+    _write_shape_stub "${SHAPES[$i]}" 0 yes yes
+  done
+  rc=0
+  main >/dev/null 2>&1 || rc=$?
+  failed_in_body=$(grep -qF "MARKER-${SHAPES[0]}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  second_in_body=$(grep -qF "MARKER-${SHAPES[1]}" "$STUB_BIN/gh-body-file.md" 2>/dev/null && echo yes || echo no)
+  if (( rc == 0 )) && [[ "$failed_in_body" == "no" ]] && [[ "$second_in_body" == "yes" ]]; then
+    _pass "$name"
+  else
+    _fail "$name (rc=$rc failed_in_body=$failed_in_body second_in_body=$second_in_body)"
+  fi
+  _teardown_test_env
+}
+
+printf '\n'
+if (( FAIL == 0 )); then
+  printf 'OK: run-retrospective-local tests (%d passed)\n' "$PASS"
+  exit 0
+else
+  printf 'FAILURES (%d/%d):\n%b' "$FAIL" "$(( PASS + FAIL ))" "$FAILURES"
+  exit 1
+fi

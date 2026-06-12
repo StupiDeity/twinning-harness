@@ -53,13 +53,13 @@ _vh_protocol_violation() {
   local issue="$1" case_id="$2" reason="$3"
   local body
   body="$(printf '<!-- pipeline: verdict result=halt reason=protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
-  bash "$_VH_SCRIPT_DIR/linear.sh" add-or-update-comment \
-    "protocol-violation/$case_id/$issue" "$issue" "$body" || true
+  bash "$_VH_SCRIPT_DIR/linear.sh" add-comment "$issue" \
+    --sig "protocol-violation/$case_id/$issue" --body "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
   # ENG-87 review-iter-7 M3: cross-file mutation of run-stage.sh's
   # verdict_emitted global is gone — _append_dispatch_end_row reads
   # find_fresh_verdict at trap-fire time and picks up the halt comment
-  # this function just posted via add-or-update-comment.
+  # this function just posted via add-comment.
   log "verdict-handler: protocol violation on $issue ($case_id): $reason"
 }
 
@@ -243,6 +243,8 @@ find_fresh_verdict() {
         {marker:"pipeline-rejection", source_stage:"", target_stage:$e.target, reason:"", comment_id:$id, event:$e}
       elif $r == "halt" then
         {marker:"pipeline-halt", source_stage:"", target_stage:"", reason:$e.reason, comment_id:$id, event:$e}
+      elif $r == "pivot" then
+        {marker:"pipeline-pivot", source_stage:$e.stage, target_stage:$e.target, reason:$e.reason, comment_id:$id, event:$e}
       else
         {marker:"unknown", source_stage:"", target_stage:"", reason:"", comment_id:$id, event:$e}
       end')"
@@ -584,6 +586,14 @@ verdict_handler() {
       ;;
     pipeline-halt)
       log "verdict-handler: halt marker on $issue (reason=$(jq -r '.reason' <<<"$fresh")) — leaving halt intact"
+      return 1
+      ;;
+    pipeline-pivot)
+      # ENG-115: parsing-only stub. The next sub-ticket (ENG-NEXT) replaces
+      # this log+return body with `apply_transition "$issue" "$src" "$tgt"
+      # "pipeline:supersede"` mirroring the `reviewing|brainstorming|pipeline:supersede`
+      # row in _VH_LOOPBACK_TRANSITIONS above.
+      log "verdict-handler: pivot-detected on $issue (source=$src → target=$tgt, reason=$(jq -r '.reason' <<<"$fresh")) — routing deferred to ENG-NEXT"
       return 1
       ;;
     *)
