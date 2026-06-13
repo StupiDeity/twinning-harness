@@ -55,6 +55,7 @@ qa_findings=_resolve_qa_findings
 progress_md_path=_resolve_progress_md_path
 plan_json=_resolve_plan_json
 verdict_review_path=_resolve_verdict_review_path
+review_ledger_path=_resolve_review_ledger_path
 init_sh_path=_resolve_init_sh_path
 qa_predicate_path=_resolve_qa_predicate_path
 artifacts_dir=_resolve_artifacts_dir
@@ -104,6 +105,7 @@ _write_rendered_paths_sidecar() {
     [[ -n "${_RENDER_LEARNED_RULES_DIR:-}" ]]  && printf 'learned_rules_dir\t%s\n'  "$_RENDER_LEARNED_RULES_DIR"
     [[ -n "${_RENDER_PROGRESS_MD_PATH:-}" ]]   && printf 'progress_md_path\t%s\n'   "$_RENDER_PROGRESS_MD_PATH"
     [[ -n "${_RENDER_ARTIFACTS_DIR:-}" ]]      && printf 'artifacts_dir\t%s\n'      "$_RENDER_ARTIFACTS_DIR"
+    [[ -n "${_RENDER_REVIEW_LEDGER_PATH:-}" ]] && printf 'review_ledger_path\t%s\n' "$_RENDER_REVIEW_LEDGER_PATH"
     # plan_json's resolver `_resolve_plan_json` returns the FILE
     # CONTENTS, not the path — so we cannot reuse it here. The path
     # this sidecar is named after is `${_RENDER_PLAN_FILE%.md}.json`
@@ -275,6 +277,7 @@ _resolve_branch_name() { printf '%s' "$_RENDER_BRANCH_NAME"; }
 _resolve_stage_summary_path() { printf '%s' "$_RENDER_STAGE_SUMMARY_PATH"; }
 _resolve_progress_md_path() { printf '%s' "$_RENDER_PROGRESS_MD_PATH"; }
 _resolve_verdict_review_path() { printf '%s' "$_RENDER_VERDICT_REVIEW_PATH"; }
+_resolve_review_ledger_path() { printf '%s' "${_RENDER_REVIEW_LEDGER_PATH-}"; }
 _resolve_init_sh_path() { printf '%s' "$_RENDER_INIT_SH_PATH"; }
 _resolve_qa_predicate_path() { printf '%s' "$_RENDER_QA_PREDICATE_PATH"; }
 _resolve_artifacts_dir() { printf '%s' "$_RENDER_ARTIFACTS_DIR"; }
@@ -578,6 +581,14 @@ main() {
   # the review agent must Write to. No stage-conditional check —
   # the validator (run-stage.sh) catches missing payloads.
   _RENDER_VERDICT_REVIEW_PATH="$(issue_dir "$issue_id")/verdict-review.json"
+  # ENG-190: per-issue review-findings-ledger.jsonl path. Composed from
+  # issue_dir per common.sh::issue_dir. Resolver returns the absolute path
+  # the review agent appends rows to via Edit-with-anchor (NEVER Write —
+  # truncating the cumulative ledger destroys prior-dispatch records).
+  # Orchestrator-side _ensure_review_ledger seeds the file once per issue
+  # on the first reviewing dispatch; post-dispatch _validate_review_ledger
+  # halts the dispatch with review-ledger-invalid on schema violations.
+  _RENDER_REVIEW_LEDGER_PATH="$(issue_dir "$issue_id")/review-findings-ledger.jsonl"
   # ENG-125: per-issue init.sh path. Composed from issue_dir per
   # common.sh::issue_dir. Resolver returns the absolute path the plan
   # agent must Write to. Plan-stage filesystem detective in dispatch.sh

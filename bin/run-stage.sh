@@ -943,6 +943,9 @@ _entry_conditions_gate() {
 #                               would lose classify-failure state)
 #   stage-summary-OTHER.md     (forward+loopback reads need them
 #                               intact — see brainstorm §6.1/6.2)
+#   review-findings-ledger.jsonl (per-issue append-only ledger;
+#                               opposite lifecycle from verdict-review.json;
+#                               see docs/runbooks/review-findings-ledger.md — ENG-190)
 _clear_current_stage_slots() {
   local PIPELINE_WRITER=orchestrator
   export PIPELINE_WRITER
@@ -1000,6 +1003,29 @@ _ensure_progress_md() {
     printf '<!-- See docs/runbooks/progress-md.md. Never truncate; orchestrator-owned. -->\n\n'
   } > "$pmd"
   log "_ensure_progress_md: seeded $pmd"
+}
+
+# ENG-190: seed per-issue review-findings-ledger.jsonl with the canonical
+# two-line `#`-prefix header. Idempotent on existing file. Stage-gated to
+# reviewing by the caller (issues that never reach reviewing don't
+# accumulate empty ledger files). The seed lines are byte-checked by
+# bin/review-ledger-schema.sh::cmd_validate before per-row validation —
+# editing this header text without updating SEED_LINE_{1,2} in the
+# validator breaks the seed-header integrity check and halts every
+# subsequent reviewing dispatch with rc=49.
+_ensure_review_ledger() {
+  local ident="$1"
+  local lgr; lgr="$(issue_dir "$ident")/review-findings-ledger.jsonl"
+  [[ -f "$lgr" ]] && return 0
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "_ensure_review_ledger: dry-run — would seed $lgr"
+    return 0
+  fi
+  {
+    printf '# review-findings-ledger — per-issue cumulative ledger; append one JSON object per line.\n'
+    printf '# See docs/runbooks/review-findings-ledger.md. Never truncate; never cleared on dispatch.\n'
+  } > "$lgr"
+  log "_ensure_review_ledger: seeded $lgr"
 }
 
 # ENG-87: post-dispatch envelope validator. Detective-only — halts only
@@ -1401,6 +1427,46 @@ _post_review_payload_halt() {
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
 
+# ENG-190: review-ledger validator. Filesystem detective — checks that the
+# per-issue review-findings-ledger.jsonl exists and validates against
+# bin/review-ledger-schema.sh's schema-v1 row contract. Returns 0=valid,
+# 48=malformed, 49=incomplete, 50=missing-file (caller halts).
+_validate_review_ledger() {
+  local ident="$1"
+  local ledger; ledger="$(issue_dir "$ident")/review-findings-ledger.jsonl"
+  if [[ ! -f "$ledger" ]]; then
+    _post_review_ledger_halt "$ident" "review-ledger-missing" \
+      "no review-findings-ledger.jsonl at $ledger"
+    return 50
+  fi
+  local out rc=0
+  out="$(bash "$SCRIPT_DIR/review-ledger-schema.sh" validate "$ledger" \
+         --ident "$ident" --dispatch-id "${PIPELINE_DISPATCH_ID-}" 2>&1)" || rc=$?
+  case "$rc" in
+    0)  return 0 ;;
+    48) _post_review_ledger_halt "$ident" "review-ledger-malformed"  "$out" ; return 48 ;;
+    49) _post_review_ledger_halt "$ident" "review-ledger-incomplete" "$out" ; return 49 ;;
+    50) _post_review_ledger_halt "$ident" "review-ledger-missing"    "$out" ; return 50 ;;
+    *)  _post_review_ledger_halt "$ident" "unexpected-rc" \
+          "validator returned unexpected rc=$rc; stdout: $out" ; return 48 ;;
+  esac
+}
+
+# Posts a halt comment for a review-ledger violation. Mirrors
+# _post_review_payload_halt sanitisation. Operator-lede recovery note:
+# the ledger is NOT cleared on --action continue (opposite lifecycle from
+# verdict-review.json), so the detective will re-halt on the same row
+# until the operator fixes or removes it by hand.
+_post_review_ledger_halt() {
+  local ident="$1" defect="$2" raw="$3"
+  local safe="${raw//<!--/<\\!--}"
+  local ledger; ledger="$(issue_dir "$ident")/review-findings-ledger.jsonl"
+  local body
+  body="$(printf '<!-- pipeline: verdict result=halt reason=review-ledger-invalid -->\n\nReview-ledger validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Ledger: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-ledger-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **NOTE:** the ledger is NOT cleared on resume; the detective will re-halt on the same row until you fix or remove it. Edit the offending row by hand first (`sed -i.bak '"'"'<N>d'"'"' %s`) using the row index in the diagnostic above, or delete the file to restart the ledger from scratch.\n- Manual repair: hand-edit `%s` to satisfy the schema, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §12.' \
+    "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$ledger" "$safe" "$ident" "$ledger" "$ledger" "$ident")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+}
+
 # ENG-117: qa-payload validator. Filesystem detective — checks that the qa
 # agent wrote a well-formed $issue_dir/verdict-qa.json with current
 # dispatch_id. Returns 0=valid, 39=malformed, 40=incomplete,
@@ -1668,6 +1734,12 @@ main() {
   # ENG-109 C2: ensure progress.md exists before dispatch so the agent's Edit
   # tool (append-via-anchor path) succeeds on first dispatch on a fresh issue.
   _ensure_progress_md "$ident"
+  # ENG-190: seed per-issue review-findings-ledger.jsonl with the canonical
+  # two-line `#`-prefix header on reviewing-stage dispatches. Idempotent on
+  # existing file (the ledger is NOT cleared by _clear_current_stage_slots —
+  # opposite lifecycle from verdict-review.json). Stage-gated so issues that
+  # never reach reviewing don't accumulate empty ledger files.
+  [[ "$stage" == "reviewing" ]] && _ensure_review_ledger "$ident"
 
   # ENG-87: allocate dispatch_id (per-issue monotonic counter) and clear
   # current-stage local files. Skip on scope-approval replay (the prior
@@ -2251,6 +2323,24 @@ main() {
           classify_failure "$ident" "$stage" "skip-until-human-acts" \
             "review-payload-invalid: $(failure_outcome_for_exit "$_rev_rc")" "$_rev_rc"
           exit "$_rev_rc"
+        fi
+        ;;
+    esac
+  fi
+
+  # ENG-190: review-ledger validator. Post-dispatch; reviewing stage only.
+  # Halts with review-ledger-invalid if $issue_dir/review-findings-ledger.jsonl
+  # is absent, malformed, or fails schema-v1 validation. Exit codes 48/49/50
+  # map to the failure_outcome_for_exit taxonomy entries added in Task 1.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      reviewing)
+        local _ledger_rc=0
+        _validate_review_ledger "$ident" || _ledger_rc=$?
+        if (( _ledger_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "review-ledger-invalid: $(failure_outcome_for_exit "$_ledger_rc")" "$_ledger_rc"
+          exit "$_ledger_rc"
         fi
         ;;
     esac
