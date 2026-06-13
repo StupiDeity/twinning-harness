@@ -1467,6 +1467,99 @@ _post_review_ledger_halt() {
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
 
+# ENG-191: post-dispatch deferred-majors enumeration helper. Reviewing
+# stage only. Reads the fresh verdict marker via find_fresh_verdict; when
+# the agent emitted `verdict pass --reason ship-with-deferred-majors`,
+# enumerates this-dispatch ledger rows where adjudicated_severity == major
+# AND blocks_ship == false, formats one markdown bullet per row, posts
+# ONE comment under sig deferred-majors/<ident>. Soft-fail: any failure
+# logs a warning and returns 0; the ledger remains the canonical record.
+# AC #4 (envelope-validator-clean): agent must NOT post under this sig;
+# the orchestrator owns the write. Sanitisation: every agent-controlled
+# interpolated field (finding_class_key, ship_classification_rationale,
+# the five decision_factors booleans, dispatch_id, iteration) is sanitised
+# via `<!-- → <\!--` and `\n,\r → space` (defense-in-depth even though
+# validator-checked at row level — see D-005).
+_post_deferred_majors_comment_if_eligible() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1"
+  local fresh reason
+  fresh="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
+  [[ -z "$fresh" ]] && return 0
+  reason="$(jq -r '.event.reason // ""' <<<"$fresh" 2>/dev/null || printf '')"
+  [[ "$reason" == "ship-with-deferred-majors" ]] || return 0
+  local ledger
+  ledger="$(issue_dir "$ident")/review-findings-ledger.jsonl"
+  if [[ ! -f "$ledger" ]]; then
+    log "[deferred-majors] ledger absent at $ledger; skipping post"
+    return 0
+  fi
+  local did="${PIPELINE_DISPATCH_ID-}"
+  if [[ -z "$did" ]]; then
+    log "[deferred-majors] PIPELINE_DISPATCH_ID unset; skipping post"
+    return 0
+  fi
+  # Per-row sanitiser (mirrors _post_review_ledger_halt's `<!--` rewrite +
+  # _sanitise idiom; local-to-function to avoid polluting the global
+  # namespace with another sanitise_* variant — the canonical
+  # sanitise_for_diag lives in bin/review-ledger-schema.sh which is not
+  # sourced from run-stage.sh).
+  _san() {
+    local raw="$1"
+    raw="${raw//$'\n'/ }"
+    raw="${raw//$'\r'/ }"
+    raw="${raw//<!--/<\\!--}"
+    printf '%s' "$raw"
+  }
+  _yn() { [[ "$1" == "true" ]] && printf 'yes' || printf 'no'; }
+  # Collect matching rows via a jq filter over non-comment lines. Emits
+  # one tab-delimited record per matching row.
+  local rows
+  rows="$(grep -v '^#' "$ledger" 2>/dev/null \
+    | grep -v '^[[:space:]]*$' \
+    | jq -rc --arg did "$did" '
+        select(.dispatch_id == $did)
+        | select(.adjudicated_severity == "major")
+        | select(.blocks_ship == false)
+        | [
+            (.finding_class_key // ""),
+            (.ship_classification_rationale // ""),
+            (.decision_factors.in_changed_code // false),
+            (.decision_factors.is_regression // false),
+            (.decision_factors.user_visible // false),
+            (.decision_factors.reversible_post_ship // false),
+            (.decision_factors.has_workaround // false),
+            (.dispatch_id // ""),
+            (.iteration // 0)
+          ] | @tsv' 2>/dev/null || printf '')"
+  local count=0
+  local bullets=""
+  while IFS=$'\t' read -r fck scr ic isr uv rp hw d_id it; do
+    [[ -z "$fck" ]] && continue
+    count=$((count+1))
+    local bullet
+    bullet="$(printf -- '- [major] %s\n  Rationale: %s\n  Decision factors:\n    - in_changed_code: %s\n    - is_regression: %s\n    - user_visible: %s\n    - reversible_post_ship: %s\n    - has_workaround: %s\n  Ledger row: dispatch_id=%s iteration=%s' \
+      "$(_san "$fck")" "$(_san "$scr")" \
+      "$(_yn "$ic")" "$(_yn "$isr")" "$(_yn "$uv")" "$(_yn "$rp")" "$(_yn "$hw")" \
+      "$(_san "$d_id")" "$(_san "$it")")"
+    if [[ -z "$bullets" ]]; then
+      bullets="$bullet"
+    else
+      bullets="$bullets
+
+$bullet"
+    fi
+  done <<< "$rows"
+  local body
+  body="$(printf 'Review took the selective exit (ENG-191). %s major finding(s) deferred as known debt.\n\n%s\n\nENG-193 will auto-create follow-up tickets per deferred major.' \
+    "$count" "$bullets")"
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
+    --sig "deferred-majors/$ident" --body "$body" \
+    || log "[deferred-majors] post failed for $ident; ledger remains the canonical record"
+  return 0
+}
+
 # ENG-117: qa-payload validator. Filesystem detective — checks that the qa
 # agent wrote a well-formed $issue_dir/verdict-qa.json with current
 # dispatch_id. Returns 0=valid, 39=malformed, 40=incomplete,
@@ -2342,6 +2435,21 @@ main() {
             "review-ledger-invalid: $(failure_outcome_for_exit "$_ledger_rc")" "$_ledger_rc"
           exit "$_ledger_rc"
         fi
+        ;;
+    esac
+  fi
+
+  # ENG-191: post-dispatch deferred-majors enumeration. Reviewing stage
+  # only. Reads the fresh verdict marker; when event.reason ==
+  # ship-with-deferred-majors, enumerates this-dispatch ledger rows with
+  # adjudicated=major + blocks_ship=false and posts ONE markdown bullet
+  # comment under sig deferred-majors/<ident>. Soft-fail; never halts the
+  # dispatch (ledger remains the canonical record). AC #4 envelope-clean:
+  # the agent's prompt forbids self-posting; the orchestrator owns this write.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      reviewing)
+        _post_deferred_majors_comment_if_eligible "$ident" || true
         ;;
     esac
   fi
