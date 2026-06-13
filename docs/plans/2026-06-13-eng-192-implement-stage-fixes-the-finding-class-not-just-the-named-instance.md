@@ -8,18 +8,25 @@ topic: §3 fix-the-class + in-file cleanup carve-out + 11-pin content test
 
 ## Goal
 
-Insert one labeled MANDATORY block into `AGENT_PROMPTS.md` §3 — between
-step 5's `Concrete failure (ENG-123 iter 4-6)` tail and the `Minor/nit
-defer rule (… ENG-136):` header — that instructs the implement agent to
-(a) close the whole class of a cited review finding within plan File
-Structure and (b) clean up obvious in-file latent bugs with a
-`cleanup(<issue_id>):` commit tag, and add eleven grep-anchored pins to
-`bin/agent-prompts-content-test.sh` — **nine AC-pin assertions** (pins 1–9,
-per brainstorm D-005's authorized set) pinning the block's header, position,
-sub-blocks, ENG-123 anti-pattern, defer-rule override, and stage-summary
-Notes emission, plus **two additive system-invariant pins** (pin 10:
-§3 fence count == 2; pin 11: §3 Self-review `Defensive-code restraint`
-cross-reference present in the new block).
+**Make the implement agent close the whole class of a cited review
+finding (not just the one named instance), and allow it to clean up
+obvious latent bugs in the same file it's already editing** — without
+expanding scope outside the plan's File Structure or the brainstorm's
+authorized contract.
+
+Concretely: insert one labeled MANDATORY block into `AGENT_PROMPTS.md`
+§3 — between step 5's `Concrete failure (ENG-123 iter 4-6)` tail and the
+`Minor/nit defer rule (… ENG-136):` header — carrying both directives
+(Fix-the-class + In-file cleanup carve-out) bounded by D-002's three
+class-closure rules and D-003's in-bounds / denial lists. Pin the block
+with eleven grep-anchored assertions in `bin/agent-prompts-content-test.sh`:
+**nine AC-pin assertions** (Pins 1–9, per brainstorm D-005's authorized
+set) covering header, position, sub-blocks, ENG-123 anti-pattern,
+defer-rule override, and stage-summary Notes emission; plus **two
+additive system-invariant pins** (Pin 10: §3 fence count == 2; Pin 11:
+§3 Self-review `Defensive-code restraint` cross-reference present in the
+new block) anchored to the System invariants section's verified_by
+targets.
 
 ## Anti-anchoring check
 
@@ -40,11 +47,22 @@ cross-reference present in the new block).
 
 Every code-level claim below has been verified against the current
 worktree at `feat/eng-192-implement-stage-fixes-the-finding-class-not-just-the-named-instance`
-(SHA matches HEAD, `git log --oneline HEAD..origin/main` empty at plan
-time; `origin/main = 438bd7376211c9763d3fcbcf638fd98839f843b2`).
+at plan-time `HEAD = 59925eb`. `origin/main = 966fa06bf3ea37c44e1e0594a6796fbc928734e4`.
 
-**Branch-base freshness:** `HEAD..origin/main` empty at plan time
-(`origin/main = 438bd73`). No Task 0 rebase needed.
+**Branch-base freshness:** `HEAD..origin/main` is NON-EMPTY at plan
+time — two upstream commits ahead: `df58269 fix(plan-schema): accept
+all CommonMark bullet markers + multi-line invariants` plus its merge
+commit `966fa06`. The drift is CLEAN: `origin/main`'s only modifications
+are to `bin/plan-schema.sh`, `bin/plan-schema-test.sh`, and
+`bin/plan-schema-adversarial-test.sh` — none of which appear in this
+plan's File Structure. The drift also deletes a prior abandoned ENG-192
+plan + json from `docs/plans/` (the previous attempt's artifacts); my
+branch contains the current iteration of those files independently. **Task 0
+below rebases onto `origin/main` before any other edit** so the implement
+agent works against the updated plan-schema validator (specifically: the
+post-dispatch `cmd_validate_md` detective now scans multi-line bullet
+bodies and accepts CommonMark `*` / `+` markers, which this plan's
+`## System invariants` section relies on).
 
 ### Files this plan modifies (verified `path:line`)
 
@@ -101,8 +119,16 @@ time; `origin/main = 438bd7376211c9763d3fcbcf638fd98839f843b2`).
 * `learned-rules/harness/project-profile.md::"## Build & test gates"`
   Test command — unchanged. No new `bin/*-test.sh` file is added
   (the new assertions land inside the existing
-  `bin/agent-prompts-content-test.sh`, which already appears in the
-  profile's gate command — verified by grep).
+  `bin/agent-prompts-content-test.sh`). Note: that test file is NOT
+  in the profile's explicit Test command list at
+  `learned-rules/harness/project-profile.md:17`, but it IS picked up
+  by `.githooks/pre-commit:162`'s `for t in bin/*-test.sh` glob —
+  verified by grep — so the new pins still fire on every commit.
+  Whether to add `bin/agent-prompts-content-test.sh` to the profile's
+  explicit Test command line is a pre-existing repo-hygiene question
+  independent of ENG-192. The implementing/qa Tool allowlist DOES
+  include the test (lines 34, 93) so it remains runnable inside
+  dispatched agents.
 * `.pipeline-config/config.json` — no per-target tool extras or
   model pin changes.
 
@@ -117,9 +143,11 @@ time; `origin/main = 438bd7376211c9763d3fcbcf638fd98839f843b2`).
 * No prior `cleanup`-tagged commit exists (`git log --oneline | grep
   -E "^[a-f0-9]+ cleanup"` returns empty). The `cleanup(<issue_id>):`
   convention does not collide with any existing prefix.
-* `.githooks/pre-commit` runs `bash bin/agent-prompts-content-test.sh`
-  on every commit touching `AGENT_PROMPTS.md` (verified via grep of
-  the hook script's KNOWN-list).
+* `.githooks/pre-commit:162` runs `for t in bin/*-test.sh; do …` —
+  the glob picks up `bin/agent-prompts-content-test.sh` on every
+  commit. The hook's KNOWN_BROKEN allow-list does NOT include
+  `agent-prompts-content-test.sh`, so the new ENG-192 pins are gated
+  on every commit (verified via grep of the hook script).
 
 ### Assumed (validated at implementation time, not pre-flight)
 
@@ -133,30 +161,12 @@ time; `origin/main = 438bd7376211c9763d3fcbcf638fd98839f843b2`).
 
 ## System invariants
 
-* §3 hoisted "Fix-the-class & in-file cleanup carve-out" block sits
-  between the 5-step block's tail (`Concrete failure (ENG-123 iter
-  4-6)`) and the ENG-136 `Minor/nit defer rule` header — verified_by:
-  bin/agent-prompts-content-test.sh:t_eng192_pin2_position
-* §3 hoisted block contains the literal class-enumeration phrase `fix
-  the whole class` and the IPv6 worked example — verified_by:
-  bin/agent-prompts-content-test.sh:t_eng192_pin3_class_phrase
-* §3 hoisted block contains the `cleanup({issue_id}):` commit-tag
-  convention and the ENG-123 anti-pattern citation — verified_by:
-  bin/agent-prompts-content-test.sh:t_eng192_pin7_eng123_forbidden
-* §3 hoisted block defers to the Minor/nit defer rule on
-  out-of-File-Structure siblings and requires stage-summary Notes
-  emission for class-closure decisions using the existing
-  `Deferred [<severity>] <finding-id>:` shape — verified_by:
-  bin/agent-prompts-content-test.sh:t_eng192_pin9_notes_emission
-* §3 fence count remains exactly 2 (one opening, one closing) so
-  `render-prompt.sh::extract_block` does not die on the
-  implementing dispatch — verified_by:
-  bin/agent-prompts-content-test.sh:t_eng192_pin10_fence_count
-* The §3 Self-review "Defensive-code restraint" clause at
-  `AGENT_PROMPTS.md:998-1030` remains the canonical definition of
-  "defensive layer"; the new block cross-references it by name and
-  does NOT introduce a parallel definition — verified_by:
-  bin/agent-prompts-content-test.sh:t_eng192_pin11_defensive_xref
+- verified_by: task:T2 — §3 hoisted "Fix-the-class & in-file cleanup carve-out" block sits between the 5-step block's tail (`Concrete failure (ENG-123 iter 4-6)`) and the ENG-136 `Minor/nit defer rule` header.
+- verified_by: task:T2 — §3 hoisted block contains the literal class-enumeration phrase `fix the whole class` and the IPv6 worked example.
+- verified_by: task:T2 — §3 hoisted block contains the `cleanup({issue_id}):` commit-tag convention and the ENG-123 anti-pattern citation.
+- verified_by: task:T2 — §3 hoisted block defers to the Minor/nit defer rule on out-of-File-Structure siblings and requires stage-summary Notes emission for class-closure decisions using the existing `Deferred [<severity>] <finding-id>:` shape.
+- verified_by: bin/render-prompt.sh:fence_count — §3 fence count remains exactly 2 (one opening, one closing) so `render-prompt.sh::extract_block` does not die on the implementing dispatch.
+- verified_by: bin/agent-prompts-content-test.sh:ENG-136 — the ENG-136 hoisted-block invariants (header presence, position between 5-step block and `Reviewing summary (verbatim):`, hard scope-ceiling phrase, example path, Notes-format prefix, step-1 forward reference, step-1 regression) all remain green after the ENG-192 block is inserted ABOVE the ENG-136 header.
 
 ## File Structure
 
@@ -181,9 +191,43 @@ change; no FE↔BE wire format, no IPC, no HTTP route, no protobuf.
 
 ## Backend Tasks
 
-### Task 1: Insert the §3 hoisted "Fix-the-class & in-file cleanup carve-out" block in `AGENT_PROMPTS.md`
+### Task 0: Rebase onto origin/main
 
 - `depends_on: []`
+- `touches: (git working tree only — no source-file edits)`
+
+This branch is two commits behind `origin/main` at plan time (the
+`df58269 fix(plan-schema): accept all CommonMark bullet markers +
+multi-line invariants` schema fix plus its merge `966fa06`). The drift
+is structurally clean: `origin/main`'s only modifications are to
+`bin/plan-schema.sh`, `bin/plan-schema-test.sh`, and
+`bin/plan-schema-adversarial-test.sh` — none in this plan's File
+Structure, no overlapping hunks. Rebasing now keeps the implement agent
+aligned with the post-dispatch `cmd_validate_md` detective the
+orchestrator will run.
+
+Steps:
+
+- [ ] Run `git fetch origin main && git rebase origin/main`. Expect
+  zero conflicts (no overlapping file edits per the drift analysis above).
+- [ ] After the rebase, re-verify every `path:line` reference in
+  Assumption Inventory survived by re-running the grep commands cited
+  there. Specifically: `grep -nF 'Concrete failure (ENG-123 iter 4-6)'
+  AGENT_PROMPTS.md` must still print one line, and `grep -nF 'Minor/nit
+  defer rule (MANDATORY — read BEFORE the findings list below;
+  ENG-136):' AGENT_PROMPTS.md` must still print one line, with the
+  former's line number strictly less than the latter's. If either
+  anchor moved by more than ±5 lines from the Inventory's quoted line
+  number, re-derive the position rather than blindly trusting Task 1's
+  content-anchor instructions.
+- [ ] Confirm the rebased `bin/plan-schema.sh` is the multi-line +
+  CommonMark-markers version by running `grep -n 'CommonMark unordered-list
+  markers' bin/plan-schema.sh`. Expect at least one match (the line
+  documenting `-`, `*`, `+`).
+
+### Task 1: Insert the §3 hoisted "Fix-the-class & in-file cleanup carve-out" block in `AGENT_PROMPTS.md`
+
+- `depends_on: [0]`
 - `touches: AGENT_PROMPTS.md` (§3 body only)
 
 Steps:
@@ -315,7 +359,7 @@ section, beyond D-005's brainstorm-authorized scope.
 
 ### Task 3: Smoke-validate the edited prompt renders
 
-- `depends_on: [1]`
+- `depends_on: [1, 2]`
 - `touches: (smoke only — no file writes)`
 
 Steps:
