@@ -314,7 +314,7 @@ cmd_validate() {
       '(keys) - ["ledger_schema_version","issue_id","dispatch_id","iteration","created_at","finding_class_key","cold_severity","adjudicated_severity","decision","rationale"] | .[]' \
       <<<"$line" 2>/dev/null || true)"
     while IFS= read -r uf; do
-      [[ -n "$uf" ]] && _warn_unknown "field (row $line_no)" "$uf"
+      if [[ -n "$uf" ]]; then _warn_unknown "field (row $line_no)" "$uf"; fi
     done <<< "$unknown_keys"
   done < "$file"
 
