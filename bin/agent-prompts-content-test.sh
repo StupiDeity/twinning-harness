@@ -241,6 +241,142 @@ else
     "literal 'see the **Minor/nit defer rule** block below' missing from §3 — step 1 lost the explicit pointer to the hoisted rule; a reader of step 1 alone would not know minor/nit handling is documented elsewhere"
 fi
 
+# ─── ENG-192: §3 fix-the-class + in-file cleanup carve-out + audit emission ───
+# A review finding cites one instance of a defect class; the implement
+# agent used to close only the named instance, so the next reviewer
+# dispatch found the next axis and the loopback ratcheted. ENG-192
+# hoists a labeled block ABOVE the ENG-136 Minor/nit defer rule that
+# (a) makes class-closure the default within plan File Structure, and
+# (b) carves out same-file cleanup commits tagged `cleanup(<issue_id>)`
+# bounded by an explicit in-bounds + denial list. Eleven pins:
+# Pins 1-9 mirror brainstorm D-005's authorized AC-pin set; Pins 10-11
+# are additive system-invariant pins (fence-count and Defensive-code
+# restraint cross-reference) anchored by this plan's System invariants
+# section's verified_by targets.
+
+# Pin 1: Hoisted-header presence.
+if printf '%s\n' "$s3" | grep -qF 'Fix-the-class & in-file cleanup carve-out (MANDATORY — read BEFORE the findings list below; ENG-192):'; then
+  ok "§3 ENG-192: fix-the-class hoisted header present"
+else
+  nope "§3 ENG-192: fix-the-class hoisted header present" \
+    "literal 'Fix-the-class & in-file cleanup carve-out (MANDATORY — read BEFORE the findings list below; ENG-192):' missing from §3 — has the hoisted block been removed or its header renamed?"
+fi
+
+# Pin 2: Position — hoisted block sits AFTER step 5's
+# 'Concrete failure (ENG-123 iter 4-6)' anchor AND BEFORE the ENG-136
+# 'Minor/nit defer rule …' header.
+_eng192_header_ln="$(grep -nF 'Fix-the-class & in-file cleanup carve-out (MANDATORY — read BEFORE the findings list below; ENG-192):' "$PROMPTS" | head -1 | cut -d: -f1)"
+_eng192_step5_ln="$(grep -nF 'Concrete failure (ENG-123 iter 4-6)' "$PROMPTS" | head -1 | cut -d: -f1)"
+_eng192_defer_ln="$(grep -nF 'Minor/nit defer rule (MANDATORY — read BEFORE the findings list below; ENG-136):' "$PROMPTS" | head -1 | cut -d: -f1)"
+if [[ -n "$_eng192_header_ln" && -n "$_eng192_step5_ln" && -n "$_eng192_defer_ln" \
+      && "$_eng192_header_ln" -gt "$_eng192_step5_ln" \
+      && "$_eng192_header_ln" -lt "$_eng192_defer_ln" ]]; then
+  ok "§3 ENG-192: fix-the-class block sits between ENG-123 concrete-failure tail and ENG-136 defer-rule header (lines $_eng192_step5_ln < $_eng192_header_ln < $_eng192_defer_ln)"
+else
+  nope "§3 ENG-192: fix-the-class block sits between ENG-123 tail and ENG-136 defer-rule header" \
+    "expected step5<header<defer; got step5=$_eng192_step5_ln header=$_eng192_header_ln defer=$_eng192_defer_ln — has the block been moved above the 5-step block, below the ENG-136 defer-rule header, or removed entirely?"
+fi
+unset _eng192_header_ln _eng192_step5_ln _eng192_defer_ln
+
+# Pin 3: Class-enumeration phrase — the directive language that
+# distinguishes class-closure from instance-only closure.
+if printf '%s\n' "$s3" | grep -qF 'fix the whole class'; then
+  ok "§3 ENG-192: class-enumeration phrase 'fix the whole class' present"
+else
+  nope "§3 ENG-192: class-enumeration phrase 'fix the whole class' present" \
+    "literal 'fix the whole class' missing from §3 — has the directive been softened to a tentative phrasing?"
+fi
+
+# Pin 4: IPv6 worked example anchors the class-identification rules
+# against a concrete defect mechanism (both 'IPv6' and 'loopback'
+# must appear in §3).
+if printf '%s\n' "$s3" | grep -qF 'IPv6' && printf '%s\n' "$s3" | grep -qF 'loopback'; then
+  ok "§3 ENG-192: IPv6 worked example present ('IPv6' and 'loopback' both grep-match)"
+else
+  nope "§3 ENG-192: IPv6 worked example present" \
+    "either 'IPv6' or 'loopback' missing from §3 — has the worked example been replaced with a generic placeholder?"
+fi
+
+# Pin 5: In-file cleanup carve-out sub-header — keeps the carve-out
+# discoverable; a tone-edit that hides it under prose trips here.
+if printf '%s\n' "$s3" | grep -qF 'In-file cleanup carve-out:'; then
+  ok "§3 ENG-192: 'In-file cleanup carve-out:' sub-header present"
+else
+  nope "§3 ENG-192: 'In-file cleanup carve-out:' sub-header present" \
+    "literal 'In-file cleanup carve-out:' missing from §3 — has the carve-out been hidden under prose without its labeled sub-header?"
+fi
+
+# Pin 6: Commit-tag convention — the `cleanup(<issue_id>):` prefix
+# is the operator-grep substrate for retrospective audits (OQ-3).
+if printf '%s\n' "$s3" | grep -qF 'cleanup(<issue_id>):'; then
+  ok "§3 ENG-192: 'cleanup(<issue_id>):' commit-tag convention present"
+else
+  nope "§3 ENG-192: 'cleanup(<issue_id>):' commit-tag convention present" \
+    "literal 'cleanup(<issue_id>):' missing from §3 — has the commit-tag convention been dropped or replaced?"
+fi
+
+# Pin 7: ENG-123 anti-pattern citation in the carve-out's denial
+# list — both 'ENG-123' and '1 MiB' must appear together in §3 so
+# a tone edit that drops the concrete reference trips here.
+if printf '%s\n' "$s3" | grep -qF 'ENG-123' && printf '%s\n' "$s3" | grep -qF '1 MiB'; then
+  ok "§3 ENG-192: ENG-123 anti-pattern citation present ('ENG-123' and '1 MiB' both grep-match)"
+else
+  nope "§3 ENG-192: ENG-123 anti-pattern citation present" \
+    "either 'ENG-123' or '1 MiB' missing from §3 — has the anti-pattern citation been dropped from the carve-out's denial list?"
+fi
+
+# Pin 8: Defer-rule override — the new block defers to ENG-136's
+# `ZERO edits to files outside the plan's File Structure` ceiling
+# on out-of-File-Structure siblings. The literal ceiling phrase
+# must appear inside §3 (already pinned by ENG-136 Pin 3, but the
+# coherence assertion is that the new block also references it).
+if printf '%s\n' "$s3" | grep -qF "ZERO edits to files outside the plan's File Structure"; then
+  ok "§3 ENG-192: defer-rule override ('ZERO edits to files outside the plan'\''s File Structure') referenced in §3"
+else
+  nope "§3 ENG-192: defer-rule override referenced in §3" \
+    "literal 'ZERO edits to files outside the plan'\''s File Structure' missing from §3 — has the new block's reference to the ENG-136 ceiling been dropped?"
+fi
+
+# Pin 9: Stage-summary Notes audit emission — the directive requires
+# 'Closed [...]'/'Deferred [...]'/'Halted [...]' lines in
+# stage-summary-implementing.md's Notes subsection. Both 'stage-summary'
+# and 'Deferred [' must grep-match to assert the audit-emission
+# directive references the Notes-format shape.
+if printf '%s\n' "$s3" | grep -qF 'stage-summary' && printf '%s\n' "$s3" | grep -qF 'Deferred ['; then
+  ok "§3 ENG-192: stage-summary Notes audit emission referenced ('stage-summary' and 'Deferred [' both grep-match)"
+else
+  nope "§3 ENG-192: stage-summary Notes audit emission referenced" \
+    "either 'stage-summary' or 'Deferred [' missing from §3 — has the audit-emission directive been dropped or its format shape replaced?"
+fi
+
+# Pin 10: Fence-count invariant — §3 must contain exactly two
+# column-0 ``` fences (the opening and closing of the prompt body).
+# A column-0 fence accidentally introduced inside the new prose block
+# would otherwise pass content checks while breaking
+# render-prompt.sh::extract_block at dispatch time.
+_eng192_fence_count="$(printf '%s\n' "$s3" | grep -cE '^```' || true)"
+if [[ "$_eng192_fence_count" == "2" ]]; then
+  ok "§3 ENG-192: §3 fence count is exactly 2 (render-prompt.sh::extract_block will not die)"
+else
+  nope "§3 ENG-192: §3 fence count is exactly 2" \
+    "got $_eng192_fence_count column-0 fences inside §3 — a stray \`\`\` line was introduced; render-prompt.sh::extract_block will die on the implementing dispatch"
+fi
+unset _eng192_fence_count
+
+# Pin 11: Defensive-code restraint cross-reference — the in-file
+# cleanup carve-out's denial list must cite the §3 Self-review's
+# `Defensive-code restraint` clause by name rather than introducing
+# a parallel definition. The literal phrase 'do NOT introduce a
+# parallel definition' is unique to the new block (verified by
+# absence-grep against the pre-ENG-192 §3 / §5 Defensive-code
+# restraint clauses).
+if printf '%s\n' "$s3" | grep -qF 'do NOT introduce a parallel definition'; then
+  ok "§3 ENG-192: in-file cleanup carve-out cross-references §3 Self-review Defensive-code restraint ('do NOT introduce a parallel definition' present)"
+else
+  nope "§3 ENG-192: in-file cleanup carve-out cross-references §3 Self-review Defensive-code restraint" \
+    "literal 'do NOT introduce a parallel definition' missing from §3 — the new block either dropped the cross-reference or introduced a parallel re-definition of 'defensive code'; either breaks the System invariants section's Pin 11 verified_by binding"
+fi
+
 # ─── ENG-140: §3 contains the new QA → implement loopback block ───
 # The implementing prompt MUST carry a QA-loopback handling block so that
 # qa → implementing fail dispatches see the QA findings inline (via
