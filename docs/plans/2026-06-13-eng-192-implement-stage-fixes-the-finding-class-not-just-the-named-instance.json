@@ -1,0 +1,74 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-192",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "AGENT_PROMPTS.md §3 carries a labeled MANDATORY Fix-the-class + in-file cleanup carve-out block between step 5's Concrete failure tail and the ENG-136 Minor/nit defer rule header, pinned by eleven grep-anchored assertions in bin/agent-prompts-content-test.sh.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "OK: §3 ENG-192: hoisted Fix-the-class block header present"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt.sh implementing ENG-192",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "AGENT_PROMPTS.md"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/agent-prompts-content-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Fix-the-class & in-file cleanup carve-out \\(MANDATORY — read BEFORE the findings list below; ENG-192\\):",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "fix the whole class",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "cleanup\\(<issue_id>\\):",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "ENG-123",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "t_eng192_pin1_header",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "t_eng192_pin10_fence_count",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "t_eng192_pin11_defensive_xref",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
