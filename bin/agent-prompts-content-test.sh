@@ -717,6 +717,85 @@ else
     "literal 'mechanical: critical > 0 OR major > 0' missing from §5 — has the path-B gate reverted to prose?"
 fi
 
+# ─── ENG-190: §5 review adjudication carries memory (cold detect, warm score) ──
+# Background: the cold ensemble re-rolls severity from scratch each iteration;
+# polish that survived a previous iter gets re-inflated to `major`, the path-B
+# predicate fires again, and the loop diverges. ENG-190 makes the adjudicator
+# layer carry memory via a per-issue append-only ledger; the path predicate
+# now keys off `Adjudicated:` (post-memory) counts instead of cold `Findings:`.
+# Pin: cold-pass contract on sub-agents, ledger block position, dual count
+# tuples, predicate source flip, critical-floor invariant, ledger Output
+# bullets, operator-visibility summary one-liner.
+
+# ENG-190-pin-cold-pass-clause: sub-agents NEVER receive ledger contents.
+if printf '%s\n' "$s5" | grep -qF 'The findings ledger is read by YOU (the adjudicator), NOT by sub-agents.'; then
+  ok "§5 ENG-190: cold-pass clause forbids passing ledger contents into sub-agents (ENG-190-pin-cold-pass-clause)"
+else
+  nope "§5 ENG-190: cold-pass clause" \
+    "literal 'The findings ledger is read by YOU (the adjudicator), NOT by sub-agents.' missing — sub-agents are no longer cold?"
+fi
+
+# ENG-190-pin-ledger-block-position: Findings ledger header appears BETWEEN
+# the Reviewer ensemble header and the Count-tuple emission header.
+_eng190_pos_reviewer="$(printf '%s\n' "$s5" | grep -n 'Reviewer ensemble (MANDATORY' | head -1 | cut -d: -f1)"
+_eng190_pos_ledger="$(printf '%s\n' "$s5" | grep -n 'Findings ledger (MANDATORY' | head -1 | cut -d: -f1)"
+_eng190_pos_counttuple="$(printf '%s\n' "$s5" | grep -n 'Count-tuple emission (MANDATORY' | head -1 | cut -d: -f1)"
+if [[ -n "$_eng190_pos_reviewer" && -n "$_eng190_pos_ledger" && -n "$_eng190_pos_counttuple" ]] \
+   && (( _eng190_pos_reviewer < _eng190_pos_ledger )) \
+   && (( _eng190_pos_ledger < _eng190_pos_counttuple )); then
+  ok "§5 ENG-190: Findings ledger block positioned between Reviewer ensemble and Count-tuple (ENG-190-pin-ledger-block-position)"
+else
+  nope "§5 ENG-190: ledger block position" \
+    "expected Reviewer < Findings ledger < Count-tuple; got reviewer=$_eng190_pos_reviewer ledger=$_eng190_pos_ledger counttuple=$_eng190_pos_counttuple"
+fi
+
+# ENG-190-pin-adjudicated-line: the literal Adjudicated: count tuple shape.
+if printf '%s\n' "$s5" | grep -qF 'Adjudicated: (critical=N, major=N, minor=N, nit=N)'; then
+  ok "§5 ENG-190: Adjudicated count-tuple line present (ENG-190-pin-adjudicated-line)"
+else
+  nope "§5 ENG-190: Adjudicated count-tuple line" \
+    "literal 'Adjudicated: (critical=N, major=N, minor=N, nit=N)' missing — has the dual-line emission contract been demoted?"
+fi
+
+# ENG-190-pin-adjudicated-predicate: the Decision-path predicate prose
+# references the Adjudicated: line as the source (not Findings:).
+# Two-part assertion: (a) the predicate prose names Adjudicated as source,
+# (b) the explicit "NOT the Findings: line" disambiguation is present.
+if printf '%s\n' "$s5" | grep -qF 'Compute `(critical, major)` from the **`Adjudicated:' \
+   && printf '%s\n' "$s5" | grep -qF 'NOT the `Findings:` line'; then
+  ok "§5 ENG-190: Decision-path predicate sourced from Adjudicated: not Findings: (ENG-190-pin-adjudicated-predicate)"
+else
+  nope "§5 ENG-190: predicate-source flip" \
+    "expected predicate prose to reference Adjudicated: as source AND explicitly disambiguate from Findings:"
+fi
+
+# ENG-190-pin-critical-floor: cold=critical ⇒ block + adjudicated=critical.
+if printf '%s\n' "$s5" | grep -qF 'If `cold_severity == critical`, you MUST emit `decision: block` and `adjudicated_severity: critical`.'; then
+  ok "§5 ENG-190: critical-floor invariant present (ENG-190-pin-critical-floor)"
+else
+  nope "§5 ENG-190: critical-floor invariant" \
+    "literal 'If \`cold_severity == critical\`, you MUST emit \`decision: block\` and \`adjudicated_severity: critical\`.' missing — may the adjudicator now downgrade a critical?"
+fi
+
+# ENG-190-pin-ledger-output-bullet: Output section instructs Edit-append +
+# explicit Write-tool ban.
+if printf '%s\n' "$s5" | grep -qF 'Append one row per finding to `{review_ledger_path}`' \
+   && printf '%s\n' "$s5" | grep -qF 'NEVER use the `Write` tool on `{review_ledger_path}`'; then
+  ok "§5 ENG-190: ledger Output bullet pins Edit-append + Write ban (ENG-190-pin-ledger-output-bullet)"
+else
+  nope "§5 ENG-190: ledger Output bullet" \
+    "expected both 'Append one row per finding to {review_ledger_path}' AND 'NEVER use the Write tool on {review_ledger_path}'"
+fi
+
+# ENG-190-pin-summary-line: operator-visibility one-liner pinned.
+if printf '%s\n' "$s5" | grep -qF 'Adjudicator: <K> carried (<S> stabilised, <D> defer-candidate), <F> fresh, <B> blocking. Ledger: <path>.' \
+   && printf '%s\n' "$s5" | grep -qF 'Adjudicator summary line (MANDATORY — operator visibility into the ratchet-vs-divergence delta'; then
+  ok "§5 ENG-190: adjudicator summary one-liner pinned with operator-visibility framing (ENG-190-pin-summary-line)"
+else
+  nope "§5 ENG-190: summary line" \
+    "expected both literal one-liner shape AND 'Adjudicator summary line (MANDATORY — operator visibility...' framing"
+fi
+
 # ─── ENG-77 QA-adversarial: §5 invariant deepening (QA round) ──────────
 # Background: the existing three D-002 asserts (lines 211, 221, 230)
 # run against the entire §5 body. `section_body()` includes pre-fence

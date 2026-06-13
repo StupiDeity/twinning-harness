@@ -7652,6 +7652,230 @@ else
     "expected sigs=bash-classifier,sandbox-path in output, got: $_eng156_m_out"
 fi
 
+# ─── ENG-190: review-findings-ledger lifecycle (Y1-Y6) ────────────────
+# Integration tests for the per-issue append-only ledger contract:
+# Y1 (AC-2): ledger persists across _clear_current_stage_slots
+# Y2: _ensure_review_ledger seeds two #-prefix header lines on absence and
+#     is a no-op on existing file
+# Y3 (AC-3): major→minor downgrade does NOT re-inflate the Adjudicated:
+#            major count
+# Y3-variant (AC-3): same-severity stabilise without downgrade — major
+#            count is 1 (held), NOT 2 (no fresh-carry inflation)
+# Y4: missing ledger on reviewing-stage post-dispatch → _validate_review_ledger
+#     returns 50 + posts halt comment
+# Y5: planning stage does NOT invoke _validate_review_ledger
+# Y6: _clear_current_stage_slots "qa" does NOT touch the ledger
+printf '\n--- ENG-190: review-findings-ledger lifecycle (Y1-Y6) ---\n'
+
+cat > "$STUB_DIR/review-ledger-schema.sh" <<SH
+#!/usr/bin/env bash
+exec bash "$HARNESS_DIR/review-ledger-schema.sh" "\$@"
+SH
+chmod +x "$STUB_DIR/review-ledger-schema.sh"
+
+_eng190_seed_line_1='# review-findings-ledger — per-issue cumulative ledger; append one JSON object per line.'
+_eng190_seed_line_2='# See docs/runbooks/review-findings-ledger.md. Never truncate; never cleared on dispatch.'
+
+_eng190_write_row() {
+  local file="$1" iid="$2" did="$3" iter="$4" key="$5" cold="$6" adj="$7" decision="$8"
+  jq -cn \
+    --argjson lv 1 \
+    --arg iid "$iid" --arg did "$did" --argjson iter "$iter" \
+    --arg key "$key" --arg cold "$cold" --arg adj "$adj" --arg dec "$decision" \
+    --arg ts "2026-06-13T00:00:00Z" --arg rat "test rationale" \
+    '{ledger_schema_version:$lv, issue_id:$iid, dispatch_id:$did, iteration:$iter, created_at:$ts, finding_class_key:$key, cold_severity:$cold, adjudicated_severity:$adj, decision:$dec, rationale:$rat}' \
+    >> "$file"
+}
+
+# Mirror the ENG-160 _ensure_progress_md pattern: unset PIPELINE_DRY_RUN
+# inside a subshell so the seed helper actually creates the file.
+# Production dispatch sets PIPELINE_DRY_RUN=0 (or unsets); the test harness
+# defaults to PIPELINE_DRY_RUN=1 which short-circuits all file writes.
+
+# ─── Y1 (AC-2): two-dispatch fixture — ledger persists across
+# _clear_current_stage_slots ────────────────────────────────────────────
+reset_capture
+mkdir -p "$(issue_dir ENG-190Y1)"
+_eng190_y1_lgr="$(issue_dir ENG-190Y1)/review-findings-ledger.jsonl"
+rm -f "$_eng190_y1_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  # Dispatch 1: seed + write three rows.
+  _ensure_review_ledger ENG-190Y1 >/dev/null 2>&1
+)
+_eng190_write_row "$_eng190_y1_lgr" ENG-190Y1 ENG-190Y1-d0001 1 "k1" major major carry
+_eng190_write_row "$_eng190_y1_lgr" ENG-190Y1 ENG-190Y1-d0001 1 "k2" minor minor carry
+_eng190_write_row "$_eng190_y1_lgr" ENG-190Y1 ENG-190Y1-d0001 1 "k3" critical critical block
+_eng190_y1_size_before="$(wc -c <"$_eng190_y1_lgr" | awk '{print $1}')"
+_eng190_y1_rows_before="$(grep -cE '^\{' "$_eng190_y1_lgr" || true)"
+
+# Dispatch 2: pre-clean fires.
+_clear_current_stage_slots ENG-190Y1 reviewing
+# Re-seed (idempotent).
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-190Y1 >/dev/null 2>&1
+)
+
+_eng190_y1_size_after="$(wc -c <"$_eng190_y1_lgr" | awk '{print $1}')"
+_eng190_y1_rows_after="$(grep -cE '^\{' "$_eng190_y1_lgr" || true)"
+
+if (( _eng190_y1_size_after >= _eng190_y1_size_before )) \
+  && (( _eng190_y1_rows_after == _eng190_y1_rows_before )) \
+  && (( _eng190_y1_rows_after == 3 )); then
+  pass_at "ENG-190 Y1 (AC-2): ledger persists across _clear_current_stage_slots (3 rows survive)"
+else
+  fail_at "ENG-190 Y1 (AC-2): ledger persistence" \
+    "before: size=$_eng190_y1_size_before rows=$_eng190_y1_rows_before; after: size=$_eng190_y1_size_after rows=$_eng190_y1_rows_after"
+fi
+
+# ─── Y2: _ensure_review_ledger seeds exactly two #-prefix lines on absence,
+# no-op on existing file ────────────────────────────────────────────────
+mkdir -p "$(issue_dir ENG-190Y2)"
+_eng190_y2_lgr="$(issue_dir ENG-190Y2)/review-findings-ledger.jsonl"
+rm -f "$_eng190_y2_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-190Y2 >/dev/null 2>&1
+)
+_eng190_y2_line_count="$(wc -l <"$_eng190_y2_lgr" | awk '{print $1}')"
+_eng190_y2_line_1="$(sed -n '1p' "$_eng190_y2_lgr")"
+_eng190_y2_line_2="$(sed -n '2p' "$_eng190_y2_lgr")"
+if (( _eng190_y2_line_count == 2 )) \
+  && [[ "$_eng190_y2_line_1" == "$_eng190_seed_line_1" ]] \
+  && [[ "$_eng190_y2_line_2" == "$_eng190_seed_line_2" ]]; then
+  pass_at "ENG-190 Y2: _ensure_review_ledger seeds exactly two #-prefix header lines"
+else
+  fail_at "ENG-190 Y2: seed header" \
+    "lines=$_eng190_y2_line_count line1='$_eng190_y2_line_1' line2='$_eng190_y2_line_2'"
+fi
+# Idempotency: contents unchanged after second call.
+_eng190_y2_hash_before="$(cksum "$_eng190_y2_lgr" | awk '{print $1}')"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-190Y2 >/dev/null 2>&1
+)
+_eng190_y2_hash_after="$(cksum "$_eng190_y2_lgr" | awk '{print $1}')"
+if [[ "$_eng190_y2_hash_before" == "$_eng190_y2_hash_after" ]]; then
+  pass_at "ENG-190 Y2: _ensure_review_ledger is a no-op on existing file (idempotent)"
+else
+  fail_at "ENG-190 Y2: idempotency" "hash changed: $_eng190_y2_hash_before → $_eng190_y2_hash_after"
+fi
+
+# ─── Y3 (AC-3): major→minor downgrade — Adjudicated: major count is 0 ─
+# Fixture: prior iter-1 row at cold=major, adj=major, decision=carry.
+# New iter-2 row for SAME finding_class_key: cold=major, decision=defer-candidate,
+# adjudicated=minor. Compute current-dispatch Adjudicated: count-tuple by
+# filtering rows where dispatch_id == current. Assert major=0, minor=1.
+mkdir -p "$(issue_dir ENG-190Y3)"
+_eng190_y3_lgr="$(issue_dir ENG-190Y3)/review-findings-ledger.jsonl"
+rm -f "$_eng190_y3_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-190Y3 >/dev/null 2>&1
+)
+# Prior dispatch row.
+_eng190_write_row "$_eng190_y3_lgr" ENG-190Y3 ENG-190Y3-d0001 1 "correctness:auth.rs:dup-key" major major carry
+# Current dispatch row — downgrade.
+_eng190_write_row "$_eng190_y3_lgr" ENG-190Y3 ENG-190Y3-d0002 2 "correctness:auth.rs:dup-key" major minor defer-candidate
+
+# Compute current-dispatch Adjudicated: count-tuple from rows where dispatch_id == ENG-190Y3-d0002.
+_eng190_y3_major="$(grep -E '^\{' "$_eng190_y3_lgr" | jq -s --arg did ENG-190Y3-d0002 '[.[] | select(.dispatch_id == $did) | select(.adjudicated_severity == "major")] | length')"
+_eng190_y3_minor="$(grep -E '^\{' "$_eng190_y3_lgr" | jq -s --arg did ENG-190Y3-d0002 '[.[] | select(.dispatch_id == $did) | select(.adjudicated_severity == "minor")] | length')"
+if [[ "$_eng190_y3_major" == "0" ]] && [[ "$_eng190_y3_minor" == "1" ]]; then
+  pass_at "ENG-190 Y3 (AC-3): major→minor defer-candidate does NOT re-inflate Adjudicated: major (0/1)"
+else
+  fail_at "ENG-190 Y3 (AC-3): re-inflation" \
+    "expected major=0 minor=1, got major=$_eng190_y3_major minor=$_eng190_y3_minor"
+fi
+
+# ─── Y3-variant (AC-3): same-severity stabilise — major count is 1 ──
+# Prior row: cold=major, adj=major, carry. New iter-2 row for SAME key:
+# cold=major, decision=stabilise, adj=major. Expect major=1 (held), NOT 2.
+mkdir -p "$(issue_dir ENG-190Y3v)"
+_eng190_y3v_lgr="$(issue_dir ENG-190Y3v)/review-findings-ledger.jsonl"
+rm -f "$_eng190_y3v_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-190Y3v >/dev/null 2>&1
+)
+_eng190_write_row "$_eng190_y3v_lgr" ENG-190Y3v ENG-190Y3v-d0001 1 "k1" major major carry
+_eng190_write_row "$_eng190_y3v_lgr" ENG-190Y3v ENG-190Y3v-d0002 2 "k1" major major stabilise
+
+_eng190_y3v_major="$(grep -E '^\{' "$_eng190_y3v_lgr" | jq -s --arg did ENG-190Y3v-d0002 '[.[] | select(.dispatch_id == $did) | select(.adjudicated_severity == "major")] | length')"
+if [[ "$_eng190_y3v_major" == "1" ]]; then
+  pass_at "ENG-190 Y3-variant (AC-3): same-severity stabilise holds Adjudicated: major=1 (no fresh-carry inflation)"
+else
+  fail_at "ENG-190 Y3-variant (AC-3): stabilise count" \
+    "expected major=1 (held), got major=$_eng190_y3v_major"
+fi
+
+# ─── Y4: missing-ledger halt — _validate_review_ledger returns 50 ───
+reset_capture
+mkdir -p "$(issue_dir ENG-190Y4)"
+_eng190_y4_lgr="$(issue_dir ENG-190Y4)/review-findings-ledger.jsonl"
+rm -f "$_eng190_y4_lgr"
+_eng190_y4_rc=0
+PIPELINE_DISPATCH_ID="ENG-190Y4-d0001" \
+  _validate_review_ledger ENG-190Y4 2>/dev/null || _eng190_y4_rc=$?
+(( _eng190_y4_rc == 50 )) \
+  && pass_at "ENG-190 Y4: missing ledger → _validate_review_ledger rc=50" \
+  || fail_at "ENG-190 Y4: missing ledger rc" "expected rc=50, got rc=$_eng190_y4_rc"
+if grep -qF '<!-- pipeline: verdict result=halt reason=review-ledger-invalid -->' \
+    "$CAPTURE_FILE"; then
+  pass_at "ENG-190 Y4: halt comment carries review-ledger-invalid marker"
+else
+  fail_at "ENG-190 Y4: review-ledger-invalid marker absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+if grep -qF 'review-ledger-missing' "$CAPTURE_FILE"; then
+  pass_at "ENG-190 Y4: halt comment names review-ledger-missing defect"
+else
+  fail_at "ENG-190 Y4: review-ledger-missing absent" \
+    "capture=$(cat "$CAPTURE_FILE")"
+fi
+
+# ─── Y5: planning stage does NOT invoke _validate_review_ledger ──────
+# Source-anchor check: confirm the post-dispatch caller arm for
+# _validate_review_ledger is GATED on `case "$stage" in reviewing)`
+# (NOT planning, NOT qa, NOT others).
+_eng190_y5_src="$HARNESS_DIR/run-stage.sh"
+# Extract the caller arm body. Anchor is the comment "ENG-190: review-ledger
+# validator. Post-dispatch;" — distinct from the function definition's
+# comment "ENG-190: review-ledger validator. Filesystem detective".
+_eng190_y5_arm="$(awk '
+  /# ENG-190: review-ledger validator\. Post-dispatch/ { in_arm=1 }
+  in_arm { print }
+  in_arm && /^  fi$/ { exit }
+' "$_eng190_y5_src" 2>/dev/null)"
+if printf '%s\n' "$_eng190_y5_arm" | grep -qE '^[[:space:]]*reviewing\)' \
+   && ! printf '%s\n' "$_eng190_y5_arm" | grep -qE '^[[:space:]]*planning\)' \
+   && ! printf '%s\n' "$_eng190_y5_arm" | grep -qE '^[[:space:]]*qa\)'; then
+  pass_at "ENG-190 Y5: _validate_review_ledger caller arm is reviewing-only (planning + qa untouched)"
+else
+  fail_at "ENG-190 Y5: caller arm stage-gating" \
+    "expected only reviewing) arm; got: $_eng190_y5_arm"
+fi
+
+# ─── Y6: _clear_current_stage_slots "qa" does NOT touch ledger ─────
+mkdir -p "$(issue_dir ENG-190Y6)"
+_eng190_y6_lgr="$(issue_dir ENG-190Y6)/review-findings-ledger.jsonl"
+rm -f "$_eng190_y6_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-190Y6 >/dev/null 2>&1
+)
+_eng190_write_row "$_eng190_y6_lgr" ENG-190Y6 ENG-190Y6-d0001 1 "k1" major major carry
+_eng190_y6_hash_before="$(cksum "$_eng190_y6_lgr" | awk '{print $1}')"
+_clear_current_stage_slots ENG-190Y6 qa
+_eng190_y6_hash_after="$(cksum "$_eng190_y6_lgr" | awk '{print $1}')"
+if [[ -f "$_eng190_y6_lgr" ]] && [[ "$_eng190_y6_hash_before" == "$_eng190_y6_hash_after" ]]; then
+  pass_at "ENG-190 Y6: _clear_current_stage_slots 'qa' leaves ledger untouched"
+else
+  fail_at "ENG-190 Y6: qa-stage clear" \
+    "ledger absent or modified — before=$_eng190_y6_hash_before after=$_eng190_y6_hash_after exists=$(test -f "$_eng190_y6_lgr" && echo yes || echo no)"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

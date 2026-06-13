@@ -263,6 +263,43 @@ else
     "expected='/tmp/test-state/ENG-125/init.sh' got='$out_isp'"
 fi
 
+# Case ENG-190: {review_ledger_path} token resolves from _RENDER_REVIEW_LEDGER_PATH.
+# Pins the resolver so a refactor that drops _RENDER_REVIEW_LEDGER_PATH or
+# renames the token breaks here rather than silently shipping a literal
+# {review_ledger_path} to the review agent.
+out_rlp="$(run_resolver_body '
+  _RENDER_REVIEW_LEDGER_PATH="/tmp/test-state/ENG-190/review-findings-ledger.jsonl"
+  resolve_block_tokens "{review_ledger_path}"
+' 2>&1)"
+if [[ "$out_rlp" == "/tmp/test-state/ENG-190/review-findings-ledger.jsonl" ]]; then
+  pass_at "ENG-190: {review_ledger_path} resolves from _RENDER_REVIEW_LEDGER_PATH"
+else
+  fail_at "ENG-190: {review_ledger_path} token resolves" \
+    "expected='/tmp/test-state/ENG-190/review-findings-ledger.jsonl' got='$out_rlp'"
+fi
+
+# Case ENG-190-unbound: render-time validator dies on an unbound
+# {review_ledger_path} token (token referenced in prompt but resolver
+# returns empty string is OK; but if a new prompt mistakenly references
+# a NON-registered token like {nonexistent_token_xyz}, the validator
+# should still die — pinning that behavior persists for {review_ledger_path}).
+# Symmetric with the case-87-R2 unknown-token guard above. We assert here
+# that the REGISTERED {review_ledger_path} token resolves to an empty
+# string (no exception) when _RENDER_REVIEW_LEDGER_PATH is unset — the
+# resolver returns "" via the ${var-} fallback shape; render-time check
+# tolerates the empty value (the agent's read of an empty path will fail
+# at file-read time, the deferred-validation path).
+out_rlp_unbound="$(run_resolver_body '
+  unset _RENDER_REVIEW_LEDGER_PATH
+  resolve_block_tokens "[{review_ledger_path}]"
+' 2>&1)"
+if [[ "$out_rlp_unbound" == "[]" ]]; then
+  pass_at "ENG-190: {review_ledger_path} unset → resolves to empty (no exception)"
+else
+  fail_at "ENG-190: {review_ledger_path} unset resolution" \
+    "expected='[]' got='$out_rlp_unbound'"
+fi
+
 # Case 87-R2: unknown {token} dies with token name in message.
 err="$(run_resolver_body '
   resolve_block_tokens "Hello {nonexistent_token_xyz} world" 2>&1
@@ -1129,10 +1166,11 @@ fi
 # PROMPT_RESOLVERS entry without updating the writer fails loudly here.
 printf '\n--- ENG-156: _write_rendered_paths_sidecar ---\n'
 
-# Case 156-W1: all seven path-shaped resolver values bound → sidecar has
-# exactly seven TSV lines, one per path-shaped resolver. ENG-27 added
-# artifacts_dir as the seventh; this fixture binds _RENDER_ARTIFACTS_DIR so
-# a deletion of the printf line in _write_rendered_paths_sidecar fails loudly.
+# Case 156-W1: all eight path-shaped resolver values bound → sidecar has
+# exactly eight TSV lines, one per path-shaped resolver. ENG-27 added
+# artifacts_dir as the seventh; ENG-190 added review_ledger_path as the
+# eighth; this fixture binds both so a deletion of either printf line in
+# _write_rendered_paths_sidecar fails loudly.
 eng156_w1_sidecar="$sandbox/eng156-w1.tsv"
 # Pre-create the plan.json so the writer's [[ -f "$_pj_path" ]] guard
 # passes for the plan_json line.
@@ -1145,17 +1183,18 @@ run_resolver_body '
   _RENDER_LEARNED_RULES_DIR="/tmp/harness/learned-rules/test-slug"
   _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W1/progress.md"
   _RENDER_ARTIFACTS_DIR="/tmp/state/ENG-156W1/artifacts/"
+  _RENDER_REVIEW_LEDGER_PATH="/tmp/state/ENG-156W1/review-findings-ledger.jsonl"
   _write_rendered_paths_sidecar "'"$eng156_w1_sidecar"'"
 ' 2>/dev/null
 if [[ -s "$eng156_w1_sidecar" ]] \
-  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "7" ]]; then
-  pass_at "ENG-156 W1: sidecar has exactly seven TSV lines for the seven path-shaped resolvers"
+  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "8" ]]; then
+  pass_at "ENG-156 W1: sidecar has exactly eight TSV lines for the eight path-shaped resolvers"
 else
   fail_at "ENG-156 W1: sidecar line count" \
-    "expected 7 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
+    "expected 8 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
 fi
 _eng156_w1_ok=1
-for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json artifacts_dir; do
+for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json artifacts_dir review_ledger_path; do
   if ! grep -qE "^${tok}"$'\t' "$eng156_w1_sidecar"; then
     _eng156_w1_ok=0
     break
