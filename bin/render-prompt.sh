@@ -59,6 +59,7 @@ review_ledger_path=_resolve_review_ledger_path
 init_sh_path=_resolve_init_sh_path
 qa_predicate_path=_resolve_qa_predicate_path
 artifacts_dir=_resolve_artifacts_dir
+review_converge_rounds=_resolve_review_converge_rounds
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -281,6 +282,25 @@ _resolve_review_ledger_path() { printf '%s' "${_RENDER_REVIEW_LEDGER_PATH-}"; }
 _resolve_init_sh_path() { printf '%s' "$_RENDER_INIT_SH_PATH"; }
 _resolve_qa_predicate_path() { printf '%s' "$_RENDER_QA_PREDICATE_PATH"; }
 _resolve_artifacts_dir() { printf '%s' "$_RENDER_ARTIFACTS_DIR"; }
+# ENG-191 D-010: config-driven convergence-rounds gate for path-D
+# (ship-with-deferred-majors). Default 2 (lowest defensible plateau);
+# operators tune via .pipeline-config/config.json::human_checkpoints
+# .review_converge_rounds. Invalid (non-integer / <1) logs warn and
+# falls back; absent is silent (absent != invalid). Returns an integer
+# (data, not a path) — NOT registered in _write_rendered_paths_sidecar's
+# closed allowlist (ENG-156 D-004).
+_resolve_review_converge_rounds() {
+  local n
+  n="$(config_get '.human_checkpoints.review_converge_rounds' 2>/dev/null || printf '')"
+  if [[ -n "$n" && "$n" != "null" && "$n" =~ ^[0-9]+$ && "$n" -ge 1 ]]; then
+    printf '%s' "$n"
+  else
+    if [[ -n "$n" && "$n" != "null" ]]; then
+      log "[render] review_converge_rounds invalid value '$n'; falling back to default 2" >&2
+    fi
+    printf '2'
+  fi
+}
 _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
 # ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
 # resolvers (was: read ambient ${PIPELINE_DISPATCH_ID-} directly).
