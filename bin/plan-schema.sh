@@ -13,9 +13,10 @@
 #   35 — missing-file: the JSON file does not exist at the given path
 #
 # Exit codes (validate-md — MD System-invariants section):
-#   0  — valid: `## System invariants` H2 section present with ≥1 bullet,
-#        every bullet carries a parseable `verified_by:` token of the form
-#        `<path>:<test-name>` OR `task:T<N>`.
+#   0  — valid: `## System invariants` H2 section present with ≥1 bullet
+#        (CommonMark `-`/`*`/`+` markers), every bullet carries a parseable
+#        `verified_by:` token of the form `<path>:<test-name>` OR `task:T<N>`
+#        somewhere in its body (first line or a continuation line).
 #   33 — malformed: token present but unparseable, OR no file argument.
 #        Diagnostic prefix `plan-md-malformed:`.
 #   34 — incomplete: H2 section missing, OR zero bullets in the section, OR
@@ -231,21 +232,27 @@ cmd_validate() {
 # cmd_validate_md <file> — MD-side validator (ENG-157).
 #
 # Enforces the `## System invariants` H2 section contract on plan markdowns:
-# the section must exist, contain ≥1 bullet, and every bullet on its first
-# line must carry a parseable `verified_by:` token of the form
-# `<path>:<test-name>` or `task:T<N>`.
+# the section must exist, contain ≥1 bullet, and every bullet must carry a
+# parseable `verified_by:` token of the form `<path>:<test-name>` or
+# `task:T<N>` somewhere in its body (first line OR any continuation line).
 #
 # Implementation: single-pass awk over the file. We track three states —
 # outside any section, inside `## System invariants`, inside a different
-# H2 section — and on every `- ` line inside the target section we look
-# for a `verified_by:` token shape on that same line. Continuation lines
-# are NOT scanned in v1 (token-on-continuation is a documented deferral —
-# see Failure Mode → Test Map row "Token on continuation line" and the
-# T_adv_md_embedded_newline adversarial case). Heading match is strictly
-# the literal `## System invariants` (case-sensitive); typos route to
-# rc=34 via the missing-section path. The validator does NOT parse code
-# fences — a `verified_by:` token inside a backtick span on the bullet's
-# first line still counts as a hit. This is acceptable per D-001 §8.3.
+# H2 section. A bullet starts at a top-level CommonMark marker line
+# (`-`, `*`, or `+` followed by a space) and accumulates every following
+# line until the next marker, the next `## ` heading, or EOF; the whole
+# accumulated body is then scanned for the `verified_by:` token shape.
+# This makes the validator robust to:
+#   • any of the three CommonMark unordered-list markers (ENG-192:
+#     planning agents emit `*` and `+`, not just `-`), and
+#   • line-wrapped bullets whose `verified_by:` token lands on a
+#     continuation line (ENG-192: the common emission shape).
+# Nesting is still not modelled — an indented marker is treated as a
+# continuation line of the enclosing top-level bullet, not a sub-bullet.
+# Heading match is strictly the literal `## System invariants`
+# (case-sensitive); typos route to rc=34 via the missing-section path.
+# The validator does NOT parse code fences — a `verified_by:` token inside
+# a backtick span still counts as a hit. This is acceptable per D-001 §8.3.
 cmd_validate_md() {
   local file="${1:-}"
   if [[ -z "$file" ]]; then
@@ -268,40 +275,66 @@ cmd_validate_md() {
       bullet_count = 0
       malformed_count = 0
       incomplete_count = 0
+      have_bullet = 0  # currently accumulating a top-level bullet
+      buf = ""         # accumulated body (marker line + continuation lines)
+    }
+    # finalize_bullet: classify the accumulated bullet body, then reset.
+    # Scans the WHOLE buffer (first line + continuation lines) so a
+    # `verified_by:` token that wrapped onto a continuation line still
+    # counts. `[[:space:]]*` spans the embedded newline between the
+    # `verified_by:` label and a token on the next line.
+    function finalize_bullet(   ) {
+      if (!have_bullet) return
+      bullet_count++
+      # `<path>:<test-name>` shape: two non-space tokens separated by `:`.
+      # `task:T<N>` shape: literal `task:T` + ≥1 digit. Either form anywhere
+      # in the bullet body counts.
+      if (match(buf, /verified_by:[[:space:]]*([^[:space:]]+:[^[:space:]]+|task:T[0-9]+)/)) {
+        # parseable token — bullet OK
+      } else if (match(buf, /verified_by:/)) {
+        # token present but neither shape matched
+        printf "plan-md-malformed: bullet %d \"verified_by: <token>\" matches neither <path>:<test> nor task:T<N>\n", bullet_count
+        malformed_count++
+      } else {
+        # no `verified_by:` reference anywhere in the bullet body
+        printf "plan-md-incomplete: bullet %d (1-indexed) lacks parseable \"verified_by:\" reference\n", bullet_count
+        incomplete_count++
+      }
+      have_bullet = 0
+      buf = ""
     }
     # Section heading detection. Treats the literal "## System invariants"
     # (allowing trailing whitespace) as the target heading; any other "## "
-    # line closes the section.
+    # line closes the section. Either boundary first finalizes an open bullet.
     /^## System invariants[[:space:]]*$/ {
+      finalize_bullet()
       in_section  = 1
       saw_section = 1
       next
     }
     /^## / {
+      finalize_bullet()
       in_section = 0
       next
     }
-    # Bullets within the section. Match top-level "- " (no nesting in v1).
-    in_section && /^- / {
-      bullet_count++
-      # `<path>:<test-name>` shape: two non-space tokens separated by `:`,
-      # the path before `:` and the test name after. `task:T<N>` shape: the
-      # literal prefix `task:T` followed by ≥1 digit. The combined regex
-      # matches either form anywhere on the first line of the bullet.
-      if (match($0, /verified_by:[[:space:]]*([^[:space:]]+:[^[:space:]]+|task:T[0-9]+)/)) {
-        # parseable token — bullet OK
-        next
-      } else if (match($0, /verified_by:/)) {
-        # token present but neither shape matched
-        printf "plan-md-malformed: bullet %d \"verified_by: <token>\" matches neither <path>:<test> nor task:T<N>\n", bullet_count
-        malformed_count++
-      } else {
-        # no `verified_by:` reference on this line at all
-        printf "plan-md-incomplete: bullet %d (1-indexed) lacks parseable \"verified_by:\" reference\n", bullet_count
-        incomplete_count++
-      }
+    # New top-level bullet within the section. CommonMark unordered-list
+    # markers are `-`, `*`, `+` (column 0, followed by a space). Closes the
+    # previous bullet before starting this one.
+    in_section && /^[-*+] / {
+      finalize_bullet()
+      have_bullet = 1
+      buf = $0
+      next
+    }
+    # Continuation line of the open bullet: blank lines, indented text, and
+    # wrapped `verified_by:` tokens all accumulate here until the next
+    # marker / heading / EOF closes the bullet.
+    in_section && have_bullet {
+      buf = buf "\n" $0
+      next
     }
     END {
+      finalize_bullet()  # close the trailing bullet at EOF
       if (!saw_section) {
         print "plan-md-incomplete: required H2 section \"## System invariants\" missing"
         exit 34

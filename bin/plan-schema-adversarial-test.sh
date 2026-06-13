@@ -294,8 +294,9 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_token_in_fence.md" >/de
   || fail_at "T_adv_md_token_in_code_fence" "expected rc=0, got rc=$rc"
 
 # ─── T_adv_md_embedded_newline: bullet wraps; verified_by: on continuation line
-# Expect: rc=34 in v1 — token-on-continuation is NOT supported (documented
-# in awk header comment; deferred to OQ).
+# Expect: rc=0 (ENG-192) — multi-line bullets now accumulate their whole body
+# before the `verified_by:` scan, so a token on a continuation line counts.
+# (Was rc=34 in the ENG-157 v1 deferral; intentionally broken + updated here.)
 cat > "$FIXTURE_DIR/adv_md_embedded_newline.md" <<'MDEOF'
 ## System invariants
 
@@ -303,9 +304,28 @@ cat > "$FIXTURE_DIR/adv_md_embedded_newline.md" <<'MDEOF'
   verified_by: bin/foo.sh:T_foo
 MDEOF
 rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_embedded_newline.md" >/dev/null 2>&1 || rc=$?
-(( rc == 34 )) \
-  && pass_at "T_adv_md_embedded_newline: token on continuation line → rc=34 (v1 deferral)" \
-  || fail_at "T_adv_md_embedded_newline" "expected rc=34, got rc=$rc"
+(( rc == 0 )) \
+  && pass_at "T_adv_md_embedded_newline: token on continuation line → rc=0 (ENG-192 multi-line support)" \
+  || fail_at "T_adv_md_embedded_newline" "expected rc=0, got rc=$rc"
+
+# ─── T_adv_md_eng192_real_shape: asterisk/plus markers + continuation-line token
+# Reproduces the exact ENG-192 halt shape: `*`/`+` bullets whose `verified_by:`
+# label ends line 1 and whose token sits on the indented continuation line.
+# Pre-ENG-192 this halted with `0 bullets` (dash-only marker match). Expect rc=0.
+cat > "$FIXTURE_DIR/adv_md_eng192_real_shape.md" <<'MDEOF'
+## System invariants
+
+* §3 hoisted block sits between the 5-step tail and the defer header — verified_by:
+  bin/agent-prompts-content-test.sh:t_eng192_pin2_position
++ §3 fence count remains exactly 2 so render-prompt does not die — verified_by:
+  bin/agent-prompts-content-test.sh:t_eng192_pin10_fence_count
+
+## File Structure
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/adv_md_eng192_real_shape.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_adv_md_eng192_real_shape: asterisk/plus markers + continuation-line token → rc=0 (ENG-192 repro)" \
+  || fail_at "T_adv_md_eng192_real_shape" "expected rc=0, got rc=$rc"
 
 # ─── QA adversarial (ENG-157): cases surfaced by cold sub-agent, NOT in plan's ─
 # Failure Mode → Test Map. Added by QA dispatch 2026-06-10.                    ─
