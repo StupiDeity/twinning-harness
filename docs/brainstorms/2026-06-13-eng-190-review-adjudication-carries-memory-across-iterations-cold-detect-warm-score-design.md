@@ -1770,32 +1770,38 @@ coherence → product → feasibility). Iteration history is in §14.
 * All ACs concretely mapped; all OUT bullets respected (no
   cross-pollination with ENG-191/ENG-192).
 
-### 13.4 Coherence — PASS (post-iter-1 fix)
+### 13.4 Coherence — PASS (post-iter-3-1 fix)
 
-* P0: 0 (initial P0 — D-009 heading exit-code drift "0/47/48/49"
-  vs body "0/48/49/50" — fixed in heading).
-* P1: 1 — D-004 step 4a decision-table missing "cold downgraded"
-  branch (same finding as Design P1). Addressed by the exhaustive
-  6-case branch table in D-004.
+* P0: 0 (iter-1 P0 — D-009 heading exit-code drift "0/47/48/49" vs
+  body "0/48/49/50" — fixed in heading. Iter-3-1 P0 — AC-2 and AC-3
+  fixture gaps in `bin/run-stage-test.sh` — closed by three
+  MANDATORY fixtures added in §3).
+* P1: 0 (iter-1 P1 — D-004 step 4a missing "cold downgraded" branch
+  — addressed by exhaustive 6-case branch table. Iter-3-1 P1 —
+  Edge case 4 graceful-skip rule not in D-004 prompt-sequence —
+  closed by new D-004 step 1b).
 * P2: 3 findings (naming convention "review-findings-ledger" file
   vs "review-ledger" validator/halt-reason — confirmed
   intentional and consistent; lifecycle-diagram phrasing nit in
   D-001 — accepted; mirror-of-pattern claims verified).
 
-### 13.5 Product — PASS (post-iter-1 fix)
+### 13.5 Product — PASS (post-iter-3-1 fix)
 
-* P0: 0.
-* P1: 2 findings.
-  * Three rc shapes share one halt reason → addressed by new
-    CLAUDE.md Failure-mode quick reference row (Product P1a).
-  * Operator recovery loop on stale malformed row → addressed by
-    explicit "Operator-lede sequence" requirement on the
-    docs/runbooks/recovery.md section (Product P1b).
-* P2: 3 findings (Linear summary one-liner shape OQ-4 — pinned in
-  AGENT_PROMPTS.md §5 Output via implementation step; three sibling
-  per-issue artifacts confusion — addressed by D-010 runbook
-  cross-links to operator-mental-model.md; AC#5 flywheel substrate
-  well-designed).
+* P0: 0 (iter-3-1 raised a false-positive P0 claiming the CLAUDE.md
+  Failure-mode quick reference row was missing from §3 — verified
+  false on re-read; the row is at §3 lines 1163-1177. Logged as
+  persona-side miss; no doc edit required).
+* P1: 0 (iter-1 P1s — three rc shapes share one halt reason → CLAUDE.md
+  row addresses; operator recovery loop on stale malformed row →
+  operator-lede sequence requirement on recovery.md. Iter-3-1 P1 —
+  OQ-4 should ship Linear summary one-liner in v1 → §7 OQ-4 revised
+  to ship; AGENT_PROMPTS.md §5 Output gains the one-line slot at
+  implementation time. Iter-3-1 P1 — recovery.md Write-truncation
+  sentence → already included in §3 recovery.md entry).
+* P2: 3 findings (three sibling per-issue artifacts confusion —
+  addressed by D-010 runbook cross-links to operator-mental-model.md;
+  prompt cognitive load not quantified — implementation-time check
+  noted in plan-stage hand-off; AC#5 flywheel substrate well-designed).
 
 ### 13.6 Feasibility — PASS (iter 2)
 
@@ -1870,8 +1876,73 @@ Brainstorm cleared for commit and stage progression.
   **PASS — 0 P0, 0 P1, 2 P2.** All code-level facts in the
   Assumption Inventory verified to source. P2s are minor citation
   drift (≤5 line off-by-one on two cited lines) — not gating;
-  implementation-time grep will pin exact lines. **Gate met:
-  6/6 PASS, feasibility P0 = 0. Brainstorm cleared.**
+  implementation-time grep will pin exact lines. **Iter-2 gate
+  met for the first pass: 6/6 PASS, feasibility P0 = 0.**
+
+* **Iteration 3 (fresh-eyes pass — second persona round on a
+  later dispatch).** A subsequent dispatch re-ran the 6-persona
+  cold pass to validate the gate held under fresh-eyes review.
+  * **Iter-3-1 results:** 4/6 PASS, 2 FAIL (coherence and product),
+    feasibility 0 P0. Fresh findings:
+    * **Coherence P0 (new).** AC #3 ("carried-over major→minor
+      class retains stable severity") and AC #5 ("structured
+      tuple survives across review dispatches") needed explicit
+      *behavior-level* test fixtures in `bin/run-stage-test.sh`,
+      not just schema-level fixtures in `bin/review-ledger-
+      schema-test.sh`. The schema validator can prove a row's
+      shape; only an integration fixture can prove that the
+      adjudicator-emitted Adjudicated: count-tuple does not
+      re-inflate `major` across iterations.
+    * **Coherence P0 (new).** AC #2 ("ledger persists across
+      review dispatches; not cleared on dispatch-start") needed
+      an explicit two-dispatch fixture asserting cross-persistence
+      of rows across `_clear_current_stage_slots` invocation,
+      not just a header-comment update.
+    * **Coherence P1 (new).** Edge case 4's graceful-skip rule
+      for unparseable prior rows was buried in §6 but not in the
+      D-004 prompt-sequence specification. AGENT_PROMPTS.md edit
+      would risk omitting it.
+    * **Product P0 (false-positive).** Persona claimed CLAUDE.md
+      Failure-mode quick reference row was missing from §3
+      Architecture. Verified false — the row is at §3 file-list
+      lines 1163-1177. Logged as persona-side miss; no doc edit
+      needed.
+    * Security / Design / Scope held PASS unchanged.
+  * **Iter-3-1 edits applied (this dispatch):**
+    - D-004 step 1b ADDED: explicit graceful-skip-on-unparseable
+      rule in the prompt-sequence specification (closes Coherence
+      P1 by hoisting the rule from §6 Edge case 4 into D-004).
+    - §3 Architecture's `bin/run-stage-test.sh` block expanded
+      with three MANDATORY new fixtures:
+        (AC-2) "ledger persistence across reviewing dispatches"
+          — two-dispatch scenario asserting cross-persistence
+          across `_clear_current_stage_slots`.
+        (AC-3) "carried-over major→minor held stable, count-tuple
+          no re-inflation" — explicit Adjudicated:-line assertion
+          that `major` count is 0 (not 1) post-downgrade.
+        (AC-3 variant) "same-severity stabilise without downgrade"
+          — covers the held-stable case distinct from defer-
+          candidate downgrade.
+    - §7 OQ-4 reversed: ship a SUMMARY one-liner in the Linear
+      completion comment in v1 (closes Product P1 about operator
+      visibility into the ratchet-vs-divergence delta). One-liner
+      shape: `Adjudicator: <K> carried (<S> stabilised, <D>
+      defer-candidate), <F> fresh, <B> blocking. Ledger: <path>.`
+  * **Iter-3-2 results (re-run of coherence, product, feasibility
+    on the updated doc):**
+    - Coherence — PASS. All three claimed fixes verified in-doc
+      at the cited lines; AC-2 and AC-3 fixtures address the
+      iter-3-1 P0s; D-004 step 1b closes the P1.
+    - Product — PASS. CLAUDE.md row + recovery.md operator-lede +
+      OQ-4 ship-summary all verified. Operator first-contact UX
+      clear.
+    - Feasibility — PASS (confirmation). No new codebase-fact
+      citations introduced by the iter-3-1 edits; existing
+      verifications still hold.
+  * **Iter-3 gate met: 6/6 PASS, feasibility P0 = 0.**
+
+**Final gate (this dispatch): 6/6 PASS, feasibility P0 = 0.
+Brainstorm cleared for commit and stage progression.**
 
 ## 15. Proposed ADRs
 
