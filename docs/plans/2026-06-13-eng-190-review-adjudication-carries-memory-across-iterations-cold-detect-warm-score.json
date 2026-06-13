@@ -1,0 +1,220 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-190",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Review adjudication carries memory across iterations via a per-issue append-only review-findings-ledger.jsonl; cold detect, warm score; critical-floor invariant",
+      "pass_criteria": [
+        {
+          "kind": "file_exists",
+          "path": "bin/review-ledger-schema.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/review-ledger-schema-test.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/review-ledger-schema-adversarial-test.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/runbooks/review-findings-ledger.md"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "48\\) printf 'review-ledger-malformed' ;;",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "49\\) printf 'review-ledger-incomplete' ;;",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "50\\) printf 'review-ledger-missing' ;;",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"review-ledger-invalid\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "review_ledger_path=_resolve_review_ledger_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_resolve_review_ledger_path\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_REVIEW_LEDGER_PATH=\"\\$\\(issue_dir \"\\$issue_id\"\\)/review-findings-ledger.jsonl\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "review_ledger_path\\\\t",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_ensure_review_ledger\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_validate_review_ledger\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_post_review_ledger_halt\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "review-ledger-invalid",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Findings ledger \\(MANDATORY — adjudicator memory; ENG-190\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Adjudicated: \\(critical=N, major=N, minor=N, nit=N\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{review_ledger_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Critical-floor invariant",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-190-pin-cold-pass-clause",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-190-pin-adjudicated-predicate",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-190-pin-summary-line",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Adjudicator: <K> carried",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-190",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "Bash\\(bash bin/review-ledger-schema-test\\.sh:\\*\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "Bash\\(bash bin/review-ledger-schema-adversarial-test\\.sh:\\*\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "learned-rules/harness/project-profile.md",
+          "pattern": "bash bin/review-ledger-schema-test\\.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "## 12\\. rc=48/49/50 — `review-ledger-invalid`",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "CLAUDE.md",
+          "pattern": "review-ledger-invalid",
+          "expect_match": true
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/review-ledger-schema-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/review-ledger-schema-adversarial-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/review-ledger-schema.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
