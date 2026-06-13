@@ -1389,19 +1389,68 @@ If `cold_severity == critical`, you MUST emit `decision: block` and `adjudicated
 Finding-class key format guidance: `<dimension>:<scope-anchor>:<concept-slug>`.
 When a class matches a prior `finding_class_key`, REUSE the prior key verbatim.
 
-Count-tuple emission (MANDATORY — ENG-133 + ENG-190): emit TWO structured
-lines, exact case, exact punctuation, exact order:
+Deferability adjudication (MANDATORY — ENG-191): for every finding whose
+`adjudicated_severity ∈ {major, critical}`, you MUST answer FIVE structured
+boolean questions before deciding `blocks_ship`. These become the
+`decision_factors` object on the ledger row AND the body of the orchestrator-
+posted deferred-majors enumeration (when path D fires). Answer one at a time;
+do not skip; do not invent additional axes.
+
+  - `in_changed_code` — Is the finding located inside the changed code of
+    THIS PR's diff (vs the merge-base of `main`)? Drift in untouched code
+    is generally deferrable; drift in the change itself raises the bar.
+  - `is_regression` — Does the finding describe behaviour that USED to be
+    correct and now isn't? Regressions of working behaviour block; new
+    sub-optimal code that doesn't regress an existing path is deferrable.
+  - `user_visible` — Does the finding surface in a way a user (operator,
+    customer, end-caller) can observe? Logging-only / internal-state drift
+    is deferrable; visible drift raises the bar.
+  - `reversible_post_ship` — Can a follow-up PR fix this without
+    backwards-incompatible breakage to any consumer that landed on the
+    shipped version? Reversible debt is deferrable; irreversible debt
+    blocks.
+  - `has_workaround` — Is there a sanctioned workaround a downstream
+    consumer can apply if the debt bites them in the field? Documented
+    workaround → deferrable; no workaround → blocks.
+
+BLOCK-default fallthrough (asymmetric default — D-003): when uncertain about ANY of the five questions, set `blocks_ship: true`. Deferral requires positive justification on every axis; ambiguity defaults to BLOCK. Concretely: if you cannot answer one of the questions with high
+confidence after re-reading the diff and the finding, treat it as
+`blocks_ship: true` and let the implement loopback handle it rather
+than shipping debt you don't fully understand.
+
+Critical-floor-blocks-ship extension (ENG-191 D-002): when
+`adjudicated_severity == critical`, `blocks_ship` is UNCONDITIONALLY
+`true`. The validator (`bin/review-ledger-schema.sh`) halts the dispatch
+with `critical-floor-blocks-ship-violation` rc=49 on any critical
+this-dispatch row carrying `blocks_ship != true`. No exceptions; a
+critical finding is never a candidate for the selective exit.
+
+`ship_classification_rationale` is a short non-empty string (≤200 char
+soft cap) naming the BLOCK pattern or the DEFER rubric category that
+justifies the decision. Examples: `blocks: regression of cached-result
+invalidation`, `defers: doc-drift polish — reversible, has workaround`,
+`blocks: irreversible API surface change`.
+
+Count-tuple emission (MANDATORY — ENG-133 + ENG-190 + ENG-191): emit THREE
+structured lines, exact case, exact punctuation, exact order:
 
   Findings: (critical=N, major=N, minor=N, nit=N)
   Adjudicated: (critical=N, major=N, minor=N, nit=N)
+  Deferrable: (deferrable_majors=N, blocking_majors=N)
 
 `Findings:` is the cold-pass count (integer-from-merged-list, pre-memory;
 preserves the ENG-133 audit record). `Adjudicated:` is the post-memory count
-derived from per-finding `adjudicated_severity` values. The path-B / path-C
-predicate (below) reads from `Adjudicated:`, NOT `Findings:`. A contradiction
-between these lines and the verdict marker emitted at exit is a P0 prompt
-violation. Both lines are auditable from the dispatch transcript and from the
-Linear `completion/reviewing/{issue_id}` summary.
+derived from per-finding `adjudicated_severity` values. `Deferrable:` is the
+ENG-191 partition of `Adjudicated.major` into `deferrable_majors` (count of
+adjudicated-major rows whose `blocks_ship == false`) and `blocking_majors`
+(count whose `blocks_ship == true`); the sum constraint
+`deferrable_majors + blocking_majors == Adjudicated.major` is load-bearing
+for path D / path B / path B′. The path-B / path-C / path-D / path-B′
+predicates (below) read from `Adjudicated:` and `Deferrable:`, NOT
+`Findings:`. A contradiction between these lines and the verdict marker
+emitted at exit is a P0 prompt violation. All three lines are auditable
+from the dispatch transcript and from the Linear
+`completion/reviewing/{issue_id}` summary.
 
 Dimension scoring payload (MANDATORY — ENG-119):
 After merging findings and emitting the count-tuple line, hold the
@@ -1505,13 +1554,31 @@ Decision path (apply exactly one):
 
 Compute `(critical, major)` from the **`Adjudicated: (critical=N, major=N,
 minor=N, nit=N)`** line above (NOT the `Findings:` line — the `Adjudicated:`
-counts apply memory per ENG-190). The path-B / path-C choice is a mechanical
-predicate on those two counts — not a judgment call, not derived from a
+counts apply memory per ENG-190) and `(deferrable_majors, blocking_majors)`
+from the **`Deferrable: (deferrable_majors=N, blocking_majors=N)`** line
+(ENG-191). The path-B / path-C / path-D / path-B′ choice is a mechanical
+predicate on those four counts — not a judgment call, not derived from a
 free-text "Verdict:" line, not derived from any sub-agent's summary.
-Emitting path B on `(critical=0, major=0)`, emitting path C on a non-zero
-count, emitting both, or emitting neither is a P0 prompt violation (ENG-133).
+Emitting the wrong path for the count tuple, emitting more than one path,
+or emitting none is a P0 prompt violation (ENG-133).
 Path A (premise failure) is a separate escape hatch and is not gated by the
 count predicate.
+
+Mechanical predicates (mutually exclusive; exactly one path fires):
+  - Path B (changes requested) — fires iff `Adjudicated critical > 0 OR blocking_majors > 0`.
+  - Path C (clean) — fires iff `Adjudicated critical == 0 AND Adjudicated major == 0`.
+  - Path D (ship-with-debt) — fires iff
+    `Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}`.
+  - Path B′ (convergence-waiting) — fires iff
+    `Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical < {review_converge_rounds}`.
+
+`convergence_rounds_at_zero_critical` is computed FROM THE LEDGER, not from
+your own memory: walk the ledger's prior-dispatch rows in descending
+iteration order; count consecutive iterations whose rows ALL have
+`cold_severity != critical`; then add 1 iff this dispatch's cold-pass
+`critical == 0`. The configured plateau is `{review_converge_rounds}`
+(default 2). Path B′ exists so that a PR waiting for the plateau cannot
+exhaust the implementer's `review_rejection` budget — see path B′ below.
 
   A. Premise failure (brainstorm was wrong).
      - Apply Linear label `pipeline:premise-failure`.
@@ -1552,6 +1619,51 @@ count predicate.
      - Exit. Orchestrator transitions `reviewing → qa` and applies
        pipeline:halted (ENG-56). Human approval is collected later, at
        build's P2 preflight, on the post-QA SHA.
+
+  D. Ship with deferred majors (mechanical: Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}) — ENG-191 selective exit.
+     - Post a consolidated COMMENTED-state review with all findings via:
+         gh pr review {pr_number} --comment --body "<full summary>"
+       Summary line: "Reviewed commit {sha[:8]}. N personas: PASS. 0
+       critical, M major adjudged deferrable (shipping with debt)." Plus
+       severity-prefixed bullets for each deferrable major + minor/nit
+       observations.
+     - Post Linear consolidated review summary via `add-comment --sig
+       completion/reviewing/{issue_id}`. Include the Adjudicator summary
+       line (ENG-190) AND a new ship-with-debt summary line:
+       "Ship-with-debt: M deferrable major(s) recorded; orchestrator will
+       post deferred-majors comment under sig deferred-majors/{issue_id}."
+       Do NOT post the deferred-majors comment yourself; the orchestrator owns that write.
+     - Write the stage summary file at `{stage_summary_path}` per the
+       Stage summary comment format contract.
+     - Write the dimension-scoring payload at `{verdict_review_path}`
+       (verdict="approve" — same as path C; the selective exit IS a pass).
+     - Append one row per finding to `{review_ledger_path}` via `Edit`
+       with the seed-header line as the anchor. On every row whose
+       `adjudicated_severity ∈ {major, critical}`, emit `blocks_ship`,
+       `ship_classification_rationale`, and the full `decision_factors`
+       object (the five-question rubric above) per the ENG-191 contract.
+     - Append a `progress.md` entry at `{progress_md_path}` (path D is a
+       clean-exit shape; same conventions as path C).
+     - Run: `bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors`
+     - Exit. Orchestrator transitions `reviewing → qa`, applies
+       pipeline:halted (ENG-56), AND posts the deferred-majors comment
+       under sig `deferred-majors/{issue_id}` via its post-dispatch hook.
+
+  B′. Convergence-waiting loopback (mechanical: Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical < {review_converge_rounds}) — ENG-191 sub-variant.
+     - Mechanically identical to path B in EVERY step EXCEPT: do NOT run
+       `bash .pipeline/bin/guards.sh bump {issue_id} review_rejection --reason "..."`. The
+       review-rejection counter is reserved for genuine blocking findings;
+       convergence-waiting iterations must NOT burn the implementer's
+       loopback budget, otherwise a PR waiting for the convergence
+       plateau would exhaust the implement-rejection cap before reaching
+       path D.
+     - Post the consolidated COMMENTED-state review + Linear summary +
+       stage-summary file + ledger rows + verdict-review.json EXACTLY as
+       in path B.
+     - Same verdict marker shape as path B: `bash bin/pipeline.sh event
+       {issue_id} verdict fail --target implementing`.
+     - Exit. Orchestrator transitions `reviewing → implementing` exactly
+       like path B.
 
 The agent does NOT submit GitHub PR reviews in the APPROVED state or in
 the CHANGES_REQUESTED state under any path. The COMMENTED state
@@ -1615,13 +1727,23 @@ Output:
   format, exact case, exact punctuation — a content-test pin
   (`ENG-190-pin-summary-line`) asserts the literal shape.
 - **Append one row per finding to `{review_ledger_path}`** via `Edit` with
-  the seed-header line as the anchor. Emit on all three Decision paths (A,
-  B, C). Each row is one JSON object per line with the required fields per
-  `bin/review-ledger-schema.sh`'s header comment: `ledger_schema_version: 1`,
-  `issue_id: "{issue_id}"`, `dispatch_id: "{dispatch_id}"`, `iteration`
-  (computed in the Findings ledger step), `created_at` (ISO-8601 UTC),
-  `finding_class_key` (stable, reused for prior matches), `cold_severity`,
-  `adjudicated_severity`, `decision`, `rationale` (≤280 char soft cap).
+  the seed-header line as the anchor. Emit on all FOUR Decision paths (A,
+  B, B′, C, D). Each row is one JSON object per line with the required
+  fields per `bin/review-ledger-schema.sh`'s header comment:
+  `ledger_schema_version: 1`, `issue_id: "{issue_id}"`,
+  `dispatch_id: "{dispatch_id}"`, `iteration` (computed in the Findings
+  ledger step), `created_at` (ISO-8601 UTC), `finding_class_key` (stable,
+  reused for prior matches), `cold_severity`, `adjudicated_severity`,
+  `decision`, `rationale` (≤280 char soft cap). **On every row whose
+  `adjudicated_severity ∈ {major, critical}`, ALSO emit:** `blocks_ship`
+  (boolean), `ship_classification_rationale` (non-empty string naming the
+  BLOCK pattern or the DEFER rubric category that justifies the decision),
+  `decision_factors` (object with all five required boolean keys:
+  `in_changed_code`, `is_regression`, `user_visible`, `reversible_post_ship`,
+  `has_workaround`). Critical-floor-blocks-ship invariant:
+  `adjudicated_severity == critical ⇒ blocks_ship == true`; the validator
+  halts with `critical-floor-blocks-ship-violation` rc=49 on any critical
+  this-dispatch row with `blocks_ship != true`.
   **NEVER use the `Write` tool on `{review_ledger_path}` — truncating the
   cumulative ledger destroys prior-dispatch records.** This is the OPPOSITE
   lifecycle from the stage-summary file and `verdict-review.json` (which
@@ -1651,6 +1773,10 @@ Post exactly ONE additional append-only comment with your verdict:
   On clean review (path C), run:
 
     bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing
+
+  To ship with deferred majors (path D — Adjudicated critical=0, all adjudicated majors deferrable, convergence rounds satisfied):
+
+    bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors
 
   To loop back to implementing (path B — any critical/major findings):
 
