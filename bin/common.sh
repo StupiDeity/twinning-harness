@@ -738,6 +738,9 @@ failure_outcome_for_exit() {
     45) printf 'init-sh-malformed' ;;
     46) printf 'init-sh-incomplete' ;;
     47) printf 'init-sh-missing' ;;
+    48) printf 'review-ledger-malformed' ;;
+    49) printf 'review-ledger-incomplete' ;;
+    50) printf 'review-ledger-missing' ;;
     124) printf 'dispatch-timeout' ;;
     *)  printf 'unknown-exit-%s' "$exit_code" ;;
   esac

@@ -261,6 +261,7 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `qa-payload-invalid`
 - `sandbox-contract-violation`
 - `qa-predicate-invalid`
+- `review-ledger-invalid`
 
 ### `wait_reasons`
 
