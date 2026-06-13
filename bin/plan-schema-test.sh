@@ -452,6 +452,81 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_valid_multi.md" >/dev/null 
   && pass_at "T_validate_md_valid_multi: 3 bullets, mixed token shapes → rc=0" \
   || fail_at "T_validate_md_valid_multi" "expected rc=0, got rc=$rc"
 
+# ─── ENG-192: CommonMark marker variety + multi-line bullet support ───
+# The ENG-157 validator only matched `- ` markers on a bullet's first line.
+# ENG-192 broadens to all three CommonMark unordered markers (`-`/`*`/`+`)
+# and accumulates continuation lines so a wrapped `verified_by:` counts.
+
+# ─── T_validate_md_asterisk_marker: `* ` bullets → rc=0
+cat > "$FIXTURE_DIR/md_asterisk_marker.md" <<'MDEOF'
+## System invariants
+
+* I-1: foo verified_by: bin/foo.sh:T_foo
+* I-2: bar verified_by: task:T2
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_asterisk_marker.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_asterisk_marker: '* ' CommonMark bullets → rc=0 (ENG-192)" \
+  || fail_at "T_validate_md_asterisk_marker" "expected rc=0, got rc=$rc"
+
+# ─── T_validate_md_plus_marker: `+ ` bullets → rc=0
+cat > "$FIXTURE_DIR/md_plus_marker.md" <<'MDEOF'
+## System invariants
+
++ I-1: foo verified_by: bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_plus_marker.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_plus_marker: '+ ' CommonMark bullets → rc=0 (ENG-192)" \
+  || fail_at "T_validate_md_plus_marker" "expected rc=0, got rc=$rc"
+
+# ─── T_validate_md_multiline_token: verified_by: on a continuation line → rc=0
+cat > "$FIXTURE_DIR/md_multiline_token.md" <<'MDEOF'
+## System invariants
+
+- I-1: a long invariant that wraps across several physical
+  lines before the reference appears verified_by:
+  bin/foo.sh:T_foo
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_multiline_token.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_multiline_token: token on continuation line → rc=0 (ENG-192)" \
+  || fail_at "T_validate_md_multiline_token" "expected rc=0, got rc=$rc"
+
+# ─── T_validate_md_mixed_markers_multiline: `*`/`+` markers + wrapped tokens
+# The exact ENG-192 emission shape — marker variety AND continuation-line
+# tokens in one section. Pre-ENG-192 this halted with "0 bullets".
+cat > "$FIXTURE_DIR/md_mixed_markers_multiline.md" <<'MDEOF'
+## System invariants
+
+* §3 hoisted block sits in the right place — verified_by:
+  bin/agent-prompts-content-test.sh:t_eng192_pin2_position
+* §3 fence count remains exactly 2 — verified_by:
+  bin/agent-prompts-content-test.sh:t_eng192_pin10_fence_count
+
+## File Structure
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_mixed_markers_multiline.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_mixed_markers_multiline: ENG-192 real shape (asterisk + wrap) → rc=0" \
+  || fail_at "T_validate_md_mixed_markers_multiline" "expected rc=0, got rc=$rc"
+
+# ─── T_validate_md_multiline_missing_token: wrapped bullet, NO token anywhere
+# Guard: multi-line accumulation must not mask a genuinely missing reference.
+cat > "$FIXTURE_DIR/md_multiline_missing.md" <<'MDEOF'
+## System invariants
+
+- I-1: this invariant wraps across lines
+  but never carries any reference at all
+
+## Next
+MDEOF
+rc=0
+md_out="$(bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_multiline_missing.md" 2>/dev/null)" || rc=$?
+(( rc == 34 )) \
+  && pass_at "T_validate_md_multiline_missing_token: wrapped bullet w/o token → rc=34 (no masking)" \
+  || fail_at "T_validate_md_multiline_missing_token" "expected rc=34, got rc=$rc; out=$md_out"
+
 # ─── T_validate_md_missing_section: heading absent → rc=34
 cat > "$FIXTURE_DIR/md_missing_section.md" <<'MDEOF'
 # stub
