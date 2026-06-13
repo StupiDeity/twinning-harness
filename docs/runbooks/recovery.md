@@ -770,6 +770,81 @@ Schema source-of-truth: header comment in `bin/review-payload-schema.sh`.
 
 ---
 
+## 12. rc=48/49/50 — `review-ledger-invalid` (review-stage ledger detective halt)
+
+If the halt cited a malformed or incomplete row, DELETE that row from `$(issue_dir <ENG-N>)/review-findings-ledger.jsonl` BEFORE running `--action continue` — the ledger is NOT cleared on resume, so the detective will re-halt on the same row until you fix or remove it.
+
+### Symptom
+
+Issue stuck at `stage:reviewing` with `pipeline:halted` label and a Linear
+comment carrying `<!-- pipeline: verdict result=halt reason=review-ledger-invalid -->`.
+The comment body names one of:
+
+- `Defect: review-ledger-malformed` (rc=48) — any row failed JSON parse.
+- `Defect: review-ledger-incomplete` (rc=49) — any row missing a required
+  field, wrong type, malformed enum, severity-ladder violation, critical-
+  floor violation, or the seed-header was tampered/missing.
+- `Defect: review-ledger-missing` (rc=50) — the ledger file was absent
+  when the post-dispatch validator ran (usually means the agent's Edit
+  failed; very rare given the orchestrator's `_ensure_review_ledger` seed).
+
+### Detect
+
+The halt comment carries the validator's stdout inside a tilde-fenced
+block. The diagnostic format is:
+
+```
+review-ledger-{malformed,incomplete,missing}: row N: <message> finding_class_key=<sanitised>
+```
+
+`row N` is the line number in the on-disk file. `finding_class_key=...`
+appears only on downstream checks (severity-ladder, critical-floor,
+enum-out-of-range) — JSON parse failures don't have the field available.
+
+### Diagnose
+
+`cat $(issue_dir <ENG-N>)/review-findings-ledger.jsonl | sed -n '<N>p'`
+prints the offending row. Re-run the validator standalone to confirm:
+
+```bash
+bash bin/review-ledger-schema.sh validate \
+  "$(issue_dir <ENG-N>)/review-findings-ledger.jsonl" \
+  --ident ENG-N
+```
+
+### Remediation
+
+The ledger is per-issue append-only. The detective will re-halt on the
+same row across resumes — the ledger is NOT cleared on `--action continue`
+(opposite lifecycle from `verdict-review.json`). Two recovery paths:
+
+1. **Surgical edit** — delete the offending row in place:
+   ```bash
+   sed -i.bak '<N>d' "$(issue_dir <ENG-N>)/review-findings-ledger.jsonl"
+   bash bin/pipeline.sh decide <ENG-N> --action continue
+   ```
+2. **Nuclear reset** — delete the ledger entirely (loses all prior
+   adjudicator memory; next reviewing dispatch starts from cold pass):
+   ```bash
+   rm "$(issue_dir <ENG-N>)/review-findings-ledger.jsonl"
+   bash bin/pipeline.sh decide <ENG-N> --action continue
+   ```
+
+### Verify
+
+After resume, confirm:
+
+1. `pipeline:halted` is cleared.
+2. The next reviewing dispatch lands without re-firing the same defect
+   (a fresh `verdict halt reason=review-ledger-invalid` on the same row
+   index indicates the surgical edit failed).
+3. `bash bin/review-ledger-schema.sh validate <file>` exits 0.
+
+See `docs/runbooks/review-findings-ledger.md` for the full lifecycle
+contract.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:

@@ -1342,6 +1342,19 @@ partial conclusions. Cold passes are what make the ensemble a real checker.
     plan's `api-contract` block agree byte-for-byte (arg names, types, return types,
     emitted event payload shapes). Contract drift is always `critical`.
 
+Findings ledger (MANDATORY — adjudicator memory; ENG-190): Read the per-issue
+ledger at `{review_ledger_path}`. Filter lines starting with `#` (file header);
+parse each remaining line as one JSON object per the schema in
+`bin/review-ledger-schema.sh`'s header comment. Inventory prior
+`finding_class_key`s with their (`iteration`, `decision`, `adjudicated_severity`)
+history. Compute `iteration = max(rows where dispatch_id != current).iteration + 1`,
+or `1` if no such rows exist. If a prior row fails to parse as JSON, SKIP IT and
+continue (do not halt; the orchestrator's post-dispatch validator will catch
+persistently malformed rows).
+The findings ledger is read by YOU (the adjudicator), NOT by sub-agents.
+Do NOT include ledger contents in any sub-agent prompt. Sub-agents must see
+ONLY the PR diff, the plan, the brainstorm, and the relevant knowledge files.
+
 Wait for all sub-agents to return. Merge findings into a single severity-tagged list:
   - `critical` — must-fix before merge. Always includes: any contract drift, any
     scope violation past `scope-check.sh`, any Failure Mode → Test Map row without
@@ -1350,18 +1363,45 @@ Wait for all sub-agents to return. Merge findings into a single severity-tagged 
   - `minor`    — nice-to-fix.
   - `nit`      — style; never request changes for nits alone.
 
-Count-tuple emission (MANDATORY — ENG-133):
-After merging findings, emit ONE structured line in the exact format below
-BEFORE the anti-bias pass and BEFORE any free-text "Verdict:" prose. This
-line is what the path-B / path-C predicate keys off; a contradiction
-between this line and the verdict marker emitted at exit is a P0 prompt
-violation.
+Adjudication (MANDATORY — ENG-190 cold detect, warm score):
+After merging the cold findings, match each finding against the prior
+`finding_class_key`s inventoried above. Decisions:
+
+  - `cold_severity == critical` → `decision=block`, `adjudicated_severity=critical`.
+    **Critical-floor invariant:** memory does NOT apply to `critical`. Path B
+    fires unconditionally.
+  - matches prior key, cold escalated higher → `decision=carry`, at NEW `cold_severity`.
+  - matches prior key, cold downgraded lower → `decision=carry`, at NEW `cold_severity`.
+  - matches prior key, cold severity equal → `decision=stabilise`,
+    `adjudicated_severity=cold_severity`.
+  - matches prior key, cold severity equal AND your judgement is "this class is
+    shrinking" → `decision=defer-candidate`, `adjudicated_severity` strictly
+    below `cold_severity` (one rung).
+  - no prior match → `decision=carry`, `adjudicated_severity=cold_severity`.
+
+For prior keys that the current cold pass did NOT surface: emit NO row for
+that class. The prior row remains in the ledger; absence from this dispatch's
+contribution IS the convergence signal.
+
+Critical-floor invariant (explicit):
+If `cold_severity == critical`, you MUST emit `decision: block` and `adjudicated_severity: critical`.
+
+Finding-class key format guidance: `<dimension>:<scope-anchor>:<concept-slug>`.
+When a class matches a prior `finding_class_key`, REUSE the prior key verbatim.
+
+Count-tuple emission (MANDATORY — ENG-133 + ENG-190): emit TWO structured
+lines, exact case, exact punctuation, exact order:
 
   Findings: (critical=N, major=N, minor=N, nit=N)
+  Adjudicated: (critical=N, major=N, minor=N, nit=N)
 
-Exact case, exact punctuation, exact order. `N` is the integer count from
-the merged severity-tagged list. The line is auditable from the dispatch
-transcript and from the Linear `completion/reviewing/{issue_id}` summary.
+`Findings:` is the cold-pass count (integer-from-merged-list, pre-memory;
+preserves the ENG-133 audit record). `Adjudicated:` is the post-memory count
+derived from per-finding `adjudicated_severity` values. The path-B / path-C
+predicate (below) reads from `Adjudicated:`, NOT `Findings:`. A contradiction
+between these lines and the verdict marker emitted at exit is a P0 prompt
+violation. Both lines are auditable from the dispatch transcript and from the
+Linear `completion/reviewing/{issue_id}` summary.
 
 Dimension scoring payload (MANDATORY — ENG-119):
 After merging findings and emitting the count-tuple line, hold the
@@ -1463,14 +1503,15 @@ Gotcha surfacing (PROPOSE, do not write):
 
 Decision path (apply exactly one):
 
-Compute `(critical, major)` from the merged findings list emitted in the
-`Findings: (critical=N, major=N, minor=N, nit=N)` line above. The path-B /
-path-C choice is a mechanical predicate on those two counts — not a
-judgment call, not derived from a free-text "Verdict:" line, not derived
-from any sub-agent's summary. Emitting path B on `(critical=0, major=0)`,
-emitting path C on a non-zero count, emitting both, or emitting neither
-is a P0 prompt violation (ENG-133). Path A (premise failure) is a separate
-escape hatch and is not gated by the count predicate.
+Compute `(critical, major)` from the **`Adjudicated: (critical=N, major=N,
+minor=N, nit=N)`** line above (NOT the `Findings:` line — the `Adjudicated:`
+counts apply memory per ENG-190). The path-B / path-C choice is a mechanical
+predicate on those two counts — not a judgment call, not derived from a
+free-text "Verdict:" line, not derived from any sub-agent's summary.
+Emitting path B on `(critical=0, major=0)`, emitting path C on a non-zero
+count, emitting both, or emitting neither is a P0 prompt violation (ENG-133).
+Path A (premise failure) is a separate escape hatch and is not gated by the
+count predicate.
 
   A. Premise failure (brainstorm was wrong).
      - Apply Linear label `pipeline:premise-failure`.
@@ -1556,6 +1597,39 @@ Output:
   after dispatch; missing or malformed payload halts the dispatch with
   `review-payload-invalid` (rc=36/37/38) and the operator must resume
   via `bash bin/pipeline.sh decide {issue_id} --action continue`.
+- **Adjudicator summary line (MANDATORY — operator visibility into the ratchet-vs-divergence delta; ENG-190).** In the Linear consolidated review
+  summary you post via `add-comment --sig completion/reviewing/{issue_id}`,
+  include the following one-liner inline (the operator scans this to see
+  at-a-glance "is the ratchet working or is the loop diverging" without
+  opening the on-disk ledger):
+
+    Adjudicator: <K> carried (<S> stabilised, <D> defer-candidate), <F> fresh, <B> blocking. Ledger: <path>.
+
+  Where `<K>` is the count of carried-over classes (matched prior
+  `finding_class_key`s), `<S>` of those that were stabilised at the same
+  severity, `<D>` of those downgraded to defer-candidate, `<F>` is the count
+  of fresh (no prior match) classes, `<B>` is the count with `decision=block`
+  (always equals the cold `critical` count by D-005a), and `<path>` is
+  `{review_ledger_path}` so the operator can `cat` it. The line slots in
+  the Linear summary BEFORE the dimension scoring + finding breakdown. Exact
+  format, exact case, exact punctuation — a content-test pin
+  (`ENG-190-pin-summary-line`) asserts the literal shape.
+- **Append one row per finding to `{review_ledger_path}`** via `Edit` with
+  the seed-header line as the anchor. Emit on all three Decision paths (A,
+  B, C). Each row is one JSON object per line with the required fields per
+  `bin/review-ledger-schema.sh`'s header comment: `ledger_schema_version: 1`,
+  `issue_id: "{issue_id}"`, `dispatch_id: "{dispatch_id}"`, `iteration`
+  (computed in the Findings ledger step), `created_at` (ISO-8601 UTC),
+  `finding_class_key` (stable, reused for prior matches), `cold_severity`,
+  `adjudicated_severity`, `decision`, `rationale` (≤280 char soft cap).
+  **NEVER use the `Write` tool on `{review_ledger_path}` — truncating the
+  cumulative ledger destroys prior-dispatch records.** This is the OPPOSITE
+  lifecycle from the stage-summary file and `verdict-review.json` (which
+  ARE overwrite-on-every-dispatch — see §0). The orchestrator's post-
+  dispatch validator halts the dispatch with `review-ledger-invalid`
+  (rc=48/49/50) on any malformed row, critical-floor violation, or
+  severity-ladder violation; the operator resumes via
+  `bash bin/pipeline.sh decide {issue_id} --action continue`.
 - Verdict per Decision path (A premise-failure → fail to brainstorming,
   B changes-requested → fail to implementing, C clean → pass advancing to qa).
 - Do NOT submit a GitHub PR review in the APPROVED state or in the
