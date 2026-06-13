@@ -117,6 +117,24 @@ out="$(run_pipe event ENG-PE7f verdict pivot --stage implementing --reason plan-
 out="$(run_pipe event ENG-PE7g verdict pivot --target planning --stage implementing --reason "" 2>&1 || true)"
 [[ "$out" == *"--reason required"* ]] && pass_at "PE7g: pivot rejects empty --reason string" || fail_at "PE7g: pivot rejects empty --reason string" "got: $out"
 
+# ENG-191 PE-191A/B/C: pass arm gains the per-arm `pass_reasons` override
+# (selective exit path D — ship-with-deferred-majors). Per-arm registry-by-arm
+# narrows the pass.reason field to pass_reasons (just `ship-with-deferred-majors`
+# today). Halt arm still reads halt_reasons|wait_reasons union, so an arm-cross
+# leak (verdict halt --reason ship-with-deferred-majors) MUST be rejected.
+
+# PE-191A: pass --reason ship-with-deferred-majors → accepted
+out="$(run_pipe event ENG-PE-191A verdict pass --stage reviewing --reason ship-with-deferred-majors)"
+[[ "$out" == *"reason=ship-with-deferred-majors"* ]] && pass_at "PE-191A: pass+reason ship-with-deferred-majors accepted" || fail_at "PE-191A: pass+reason ship-with-deferred-majors accepted" "got: $out"
+
+# PE-191B: pass --reason unknown-token → rejected by per-arm pass_reasons override
+out="$(run_pipe event ENG-PE-191B verdict pass --stage reviewing --reason unknown-token 2>&1 || true)"
+[[ "$out" == *"not in pass_reasons"* ]] && pass_at "PE-191B: unknown pass reason rejected (per-arm scope)" || fail_at "PE-191B: unknown pass reason rejected (per-arm scope)" "got: $out"
+
+# PE-191C: halt --reason ship-with-deferred-majors → rejected (per-arm override is pass-only)
+out="$(run_pipe event ENG-PE-191C verdict halt --reason ship-with-deferred-majors 2>&1 || true)"
+[[ "$out" == *"not in halt_reasons"* ]] && pass_at "PE-191C: ship-with-deferred-majors rejected on halt arm" || fail_at "PE-191C: ship-with-deferred-majors rejected on halt arm" "got: $out"
+
 printf '\n--- bin/pipeline.sh: event transition ---\n'
 
 # PT1: valid transition — body uses two k=v pairs (from=X to=Y) per T2.6
