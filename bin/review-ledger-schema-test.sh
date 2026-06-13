@@ -54,6 +54,39 @@ write_row() {
     >> "$file"
 }
 
+# ENG-191: write a complete row with the deferability fields. Five
+# decision_factors keys all default to true (use a custom variant when
+# fixturing a specific key — none of the existing T1-T12 tests depend
+# on a particular decision_factors shape; ENG-191's AC-AD-* covers those).
+write_row_eng191() {
+  local file="$1" iid="$2" did="$3" iter="$4" key="$5" cold="$6" adj="$7" \
+        decision="$8" rationale="$9" blocks="${10}" scr="${11}"
+  jq -cn \
+    --argjson lv 1 \
+    --arg iid "$iid" \
+    --arg did "$did" \
+    --argjson iter "$iter" \
+    --arg key "$key" \
+    --arg cold "$cold" \
+    --arg adj "$adj" \
+    --arg dec "$decision" \
+    --arg rat "$rationale" \
+    --argjson bs "$blocks" \
+    --arg scr "$scr" \
+    --arg ts "2026-06-13T00:00:00Z" \
+    '{
+       ledger_schema_version:$lv, issue_id:$iid, dispatch_id:$did,
+       iteration:$iter, created_at:$ts, finding_class_key:$key,
+       cold_severity:$cold, adjudicated_severity:$adj, decision:$dec,
+       rationale:$rat, blocks_ship:$bs, ship_classification_rationale:$scr,
+       decision_factors:{
+         in_changed_code:true, is_regression:true, user_visible:true,
+         reversible_post_ship:true, has_workaround:true
+       }
+     }' \
+    >> "$file"
+}
+
 # ─── Sentinel header check ───────────────────────────────────────────
 printf '\n--- review-ledger-schema-test: sentinel + executable ---\n'
 if [[ -f "$VALIDATOR" ]]; then
@@ -70,10 +103,15 @@ fi
 printf '\n--- review-ledger-schema-test: T1-T12 ---\n'
 
 # ─── T1: well-formed multi-row ledger (3 rows, mixed decisions) → exit 0 ─
+# Row 1 (d0001) is prior-dispatch → schema-grace exempts it from ENG-191
+# deferability fields (carries the pre-ENG-190 shape). Rows 2&3 (d0002) are
+# this-dispatch; row 2 is major+stabilise → ENG-191 requires deferability
+# fields (use write_row_eng191 — defined below in the T-191-* block).
+# Row 3 is minor → ENG-191 deferability check does not gate (minor < major).
 f="$FIXTURE_DIR/t1.jsonl"
 write_seed_header "$f"
 write_row "$f" ENG-1 ENG-1-d0001 1 "correctness:auth.rs:duplicate-key" major major carry "first iteration"
-write_row "$f" ENG-1 ENG-1-d0002 2 "correctness:auth.rs:duplicate-key" major major stabilise "no change"
+write_row_eng191 "$f" ENG-1 ENG-1-d0002 2 "correctness:auth.rs:duplicate-key" major major stabilise "no change" false "stabilised — old class, no fresh risk"
 write_row "$f" ENG-1 ENG-1-d0002 2 "testing:auth-test.rs:missing-case" minor minor carry "new class"
 rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-1 --dispatch-id ENG-1-d0002 >/dev/null 2>&1 || rc=$?
 (( rc == 0 )) \
@@ -217,6 +255,35 @@ if [[ "$out" == *"finding_class_key=correctness:foo.rs:bar"* ]]; then
 else
   fail_at "T-diag: finding_class_key in diagnostic" "expected finding_class_key=... in diag; got: $out"
 fi
+
+# ─── ENG-191 T-191-*: deferability fields positive cases ───────────────
+printf '\n--- review-ledger-schema-test: ENG-191 T-191-* ---\n'
+
+# T-191-1: 2-row this-dispatch ledger with full ENG-191 fields → rc=0.
+f="$FIXTURE_DIR/t-191-1.jsonl"
+write_seed_header "$f"
+write_row_eng191 "$f" ENG-191 ENG-191-d0001 1 "correctness:auth.rs:duplicate-key" \
+  major major carry "regression of cached-result path" true "blocks: real regression"
+write_row_eng191 "$f" ENG-191 ENG-191-d0001 1 "docs:runbooks/foo.md:typo" \
+  major major carry "doc-drift polish" false "defers: docs polish"
+rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-191 --dispatch-id ENG-191-d0001 >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T-191-1: 2-row ENG-191-full ledger valid (rc=0)" \
+  || fail_at "T-191-1: ENG-191-full" "expected rc=0, got rc=$rc"
+
+# T-191-2 (schema-grace): prior-dispatch row missing blocks_ship + this-dispatch
+# row with full fields → rc=0 (prior row exempt via grace).
+f="$FIXTURE_DIR/t-191-2.jsonl"
+write_seed_header "$f"
+# Prior-dispatch (d0001) major row WITHOUT blocks_ship — pre-ENG-191 shape.
+write_row "$f" ENG-191 ENG-191-d0001 1 "correctness:auth.rs:k1" major major carry "ok"
+# This-dispatch (d0002) major row WITH full ENG-191 fields.
+write_row_eng191 "$f" ENG-191 ENG-191-d0002 2 "docs:runbooks/bar.md:k2" \
+  major major carry "doc nit" false "defers: docs polish"
+rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-191 --dispatch-id ENG-191-d0002 >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T-191-2: schema-grace — prior-dispatch row exempt; this-dispatch passes (rc=0)" \
+  || fail_at "T-191-2: schema-grace" "expected rc=0, got rc=$rc"
 
 printf '\nreview-ledger-schema-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
