@@ -166,6 +166,21 @@ TARGET_REPO=/path/to/target bash bin/linear.sh get-comments ENG-N \
         | { count: length, first: .[0].createdAt, last: .[-1].createdAt }'
 ```
 
+**Find the deferred-majors enumeration for an issue (ENG-191 selective
+exit):**
+
+```bash
+TARGET_REPO=/path/to/target bash bin/linear.sh get-comments ENG-N \
+  | jq -r '.[] | select(.body | test("dedup key=deferred-majors/ENG-N")) | .body'
+```
+
+Each match is one dispatch's deferred-majors comment; multi-dispatch issues
+accumulate one comment per `ship-with-deferred-majors` exit. The body
+carries the per-row five-question rubric values + ledger row provenance, so
+the operator can cross-reference against
+`$(issue_dir)/review-findings-ledger.jsonl`. See `docs/runbooks/recovery.md`
+§13 for the full lifecycle.
+
 **`PIPELINE_WRITER` env var lane-fences writes.** If you run
 `bash bin/linear.sh add-comment` from a shell without setting
 `PIPELINE_WRITER=human`, comments containing certain marker shapes
