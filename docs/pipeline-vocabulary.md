@@ -245,6 +245,10 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `wait`
 - `pivot`
 
+### `pass_reasons`
+
+- `ship-with-deferred-majors`
+
 ### `halt_reasons`
 
 - `agent-blocked`
