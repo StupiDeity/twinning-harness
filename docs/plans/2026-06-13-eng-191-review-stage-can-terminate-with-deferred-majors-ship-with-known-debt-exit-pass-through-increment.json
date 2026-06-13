@@ -1,0 +1,318 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-191",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Review stage selective exit (ship-with-deferred-majors): per-finding blocks_ship axis + structured five-question decision_factors on the ENG-190 ledger; new pass_reasons registry entry scoped to the pass arm; agent-decided path D + sub-variant path B'; orchestrator posts ONE deferred-majors comment per exit",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"pass_reasons\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"ship-with-deferred-majors\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"pass\": \\{[[:space:]]*\"reason\": \"pass_reasons\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/pipeline-vocabulary.md",
+          "pattern": "ship-with-deferred-majors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "review_converge_rounds=_resolve_review_converge_rounds",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_resolve_review_converge_rounds\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "human_checkpoints\\.review_converge_rounds",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "blocks_ship",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "ship_classification_rationale",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "decision_factors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "critical-floor-blocks-ship-violation",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "in_changed_code",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "is_regression",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "reversible_post_ship",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "has_workaround",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_post_deferred_majors_comment_if_eligible",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "deferred-majors/\\$ident",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "ship-with-deferred-majors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "\\.event\\.reason",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Deferrable: \\(deferrable_majors=N, blocking_majors=N\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "in_changed_code",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "reversible_post_ship",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "has_workaround",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "ship-with-deferred-majors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{review_converge_rounds\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Convergence-waiting loopback",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "Do NOT post the deferred-majors comment yourself",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-191-pin-deferrable-count-tuple",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-191-pin-five-question-rubric",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-191-pin-path-d-predicate",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-191-pin-path-d-verdict-command",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-191-pin-agent-no-deferred-majors-post",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-191-pin-path-b-prime-bump-elision",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-191-pin-review-converge-rounds-token",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema-adversarial-test.sh",
+          "pattern": "AC-AD-1",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema-adversarial-test.sh",
+          "pattern": "critical-floor-blocks-ship",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-test.sh",
+          "pattern": "ship-with-deferred-majors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-191",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-test.sh",
+          "pattern": "review_converge_rounds",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "Selective exit \\(ship-with-deferred-majors, ENG-191\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/operator-mental-model.md",
+          "pattern": "deferred-majors/ENG-N",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "CLAUDE.md",
+          "pattern": "ship-with-deferred-majors",
+          "expect_match": true
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/pipeline-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/review-ledger-schema-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/review-ledger-schema-adversarial-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/run-stage.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/render-prompt.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/review-ledger-schema.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
