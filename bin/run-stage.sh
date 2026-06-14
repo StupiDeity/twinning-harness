@@ -1560,6 +1560,264 @@ $bullet"
   return 0
 }
 
+# ENG-118: emit the coerced verdict + sib structured-body + metric for a
+# threshold-gate fire. Shared by _validate_review_thresholds and
+# _validate_qa_thresholds. Soft-fail throughout: every post is `|| log`
+# (mirrors _post_deferred_majors_comment_if_eligible's discipline) so a
+# Linear outage never halts the dispatch — the coerced verdict marker
+# IS the operator-visible signal; the sib comment + metric are forensic.
+# Sanitises every agent-controlled value via the `<!--` → `<\!--` rewrite
+# idiom (mirrors _post_review_ledger_halt :1462-1467) so an agent-emitted
+# dimension name or rationale cannot hijack the marker parser.
+#
+# Args:
+#   $1 ident             — e.g. ENG-118
+#   $2 stage             — reviewing|qa
+#   $3 failed_dims_json  — JSON array of failed dim objects, each
+#                          {name, reason, score?, threshold}. `reason` is
+#                          "below-threshold" or "missing-in-payload".
+_emit_threshold_coerce_post() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2" failed_json="$3"
+  local _ts_san
+  _ts_san() {
+    local raw="$1"
+    raw="${raw//$'\n'/ }"
+    raw="${raw//$'\r'/ }"
+    raw="${raw//<!--/<\\!--}"
+    printf '%s' "$raw"
+  }
+  # Build a markdown bullet per failed dim. jq -c flattens each object to
+  # one TSV record so the bash loop can sanitise per-field before format.
+  local rows
+  rows="$(jq -rc '
+    .[] | [
+      (.name // ""),
+      (.reason // ""),
+      (.score | if . == null then "" else (. | tostring) end),
+      (.threshold | if . == null then "" else (. | tostring) end)
+    ] | @tsv' <<<"$failed_json" 2>/dev/null || printf '')"
+  local bullets=""
+  local dim_names_csv=""
+  while IFS=$'\t' read -r dname reason score thr; do
+    [[ -z "$dname" ]] && continue
+    local sdname sreason sscore sthr
+    sdname="$(_ts_san "$dname")"
+    sreason="$(_ts_san "$reason")"
+    sscore="$(_ts_san "$score")"
+    sthr="$(_ts_san "$thr")"
+    local bullet
+    if [[ "$reason" == "missing-in-payload" ]]; then
+      bullet="$(printf -- '- **`%s`** — threshold=`%s` (missing-in-payload — operator named this dimension in `.%s.thresholds` but the agent payload did not emit it; fail-closed per ENG-118 D-008)' \
+        "$sdname" "$sthr" "$stage")"
+    else
+      bullet="$(printf -- '- **`%s`** — score=`%s`, threshold=`%s` (`%s`)' \
+        "$sdname" "$sscore" "$sthr" "$sreason")"
+    fi
+    if [[ -z "$bullets" ]]; then bullets="$bullet"; else bullets="$bullets
+$bullet"; fi
+    if [[ -z "$dim_names_csv" ]]; then dim_names_csv="$dname"; else dim_names_csv="$dim_names_csv,$dname"; fi
+  done <<< "$rows"
+  local body
+  body="$(printf '**Dimensional threshold gate coerced this dispatch.** The following %s-stage dimensions scored below their configured floors:
+
+%s
+
+Recovery: loosen `.%s.thresholds.<dim>` in `.pipeline-config/config.json` (raise to floor, or remove entirely), then `bash bin/pipeline.sh decide %s --action continue`. See `docs/runbooks/recovery.md` §14.' \
+    "$stage" "$bullets" "$stage" "$ident")"
+  # Coerced verdict marker — closed-vocabulary token `dimensional-threshold-not-met`
+  # in fail_reasons; per-arm override field_registry_by_arm.fail.reason
+  # narrows the field so any unknown reason on the fail arm is rejected.
+  bash "$SCRIPT_DIR/pipeline.sh" event "$ident" verdict fail \
+    --target implementing --reason dimensional-threshold-not-met \
+    || log "[threshold-gate] verdict-coerce post failed for $ident"
+  # Sib structured-body — operator-readable enumeration of failed dims.
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
+    --sig "dimensional-threshold/$stage/$ident" --body "$body" \
+    || log "[threshold-gate] sib-comment post failed for $ident"
+  # Metric for cross-issue audit (jq -r 'select(.event=="dimensional_threshold_coerced") ...').
+  # notes field carries the comma-list of failed dim names.
+  bash "$SCRIPT_DIR/metrics.sh" "dimensional_threshold_coerced" \
+    "$ident" "$stage" "coerced" "0" "failed=$dim_names_csv" || true
+  return 0
+}
+
+# ENG-118: post-dispatch threshold-gate detective for the reviewing stage.
+# Reads `.review.thresholds` from $CONFIG and per-dim `score` from the
+# agent-emitted verdict-review.json; when the agent self-PASSed
+# (verdict == "approve") AND any payload-emitted dimension's score falls
+# below its configured floor (enum ordinal `fail<concern<pass`), posts a
+# coerced `verdict fail --target implementing --reason
+# dimensional-threshold-not-met` Linear comment via the shared
+# _emit_threshold_coerce_post helper. The orchestrator's coerced fail-
+# marker wins find_fresh_verdict's strict-id-match path within the same
+# PIPELINE_DISPATCH_ID, and verdict_handler's existing pipeline-rejection
+# branch routes the loopback to stage:implementing — no verdict_handler
+# code changes, no new exit codes.
+#
+# Returns 0 only (the gate never halts the dispatch; the coerced verdict
+# marker IS the operator-visible signal). On a coerce-fire it posts via
+# _emit_threshold_coerce_post; the soft-fail discipline applies there.
+_validate_review_thresholds() {
+  local ident="$1"
+  # Guards (D-009 fail-open + ENG-87 freshness-contract compatibility).
+  if [[ -z "${PIPELINE_DISPATCH_ID-}" ]]; then
+    log "[threshold-gate] warning: PIPELINE_DISPATCH_ID unset; gate skipped"
+    return 0
+  fi
+  command -v jq >/dev/null \
+    || { log "[threshold-gate] warning: jq missing; gate skipped"; return 0; }
+  [[ -f "$CONFIG" && -r "$CONFIG" ]] \
+    || { log "[threshold-gate] warning: config unreadable: $CONFIG; gate skipped"; return 0; }
+  # Absent block → gate is no-op (pre-ENG-118 behaviour preserved).
+  local block
+  block="$(jq -r '.review.thresholds // empty' "$CONFIG" 2>/dev/null || printf '')"
+  if [[ -z "$block" || "$block" == "null" ]]; then
+    log "_validate_review_thresholds: review.thresholds absent; gate is no-op"
+    return 0
+  fi
+  local payload; payload="$(issue_dir "$ident")/verdict-review.json"
+  [[ -f "$payload" ]] || return 0
+  # Short-circuit on agent self-reject. Review's verdict enum is
+  # {approve, request-changes, premise-failure, halt} — D-001 step 3
+  # asymmetry vs qa's {pass, fail, halt}.
+  local agent_verdict
+  agent_verdict="$(jq -r '.verdict // "MISSING"' "$payload" 2>/dev/null || printf 'MISSING')"
+  if [[ "$agent_verdict" != "approve" ]]; then
+    log "_validate_review_thresholds: agent self-rejected (verdict=$agent_verdict); no coercion needed"
+    return 0
+  fi
+  # Enum ordinal helper: fail<concern<pass.
+  local _rev_ord
+  _rev_ord() {
+    case "$1" in
+      fail) printf '0' ;;
+      concern) printf '1' ;;
+      pass) printf '2' ;;
+      *) printf '-1' ;;
+    esac
+  }
+  local failed_json='[]'
+  local total_dims=0
+  while IFS= read -r dim; do
+    [[ -z "$dim" ]] && continue
+    total_dims=$((total_dims+1))
+    local thr
+    thr="$(jq -r --arg n "$dim" '.review.thresholds[$n] // ""' "$CONFIG" 2>/dev/null || printf '')"
+    case "$thr" in
+      fail|concern|pass) ;;
+      *)
+        log "[threshold-gate] warning: rejecting review.thresholds.$dim='$thr' (expected enum {fail, concern, pass})"
+        continue
+        ;;
+    esac
+    local score
+    score="$(jq -r --arg k "$dim" '.dimensions[$k].score // "MISSING"' "$payload" 2>/dev/null || printf 'MISSING')"
+    if [[ "$score" == "MISSING" || -z "$score" ]]; then
+      failed_json="$(jq -c --arg n "$dim" --arg t "$thr" \
+        '. + [{name:$n, reason:"missing-in-payload", threshold:$t}]' <<<"$failed_json")"
+      continue
+    fi
+    local s_ord t_ord
+    s_ord="$(_rev_ord "$score")"
+    t_ord="$(_rev_ord "$thr")"
+    if [[ "$s_ord" == "-1" ]]; then
+      log "[threshold-gate] warning: review payload dim=$dim has unknown score=$score; skipping"
+      continue
+    fi
+    if (( s_ord < t_ord )); then
+      failed_json="$(jq -c --arg n "$dim" --arg s "$score" --arg t "$thr" \
+        '. + [{name:$n, reason:"below-threshold", score:$s, threshold:$t}]' <<<"$failed_json")"
+    fi
+  done < <(jq -r '.review.thresholds | keys[]' "$CONFIG" 2>/dev/null || printf '')
+  local failed_count
+  failed_count="$(jq -r 'length' <<<"$failed_json" 2>/dev/null || printf '0')"
+  if (( failed_count == 0 )); then
+    log "_validate_review_thresholds: all $total_dims dimensions clear"
+    return 0
+  fi
+  _emit_threshold_coerce_post "$ident" "reviewing" "$failed_json"
+  return 0
+}
+
+# ENG-118: post-dispatch threshold-gate detective for the qa stage.
+# Mirrors _validate_review_thresholds but for the qa-side asymmetry —
+# `.qa.thresholds.<dim>` is a number in [0.0, 1.0] (numeric comparison
+# vs review's enum ordinal); agent's verdict enum is {pass, fail, halt}
+# (short-circuits on non-`pass`); per-dim score is read via
+# `.dimensions[] | select(.name == $n) | .score` (qa-payload-schema's
+# array shape vs review-payload-schema's keyed-object shape).
+_validate_qa_thresholds() {
+  local ident="$1"
+  if [[ -z "${PIPELINE_DISPATCH_ID-}" ]]; then
+    log "[threshold-gate] warning: PIPELINE_DISPATCH_ID unset; gate skipped"
+    return 0
+  fi
+  command -v jq >/dev/null \
+    || { log "[threshold-gate] warning: jq missing; gate skipped"; return 0; }
+  [[ -f "$CONFIG" && -r "$CONFIG" ]] \
+    || { log "[threshold-gate] warning: config unreadable: $CONFIG; gate skipped"; return 0; }
+  local block
+  block="$(jq -r '.qa.thresholds // empty' "$CONFIG" 2>/dev/null || printf '')"
+  if [[ -z "$block" || "$block" == "null" ]]; then
+    log "_validate_qa_thresholds: qa.thresholds absent; gate is no-op"
+    return 0
+  fi
+  local payload; payload="$(issue_dir "$ident")/verdict-qa.json"
+  [[ -f "$payload" ]] || return 0
+  local agent_verdict
+  agent_verdict="$(jq -r '.verdict // "MISSING"' "$payload" 2>/dev/null || printf 'MISSING')"
+  if [[ "$agent_verdict" != "pass" ]]; then
+    log "_validate_qa_thresholds: agent self-rejected (verdict=$agent_verdict); no coercion needed"
+    return 0
+  fi
+  local failed_json='[]'
+  local total_dims=0
+  while IFS= read -r dim; do
+    [[ -z "$dim" ]] && continue
+    total_dims=$((total_dims+1))
+    # Per-dim threshold type-check: must be number in [0, 1].
+    if ! jq -e --arg n "$dim" \
+        '.qa.thresholds[$n] | type == "number" and . >= 0 and . <= 1' \
+        "$CONFIG" >/dev/null 2>&1; then
+      local raw_thr
+      raw_thr="$(jq -r --arg n "$dim" '.qa.thresholds[$n] | tostring' "$CONFIG" 2>/dev/null || printf '?')"
+      log "[threshold-gate] warning: rejecting qa.thresholds.$dim='$raw_thr' (expected number in [0.0, 1.0])"
+      continue
+    fi
+    local thr
+    thr="$(jq -r --arg n "$dim" '.qa.thresholds[$n]' "$CONFIG")"
+    # Per-dim score lookup. qa-payload's .dimensions is an array of
+    # {name, score, rationale, threshold_met}; select-by-name yields
+    # empty string when the agent did not emit the dim.
+    local score
+    score="$(jq -r --arg n "$dim" \
+      '[.dimensions[] | select(.name == $n) | .score] | .[0] // empty' \
+      "$payload" 2>/dev/null || printf '')"
+    if [[ -z "$score" ]]; then
+      failed_json="$(jq -c --arg n "$dim" --argjson t "$thr" \
+        '. + [{name:$n, reason:"missing-in-payload", threshold:$t}]' <<<"$failed_json")"
+      continue
+    fi
+    # Numeric below-threshold comparison via jq (handles 0.65 < 0.8 etc.).
+    if jq -e --arg n "$dim" --argjson t "$thr" \
+        '[.dimensions[] | select(.name == $n) | .score] | .[0] < $t' \
+        "$payload" >/dev/null 2>&1; then
+      failed_json="$(jq -c --arg n "$dim" --argjson s "$score" --argjson t "$thr" \
+        '. + [{name:$n, reason:"below-threshold", score:$s, threshold:$t}]' <<<"$failed_json")"
+    fi
+  done < <(jq -r '.qa.thresholds | keys[]' "$CONFIG" 2>/dev/null || printf '')
+  local failed_count
+  failed_count="$(jq -r 'length' <<<"$failed_json" 2>/dev/null || printf '0')"
+  if (( failed_count == 0 )); then
+    log "_validate_qa_thresholds: all $total_dims dimensions clear"
+    return 0
+  fi
+  _emit_threshold_coerce_post "$ident" "qa" "$failed_json"
+  return 0
+}
+
 # ENG-117: qa-payload validator. Filesystem detective — checks that the qa
 # agent wrote a well-formed $issue_dir/verdict-qa.json with current
 # dispatch_id. Returns 0=valid, 39=malformed, 40=incomplete,
@@ -2454,6 +2712,19 @@ main() {
     esac
   fi
 
+  # ENG-118: post-dispatch dimensional threshold gate. Reviewing stage
+  # only. Reads .review.thresholds + verdict-review.json; coerces
+  # verdict approve → verdict fail loopback when any payload-emitted
+  # dimension's score is below floor. Soft-fail; never halts the
+  # dispatch (the coerced verdict marker IS the operator-visible signal).
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      reviewing)
+        _validate_review_thresholds "$ident" || true
+        ;;
+    esac
+  fi
+
   # ENG-117: qa-payload validator. Post-dispatch; qa stage only.
   # Halts with qa-payload-invalid if $issue_dir/verdict-qa.json is absent,
   # malformed, or fails schema-v1 validation. Exit codes 39/40/41 map to
@@ -2468,6 +2739,18 @@ main() {
             "qa-payload-invalid: $(failure_outcome_for_exit "$_qa_payload_rc")" "$_qa_payload_rc"
           exit "$_qa_payload_rc"
         fi
+        ;;
+    esac
+  fi
+
+  # ENG-118: post-dispatch dimensional threshold gate. QA stage only.
+  # Reads .qa.thresholds + verdict-qa.json; coerces verdict pass →
+  # verdict fail loopback when any payload-emitted dimension's score
+  # is below floor. Soft-fail; never halts the dispatch.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      qa)
+        _validate_qa_thresholds "$ident" || true
         ;;
     esac
   fi
