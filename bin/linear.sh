@@ -24,7 +24,7 @@
 #   linear.sh has-label <ENG-n> <label_name>   # exit 0 if present, 1 otherwise
 #   linear.sh has-comment-since <ENG-n> <iso8601_ts>   # exit 0 if a comment exists whose createdAt >= ts, 1 otherwise
 #   linear.sh get-comments <ENG-n>   # prints a JSON array [{id, body, createdAt}, ...] in chronological ascending order (oldest first), paginated to the most recent 50
-#   linear.sh create-issue [<unused-positional>] --title <T> --type-label <Bug|Improvement|Feature> [--parent-id ENG-N] [--state <name>] [--label <name>]... --description <val | - | @<path>>
+#   linear.sh create-issue --title <T> --type-label <Bug|Improvement|Feature> [--parent-id ENG-N] [--state <name>] --description <val | - | @<path>>
 #   linear.sh find-follow-up --dispatch-id <ENG-N-dNNNN> --finding-class-key <sanitised key>
 
 set -euo pipefail
@@ -938,21 +938,13 @@ add_comment() {
 # Mirrors add_label's chokepoint shape: lane fence FIRST → flag parse →
 # cache lookups → dry-run gate → issueCreate mutation via linear_query.
 # Body parameters are passed via --description (multi-mode resolver).
-# A leading unused positional (e.g. the parent issue identifier) is
-# tolerated to keep the call site readable when the orchestrator also
-# threads the parent through.
 create_issue() {
   # Note: --parent-id is OPTIONAL (a future use case may file unparented
   # issues), but ENG-193 always passes it. The lane fence runs FIRST.
   _check_lane "create" "child_issue" || return $?
 
   local title="" type_label="" parent_id="" state_name="" description=""
-  local labels_extra=()
   local _rest=()
-  # Tolerate a single leading positional (caller convenience — discarded).
-  if (( $# > 0 )) && [[ "$1" != --* ]]; then
-    shift
-  fi
   while (( $# > 0 )); do
     case "$1" in
       --title)       title="$2"; shift 2 ;;
@@ -963,8 +955,6 @@ create_issue() {
       --parent-id=*) parent_id="${1#--parent-id=}"; shift ;;
       --state)       state_name="$2"; shift 2 ;;
       --state=*)     state_name="${1#--state=}"; shift ;;
-      --label)       labels_extra+=("$2"); shift 2 ;;
-      --label=*)     labels_extra+=("${1#--label=}"); shift ;;
       *)             _rest+=("$1"); shift ;;
     esac
   done
@@ -988,16 +978,10 @@ create_issue() {
   if [[ -n "$parent_id" ]]; then
     parent_uuid="$(_resolve_issue_uuid "$parent_id")"
   fi
-  local label_ids_json="[\"$type_label_uuid\"]"
-  if (( ${#labels_extra[@]} > 0 )); then
-    local extra_uuids=()
-    for ln in "${labels_extra[@]}"; do
-      local lu; lu="$(label_id "$ln")"
-      [[ "$lu" != "null" && -n "$lu" ]] || die "label not in cache: $ln (run refresh-cache)"
-      extra_uuids+=("\"$lu\"")
-    done
-    label_ids_json="[\"$type_label_uuid\",$(IFS=,; printf '%s' "${extra_uuids[*]}")]"
-  fi
+  # Defense-in-depth: build label_ids array via jq -nc so any operator-edited
+  # cache value containing `\` or `"` cannot escape the JSON literal.
+  local label_ids_json
+  label_ids_json="$(jq -nc --arg t "$type_label_uuid" '[$t]')"
 
   if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
     log "[DRY_RUN] would create issue: title='${title:0:80}' parent=${parent_id:-none} type=$type_label state=$state_name"
@@ -1046,13 +1030,18 @@ find_follow_up() {
   [[ -n "$dispatch_id" ]]        || die "linear.sh find-follow-up: --dispatch-id is required"
   [[ -n "$finding_class_key" ]]  || die "linear.sh find-follow-up: --finding-class-key is required"
 
-  # Sanitise the finding-class-key — must byte-match what create-issue
-  # embedded into the description marker. Same `<!-- → <\!--` + `\n,\r → space`
-  # rule as the orchestrator's helper.
+  # Sanitise the finding-class-key — must byte-match what the orchestrator's
+  # _sanitise_for_md_marker embedded into the description marker. Four rules:
+  #   \n,\r → space  (collapse to single line)
+  #   <!--  → <\!--  (neutralise comment-open spoof)
+  #   -->   → --\>   (neutralise comment-close spoof — ENG-193 review fix)
+  #   `     → \`     (neutralise backtick-injection in code spans)
   local sanitised_fck="$finding_class_key"
   sanitised_fck="${sanitised_fck//$'\n'/ }"
   sanitised_fck="${sanitised_fck//$'\r'/ }"
   sanitised_fck="${sanitised_fck//<!--/<\\!--}"
+  sanitised_fck="${sanitised_fck//-->/--\\>}"
+  sanitised_fck="${sanitised_fck//\`/\\\`}"
 
   local marker_substring="follow-up-source dispatch=${dispatch_id} finding_class_key=${sanitised_fck}"
   local q='query($q: String!) { searchIssues(term: $q, first: 5, includeArchived: true) { nodes { id identifier title } } }'
