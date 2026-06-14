@@ -8794,6 +8794,52 @@ else
     "sig='$_tha4_sig' pipe='$_tha4_pipe' metric='$_tha4_metric' warns=$_tha4_warns"
 fi
 
+# ─── TH-ADV-5 (review score="fail" triggers _rev_ord(fail)→0 < threshold) ─
+# GAP-1: no prior test exercises _rev_ord("fail") under a live ordinal
+# comparison (TH8 short-circuits before the loop). This verifies the
+# fail→0 arm is evaluated when verdict="approve" and threshold="concern".
+_reset_th_capture
+export PIPELINE_DISPATCH_ID=ENG-118THA5-d0001
+_write_th_review_payload ENG-118THA5 correctness=fail testing=pass maintainability=pass scope=pass
+_tha5_cfg="$_TH_CFG_DIR/tha5.json"
+_write_th_config "$_tha5_cfg" '{"review":{"thresholds":{"correctness":"concern"}}}'
+CONFIG="$_tha5_cfg" _validate_review_thresholds ENG-118THA5 || true
+_tha5_sig="$(_th_dim_sig)"
+_tha5_body="$(_th_dim_body)"
+_tha5_pipe="$(_th_pipeline_calls)"
+if [[ "$_tha5_sig" == "dimensional-threshold/reviewing/ENG-118THA5" ]] \
+   && printf '%s' "$_tha5_body" | grep -q 'correctness' \
+   && printf '%s' "$_tha5_body" | grep -q 'below-threshold' \
+   && printf '%s' "$_tha5_pipe" | grep -q 'dimensional-threshold-not-met'; then
+  pass_at "ENG-118 TH-ADV-5: review score=fail → _rev_ord(fail)=0 < _rev_ord(concern)=1 → coerce"
+else
+  fail_at "ENG-118 TH-ADV-5: review score=fail below-threshold coerce" \
+    "sig='$_tha5_sig' pipe='$_tha5_pipe' body-head='${_tha5_body:0:200}'"
+fi
+
+# ─── TH-ADV-6 (multiple review dims failing → sib enumerates all) ──────
+# GAP-3: TH-ADV-3 covers multi-dim accumulation for the qa gate. This
+# mirrors it for the review gate: correctness="concern"<"pass" AND
+# testing="fail"<"concern" both below their thresholds; body must name both.
+_reset_th_capture
+export PIPELINE_DISPATCH_ID=ENG-118THA6-d0001
+_write_th_review_payload ENG-118THA6 correctness=concern testing=fail maintainability=pass scope=pass
+_tha6_cfg="$_TH_CFG_DIR/tha6.json"
+_write_th_config "$_tha6_cfg" '{"review":{"thresholds":{"correctness":"pass","testing":"concern"}}}'
+CONFIG="$_tha6_cfg" _validate_review_thresholds ENG-118THA6 || true
+_tha6_sig="$(_th_dim_sig)"
+_tha6_body="$(_th_dim_body)"
+_tha6_pipe="$(_th_pipeline_calls)"
+if [[ "$_tha6_sig" == "dimensional-threshold/reviewing/ENG-118THA6" ]] \
+   && printf '%s' "$_tha6_body" | grep -q 'correctness' \
+   && printf '%s' "$_tha6_body" | grep -q 'testing' \
+   && printf '%s' "$_tha6_pipe" | grep -q 'dimensional-threshold-not-met'; then
+  pass_at "ENG-118 TH-ADV-6: multiple review dims failing → sib body enumerates correctness + testing"
+else
+  fail_at "ENG-118 TH-ADV-6: multi-review-dim sib enumeration" \
+    "sig='$_tha6_sig' body-head='${_tha6_body:0:300}' pipe='$_tha6_pipe'"
+fi
+
 unset PIPELINE_DISPATCH_ID
 
 echo
