@@ -1552,8 +1552,19 @@ $bullet"
     fi
   done <<< "$rows"
   local body
-  body="$(printf 'Review took the selective exit (ENG-191). %s major finding(s) deferred as known debt.\n\n%s\n\nENG-193 will auto-create follow-up tickets per deferred major.' \
-    "$count" "$bullets")"
+  # ENG-193: footer is config-conditional (D-006). Tense is past
+  # ("has auto-created") because the comment posts BEFORE the helper
+  # _create_follow_up_tickets_for_deferred_majors fires; per-row failure
+  # leaves the comment partially inaccurate but the follow-up-failed
+  # metric event captures the divergence.
+  local footer
+  if _config_auto_ticket_deferred_majors_enabled; then
+    footer="ENG-193 has auto-created one follow-up ticket per row above; find them via Linear's sub-issue tree on this issue, or via the operator-mental-model.md grep recipe."
+  else
+    footer="Auto-ticketing is disabled by config (.human_checkpoints.auto_ticket_deferred_majors=false); the ledger above is the canonical record. Operator triage by hand."
+  fi
+  body="$(printf 'Review took the selective exit (ENG-191). %s major finding(s) deferred as known debt.\n\n%s\n\n%s' \
+    "$count" "$bullets" "$footer")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" \
     --sig "deferred-majors/$ident" --body "$body" \
     || log "[deferred-majors] post failed for $ident; ledger remains the canonical record"
@@ -1813,6 +1824,194 @@ _validate_qa_thresholds() {
     return 0
   fi
   _emit_threshold_coerce_post "$ident" "qa" "$failed_json"
+  return 0
+}
+
+# ENG-193: orchestrator-side config gate for auto-ticketing of deferred
+# majors. Boolean: returns 0 (enabled) on true/null/absent, 1 on false,
+# 0 (default true) on invalid with stderr log warning. Mirrors the
+# ENG-191 D-010 resolver pattern (config_get → validation → fallback).
+_config_auto_ticket_deferred_majors_enabled() {
+  local v
+  v="$(config_get '.human_checkpoints.auto_ticket_deferred_majors' 2>/dev/null || printf '')"
+  case "$v" in
+    true|"")  return 0 ;;
+    false)    return 1 ;;
+    null)     return 0 ;;
+    *)
+      log "[follow-up] auto_ticket_deferred_majors invalid value '$v'; defaulting to true"
+      return 0
+      ;;
+  esac
+}
+
+# ENG-193 D-003: title shape `[deferred from ENG-N] <sanitised scr truncated>`.
+# Sanitise-then-truncate with partial-escape tail-trim safety.
+_follow_up_title() {
+  local scr="$1" fck="$2" ident="$3"
+  local prefix="[deferred from $ident] "
+  local budget=$(( 80 - ${#prefix} ))
+  (( budget < 8 )) && budget=8
+  local raw="$scr"
+  [[ -z "$raw" ]] && raw="$fck"
+  raw="${raw//$'\n'/ }"
+  raw="${raw//$'\r'/ }"
+  raw="${raw//<!--/<\\!--}"
+  if (( ${#raw} > budget )); then
+    raw="${raw:0:budget}"
+    # Trim partial `<\!--` escape at tail: scan back if ending in `<\` or `<\!`.
+    while [[ "$raw" == *"<\\" || "$raw" == *"<\\!" ]]; do
+      raw="${raw:0:$((${#raw}-1))}"
+    done
+  fi
+  printf '%s%s' "$prefix" "$raw"
+}
+
+# ENG-193 D-003: mechanical type-label rule.
+# Bug iff decision_factors.user_visible == true; else Improvement.
+_follow_up_type_label() {
+  if [[ "$1" == "true" ]]; then printf 'Bug'; else printf 'Improvement'; fi
+}
+
+# ENG-193 D-003: markdown body for the auto-created follow-up.
+# Sanitises every agent-controlled field via line-local _san()/_yn().
+# Args (positional): ident, pr_url, dispatch_id, iteration,
+#                    finding_class_key, ship_classification_rationale,
+#                    in_changed_code, is_regression, user_visible,
+#                    reversible_post_ship, has_workaround.
+_follow_up_body() {
+  local ident="$1" pr_url="$2" did="$3" iter="$4"
+  local fck="$5" scr="$6"
+  local ic="$7" isr="$8" uv="$9" rp="${10}" hw="${11}"
+  _san() {
+    local raw="$1"
+    raw="${raw//$'\n'/ }"
+    raw="${raw//$'\r'/ }"
+    raw="${raw//<!--/<\\!--}"
+    printf '%s' "$raw"
+  }
+  _yn() { [[ "$1" == "true" ]] && printf 'yes' || printf 'no'; }
+  local type_label_rationale
+  if [[ "$uv" == "true" ]]; then
+    type_label_rationale='Bug — decision_factors.user_visible=true (the finding affects user-observable behavior).'
+  else
+    type_label_rationale='Improvement — decision_factors.user_visible=false (the finding is internal-only; not user-observable).'
+  fi
+  local s_fck s_scr s_did s_iter
+  s_fck="$(_san "$fck")"
+  s_scr="$(_san "$scr")"
+  s_did="$(_san "$did")"
+  s_iter="$(_san "$iter")"
+  printf '**Deferred from [%s](%s) — review-stage selective exit (ENG-191).**\n\n## Source\n\n- Finding class key: `%s`\n- Originating PR: %s\n- Dispatch: `%s`, iteration `%s`\n\n## Why this was deferred (not blocking)\n\n%s\n\n## Decision factors\n\n- in_changed_code: %s\n- is_regression: %s\n- user_visible: %s\n- reversible_post_ship: %s\n- has_workaround: %s\n\n## Type label\n\n%s\n\n## How to triage\n\nThis ticket is filed in `Backlog`. Move to `Todo` to enter the harness queue. The finding text above is the canonical description; consult the originating PR for diff context.\n\n<!-- meta: follow-up-source dispatch=%s finding_class_key=%s -->\n' \
+    "$ident" "$pr_url" \
+    "$s_fck" "$pr_url" "$s_did" "$s_iter" \
+    "$s_scr" \
+    "$(_yn "$ic")" "$(_yn "$isr")" "$(_yn "$uv")" "$(_yn "$rp")" "$(_yn "$hw")" \
+    "$type_label_rationale" \
+    "$s_did" "$s_fck"
+}
+
+# ENG-193 D-004: per-row loop. Gated by event.reason ==
+# ship-with-deferred-majors (same predicate as
+# _post_deferred_majors_comment_if_eligible) AND the config gate
+# auto_ticket_deferred_majors (default true). Soft-fail per-row;
+# always returns 0; emits follow-up-{created,skipped,failed} metric
+# events via bin/metrics.sh.
+_create_follow_up_tickets_for_deferred_majors() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1"
+  local fresh reason
+  fresh="$(find_fresh_verdict "$ident" 2>/dev/null || printf '')"
+  [[ -z "$fresh" ]] && return 0
+  reason="$(jq -r '.event.reason // ""' <<<"$fresh" 2>/dev/null || printf '')"
+  [[ "$reason" == "ship-with-deferred-majors" ]] || return 0
+
+  if ! _config_auto_ticket_deferred_majors_enabled; then
+    log "[follow-up] auto_ticket_deferred_majors=false; skipping ticket creation for $ident"
+    return 0
+  fi
+
+  local ledger
+  ledger="$(issue_dir "$ident")/review-findings-ledger.jsonl"
+  if [[ ! -f "$ledger" ]]; then
+    log "[follow-up] ledger absent at $ledger; skipping ticket creation"
+    return 0
+  fi
+
+  local did="${PIPELINE_DISPATCH_ID-}"
+  if [[ -z "$did" ]]; then
+    log "[follow-up] PIPELINE_DISPATCH_ID unset; skipping ticket creation"
+    return 0
+  fi
+
+  local pr_url
+  pr_url="$(gh pr view --json url --jq .url 2>/dev/null || printf '')"
+  [[ -z "$pr_url" ]] && pr_url="(not discoverable)"
+
+  local rows
+  rows="$(grep -v '^#' "$ledger" 2>/dev/null \
+    | grep -v '^[[:space:]]*$' \
+    | jq -rc --arg did "$did" '
+        select(.dispatch_id == $did)
+        | select(.adjudicated_severity == "major")
+        | select(.blocks_ship == false)
+        | [
+            (.finding_class_key // ""),
+            (.ship_classification_rationale // ""),
+            (.decision_factors.in_changed_code // false),
+            (.decision_factors.is_regression // false),
+            (.decision_factors.user_visible // false),
+            (.decision_factors.reversible_post_ship // false),
+            (.decision_factors.has_workaround // false),
+            (.dispatch_id // ""),
+            (.iteration // 0)
+          ] | @tsv' 2>/dev/null || printf '')"
+
+  local created=0 skipped=0 failed=0
+  local fck scr ic isr uv rp hw d_id it
+  while IFS=$'\t' read -r fck scr ic isr uv rp hw d_id it; do
+    [[ -z "$fck" ]] && continue
+
+    local existing
+    existing="$(bash "$SCRIPT_DIR/linear.sh" find-follow-up \
+      --dispatch-id "$d_id" --finding-class-key "$fck" 2>/dev/null || printf '')"
+    if [[ -n "$existing" ]]; then
+      skipped=$((skipped+1))
+      log "[follow-up] $ident: marker hit for $fck → existing $existing (skipped)"
+      bash "$SCRIPT_DIR/metrics.sh" follow-up-skipped "$ident" reviewing success 0 \
+        "parent=$ident finding_class_key=$fck child=$existing dispatch_id=$d_id" \
+        2>/dev/null || true
+      continue
+    fi
+
+    local title type_label body new_ident
+    title="$(_follow_up_title "$scr" "$fck" "$ident")"
+    type_label="$(_follow_up_type_label "$uv")"
+    body="$(_follow_up_body "$ident" "$pr_url" "$d_id" "$it" "$fck" "$scr" "$ic" "$isr" "$uv" "$rp" "$hw")"
+
+    new_ident="$(printf '%s' "$body" \
+      | bash "$SCRIPT_DIR/linear.sh" create-issue \
+          --title "$title" --type-label "$type_label" \
+          --parent-id "$ident" --state Backlog --description - \
+        2>/dev/null || printf '')"
+    new_ident="${new_ident%%$'\n'*}"
+    if [[ -n "$new_ident" ]]; then
+      created=$((created+1))
+      log "[follow-up] $ident: created $new_ident (type=$type_label) for $fck"
+      bash "$SCRIPT_DIR/metrics.sh" follow-up-created "$ident" reviewing success 0 \
+        "parent=$ident finding_class_key=$fck child=$new_ident dispatch_id=$d_id" \
+        2>/dev/null || true
+    else
+      failed=$((failed+1))
+      log "[follow-up] $ident: create failed for $fck (dispatch=$d_id); see Linear API outage or shape divergence"
+      bash "$SCRIPT_DIR/metrics.sh" follow-up-failed "$ident" reviewing failure 0 \
+        "parent=$ident finding_class_key=$fck dispatch_id=$d_id" \
+        2>/dev/null || true
+    fi
+  done <<< "$rows"
+
+  log "[follow-up] $ident: created=$created skipped=$skipped failed=$failed (dispatch=$did)"
   return 0
 }
 
@@ -2715,10 +2914,15 @@ main() {
   # verdict approve → verdict fail loopback when any payload-emitted
   # dimension's score is below floor. Soft-fail; never halts the
   # dispatch (the coerced verdict marker IS the operator-visible signal).
+  # ENG-193: also runs the post-dispatch deferred-majors follow-up
+  # ticket creation. Both hooks are reviewing-only, soft-fail, per-row,
+  # and never halt the dispatch (AC #3 envelope-clean: runs
+  # orchestrator-side, after the envelope validator).
   if (( ! skip_dispatch )); then
     case "$stage" in
       reviewing)
         _validate_review_thresholds "$ident" || true
+        _create_follow_up_tickets_for_deferred_majors "$ident" || true
         ;;
     esac
   fi
