@@ -8098,6 +8098,61 @@ else
     "body should contain '<\\!--' but NOT raw '<!-- pipeline:'; got: ${_z6_body:0:300}..."
 fi
 
+# ─── Z7 (QA-ADV): PIPELINE_DISPATCH_ID unset → helper short-circuits ────
+# When PIPELINE_DISPATCH_ID is not exported, the helper must log + return 0
+# without posting any comment (no valid dispatch context to filter against).
+reset_capture
+mkdir -p "$(issue_dir ENG-191Z7)"
+_z7_lgr="$(issue_dir ENG-191Z7)/review-findings-ledger.jsonl"
+rm -f "$_z7_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-191Z7 >/dev/null 2>&1
+)
+_eng191_write_row "$_z7_lgr" ENG-191Z7 ENG-191Z7-d0001 1 "k1" major major carry \
+  false "defers: docs" true false false true true
+# Deliberately do NOT export PIPELINE_DISPATCH_ID.
+unset PIPELINE_DISPATCH_ID
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_post_deferred_majors_comment_if_eligible ENG-191Z7
+unset -f find_fresh_verdict
+_z7_sig="$(captured_sig)"
+if [[ -z "$_z7_sig" ]]; then
+  pass_at "ENG-191 Z7 (QA-ADV): PIPELINE_DISPATCH_ID unset → no post (short-circuit)"
+else
+  fail_at "ENG-191 Z7 (QA-ADV): unset-did no-post" \
+    "expected empty sig, got sig='$_z7_sig'"
+fi
+
+# ─── Z8 (QA-ADV): ship-with-deferred-majors + zero matching rows → post with count=0 ─
+# Path D fires but all ledger rows belong to a prior dispatch. Filter yields zero
+# rows; count=0; the orchestrator still posts the comment as operator signal.
+reset_capture
+mkdir -p "$(issue_dir ENG-191Z8)"
+_z8_lgr="$(issue_dir ENG-191Z8)/review-findings-ledger.jsonl"
+rm -f "$_z8_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-191Z8 >/dev/null 2>&1
+)
+# Prior-dispatch deferrable row — will NOT match the this-dispatch filter.
+_eng191_write_row "$_z8_lgr" ENG-191Z8 ENG-191Z8-d0001 1 "k-prior" major major carry \
+  false "defers: prior docs" true false false true true
+export PIPELINE_DISPATCH_ID=ENG-191Z8-d0002
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_post_deferred_majors_comment_if_eligible ENG-191Z8
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_z8_sig="$(captured_sig)"
+_z8_body="$(captured_body)"
+if [[ "$_z8_sig" == "deferred-majors/ENG-191Z8" ]] \
+   && [[ "$_z8_body" == *"0 major finding(s) deferred"* ]]; then
+  pass_at "ENG-191 Z8 (QA-ADV): ship-with-deferred-majors + zero matching rows → posts with count=0"
+else
+  fail_at "ENG-191 Z8 (QA-ADV): zero-rows count=0 post" \
+    "sig='$_z8_sig' body='${_z8_body:0:200}'"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

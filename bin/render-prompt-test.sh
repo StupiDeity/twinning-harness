@@ -1388,6 +1388,22 @@ else
   fail_at "ENG-191 R4: zero-rejected" "expected 'rounds=2*', got '$out'"
 fi
 
+# Case ENG-191 R5 (QA-ADV): negative integer "-1" is not matched by ^[0-9]+$
+# (the regex requires digits-only; '-1' starts with '-') → fallback to "2" with warn.
+cat > "$eng191_config" <<'JSON'
+{"linear":{"team_id":"T","project_id":"P"},"project":{"slug":"test-slug"},"orchestrator":{"paused":false},"human_checkpoints":{"review_converge_rounds":-1}}
+JSON
+eng191_r5_stdout="$(run_resolver_body '_resolve_review_converge_rounds' 2> "$sandbox/eng191-r5.stderr")"
+eng191_r5_stderr="$(cat "$sandbox/eng191-r5.stderr")"
+if [[ "$eng191_r5_stdout" == "2" ]] \
+   && grep -qF "falling back to default 2" <<<"$eng191_r5_stderr"; then
+  pass_at "ENG-191 R5 (QA-ADV): negative '-1' rejected by regex → fallback to \"2\" with warn"
+else
+  fail_at "ENG-191 R5 (QA-ADV): negative-int-fallback" \
+    "stdout='$eng191_r5_stdout' stderr='$eng191_r5_stderr'"
+fi
+unset eng191_r5_stdout eng191_r5_stderr
+
 # Restore the original config.json so subsequent (post-eof) tests are unaffected.
 printf '%s' "$eng191_config_backup" > "$eng191_config"
 unset eng191_config eng191_config_backup eng191_r3_stdout eng191_r3_stderr

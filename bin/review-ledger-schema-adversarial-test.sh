@@ -295,5 +295,38 @@ else
   fail_at "AC-AD-9: this-dispatch missing fails" "rc=$rc out=$out"
 fi
 
+# AC-AD-10 (QA-ADV): blocks_ship as JSON string "true" (not boolean) → rc=49.
+# The validator calls `.blocks_ship | type` and requires "boolean"; a string-typed
+# "true" has type "string" → triggers blocks_ship-missing-on-blocking-severity.
+f="$FIXTURE_DIR/ad10.jsonl"
+write_seed_header "$f"
+jq -cn '{
+  ledger_schema_version:1, issue_id:"ENG-191", dispatch_id:"ENG-191-d0001",
+  iteration:1, created_at:"2026-06-13T00:00:00Z", finding_class_key:"k1",
+  cold_severity:"major", adjudicated_severity:"major", decision:"carry",
+  rationale:"r", blocks_ship:"true", ship_classification_rationale:"x",
+  decision_factors:{in_changed_code:true, is_regression:true, user_visible:true, reversible_post_ship:true, has_workaround:true}
+}' >> "$f"
+rc=0; out="$(bash "$VALIDATOR" validate "$f" --ident ENG-191 --dispatch-id ENG-191-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"blocks_ship-missing-on-blocking-severity"* ]]; then
+  pass_at "AC-AD-10 (QA-ADV): blocks_ship as string 'true' (not boolean) → rc=49 + diag"
+else
+  fail_at "AC-AD-10 (QA-ADV): string-typed blocks_ship" "rc=$rc out=$out"
+fi
+
+# AC-AD-11 (QA-ADV): decision_factors with all five required keys + one extra unknown
+# key (boolean value) → rc=0. Validator warns on unknown top-level row fields but
+# does not fail on extra keys inside decision_factors objects.
+f="$FIXTURE_DIR/ad11.jsonl"
+write_seed_header "$f"
+adv_write_row "$f" ENG-191 ENG-191-d0001 1 "k1" major major carry "r" false "defers: docs" \
+  '{in_changed_code:true, is_regression:false, user_visible:false, reversible_post_ship:true, has_workaround:true, extra_unknown_key:true}'
+rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-191 --dispatch-id ENG-191-d0001 >/dev/null 2>&1 || rc=$?
+if (( rc == 0 )); then
+  pass_at "AC-AD-11 (QA-ADV): decision_factors with extra unknown key (bool) → rc=0"
+else
+  fail_at "AC-AD-11 (QA-ADV): extra-key-passthrough" "rc=$rc"
+fi
+
 printf '\nreview-ledger-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
