@@ -7,6 +7,9 @@
     "wait",
     "pivot"
   ],
+  "pass_reasons": [
+    "ship-with-deferred-majors"
+  ],
   "halt_reasons": [
     "agent-blocked",
     "agent-failure",
@@ -106,6 +109,9 @@
         },
         "_comment_field_registry_by_arm": "Per-arm overrides: this map[arm][field] beats field_registry[field] in pipeline.sh::_validate_event_payload. Used to narrow a top-level union (e.g. 'fail_targets|pivot_targets') to the arm-specific subset so the writer rejects with 'not in <subset>' instead of accepting the wider union.",
         "field_registry_by_arm": {
+          "pass": {
+            "reason": "pass_reasons"
+          },
           "pivot": {
             "target": "pivot_targets",
             "reason": "pivot_reasons"

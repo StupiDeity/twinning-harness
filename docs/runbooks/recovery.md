@@ -845,6 +845,50 @@ contract.
 
 ---
 
+## 13. Selective exit (ship-with-deferred-majors, ENG-191)
+
+**Status:** mid-pipeline at `stage:qa`. **No recovery action required**; the
+issue is advancing normally with recorded debt.
+
+**What it means.** The reviewing agent surfaced N adjudicated-major findings,
+all classified deferrable by the structured five-question rubric
+(`in_changed_code`, `is_regression`, `user_visible`, `reversible_post_ship`,
+`has_workaround` — see `AGENT_PROMPTS.md §5`'s Deferability adjudication
+block). The harness shipped with known debt; ENG-193 will auto-create
+follow-up tickets per deferred major.
+
+**Audit recipe** — find the deferred-majors enumeration for an issue:
+
+```bash
+bash bin/linear.sh get-comments <ENG-N> \
+  | jq -r '.[] | select(.body | test("dedup key=deferred-majors/<ENG-N>")) | .body'
+```
+
+Each match is one dispatch's deferred-majors comment; multi-dispatch issues
+accumulate one comment per ship-with-deferred-majors exit. The comment body
+carries per-row bullets naming `finding_class_key`, the
+`ship_classification_rationale`, the five `decision_factors` booleans, and
+the ledger row's `dispatch_id` + `iteration` for cross-reference against
+`$(issue_dir)/review-findings-ledger.jsonl`.
+
+**Override (power user only).** To revoke the exit and force a re-review
+with deferred items treated as blocking, manually `bash bin/linear.sh
+add-label <ENG-N> pipeline:halted` from `stage:qa` then `bash
+bin/pipeline.sh decide <ENG-N> --action continue`. This crosses the
+orchestrator-managed `pipeline:halted` lane fence deliberately; documented
+but not optimised in v1. The selective exit is intended to be terminal —
+overriding it is rare.
+
+**Related** — the deferred-majors comment is emitted by the orchestrator's
+post-dispatch `_post_deferred_majors_comment_if_eligible` hook in
+`bin/run-stage.sh`. The agent's prompt forbids self-posting under this sig
+(envelope-validator safe; the orchestrator owns the write). The on-disk
+canonical record is `review-findings-ledger.jsonl`'s rows where
+`adjudicated_severity == major AND blocks_ship == false`; the Linear
+comment is operator-visibility convenience.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:

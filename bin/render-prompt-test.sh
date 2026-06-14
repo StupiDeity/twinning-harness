@@ -1328,6 +1328,86 @@ else
     "expected verdict_review_path NOT in sidecar (it was not planned for ENG-156); contents: $(cat "$eng156_w5_sidecar" 2>/dev/null)"
 fi
 
+# ─── ENG-191: {review_converge_rounds} resolver ──────────────────────────────
+# Config-driven convergence-rounds gate for path-D (ship-with-deferred-majors).
+# Returns "2" on absent config (silent default); returns the configured integer
+# on valid; returns "2" with a stderr warn on invalid (non-integer / <1).
+printf '\n--- ENG-191: {review_converge_rounds} resolver ---\n'
+
+# Save and restore the sandbox config.json between cases.
+eng191_config="$sandbox/target/.pipeline-config/config.json"
+eng191_config_backup="$(cat "$eng191_config")"
+
+# Case ENG-191 R1: default on absent (human_checkpoints key not present).
+# The base sandbox config.json contains no human_checkpoints key — config_get
+# returns "null" — resolver returns "2", stderr empty.
+out="$(run_resolver_body 'resolve_block_tokens "rounds={review_converge_rounds}"' 2>&1)"
+if [[ "$out" == "rounds=2" ]]; then
+  pass_at "ENG-191 R1: {review_converge_rounds} default \"2\" on absent config"
+else
+  fail_at "ENG-191 R1: default-on-absent" "expected 'rounds=2', got '$out'"
+fi
+
+# Case ENG-191 R2: valid integer (3) returns "3".
+cat > "$eng191_config" <<'JSON'
+{"linear":{"team_id":"T","project_id":"P"},"project":{"slug":"test-slug"},"orchestrator":{"paused":false},"human_checkpoints":{"review_converge_rounds":3}}
+JSON
+out="$(run_resolver_body 'resolve_block_tokens "rounds={review_converge_rounds}"' 2>&1)"
+if [[ "$out" == "rounds=3" ]]; then
+  pass_at "ENG-191 R2: valid integer 3 returns \"3\""
+else
+  fail_at "ENG-191 R2: valid integer" "expected 'rounds=3', got '$out'"
+fi
+
+# Case ENG-191 R3: invalid value "abc" returns "2" with stderr warning.
+# Call the resolver directly (resolve_block_tokens line 452 wraps resolvers
+# with `2>/dev/null` which would swallow the warn — direct invocation is the
+# right surface to assert the stderr behaviour).
+cat > "$eng191_config" <<'JSON'
+{"linear":{"team_id":"T","project_id":"P"},"project":{"slug":"test-slug"},"orchestrator":{"paused":false},"human_checkpoints":{"review_converge_rounds":"abc"}}
+JSON
+eng191_r3_stdout="$(run_resolver_body '_resolve_review_converge_rounds' 2> "$sandbox/eng191-r3.stderr")"
+eng191_r3_stderr="$(cat "$sandbox/eng191-r3.stderr")"
+if [[ "$eng191_r3_stdout" == "2" ]] \
+   && grep -qF "invalid value 'abc'" <<<"$eng191_r3_stderr" \
+   && grep -qF "falling back to default 2" <<<"$eng191_r3_stderr"; then
+  pass_at "ENG-191 R3: invalid 'abc' falls back to \"2\" with stderr warn"
+else
+  fail_at "ENG-191 R3: invalid-fallback" \
+    "stdout='$eng191_r3_stdout' stderr='$eng191_r3_stderr'"
+fi
+
+# Case ENG-191 R4: zero ("0") is invalid (`-ge 1` check) → fall back to "2".
+cat > "$eng191_config" <<'JSON'
+{"linear":{"team_id":"T","project_id":"P"},"project":{"slug":"test-slug"},"orchestrator":{"paused":false},"human_checkpoints":{"review_converge_rounds":0}}
+JSON
+out="$(run_resolver_body 'resolve_block_tokens "rounds={review_converge_rounds}"' 2>&1)"
+if [[ "$out" == "rounds=2"* ]]; then
+  pass_at "ENG-191 R4: zero rejected (<1) → falls back to \"2\""
+else
+  fail_at "ENG-191 R4: zero-rejected" "expected 'rounds=2*', got '$out'"
+fi
+
+# Case ENG-191 R5 (QA-ADV): negative integer "-1" is not matched by ^[0-9]+$
+# (the regex requires digits-only; '-1' starts with '-') → fallback to "2" with warn.
+cat > "$eng191_config" <<'JSON'
+{"linear":{"team_id":"T","project_id":"P"},"project":{"slug":"test-slug"},"orchestrator":{"paused":false},"human_checkpoints":{"review_converge_rounds":-1}}
+JSON
+eng191_r5_stdout="$(run_resolver_body '_resolve_review_converge_rounds' 2> "$sandbox/eng191-r5.stderr")"
+eng191_r5_stderr="$(cat "$sandbox/eng191-r5.stderr")"
+if [[ "$eng191_r5_stdout" == "2" ]] \
+   && grep -qF "falling back to default 2" <<<"$eng191_r5_stderr"; then
+  pass_at "ENG-191 R5 (QA-ADV): negative '-1' rejected by regex → fallback to \"2\" with warn"
+else
+  fail_at "ENG-191 R5 (QA-ADV): negative-int-fallback" \
+    "stdout='$eng191_r5_stdout' stderr='$eng191_r5_stderr'"
+fi
+unset eng191_r5_stdout eng191_r5_stderr
+
+# Restore the original config.json so subsequent (post-eof) tests are unaffected.
+printf '%s' "$eng191_config_backup" > "$eng191_config"
+unset eng191_config eng191_config_backup eng191_r3_stdout eng191_r3_stderr
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"

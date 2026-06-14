@@ -37,6 +37,32 @@
 #   cold_severity == critical  ⇒  decision == block AND adjudicated_severity == critical.
 #   No exceptions. The adjudicator may never downgrade a critical.
 #
+# ENG-191 extension — deferability fields (optional on row, mandatory when gate holds):
+#   On every row whose adjudicated_severity ∈ {major, critical} AND
+#   dispatch_id == --dispatch-id (this-dispatch row), the following three
+#   fields are MANDATORY:
+#     "blocks_ship": <boolean>,
+#     "ship_classification_rationale": "<non-empty string naming the BLOCK
+#         pattern or the DEFER rubric category that justifies the decision>",
+#     "decision_factors": {
+#       "in_changed_code":      <boolean>,
+#       "is_regression":        <boolean>,
+#       "user_visible":         <boolean>,
+#       "reversible_post_ship": <boolean>,
+#       "has_workaround":       <boolean>
+#     }
+#   Critical-floor-blocks-ship invariant (D-002): when the gate holds AND
+#   adjudicated_severity == critical, blocks_ship MUST be true. The
+#   validator halts with `critical-floor-blocks-ship-violation` rc=49 on
+#   any critical this-dispatch row with blocks_ship != true.
+#
+#   Schema-grace clause: prior-dispatch rows (dispatch_id != --dispatch-id)
+#   are EXEMPT from the three deferability requirements. Existing ledgers
+#   written before ENG-191 landed continue to validate under the pre-ENG-191
+#   closed contract; only this-dispatch rows enforce the new fields. The
+#   gate also fails-open when --dispatch-id is unset (validator invoked
+#   without dispatch context — e.g. operator triage).
+#
 # Seed-header integrity:
 #   First two lines MUST byte-equal the canonical seed string emitted by
 #   bin/run-stage.sh::_ensure_review_ledger.
@@ -234,10 +260,17 @@ cmd_validate() {
     # is therefore NOT a hard error; rely on dispatch_id format check above.
 
     # iteration: integer >= 1.
-    # Precedence parens are load-bearing: `(.iteration | floor == .iteration)`
-    # parses as `.iteration | (floor == .iteration)`, which indexes the number
-    # with "iteration" and aborts jq (rc=5) — `! jq` then mis-reports every
-    # valid row as "got: 1". `(.iteration | floor) == .iteration` is correct.
+    # ENG-191 fix: precedence parens around `(.iteration | floor) == .iteration`.
+    # `|` binds looser than `==` in jq, so the prior shape
+    # `.iteration | floor == .iteration` parsed as
+    # `.iteration | (floor == .iteration)` — inside the pipe `.iteration`
+    # dereferences the iteration *value* (a number), yielding null and a
+    # false comparison. Result: every valid integer iteration tripped the
+    # check. This was the root cause of T-191-1 / T-191-2 / T1 / T2 / T6 /
+    # T7 / T9 / T11 failing pre-ENG-191; T-191-* is the QA-loopback carve-
+    # out path for the fix (test exposes a real validator bug).
+    # (Same one-line fix shipped independently on main as PR #167 / a240c30
+    # to unblock the validator before this branch merged; identical predicate.)
     if ! jq -e '(.iteration | type) == "number" and ((.iteration | floor) == .iteration) and .iteration >= 1' <<<"$line" >/dev/null 2>&1; then
       local iter_val
       iter_val="$(jq -r '.iteration // "MISSING"' <<<"$line" 2>/dev/null || printf 'MISSING')"
@@ -312,10 +345,63 @@ cmd_validate() {
       fi
     fi
 
+    # ENG-191: deferability checks — gated on adjudicated_severity ∈ {major, critical}
+    # AND this-dispatch row (dispatch_id == --dispatch-id). Schema-grace clause
+    # exempts prior-dispatch rows from the new contract; absent --dispatch-id
+    # flag fails open (validator without dispatch context).
+    if [[ "$as_val" == "major" || "$as_val" == "critical" ]] \
+       && [[ -n "$dispatch_id_flag" && "$did_val" == "$dispatch_id_flag" ]]; then
+      # (a) blocks_ship: boolean presence.
+      local bs_type bs_val
+      bs_type="$(jq -r '.blocks_ship | type' <<<"$line" 2>/dev/null || printf 'missing')"
+      bs_val="$(jq -r '.blocks_ship // "MISSING"' <<<"$line" 2>/dev/null || printf 'MISSING')"
+      if [[ "$bs_type" != "boolean" ]]; then
+        _emit_incomplete "$line_no" "blocks_ship-missing-on-blocking-severity: adjudicated=$as_val but blocks_ship type=$(sanitise_for_diag "$bs_type")" "$fck"
+        return 49
+      fi
+      # (b) Critical-floor-blocks-ship: as=critical ⇒ blocks_ship=true.
+      if [[ "$as_val" == "critical" && "$bs_val" != "true" ]]; then
+        _emit_incomplete "$line_no" "critical-floor-blocks-ship-violation: adjudicated=critical but blocks_ship=$(sanitise_for_diag "$bs_val")" "$fck"
+        return 49
+      fi
+      # (c) ship_classification_rationale: non-empty string.
+      local scr_type scr_val
+      scr_type="$(jq -r '.ship_classification_rationale | type' <<<"$line" 2>/dev/null || printf 'missing')"
+      scr_val="$(jq -r '.ship_classification_rationale // "MISSING"' <<<"$line" 2>/dev/null || printf 'MISSING')"
+      if [[ "$scr_val" == "MISSING" || "$scr_type" != "string" || -z "$scr_val" ]]; then
+        _emit_incomplete "$line_no" "ship_classification_rationale must be a non-empty string, got type=$(sanitise_for_diag "$scr_type")" "$fck"
+        return 49
+      fi
+      # (d) decision_factors: object with all five required boolean keys.
+      local df_type
+      df_type="$(jq -r '.decision_factors | type' <<<"$line" 2>/dev/null || printf 'missing')"
+      if [[ "$df_type" != "object" ]]; then
+        _emit_incomplete "$line_no" "decision_factors must be object, got type=$(sanitise_for_diag "$df_type")" "$fck"
+        return 49
+      fi
+      local missing_keys
+      missing_keys="$(jq -r '
+        ["in_changed_code","is_regression","user_visible","reversible_post_ship","has_workaround"] as $req
+        | ($req - (.decision_factors | keys))
+        | join(",")' <<<"$line" 2>/dev/null || printf '')"
+      if [[ -n "$missing_keys" ]]; then
+        _emit_incomplete "$line_no" "decision_factors missing required keys: $(sanitise_for_diag "$missing_keys")" "$fck"
+        return 49
+      fi
+      local wrong_type_keys
+      wrong_type_keys="$(jq -r '
+        [.decision_factors | to_entries[] | select(.value | type != "boolean") | .key]
+        | join(",")' <<<"$line" 2>/dev/null || printf '')"
+      if [[ -n "$wrong_type_keys" ]]; then
+        _emit_incomplete "$line_no" "decision_factors keys must be boolean; non-boolean: $(sanitise_for_diag "$wrong_type_keys")" "$fck"
+        return 49
+      fi
+    fi
+
     # Unknown fields: stderr warning, exit 0 path.
     local unknown_keys
     unknown_keys="$(jq -r \
-      '(keys) - ["ledger_schema_version","issue_id","dispatch_id","iteration","created_at","finding_class_key","cold_severity","adjudicated_severity","decision","rationale"] | .[]' \
+      '(keys) - ["ledger_schema_version","issue_id","dispatch_id","iteration","created_at","finding_class_key","cold_severity","adjudicated_severity","decision","rationale","blocks_ship","ship_classification_rationale","decision_factors"] | .[]' \
       <<<"$line" 2>/dev/null || true)"
     while IFS= read -r uf; do
       if [[ -n "$uf" ]]; then _warn_unknown "field (row $line_no)" "$uf"; fi

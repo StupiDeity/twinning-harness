@@ -796,6 +796,83 @@ else
     "expected both literal one-liner shape AND 'Adjudicator summary line (MANDATORY — operator visibility...' framing"
 fi
 
+# ─── ENG-191 pins: §5 selective-exit (ship-with-deferred-majors) ───────
+
+# ENG-191-pin-deferrable-count-tuple: the Deferrable: count-tuple line is
+# the data the path-D / path-B / path-B′ predicates read from.
+if printf '%s\n' "$s5" | grep -qF 'Deferrable: (deferrable_majors=N, blocking_majors=N)'; then
+  ok "§5 ENG-191: Deferrable count-tuple line pinned (ENG-191-pin-deferrable-count-tuple)"
+else
+  nope "§5 ENG-191: Deferrable count-tuple" \
+    "expected literal 'Deferrable: (deferrable_majors=N, blocking_majors=N)'"
+fi
+
+# ENG-191-pin-five-question-rubric: all five decision-factor tokens pinned.
+if printf '%s\n' "$s5" | grep -qF 'in_changed_code' \
+   && printf '%s\n' "$s5" | grep -qF 'is_regression' \
+   && printf '%s\n' "$s5" | grep -qF 'user_visible' \
+   && printf '%s\n' "$s5" | grep -qF 'reversible_post_ship' \
+   && printf '%s\n' "$s5" | grep -qF 'has_workaround'; then
+  ok "§5 ENG-191: five-question deferability rubric pinned (ENG-191-pin-five-question-rubric)"
+else
+  nope "§5 ENG-191: five-question rubric" \
+    "expected all five tokens: in_changed_code, is_regression, user_visible, reversible_post_ship, has_workaround"
+fi
+
+# ENG-191-pin-block-default-fallthrough: asymmetric default on uncertainty.
+if printf '%s\n' "$s5" | grep -qF 'when uncertain' \
+   && printf '%s\n' "$s5" | grep -qF 'BLOCK' \
+   && printf '%s\n' "$s5" | grep -qF 'Deferral requires positive justification'; then
+  ok "§5 ENG-191: BLOCK-default fallthrough wording pinned (ENG-191-pin-block-default-fallthrough)"
+else
+  nope "§5 ENG-191: BLOCK-default fallthrough" \
+    "expected 'when uncertain' AND 'BLOCK' AND 'Deferral requires positive justification'"
+fi
+
+# ENG-191-pin-path-d-predicate: literal path-D mechanical predicate.
+if printf '%s\n' "$s5" | grep -qF 'Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}'; then
+  ok "§5 ENG-191: path-D mechanical predicate pinned (ENG-191-pin-path-d-predicate)"
+else
+  nope "§5 ENG-191: path-D predicate" \
+    "expected literal 'Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}'"
+fi
+
+# ENG-191-pin-path-d-verdict-command: literal pipeline.sh event command.
+if printf '%s\n' "$s5" | grep -qF 'bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors'; then
+  ok "§5 ENG-191: path-D verdict-marker command pinned (ENG-191-pin-path-d-verdict-command)"
+else
+  nope "§5 ENG-191: path-D verdict command" \
+    "expected literal 'bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors'"
+fi
+
+# ENG-191-pin-agent-no-deferred-majors-post: defends AC #4 envelope-validator
+# (orchestrator owns the deferred-majors comment write).
+if printf '%s\n' "$s5" | grep -qF 'Do NOT post the deferred-majors comment yourself; the orchestrator owns that write.'; then
+  ok "§5 ENG-191: agent-no-deferred-majors-post rule pinned (ENG-191-pin-agent-no-deferred-majors-post)"
+else
+  nope "§5 ENG-191: agent-no-deferred-majors-post" \
+    "expected literal 'Do NOT post the deferred-majors comment yourself; the orchestrator owns that write.'"
+fi
+
+# ENG-191-pin-path-b-prime-bump-elision: B′ semantics — no review_rejection bump.
+if printf '%s\n' "$s5" | grep -qF 'Convergence-waiting loopback' \
+   && printf '%s\n' "$s5" | grep -qF 'bash .pipeline/bin/guards.sh bump'; then
+  ok "§5 ENG-191: path-B′ bump-elision instruction pinned (ENG-191-pin-path-b-prime-bump-elision)"
+else
+  nope "§5 ENG-191: path-B′ bump-elision" \
+    "expected 'Convergence-waiting loopback' AND a reference to 'bash .pipeline/bin/guards.sh bump' (in the do-NOT-run context)"
+fi
+
+# ENG-191-pin-review-converge-rounds-token: {review_converge_rounds} appears
+# in the predicate prose AND the path-D block (>=2 occurrences).
+eng191_round_token_count="$(printf '%s\n' "$s5" | grep -cF '{review_converge_rounds}')"
+if (( eng191_round_token_count >= 2 )); then
+  ok "§5 ENG-191: {review_converge_rounds} token used >=2 times (ENG-191-pin-review-converge-rounds-token; count=$eng191_round_token_count)"
+else
+  nope "§5 ENG-191: review_converge_rounds token coverage" \
+    "expected >=2 occurrences of literal {review_converge_rounds}, got $eng191_round_token_count"
+fi
+
 # ─── ENG-77 QA-adversarial: §5 invariant deepening (QA round) ──────────
 # Background: the existing three D-002 asserts (lines 211, 221, 230)
 # run against the entire §5 body. `section_body()` includes pre-fence
