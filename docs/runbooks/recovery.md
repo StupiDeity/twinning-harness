@@ -854,8 +854,9 @@ issue is advancing normally with recorded debt.
 all classified deferrable by the structured five-question rubric
 (`in_changed_code`, `is_regression`, `user_visible`, `reversible_post_ship`,
 `has_workaround` — see `AGENT_PROMPTS.md §5`'s Deferability adjudication
-block). The harness shipped with known debt; ENG-193 will auto-create
-follow-up tickets per deferred major.
+block). The harness shipped with known debt; the orchestrator
+auto-created one Linear sub-ticket per deferred major (unless
+`auto_ticket_deferred_majors` is disabled — see below).
 
 **Audit recipe** — find the deferred-majors enumeration for an issue:
 
@@ -886,6 +887,29 @@ post-dispatch `_post_deferred_majors_comment_if_eligible` hook in
 canonical record is `review-findings-ledger.jsonl`'s rows where
 `adjudicated_severity == major AND blocks_ship == false`; the Linear
 comment is operator-visibility convenience.
+
+**Auto-created follow-up tickets (ENG-193).** Immediately after the
+deferred-majors comment posts, the orchestrator's
+`_create_follow_up_tickets_for_deferred_majors` hook files one Linear
+sub-ticket per deferred major: parented to the originating issue, in
+state `Backlog`, typed as `Bug` (when `decision_factors.user_visible
+== true`) or `Improvement` (otherwise). Find them via Linear's
+sub-issue tree view on the parent, or grep via Linear's GraphQL
+`searchIssues` for the marker substring `follow-up-source
+dispatch=ENG-N` (recipe in `operator-mental-model.md §3`). Each
+follow-up carries `<!-- meta: follow-up-source
+dispatch=ENG-N-d<NNNN> finding_class_key=<key> -->` in its
+description for cross-reference. Idempotent across re-runs: re-taking
+the exit looks up the marker and skips already-created tickets. The
+hook is soft-fail per-row — a Linear API outage during creation logs
++ emits a `follow-up-failed` metric event and continues; the dispatch
+never halts.
+
+**Disable auto-ticketing (operator opt-out).** Set
+`.human_checkpoints.auto_ticket_deferred_majors: false` in target's
+`.pipeline-config/config.json`. The deferred-majors comment
+(ENG-191) still posts; only the auto-ticket step is suppressed and
+the comment's footer is rewritten in-place to truthfully say so.
 
 ---
 
