@@ -1760,31 +1760,134 @@ fi
 unset _eng193_out _eng193_rc
 
 # ─── L-7: create-issue does NOT auto-inject the follow-up marker ───────
+# ENG-193 review fix — the dry-run path returns BEFORE variables are
+# interpolated, so a pre-fix test that asserted the marker is absent in
+# dry-run stdout was tautological (it could never appear regardless of
+# implementation). Run on the NON-dry-run path with a capturing
+# linear_query stub: inspect the GraphQL `vars` payload directly. The
+# subcommand must NOT auto-inject the marker — orchestrator-side
+# _follow_up_body owns that contract.
+unset PIPELINE_DRY_RUN
+# create_issue runs under `$(...)` (command substitution), so any stub
+# variable assignment vanishes when the subshell exits. Use a tempfile
+# instead — the stub writes vars to it, and the parent reads back after.
+_eng193_l7_vars_f="$(mktemp)"
+linear_query() {
+  local q="$1"
+  # create_issue calls `_resolve_issue_uuid` → `get_issue` → linear_query
+  # for parent-id resolution BEFORE the mutation; route that to a synthetic
+  # issue lookup so the mutation step is reached without dying on parent.
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"u-parent","identifier":"ENG-1","title":"t","description":"","state":{"id":"s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
+  # Capture the mutation's `vars` payload (subshell-safe via tempfile).
+  printf '%s' "$2" > "$_eng193_l7_vars_f"
+  printf '{"data":{"issueCreate":{"success":true,"issue":{"id":"u","identifier":"ENG-CHILD-XYZ","url":""}}}}\n'
+}
 _eng193_rc=0
 _eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
   --title 't' --type-label Improvement --parent-id ENG-1 --description 'plain body' 2>&1)" || _eng193_rc=$?
-if [[ "$_eng193_rc" == 0 && "$_eng193_out" != *"follow-up-source dispatch="* ]]; then
-  pass_at "ENG-193 L-7: create-issue does NOT auto-inject the follow-up marker"
+_eng193_l7_vars="$(cat "$_eng193_l7_vars_f" 2>/dev/null || printf '')"
+# Assert the captured vars payload's `description` is the LITERAL plain
+# body — no marker spliced in by the subcommand.
+_eng193_l7_desc="$(jq -r '.description' <<<"$_eng193_l7_vars" 2>/dev/null)"
+if [[ "$_eng193_rc" == 0 \
+   && "$_eng193_l7_desc" == "plain body" \
+   && "$_eng193_l7_desc" != *"follow-up-source dispatch="* \
+   && "$_eng193_l7_vars" != *"follow-up-source dispatch="* ]]; then
+  pass_at "ENG-193 L-7: create-issue does NOT auto-inject the follow-up marker (non-dry-run vars-capture)"
 else
-  fail_at "ENG-193 L-7: marker not auto-injected" "rc=$_eng193_rc out=$_eng193_out"
+  fail_at "ENG-193 L-7: marker not auto-injected" \
+    "rc=$_eng193_rc desc='$_eng193_l7_desc' vars='${_eng193_l7_vars:0:200}' out='${_eng193_out:0:200}'"
+fi
+rm -f "$_eng193_l7_vars_f"
+unset _eng193_out _eng193_rc _eng193_l7_vars _eng193_l7_desc _eng193_l7_vars_f
+export PIPELINE_DRY_RUN=1
+
+# ─── L-1-adv: create-issue with malformed Linear response (no identifier)
+# ENG-193 review fix — the die path at bin/linear.sh:1023 (`response missing
+# identifier`) had no fixture. Exercise the non-dry-run path with a stubbed
+# linear_query returning `{"data":{"issueCreate":{"issue":{}}}}` (success
+# field absent, identifier missing); subcommand must die non-zero with the
+# operator-recognisable diagnostic.
+unset PIPELINE_DRY_RUN
+linear_query() {
+  printf '{"data":{"issueCreate":{"issue":{}}}}\n'
+}
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --type-label Improvement --parent-id ENG-1 --description 'd' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" != 0 && "$_eng193_out" == *"response missing identifier"* ]]; then
+  pass_at "ENG-193 L-1-adv: create-issue malformed response dies with 'response missing identifier' diagnostic"
+else
+  fail_at "ENG-193 L-1-adv: malformed response" \
+    "rc=$_eng193_rc out='${_eng193_out:0:300}'"
 fi
 unset _eng193_out _eng193_rc
+export PIPELINE_DRY_RUN=1
+# Restore the default L-block stub so downstream fixtures don't inherit
+# the malformed-response stub.
+linear_query() {
+  local q="$1"
+  if [[ "$q" == *mutation* ]]; then
+    printf '{"data":{"dry_run":true}}\n'
+    return 0
+  fi
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"uuid-resolved","identifier":"ENG-STUB","title":"t","description":"","state":{"id":"uuid-s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
+  if [[ "$q" == *searchIssues* ]]; then
+    printf '{"data":{"searchIssues":{"nodes":[]}}}\n'
+    return 0
+  fi
+  printf '{}\n'
+}
 
-# ─── L-8: find-follow-up miss ──────────────────────────────────────────
+# ─── L-8: find-follow-up miss (empty nodes) ────────────────────────────
 _eng193_rc=0
 _eng193_out="$(PIPELINE_WRITER=orchestrator find_follow_up \
   --dispatch-id ENG-1-d0001 --finding-class-key 'x:y:z' 2>/dev/null)" || _eng193_rc=$?
 if [[ "$_eng193_rc" == 0 && -z "$_eng193_out" ]]; then
-  pass_at "ENG-193 L-8: find-follow-up miss returns empty stdout, rc=0"
+  pass_at "ENG-193 L-8: find-follow-up miss (empty nodes) returns empty stdout, rc=0"
 else
   fail_at "ENG-193 L-8: find-follow-up miss" "rc=$_eng193_rc out=$_eng193_out"
 fi
 unset _eng193_out _eng193_rc
 
+# ─── L-8b: find-follow-up soft-fail when linear_query fails ────────────
+# ENG-193 review fix — L-8 covered the empty-nodes path; the OTHER soft-fail
+# branch at bin/linear.sh:1061 (`linear_query failed; treating as miss`)
+# was uncovered. A linear_query stub that returns non-zero exercises it:
+# the helper must still exit 0 with empty stdout so the orchestrator's
+# per-row loop treats the row as a miss and proceeds to create.
+_eng193_l8b_lq_backup="$(declare -f linear_query)"
+linear_query() {
+  printf 'simulated GraphQL outage\n' >&2
+  return 1
+}
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key 'x:y:z' 2>/dev/null)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 && -z "$_eng193_out" ]]; then
+  pass_at "ENG-193 L-8b: find-follow-up soft-fail (linear_query non-zero) returns empty stdout, rc=0"
+else
+  fail_at "ENG-193 L-8b: find-follow-up soft-fail" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+eval "$_eng193_l8b_lq_backup"
+unset _eng193_l8b_lq_backup
+
 # ─── L-9: find-follow-up hit + defensive byte-match success ────────────
 # Stub: search returns one node; get_issue returns description WITH marker.
-# DEBUG begin
-_eng193_l9_marker='<!-- meta: follow-up-source dispatch=ENG-1-d0001 finding_class_key=x:y:z -->'
+# ENG-193 review fix — L-9 originally redefined both `linear_query` and
+# `get_issue` but only restored `linear_query` at the end of the L-block,
+# leaving L-9's synthetic `get_issue` definition in place for any future
+# test below. Backup BOTH function definitions and restore BOTH after the
+# fixture (mirrors the L-8b pattern).
+_eng193_l9_lq_backup="$(declare -f linear_query)"
+_eng193_l9_gi_backup="$(declare -f get_issue 2>/dev/null || printf '')"
 _eng193_l9_marker='<!-- meta: follow-up-source dispatch=ENG-1-d0001 finding_class_key=x:y:z -->'
 _eng193_l9_search="$(jq -cn '{data:{searchIssues:{nodes:[{id:"u-1",identifier:"ENG-CHILD-1",title:"matched"}]}}}')"
 _eng193_l9_issue="$(jq -cn --arg m "$_eng193_l9_marker" '{data:{issue:{id:"u-1",identifier:"ENG-CHILD-1",title:"matched",description:("leading\n" + $m + "\ntail"),state:{id:"s",name:"Backlog"},labels:{nodes:[]},url:"",createdAt:"",updatedAt:""}}}')"
@@ -1817,6 +1920,15 @@ else
   fail_at "ENG-193 L-9: find-follow-up hit" "rc=$_eng193_rc out='$_eng193_out'"
 fi
 unset _eng193_out _eng193_rc _eng193_l9_marker _eng193_l9_search _eng193_l9_issue
+# Restore BOTH functions — leaking get_issue silently broke earlier
+# downstream cases (review fix).
+eval "$_eng193_l9_lq_backup"
+if [[ -n "$_eng193_l9_gi_backup" ]]; then
+  eval "$_eng193_l9_gi_backup"
+else
+  unset -f get_issue 2>/dev/null || true
+fi
+unset _eng193_l9_lq_backup _eng193_l9_gi_backup
 
 # ─── L-10: find-follow-up defensive byte-match — false-positive ────────
 # Stub: search returns one node but its description does NOT contain marker.
