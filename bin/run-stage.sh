@@ -1722,10 +1722,6 @@ _validate_review_thresholds() {
     local s_ord t_ord
     s_ord="$(_rev_ord "$score")"
     t_ord="$(_rev_ord "$thr")"
-    if [[ "$s_ord" == "-1" ]]; then
-      log "[threshold-gate] warning: review payload dim=$dim has unknown score=$score; skipping"
-      continue
-    fi
     if (( s_ord < t_ord )); then
       failed_json="$(jq -c --arg n "$dim" --arg s "$score" --arg t "$thr" \
         '. + [{name:$n, reason:"below-threshold", score:$s, threshold:$t}]' <<<"$failed_json")"
