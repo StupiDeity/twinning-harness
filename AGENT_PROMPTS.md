@@ -1509,8 +1509,10 @@ Output sequence (see Output section below). Score mapping:
   - `fail`   — at least one `critical` finding.
 `rationale` is one short prose line (≤200 chars, soft limit) summarising
 the finding count and severity. `thresholds_met[]` / `thresholds_missed[]`
-are free-text narrative arrays — NOT a closed vocabulary; ENG-118
-threshold-gating reads only `score` in v1.
+are free-text narrative arrays — NOT a closed vocabulary; orchestrator-
+side threshold gating (configured via `.review.thresholds.<dim>` in
+`.pipeline-config/config.json` — see `docs/configuration.md`) reads only
+`score`.
 
 Anti-bias pass (MANDATORY — do this YOURSELF; do not delegate to ensemble):
 
@@ -2059,9 +2061,12 @@ Your task:
    The post-dispatch detective scan in
    `bin/run-stage.sh::_validate_qa_payload` will halt the dispatch with
    `qa-payload-invalid` if the file is missing, malformed, or fails
-   schema validation. The threshold sub-ticket will later gate the
-   dispatch verdict on dimensional minimums; today the payload is
-   recorded forensically without gating.
+   schema validation. The orchestrator-side threshold gate (configured
+   via `.qa.thresholds.<dim>` in `.pipeline-config/config.json` — see
+   `docs/configuration.md`) compares each dimension's `score` to its
+   floor and coerces `verdict pass` → `verdict fail --target
+   implementing` loopback on sub-threshold; your `threshold_met` field
+   becomes forensic (calibration substrate for ENG-39).
 
    Overwrite-on-every-dispatch contract per §0; use `Write` (not Edit)
    against the canonical path; do NOT write scratch fixtures elsewhere
