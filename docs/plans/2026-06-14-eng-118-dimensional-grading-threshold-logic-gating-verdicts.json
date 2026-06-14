@@ -1,0 +1,126 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-118",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Threshold gate as a new post-dispatch detective in bin/run-stage.sh that coerces verdict=pass → verdict=fail loopback when any payload-emitted dimension scores below operator-configured floors",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"fail_reasons\":[[:space:]]*\\[",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "dimensional-threshold-not-met",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "dimensional_threshold_coerced",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"fail\":[[:space:]]*\\{[[:space:]]*\"reason\":[[:space:]]*\"fail_reasons\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_validate_review_thresholds\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_validate_qa_thresholds\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_emit_threshold_coerce_post",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "ENG-118: post-dispatch dimensional threshold gate",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/vocabulary-cleanliness-test.sh",
+          "pattern": "dimensional-threshold-not-met in fail_reasons registry",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/vocabulary-cleanliness-test.sh",
+          "pattern": "dimensional_threshold_coerced in metric_names registry",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "TH1|TH2|TH3|TH4|TH5|TH6|TH7|TH8|TH9|TH10|TH11|TH12|TH13|TH14|TH15",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/configuration.md",
+          "pattern": "review\\.thresholds.*qa\\.thresholds|qa\\.thresholds.*review\\.thresholds",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "## 14\\. Dimensional threshold coercion \\(ENG-118\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "CLAUDE.md",
+          "pattern": "reason=dimensional-threshold-not-met",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "ENG-118 threshold-gating reads only",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "threshold sub-ticket will later gate",
+          "expect_match": false
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/pipeline-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/vocabulary-cleanliness-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
