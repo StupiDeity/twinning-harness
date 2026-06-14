@@ -287,14 +287,27 @@ else
     "literal 'fix the whole class' missing from §3 — has the directive been softened to a tentative phrasing?"
 fi
 
+# Scope ENG-192 Pins 4, 7, 8, 9 to an awk-window over the new block
+# only — the literals each pin asserts ('IPv6', 'loopback', 'ENG-123',
+# '1 MiB', "ZERO edits to files outside the plan's File Structure",
+# 'stage-summary', 'Deferred [') all appear ELSEWHERE in §3 (in step
+# 5's 'Concrete failure (ENG-123 iter 4-6)' tail at line ~804 and/or
+# the existing ENG-136 defer-rule block at lines ~853-865), so an
+# unscoped `printf '%s\n' "$s3" | grep -qF` falsely passes when the
+# ENG-192 block is deleted. Precedent: ENG-120 Pin C5 awk-window above
+# (line ~140). Bounded by the ENG-192 header on the AFTER side and the
+# ENG-136 header on the BEFORE side — neither anchor is itself emitted
+# by the new block, so the window is precise.
+eng192_block="$(printf '%s\n' "$s3" | awk '/Fix-the-class & in-file cleanup carve-out \(MANDATORY/{in_block=1} in_block; /Minor\/nit defer rule \(MANDATORY/{exit}')"
+
 # Pin 4: IPv6 worked example anchors the class-identification rules
 # against a concrete defect mechanism (both 'IPv6' and 'loopback'
-# must appear in §3).
-if printf '%s\n' "$s3" | grep -qF 'IPv6' && printf '%s\n' "$s3" | grep -qF 'loopback'; then
-  ok "§3 ENG-192: IPv6 worked example present ('IPv6' and 'loopback' both grep-match)"
+# must appear in the ENG-192 block window).
+if printf '%s\n' "$eng192_block" | grep -qF 'IPv6' && printf '%s\n' "$eng192_block" | grep -qF 'loopback'; then
+  ok "§3 ENG-192: IPv6 worked example present ('IPv6' and 'loopback' both grep-match in ENG-192 block window)"
 else
   nope "§3 ENG-192: IPv6 worked example present" \
-    "either 'IPv6' or 'loopback' missing from §3 — has the worked example been replaced with a generic placeholder?"
+    "either 'IPv6' or 'loopback' missing from the ENG-192 block window — has the worked example been replaced with a generic placeholder, or has the ENG-192 block been deleted entirely?"
 fi
 
 # Pin 5: In-file cleanup carve-out sub-header — keeps the carve-out
@@ -316,37 +329,46 @@ else
 fi
 
 # Pin 7: ENG-123 anti-pattern citation in the carve-out's denial
-# list — both 'ENG-123' and '1 MiB' must appear together in §3 so
-# a tone edit that drops the concrete reference trips here.
-if printf '%s\n' "$s3" | grep -qF 'ENG-123' && printf '%s\n' "$s3" | grep -qF '1 MiB'; then
-  ok "§3 ENG-192: ENG-123 anti-pattern citation present ('ENG-123' and '1 MiB' both grep-match)"
+# list — both 'ENG-123' and '1 MiB' must appear together in the
+# ENG-192 block window so a tone edit that drops the concrete
+# reference trips here. (Scoped to the window because step 5's
+# 'Concrete failure (ENG-123 iter 4-6)' tail at line ~804 carries
+# both literals independently — see the eng192_block helper above.)
+if printf '%s\n' "$eng192_block" | grep -qF 'ENG-123' && printf '%s\n' "$eng192_block" | grep -qF '1 MiB'; then
+  ok "§3 ENG-192: ENG-123 anti-pattern citation present ('ENG-123' and '1 MiB' both grep-match in ENG-192 block window)"
 else
   nope "§3 ENG-192: ENG-123 anti-pattern citation present" \
-    "either 'ENG-123' or '1 MiB' missing from §3 — has the anti-pattern citation been dropped from the carve-out's denial list?"
+    "either 'ENG-123' or '1 MiB' missing from the ENG-192 block window — has the anti-pattern citation been dropped from the carve-out's denial list, or has the ENG-192 block been deleted entirely?"
 fi
 
 # Pin 8: Defer-rule override — the new block defers to ENG-136's
 # `ZERO edits to files outside the plan's File Structure` ceiling
 # on out-of-File-Structure siblings. The literal ceiling phrase
-# must appear inside §3 (already pinned by ENG-136 Pin 3, but the
-# coherence assertion is that the new block also references it).
-if printf '%s\n' "$s3" | grep -qF "ZERO edits to files outside the plan's File Structure"; then
-  ok "§3 ENG-192: defer-rule override ('ZERO edits to files outside the plan'\''s File Structure') referenced in §3"
+# must appear inside the ENG-192 block window — the mutual-coherence
+# assertion is that the NEW block also references the ceiling, not
+# just that ENG-136's downstream block carries it. (Scoped to the
+# window because the ENG-136 block at line ~855 carries the literal
+# independently — see the eng192_block helper above.)
+if printf '%s\n' "$eng192_block" | grep -qF "ZERO edits to files outside the plan's File Structure"; then
+  ok "§3 ENG-192: defer-rule override ('ZERO edits to files outside the plan'\''s File Structure') referenced in ENG-192 block window"
 else
-  nope "§3 ENG-192: defer-rule override referenced in §3" \
-    "literal 'ZERO edits to files outside the plan'\''s File Structure' missing from §3 — has the new block's reference to the ENG-136 ceiling been dropped?"
+  nope "§3 ENG-192: defer-rule override referenced in ENG-192 block window" \
+    "literal 'ZERO edits to files outside the plan'\''s File Structure' missing from the ENG-192 block window — has the new block's reference to the ENG-136 ceiling been dropped, or has the ENG-192 block been deleted entirely?"
 fi
 
 # Pin 9: Stage-summary Notes audit emission — the directive requires
 # 'Closed [...]'/'Deferred [...]'/'Halted [...]' lines in
 # stage-summary-implementing.md's Notes subsection. Both 'stage-summary'
-# and 'Deferred [' must grep-match to assert the audit-emission
-# directive references the Notes-format shape.
-if printf '%s\n' "$s3" | grep -qF 'stage-summary' && printf '%s\n' "$s3" | grep -qF 'Deferred ['; then
-  ok "§3 ENG-192: stage-summary Notes audit emission referenced ('stage-summary' and 'Deferred [' both grep-match)"
+# and 'Deferred [' must grep-match inside the ENG-192 block window to
+# assert the NEW block's audit-emission directive references the
+# Notes-format shape. (Scoped to the window because the ENG-136 block
+# at lines ~857-859 carries both literals independently — see the
+# eng192_block helper above.)
+if printf '%s\n' "$eng192_block" | grep -qF 'stage-summary' && printf '%s\n' "$eng192_block" | grep -qF 'Deferred ['; then
+  ok "§3 ENG-192: stage-summary Notes audit emission referenced ('stage-summary' and 'Deferred [' both grep-match in ENG-192 block window)"
 else
   nope "§3 ENG-192: stage-summary Notes audit emission referenced" \
-    "either 'stage-summary' or 'Deferred [' missing from §3 — has the audit-emission directive been dropped or its format shape replaced?"
+    "either 'stage-summary' or 'Deferred [' missing from the ENG-192 block window — has the audit-emission directive been dropped or its format shape replaced, or has the ENG-192 block been deleted entirely?"
 fi
 
 # Pin 10: Fence-count invariant — §3 must contain exactly two
