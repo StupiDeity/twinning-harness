@@ -774,7 +774,9 @@ ENG-191 critical-floor-blocks-ship block at lines 362-365):**
      if [[ -n "$fix_target" ]]; then
        # Source helper + run matcher against canonical plan.
        source "$SCRIPT_DIR/plan-scope.sh"
-       local plan body af ad
+       local plan body af ad worktree_root
+       # Resolve the worktree root for find_plan (mirrors bin/scope-check.sh:269-270).
+       worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TARGET_REPO")"
        plan="$(plan_scope::find_plan "$ident" "$worktree_root" 2>/dev/null || printf '')"
        if [[ -n "$plan" ]]; then
          body="$(plan_scope::extract_section "$plan" 2>/dev/null || printf '')"
@@ -1503,11 +1505,18 @@ deterministic; failure means agent bug.
    emits empty sets, safe-default behaviour.
 
 3. **Multi-file finding with mixed in-plan/out-of-plan files.**
-   Per D-002, the agent treats the FIRST file in the body as
-   canonical for fix-target. If any of the named files is in-plan,
-   the finding is treated as in-plan. The rubric handles it.
-   Rationale: the implementer CAN fix the in-plan one without
-   tripping scope-check; the out-of-plan files become side-quests.
+   Per D-002's canonical-anchor rule, ONLY the canonical anchor —
+   the `path/to/file.ext:LINE` token immediately after the severity
+   tag — is consulted as the fix-target; secondary files mentioned
+   later in the finding body are informational and NOT consulted.
+   If the canonical anchor's file is out-of-plan, the finding is
+   scope-deferred (`defer_reason="out-of-plan-scope"`) regardless of
+   secondary mentions; if it's in-plan, the five-question rubric
+   applies. This collapses to the single source of truth the
+   review-comment-quality rubric (AGENT_PROMPTS.md:1572-1586) already
+   enforces, avoiding the retired any-in-plan tie-break. Operators
+   inspecting a deferred-majors comment can re-read the underlying PR
+   review comment to see the full file list.
 
 4. **Critical finding whose fix is out-of-plan.** Critical-floor
    invariant rules: `blocks_ship=true` unconditionally. The agent
