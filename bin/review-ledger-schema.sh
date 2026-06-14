@@ -234,7 +234,11 @@ cmd_validate() {
     # is therefore NOT a hard error; rely on dispatch_id format check above.
 
     # iteration: integer >= 1.
-    if ! jq -e '(.iteration | type) == "number" and (.iteration | floor == .iteration) and .iteration >= 1' <<<"$line" >/dev/null 2>&1; then
+    # Precedence parens are load-bearing: `(.iteration | floor == .iteration)`
+    # parses as `.iteration | (floor == .iteration)`, which indexes the number
+    # with "iteration" and aborts jq (rc=5) — `! jq` then mis-reports every
+    # valid row as "got: 1". `(.iteration | floor) == .iteration` is correct.
+    if ! jq -e '(.iteration | type) == "number" and ((.iteration | floor) == .iteration) and .iteration >= 1' <<<"$line" >/dev/null 2>&1; then
       local iter_val
       iter_val="$(jq -r '.iteration // "MISSING"' <<<"$line" 2>/dev/null || printf 'MISSING')"
       _emit_incomplete "$line_no" "iteration must be integer >= 1, got: $iter_val" "$fck"

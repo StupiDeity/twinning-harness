@@ -435,6 +435,40 @@ _dispatch_tools_extras() {
   ' "$CONFIG" 2>/dev/null || true
 }
 
+# ENG-196: auto-derive the test-runner allowlist from the worktree at
+# dispatch time, so the implementing/qa agents can run EVERY
+# bin/<name>-test.sh on disk with zero hand-maintained config.
+#
+# Why this exists: claude's permission matcher does not glob-expand the
+# inner `*` in `Bash(bash bin/*-test.sh:*)` — it matches the literal
+# string only (CLAUDE.md "Wildcard pitfall"). The historical workaround
+# was a hand-enumerated literal entry per script in BOTH
+# config.json::dispatch.tools and the project profile's `## Tool
+# allowlist`. Both lists drifted (52/54 of 77 on disk), and the gap is
+# how ENG-190's broken validator shipped without its sibling test being
+# runnable by the agent. Globbing the actual files removes the drift
+# class entirely: a newly-added test is grantable in the SAME dispatch.
+#
+# CWD is the feature worktree at dispatch time (ENG-13 D-011), so the
+# glob sees exactly the tests the agent would run from its worktree.
+# On non-harness targets the worktree has no top-level bin/*-test.sh, so
+# the glob matches nothing and the helper returns empty (soft, no harm).
+# Restricted to implementing|qa — the only stages that run the suite.
+_dispatch_tools_autotests() {
+  case "${1-}" in
+    implementing|qa) ;;
+    *) return 0 ;;
+  esac
+  local out="" f
+  # Bash leaves an unmatched glob literal; the -e guard skips it so a
+  # tests-less worktree yields empty rather than a bogus `bin/*-test.sh`.
+  for f in bin/*-test.sh; do
+    [[ -e "$f" ]] || continue
+    out="${out:+$out,}Bash(bash ${f}:*)"
+  done
+  printf '%s' "$out"
+}
+
 # ENG-94: read the per-stage Tool allowlist block from the slug-aware
 # project profile and emit a comma-joined string ready to splice into
 # allowed_tools_for's base+extras composition. Sibling of
@@ -621,9 +655,14 @@ allowed_tools_for() {
   profile_tools="$(_dispatch_tools_from_profile "$1")"
   local extras
   extras="$(_dispatch_tools_extras "$1")"
+  # ENG-196: auto-derived per-test grants (implementing|qa). Replaces the
+  # hand-enumerated test lists that drifted in config.json + profile.
+  local autotests
+  autotests="$(_dispatch_tools_autotests "$1")"
   local result="$base"
   [[ -n "$profile_tools" ]] && result="${result},${profile_tools}"
   [[ -n "$extras"        ]] && result="${result},${extras}"
+  [[ -n "$autotests"     ]] && result="${result},${autotests}"
   # ENG-27 4-tier composition: base + profile + extras + mcp (per
   # brainstorm §2 / D-1). The MCP segment is the rightmost tier so
   # the operator-curated extras keep their natural position; claude's

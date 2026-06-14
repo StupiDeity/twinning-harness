@@ -14,7 +14,7 @@ Bash 3.2+ orchestration scripts (macOS-compatible). The repo contains no applica
 ## Build & test gates
 
 - Build: `(n/a) — interpreted bash; no compile step`
-- Test: `bash bin/dispatch-test.sh && bash bin/run-stage-test.sh && bash bin/poll-slot-test.sh && bash bin/scope-check-test.sh && bash bin/verdict-handler-test.sh && bash bin/classify-failure-test.sh && bash bin/halt-sprawl-test.sh && bash bin/halt-sprawl-adversarial-test.sh && bash bin/linear-test.sh && bash bin/metrics-test.sh && bash bin/mutex-test.sh && bash bin/setup-helpers-test.sh && bash bin/render-prompt-test.sh && bash bin/phase-project-profile-test.sh && bash bin/common-test.sh && bash bin/stuck-tick-alarm-test.sh && bash bin/review-payload-schema-test.sh && bash bin/retro-shape-tool-denial-trends-test.sh && bash bin/retro-shape-runtime-invariant-audit-test.sh && bash bin/retro-shape-claude-version-drift-test.sh && bash bin/init-sh-validator-test.sh && bash bin/init-sh-validator-adversarial-test.sh && bash bin/dispatch-playwright-test.sh && bash bin/dispatch-playwright-adversarial-test.sh && bash bin/verify-qa-test.sh && bash bin/review-ledger-schema-test.sh && bash bin/review-ledger-schema-adversarial-test.sh` *(every `bin/*-test.sh` is a self-contained executable; no test runner; bin/eng-81-reproducer-test.sh omitted — KNOWN_BROKEN per .githooks/pre-commit, tracked for a dedicated fix ticket: ENG-154/151/153 fixture drift)*
+- Test: `bash .githooks/pre-commit` runs every `bin/*-test.sh` on disk (each is a self-contained executable; no test runner) and blocks on any failure outside the hook's KNOWN_BROKEN allowlist. Run a single test during iteration with `bash bin/<name>-test.sh`. *(ENG-196: this replaced a hand-enumerated 28-test chain that had drifted out of sync with the 77 tests on disk — the hook globs `bin/*-test.sh` so newly-added tests are covered with no edit here. KNOWN_BROKEN currently: eng-81-reproducer, mutex, render-pr-body, render-prompt-slug — see `.githooks/pre-commit`.)*
 - Lint/check: `bash -n bin/*.sh` *(syntax check only; no shellcheck in CI today)*
 - Integration/E2E: `PIPELINE_DRY_RUN=1 TARGET_REPO=/path/to/target bash bin/dry-run.sh`
 
@@ -26,124 +26,23 @@ git family, `bash bin/linear.sh`, `bash bin/pipeline.sh`,
 `bash bin/guards.sh`, `bash bin/slack.sh`, `bash bin/metrics.sh`)
 are implicit and not declared here.
 
+ENG-196: the `bin/<name>-test.sh` test runners are NO LONGER enumerated
+here. `dispatch.sh::_dispatch_tools_autotests` globs `bin/*-test.sh` from
+the worktree and grants them automatically for implementing|qa, so a
+newly-added test is runnable in the same dispatch with zero edits to this
+file. Only NON-test runners (e.g. `.githooks/pre-commit`,
+`secret-probe-lint.sh`) need a bullet below.
+
 - brainstorming: (none)
 - planning: (none)
 - implementing:
   - `Bash(bash .githooks/pre-commit:*)`
   - `Bash(bash bin/secret-probe-lint.sh:*)`
-  - `Bash(bash bin/agent-prompts-content-test.sh:*)`
-  - `Bash(bash bin/classify-failure-test.sh:*)`
-  - `Bash(bash bin/cleanup-worktrees-test.sh:*)`
-  - `Bash(bash bin/common-test.sh:*)`
-  - `Bash(bash bin/dispatch-playwright-adversarial-test.sh:*)`
-  - `Bash(bash bin/dispatch-playwright-test.sh:*)`
-  - `Bash(bash bin/dispatch-test.sh:*)`
-  - `Bash(bash bin/eng-81-reproducer-test.sh:*)`
-  - `Bash(bash bin/entry-conditions-test.sh:*)`
-  - `Bash(bash bin/halt-sprawl-adversarial-test.sh:*)`
-  - `Bash(bash bin/halt-sprawl-test.sh:*)`
-  - `Bash(bash bin/init-sh-validator-adversarial-test.sh:*)`
-  - `Bash(bash bin/init-sh-validator-test.sh:*)`
-  - `Bash(bash bin/install-launchd-test.sh:*)`
-  - `Bash(bash bin/linear-test.sh:*)`
-  - `Bash(bash bin/metrics-test.sh:*)`
-  - `Bash(bash bin/mutex-test.sh:*)`
-  - `Bash(bash bin/phase-project-profile-test.sh:*)`
-  - `Bash(bash bin/pipeline-test.sh:*)`
-  - `Bash(bash bin/poll-slot-test.sh:*)`
-  - `Bash(bash bin/profile-allowlist-test.sh:*)`
-  - `Bash(bash bin/progress-md-cross-stage-test.sh:*)`
-  - `Bash(bash bin/qa-payload-schema-adversarial-test.sh:*)`
-  - `Bash(bash bin/qa-payload-schema-test.sh:*)`
-  - `Bash(bash bin/reconcile-test.sh:*)`
-  - `Bash(bash bin/render-pr-body-test.sh:*)`
-  - `Bash(bash bin/render-prompt-slug-test.sh:*)`
-  - `Bash(bash bin/render-prompt-test.sh:*)`
-  - `Bash(bash bin/retro-shape-claude-version-drift-test.sh:*)`
-  - `Bash(bash bin/retro-shape-runtime-invariant-audit-test.sh:*)`
-  - `Bash(bash bin/retro-shape-tool-denial-trends-test.sh:*)`
-  - `Bash(bash bin/review-ledger-schema-adversarial-test.sh:*)`
-  - `Bash(bash bin/review-ledger-schema-test.sh:*)`
-  - `Bash(bash bin/review-payload-schema-test.sh:*)`
-  - `Bash(bash bin/review-poll-test.sh:*)`
-  - `Bash(bash bin/review-state-test.sh:*)`
-  - `Bash(bash bin/run-local-content-adversarial-test.sh:*)`
-  - `Bash(bash bin/run-local-content-test.sh:*)`
-  - `Bash(bash bin/run-local-helpers-adversarial-test.sh:*)`
-  - `Bash(bash bin/run-local-sweep-test.sh:*)`
-  - `Bash(bash bin/run-stage-model-adversarial-test.sh:*)`
-  - `Bash(bash bin/run-stage-model-test.sh:*)`
-  - `Bash(bash bin/run-stage-test.sh:*)`
-  - `Bash(bash bin/scope-check-test.sh:*)`
-  - `Bash(bash bin/secret-probe-lint-adversarial-test.sh:*)`
-  - `Bash(bash bin/secret-probe-lint-test.sh:*)`
-  - `Bash(bash bin/setup-helpers-test.sh:*)`
-  - `Bash(bash bin/setup-test.sh:*)`
-  - `Bash(bash bin/stuck-tick-alarm-test.sh:*)`
-  - `Bash(bash bin/test-isolation-test.sh:*)`
-  - `Bash(bash bin/verdict-adversarial-test.sh:*)`
-  - `Bash(bash bin/verdict-handler-test.sh:*)`
-  - `Bash(bash bin/verify-qa-test.sh:*)`
-  - `Bash(bash bin/vocabulary-cleanliness-test.sh:*)`
 - ui: (none)
 - reviewing: (none)
 - qa:
   - `Bash(bash .githooks/pre-commit:*)`
   - `Bash(bash bin/secret-probe-lint.sh:*)`
-  - `Bash(bash bin/agent-prompts-content-test.sh:*)`
-  - `Bash(bash bin/classify-failure-test.sh:*)`
-  - `Bash(bash bin/cleanup-worktrees-test.sh:*)`
-  - `Bash(bash bin/common-test.sh:*)`
-  - `Bash(bash bin/dispatch-playwright-adversarial-test.sh:*)`
-  - `Bash(bash bin/dispatch-playwright-test.sh:*)`
-  - `Bash(bash bin/dispatch-test.sh:*)`
-  - `Bash(bash bin/eng-81-reproducer-test.sh:*)`
-  - `Bash(bash bin/entry-conditions-test.sh:*)`
-  - `Bash(bash bin/halt-sprawl-adversarial-test.sh:*)`
-  - `Bash(bash bin/halt-sprawl-test.sh:*)`
-  - `Bash(bash bin/init-sh-validator-adversarial-test.sh:*)`
-  - `Bash(bash bin/init-sh-validator-test.sh:*)`
-  - `Bash(bash bin/install-launchd-test.sh:*)`
-  - `Bash(bash bin/linear-test.sh:*)`
-  - `Bash(bash bin/metrics-test.sh:*)`
-  - `Bash(bash bin/mutex-test.sh:*)`
-  - `Bash(bash bin/phase-project-profile-test.sh:*)`
-  - `Bash(bash bin/pipeline-test.sh:*)`
-  - `Bash(bash bin/poll-slot-test.sh:*)`
-  - `Bash(bash bin/profile-allowlist-test.sh:*)`
-  - `Bash(bash bin/progress-md-cross-stage-test.sh:*)`
-  - `Bash(bash bin/qa-payload-schema-adversarial-test.sh:*)`
-  - `Bash(bash bin/qa-payload-schema-test.sh:*)`
-  - `Bash(bash bin/reconcile-test.sh:*)`
-  - `Bash(bash bin/render-pr-body-test.sh:*)`
-  - `Bash(bash bin/render-prompt-slug-test.sh:*)`
-  - `Bash(bash bin/render-prompt-test.sh:*)`
-  - `Bash(bash bin/retro-shape-claude-version-drift-test.sh:*)`
-  - `Bash(bash bin/retro-shape-runtime-invariant-audit-test.sh:*)`
-  - `Bash(bash bin/retro-shape-tool-denial-trends-test.sh:*)`
-  - `Bash(bash bin/review-ledger-schema-adversarial-test.sh:*)`
-  - `Bash(bash bin/review-ledger-schema-test.sh:*)`
-  - `Bash(bash bin/review-payload-schema-test.sh:*)`
-  - `Bash(bash bin/review-poll-test.sh:*)`
-  - `Bash(bash bin/review-state-test.sh:*)`
-  - `Bash(bash bin/run-local-content-adversarial-test.sh:*)`
-  - `Bash(bash bin/run-local-content-test.sh:*)`
-  - `Bash(bash bin/run-local-helpers-adversarial-test.sh:*)`
-  - `Bash(bash bin/run-local-sweep-test.sh:*)`
-  - `Bash(bash bin/run-stage-model-adversarial-test.sh:*)`
-  - `Bash(bash bin/run-stage-model-test.sh:*)`
-  - `Bash(bash bin/run-stage-test.sh:*)`
-  - `Bash(bash bin/scope-check-test.sh:*)`
-  - `Bash(bash bin/secret-probe-lint-adversarial-test.sh:*)`
-  - `Bash(bash bin/secret-probe-lint-test.sh:*)`
-  - `Bash(bash bin/setup-helpers-test.sh:*)`
-  - `Bash(bash bin/setup-test.sh:*)`
-  - `Bash(bash bin/stuck-tick-alarm-test.sh:*)`
-  - `Bash(bash bin/test-isolation-test.sh:*)`
-  - `Bash(bash bin/verdict-adversarial-test.sh:*)`
-  - `Bash(bash bin/verdict-handler-test.sh:*)`
-  - `Bash(bash bin/verify-qa-test.sh:*)`
-  - `Bash(bash bin/vocabulary-cleanliness-test.sh:*)`
 - building: (none)
 - released: (none)
 

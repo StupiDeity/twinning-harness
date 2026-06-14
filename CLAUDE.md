@@ -466,7 +466,8 @@ Per-target stack tools come from the profile's `## Tool allowlist` section
 extras come from `.pipeline-config/config.json::dispatch.tools.<stage>[]`.
 
 Per-stage `--allowed-tools` argv composition (left-to-right):
-**stack-neutral base + profile-derived stack tools + operator-curated extras**.
+**stack-neutral base + profile-derived stack tools + operator-curated extras
++ auto-derived test runners (ENG-196, implementing|qa) + MCP**.
 Empty segments elided. Claude's matcher is order-insensitive — ordering is
 for log readability only.
 
@@ -474,43 +475,32 @@ for log readability only.
 `## Tool allowlist` → `_dispatch_tools_from_profile` returns empty, emits a
 single `[allowed-tools]` warning to stderr, dispatch does NOT die.
 
-**Wildcard pitfall.** Claude's matcher does NOT expand `*` inside a
-`Bash(<prefix>:*)` prefix as a shell glob — `*` is treated literally.
-`Bash(bash bin/*-test.sh:*)` matches *only* the literal string, not any actual
-test script. Patterns must enumerate each script with a fully-literal prefix:
+**Test runners are auto-derived (ENG-196).** Claude's matcher does NOT expand
+`*` inside a `Bash(<prefix>:*)` prefix as a shell glob — `*` is treated
+literally, so `Bash(bash bin/*-test.sh:*)` matches *only* the literal string,
+never an actual test script. The historical workaround hand-enumerated one
+literal entry per script in BOTH `config.json::dispatch.tools` and the profile's
+`## Tool allowlist`; both lists drifted (52/54 of 77 on disk), and the gap let
+ENG-190's broken validator ship without its sibling test being runnable by the
+agent (→ the ENG-191 review halt).
 
-```json
-{
-  "dispatch": {
-    "tools": {
-      "implementing": [
-        "Bash(bash .githooks/pre-commit:*)",
-        "Bash(bash bin/secret-probe-lint.sh:*)",
-        "Bash(bash bin/classify-failure-test.sh:*)",
-        "...one literal entry per bin/*-test.sh..."
-      ],
-      "qa": [ "...same enumerated list..." ]
-    }
-  }
-}
-```
+`dispatch.sh::_dispatch_tools_autotests` now globs `bin/*-test.sh` from the
+worktree (cwd at dispatch time, ENG-13 D-011) and emits one literal
+`Bash(bash <file>:*)` per script for the `implementing`/`qa` stages. **Adding a
+new `bin/<name>-test.sh` requires no allowlist edit** — it is grantable in the
+same dispatch. On non-harness targets the worktree has no top-level
+`bin/*-test.sh`, so the helper returns empty (soft). You therefore no longer
+hand-maintain a test list anywhere; only NON-test runners (e.g.
+`Bash(bash .githooks/pre-commit:*)`, `Bash(bash bin/secret-probe-lint.sh:*)`)
+need an explicit profile bullet or `config.json::dispatch.tools` entry.
 
-Stage keys are gerund form (`implementing`, `qa`). For the harness-self target
-this is required (ENG-77 cascade May 2026). Regenerate when adding a test:
+The wildcard pitfall still applies to any NON-test pattern you add by hand —
+enumerate each command with a fully-literal prefix; never rely on an inner `*`
+to glob.
 
-```bash
-TESTS=$(ls bin/*-test.sh | sort | sed 's|^|Bash(bash |; s|$|:*)|')
-LIST=$(printf '%s\n' \
-  "Bash(bash .githooks/pre-commit:*)" \
-  "Bash(bash bin/secret-probe-lint.sh:*)" \
-  "$TESTS" | jq -R . | jq -s .)
-jq --argjson l "$LIST" '.dispatch.tools = {"implementing": $l, "qa": $l}' \
-  .pipeline-config/config.json > /tmp/c && mv /tmp/c .pipeline-config/config.json
-```
-
-`bin/dispatch-test.sh` asserts no broken wildcard is present and the enumerated
-count covers every `bin/*-test.sh` on disk. The pitfall applies symmetrically
-to the profile's `## Tool allowlist` section.
+`bin/dispatch-test.sh` (ENG-196 block) asserts `_dispatch_tools_autotests`
+grants every `bin/*-test.sh` on disk, is gated to implementing|qa, and
+auto-picks up a newly-added test file.
 
 ## Per-stage dispatch timeouts (ENG-65)
 

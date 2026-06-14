@@ -2217,52 +2217,81 @@ contract_check_stage reviewing     "## 5. Review Agent"
 contract_check_stage qa            "## 6. QA Agent"
 contract_check_stage building      "## 7. Build Agent"
 
-# ─── ENG-53 #8: harness target's dispatch.tools populated ──────────────
-# Per the ENG-44 dogfood post-mortem: the implement and qa stages on
-# harness-self had no allowlisted way to invoke `bash bin/<name>-test.sh`
-# (the harness's testing convention per learned-rules/harness/project-
-# profile.md). Implement shipped a broken `read -r cfg sf` test that
-# pass-by-accident; qa explicitly flagged "harness sandbox blocked
-# direct `bash bin/<test>.sh` execution" before proceeding. The fix is
-# pure config — populate harness's own .pipeline-config/config.json::
-# dispatch.tools.{implement,qa}[] with the test-runner pattern. ENG-51's
-# dispatch.tools mechanism does the rest.
+# ─── ENG-196: auto-derived test-runner allowlist (supersedes ENG-53#8) ──
+# Per the ENG-44 dogfood post-mortem, the implement/qa stages on
+# harness-self need an allowlisted way to invoke `bash bin/<name>-test.sh`
+# (the harness's testing convention). The original fix hand-enumerated one
+# literal entry per script in config.json::dispatch.tools (ENG-53#8) —
+# claude's matcher can't glob-expand `Bash(bash bin/*-test.sh:*)`, so a
+# wildcard won't do. That hand-list drifted (52/54 of 77), and the gap let
+# ENG-190's broken validator ship without its sibling test being runnable.
 #
-# This assertion is a static check on the committed config — if a future
-# edit drops the entries, this trips.
-printf '\n--- ENG-53 #8: harness profile populates dispatch.tools test-runner ---\n'
-# .pipeline-config/ is gitignored — config.json is per-operator. This
-# assertion warns the operator running tests against TARGET_REPO=harness
-# if their local config drifts from the recommended dispatch.tools
-# population. CI / other-target operators (file missing) skip silently.
-HARNESS_CONFIG="$HARNESS_ROOT/.pipeline-config/config.json"
-if [[ -f "$HARNESS_CONFIG" ]]; then
-  expected_count="$(ls "$HARNESS_ROOT"/bin/*-test.sh 2>/dev/null | wc -l | tr -d ' ')"
-  for stage in implementing qa; do
-    has_broken_wildcard="$(jq -r --arg s "$stage" '
-      (.dispatch.tools[$s] // []) as $arr
-      | if ($arr | type) == "array"
-        then $arr | any(. == "Bash(bash bin/*-test.sh:*)")
-        else false end
-    ' "$HARNESS_CONFIG" 2>/dev/null || printf 'false')"
-    actual_count="$(jq -r --arg s "$stage" '
-      (.dispatch.tools[$s] // []) as $arr
-      | if ($arr | type) == "array"
-        then [$arr[] | select(test("^Bash\\(bash bin/[^*]+-test\\.sh:\\*\\)$"))] | length
-        else 0 end
-    ' "$HARNESS_CONFIG" 2>/dev/null || printf '0')"
-    if [[ "$has_broken_wildcard" == "true" ]]; then
-      fail_at "ENG-53#8/ENG-77: harness config.json::dispatch.tools.${stage} contains broken wildcard Bash(bash bin/*-test.sh:*)" \
-        "Claude's permission matcher does not expand the inner '*' as a glob — the pattern matches no actual test script. Replace with one literal Bash(bash bin/<name>-test.sh:*) entry per script. See CLAUDE.md '## Per-target dispatch.tools extras' for the regen one-liner."
-    elif (( actual_count >= expected_count )); then
-      pass_at "ENG-53#8: harness config.json::dispatch.tools.${stage} enumerates ${actual_count} test runners (>= ${expected_count} on disk)"
-    else
-      fail_at "ENG-53#8: harness config.json::dispatch.tools.${stage} only enumerates ${actual_count} test runners; ${expected_count} bin/*-test.sh files exist on disk" \
-        "see CLAUDE.md '## Per-target dispatch.tools extras' for the regen one-liner."
-    fi
-  done
+# ENG-196 replaces the hand-list with `_dispatch_tools_autotests`, which
+# globs bin/*-test.sh from the worktree (cwd) at dispatch time. These
+# assertions pin the new mechanism: full disk coverage, stage gating, and
+# zero-maintenance pickup of a newly-added test file (AC1/AC3).
+printf '\n--- ENG-196: auto-derived test-runner allowlist ---\n'
+
+# AC1 — every bin/*-test.sh on disk is granted (exact whole-line match).
+# The test runs from the repo root, so cwd has the real bin/*-test.sh set.
+auto_impl="$(_dispatch_tools_autotests implementing)"
+auto_lines="$(printf '%s' "$auto_impl" | tr ',' '\n')"
+disk_count=0; auto_missing=""
+for f in bin/*-test.sh; do
+  [[ -e "$f" ]] || continue
+  disk_count=$((disk_count+1))
+  grep -Fxq "Bash(bash $f:*)" <<<"$auto_lines" || auto_missing="$auto_missing $f"
+done
+if [[ -z "$auto_missing" ]] && (( disk_count > 0 )); then
+  pass_at "ENG-196: _dispatch_tools_autotests grants all ${disk_count} bin/*-test.sh on disk"
 else
-  printf 'SKIP ENG-53#8: %s not present (CI or non-harness target) — skipping config drift check\n' "$HARNESS_CONFIG"
+  fail_at "ENG-196: _dispatch_tools_autotests missing grants for:${auto_missing:- (disk_count=0)}" \
+    "autotests must emit one Bash(bash <file>:*) per bin/*-test.sh in the worktree"
+fi
+
+# AC1 — qa stage gets the same coverage.
+auto_qa="$(_dispatch_tools_autotests qa)"
+if [[ "$auto_qa" == "$auto_impl" ]]; then
+  pass_at "ENG-196: qa autotests match implementing autotests"
+else
+  fail_at "ENG-196: qa autotests diverge from implementing" "qa and implementing must grant the same suite"
+fi
+
+# Stage gating — non-(implementing|qa) stages get no autotests.
+for stage in brainstorming planning ui reviewing building released; do
+  if [[ -z "$(_dispatch_tools_autotests "$stage")" ]]; then
+    pass_at "ENG-196: stage '$stage' receives no autotests (gated)"
+  else
+    fail_at "ENG-196: stage '$stage' unexpectedly received autotests" "only implementing|qa should auto-derive test grants"
+  fi
+done
+
+# AC3 — a brand-new test file is granted with NO allowlist edit. Prove it
+# by globbing a synthetic worktree from a temp cwd.
+_eng196_tmp="$(mktemp -d)"
+_test_assert_temp_path "$_eng196_tmp"
+mkdir -p "$_eng196_tmp/bin"
+: > "$_eng196_tmp/bin/zzz-brand-new-test.sh"
+auto_new="$(cd "$_eng196_tmp" && _dispatch_tools_autotests implementing)"
+if [[ "$auto_new" == "Bash(bash bin/zzz-brand-new-test.sh:*)" ]]; then
+  pass_at "ENG-196 AC3: a newly-added bin/*-test.sh is auto-granted with no config edit"
+else
+  fail_at "ENG-196 AC3: new test file not auto-granted" "got: $auto_new"
+fi
+# Empty worktree → empty (soft, no bogus literal glob).
+auto_empty="$(cd "$_eng196_tmp" && rm -f bin/zzz-brand-new-test.sh && _dispatch_tools_autotests implementing)"
+if [[ -z "$auto_empty" ]]; then
+  pass_at "ENG-196: tests-less worktree yields empty autotests (no literal glob leak)"
+else
+  fail_at "ENG-196: tests-less worktree leaked a grant" "got: $auto_empty"
+fi
+_test_safe_rm "$_eng196_tmp"
+
+# Integration — allowed_tools_for composes autotests into implementing.
+if grep -Fq "Bash(bash bin/dispatch-test.sh:*)" <<<"$(allowed_tools_for implementing)"; then
+  pass_at "ENG-196: allowed_tools_for implementing includes auto-derived test grants"
+else
+  fail_at "ENG-196: allowed_tools_for implementing missing auto-derived grants" "composition tier not spliced"
 fi
 
 # ─── ENG-87 review-iter-7 M6: PIPELINE_DISPATCH_ID propagation pin ──
