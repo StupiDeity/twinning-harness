@@ -272,7 +272,8 @@ sees no orphaned terminal event.
 
 Every `claude -p` invocation passes `--allowed-tools <comma-list>`. The
 composition is
-**stack-neutral base + profile-derived stack tools + operator-curated extras**:
+**stack-neutral base + profile-derived stack tools + operator-curated extras
++ auto-derived test runners (implementing|qa) + MCP**:
 
 - **stack-neutral base** — from `bin/dispatch.sh::allowed_tools_for`'s
   per-stage case arm. No language-specific tokens.
@@ -280,6 +281,9 @@ composition is
   authored by the discovery agent.
 - **operator-curated extras** — from `.pipeline-config/config.json::dispatch.tools.<stage>[]`,
   for per-target one-offs that don't belong in the canonical profile.
+- **auto-derived test runners (ENG-196)** — `_dispatch_tools_autotests`
+  globs `bin/*-test.sh` from the worktree for the implementing/qa stages;
+  see below.
 
 Per-target stack tools are declared by the project profile, not
 hardcoded here.
@@ -294,44 +298,29 @@ Bash(bash bin/*-test.sh:*)   ← matches the literal string "bash bin/*-test.sh 
                                  NOT any actual test script
 ```
 
-Patterns must enumerate every prefix with a fully-literal command:
+Any non-test `Bash(...)` pattern you add by hand must therefore enumerate
+the command with a fully-literal prefix — never rely on an inner `*` to
+glob. This drove ENG-77's QA halt cascade (May 2026).
 
-```json
-"dispatch": {
-  "tools": {
-    "implementing": [
-      "Bash(bash .githooks/pre-commit:*)",
-      "Bash(bash bin/secret-probe-lint.sh:*)",
-      "Bash(bash bin/agent-prompts-content-test.sh:*)",
-      "Bash(bash bin/classify-failure-test.sh:*)",
-      "...one literal entry per bin/*-test.sh..."
-    ],
-    "qa": [
-      "...same enumerated list..."
-    ]
-  }
-}
-```
+### Test runners are auto-derived (ENG-196) <a id="regenerating-the-test-allowlist"></a>
 
-This drove ENG-77's QA halt cascade (May 2026) and is the second-most
-common cause of "agent ships without running tests."
+You do **not** hand-maintain a test allowlist. `bin/*-test.sh` runners are
+granted automatically: `dispatch.sh::_dispatch_tools_autotests` globs
+`bin/*-test.sh` from the worktree (cwd at dispatch time) and emits one
+literal `Bash(bash <file>:*)` per script for the `implementing`/`qa`
+stages. **Adding a new `bin/<name>-test.sh` requires no config or profile
+edit** — it is runnable in the same dispatch.
 
-### Regenerating the test allowlist <a id="regenerating-the-test-allowlist"></a>
+This replaced the prior hand-enumerated lists in both
+`config.json::dispatch.tools` and the profile's `## Tool allowlist`, which
+drifted (52/54 of 77 on disk) and let ENG-190's broken validator ship
+without its sibling test being runnable. Only **non-test** runners (e.g.
+`Bash(bash .githooks/pre-commit:*)`, `Bash(bash bin/secret-probe-lint.sh:*)`)
+still need an explicit profile bullet or `dispatch.tools` entry.
 
-When you add a new `bin/*-test.sh`, regenerate:
-
-```bash
-TESTS=$(ls bin/*-test.sh | sort | sed 's|^|Bash(bash |; s|$|:*)|')
-LIST=$(printf '%s\n' \
-  "Bash(bash .githooks/pre-commit:*)" \
-  "Bash(bash bin/secret-probe-lint.sh:*)" \
-  "$TESTS" | jq -R . | jq -s .)
-jq --argjson l "$LIST" '.dispatch.tools = {"implementing": $l, "qa": $l}' \
-  .pipeline-config/config.json > /tmp/c && mv /tmp/c .pipeline-config/config.json
-```
-
-`bin/dispatch-test.sh` asserts (a) no broken wildcard `Bash(bash bin/*-test.sh:*)`
-is present, and (b) the enumerated count covers every `bin/*-test.sh` on disk.
+`bin/dispatch-test.sh` (ENG-196 block) asserts `_dispatch_tools_autotests`
+grants every `bin/*-test.sh` on disk, is gated to implementing|qa, and
+auto-picks up a newly-added test file.
 
 ### Stage keys and base lists
 
@@ -463,7 +452,9 @@ wildcards, test enumeration matches disk).
 
 ### Full harness-self profile
 
-See the regen one-liner above plus:
+Test runners are auto-derived (see [above](#regenerating-the-test-allowlist)),
+so `dispatch.tools` no longer needs a test list. A representative harness-self
+`config.json` orchestrator block:
 
 ```json
 {
