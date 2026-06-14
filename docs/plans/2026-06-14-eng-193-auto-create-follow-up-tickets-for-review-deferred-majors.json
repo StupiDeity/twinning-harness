@@ -1,0 +1,244 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-193",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Auto-create one Linear sub-ticket per review-deferred major via orchestrator-owned `bin/linear.sh create-issue` + `find-follow-up` chokepoint, idempotent by per-finding description marker, soft-fail per row; lane-fence-gated to orchestrator+human only (agent denied with rc=13); config-toggle `human_checkpoints.auto_ticket_deferred_majors`; ENG-191 footer rewritten in-place to a config-conditional branch",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "create-issue\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "find-follow-up\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "^create_issue\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "^find_follow_up\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "_check_lane \"create\" \"child_issue\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "_check_lane \"find\" \"child_issue\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "\"create child_issue\"\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "\"find child_issue\"\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "issueCreate",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "searchIssues",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear.sh",
+          "pattern": "_resolve_description_arg",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_create_follow_up_tickets_for_deferred_majors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_config_auto_ticket_deferred_majors_enabled",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_follow_up_title",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_follow_up_type_label",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_follow_up_body",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "follow-up-source dispatch=",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "human_checkpoints\\.auto_ticket_deferred_majors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "has auto-created one follow-up ticket per row above",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "Auto-ticketing is disabled by config",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "ENG-193 will auto-create follow-up tickets per deferred major",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "follow-up-created",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "follow-up-skipped",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "follow-up-failed",
+          "expect_match": true
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/linear-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear-test.sh",
+          "pattern": "ENG-193: create-issue \\+ find-follow-up",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear-test.sh",
+          "pattern": "create-issue",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/linear-test.sh",
+          "pattern": "find-follow-up",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-193",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "follow-up-source",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "MOCK_FIND_FOLLOW_UP_HIT",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "auto-created one Linear sub-ticket per deferred major",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "auto_ticket_deferred_majors",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/operator-mental-model.md",
+          "pattern": "follow-up-source dispatch=ENG-N",
+          "expect_match": true
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/linear.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/run-stage.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/linear-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/linear-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
