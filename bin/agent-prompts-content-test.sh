@@ -399,6 +399,47 @@ else
     "literal 'do NOT introduce a parallel definition' missing from §3 — the new block either dropped the cross-reference or introduced a parallel re-definition of 'defensive code'; either breaks the System invariants section's Pin 11 verified_by binding"
 fi
 
+# ─── ENG-192 QA-adversarial: class-closure audit shape completeness ─────────
+# Pin 9 above asserts that 'stage-summary' and 'Deferred [' appear in the
+# eng192_block window — the minimum atoms. Three additional adversarial
+# checks assert the NEW class-closure audit shapes ('Closed [', 'Halted [',
+# '+ class:') are also present in the window, so a future edit that drops
+# the Closed or Halted lines (while keeping the Deferred line) trips here.
+# All three are scoped to the awk-window so deletion of the ENG-192 block
+# as a whole (rather than a targeted shape removal) also trips these.
+
+# QA-A: 'Closed [' must appear in the ENG-192 block window — the class-closed
+# audit line (Closed [...] + class:) is new to ENG-192 and has no upstream
+# analogue in ENG-136. A future editor who reads only Pin 9's 'Deferred ['
+# anchor might silently drop this shape.
+if printf '%s\n' "$eng192_block" | grep -qF 'Closed ['; then
+  ok "§3 ENG-192 QA-A: 'Closed [' class-closure audit shape present in ENG-192 block window"
+else
+  nope "§3 ENG-192 QA-A: 'Closed [' class-closure audit shape present in ENG-192 block window" \
+    "'Closed [' missing from the ENG-192 block window — the class-closed audit line was dropped; operator and §5 reviewer lose visibility into which siblings were closed (vs deferred or halted)"
+fi
+
+# QA-B: 'Halted [' must appear in the ENG-192 block window — the plan-gap halt
+# shape. Without it the agent has no documented format for the plan_gap outcome.
+if printf '%s\n' "$eng192_block" | grep -qF 'Halted ['; then
+  ok "§3 ENG-192 QA-B: 'Halted [' class-closure audit shape present in ENG-192 block window"
+else
+  nope "§3 ENG-192 QA-B: 'Halted [' class-closure audit shape present in ENG-192 block window" \
+    "'Halted [' missing from the ENG-192 block window — the plan-gap halt audit shape was dropped; plan_gap siblings become undocumented"
+fi
+
+# QA-C: '+ class:' must appear in the ENG-192 block window — the qualifying
+# suffix that distinguishes class-closure audit lines from ENG-136's plain
+# 'Deferred [<severity>] <finding-id>:' format. Without it, the audit lines
+# become visually identical to ENG-136 deferrals and the §5 reviewer cannot
+# distinguish class-closure decisions from ordinary minor/nit deferrals.
+if printf '%s\n' "$eng192_block" | grep -qF '+ class:'; then
+  ok "§3 ENG-192 QA-C: '+ class:' qualifying suffix present in ENG-192 block window (distinguishes class-closure from generic ENG-136 deferral)"
+else
+  nope "§3 ENG-192 QA-C: '+ class:' qualifying suffix present in ENG-192 block window" \
+    "'+ class:' suffix missing from the ENG-192 block window — class-closure audit lines lose their distinguishing qualifier and become indistinguishable from ENG-136 plain deferrals"
+fi
+
 # ─── ENG-140: §3 contains the new QA → implement loopback block ───
 # The implementing prompt MUST carry a QA-loopback handling block so that
 # qa → implementing fail dispatches see the QA findings inline (via
