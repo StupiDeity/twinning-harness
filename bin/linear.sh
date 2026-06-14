@@ -24,6 +24,8 @@
 #   linear.sh has-label <ENG-n> <label_name>   # exit 0 if present, 1 otherwise
 #   linear.sh has-comment-since <ENG-n> <iso8601_ts>   # exit 0 if a comment exists whose createdAt >= ts, 1 otherwise
 #   linear.sh get-comments <ENG-n>   # prints a JSON array [{id, body, createdAt}, ...] in chronological ascending order (oldest first), paginated to the most recent 50
+#   linear.sh create-issue [<unused-positional>] --title <T> --type-label <Bug|Improvement|Feature> [--parent-id ENG-N] [--state <name>] [--label <name>]... --description <val | - | @<path>>
+#   linear.sh find-follow-up --dispatch-id <ENG-N-dNNNN> --finding-class-key <sanitised key>
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -330,6 +332,8 @@ _lane_decision() {
     "add other_comment")          printf 'allow' ;;  # all lanes allowed
     "add any_other_label")        case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
     "remove any_other_label")     case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "create child_issue")         case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
+    "find child_issue")           case "$lane" in orchestrator|human) printf 'allow';; *) printf 'deny';; esac ;;
     *)                            printf 'deny' ;;
   esac
 }
@@ -350,6 +354,8 @@ _allowed_lanes_for() {
     "add other_comment")          printf 'orchestrator,agent,classify,scope-check,human' ;;
     "add any_other_label")        printf 'orchestrator,human' ;;
     "remove any_other_label")     printf 'orchestrator,human' ;;
+    "create child_issue")         printf 'orchestrator,human' ;;
+    "find child_issue")           printf 'orchestrator,human' ;;
     *)                            printf 'none' ;;
   esac
 }
@@ -708,6 +714,58 @@ _resolve_body_arg() {
   printf '%s' "$body"
 }
 
+# ENG-193: --description multi-mode resolver (mirrors _resolve_body_arg).
+# Accepts --description <val>, --description - (stdin), --description=<val>,
+# --description-file <path>, --description-file=<path>.
+_resolve_description_arg() {
+  local description=""
+  local got_flag=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --description-file)
+        [[ -n "${2:-}" ]] || die "linear.sh: --description-file requires a path"
+        [[ -f "$2" ]] || die "linear.sh: --description-file path not found: $2"
+        description="$(cat "$2")"
+        got_flag=1
+        shift 2
+        ;;
+      --description-file=*)
+        local p="${1#--description-file=}"
+        [[ -f "$p" ]] || die "linear.sh: --description-file path not found: $p"
+        description="$(cat "$p")"
+        got_flag=1
+        shift
+        ;;
+      --description)
+        [[ $# -ge 2 ]] || die "linear.sh: --description requires a value (use - for stdin)"
+        if [[ "$2" == "-" ]]; then
+          description="$(cat)"
+        else
+          description="$2"
+        fi
+        got_flag=1
+        shift 2
+        ;;
+      --description=*)
+        description="${1#--description=}"
+        got_flag=1
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        if (( ! got_flag )) && (( $# == 1 )); then
+          description="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+  printf '%s' "$description"
+}
+
 add_comment() {
   local ident="$1"; shift
 
@@ -876,6 +934,154 @@ add_comment() {
   log "commented on $ident"
 }
 
+# ENG-193: create a child Linear issue. Orchestrator-only (lane fence).
+# Mirrors add_label's chokepoint shape: lane fence FIRST → flag parse →
+# cache lookups → dry-run gate → issueCreate mutation via linear_query.
+# Body parameters are passed via --description (multi-mode resolver).
+# A leading unused positional (e.g. the parent issue identifier) is
+# tolerated to keep the call site readable when the orchestrator also
+# threads the parent through.
+create_issue() {
+  # Note: --parent-id is OPTIONAL (a future use case may file unparented
+  # issues), but ENG-193 always passes it. The lane fence runs FIRST.
+  _check_lane "create" "child_issue" || return $?
+
+  local title="" type_label="" parent_id="" state_name="" description=""
+  local labels_extra=()
+  local _rest=()
+  # Tolerate a single leading positional (caller convenience — discarded).
+  if (( $# > 0 )) && [[ "$1" != --* ]]; then
+    shift
+  fi
+  while (( $# > 0 )); do
+    case "$1" in
+      --title)       title="$2"; shift 2 ;;
+      --title=*)     title="${1#--title=}"; shift ;;
+      --type-label)  type_label="$2"; shift 2 ;;
+      --type-label=*) type_label="${1#--type-label=}"; shift ;;
+      --parent-id)   parent_id="$2"; shift 2 ;;
+      --parent-id=*) parent_id="${1#--parent-id=}"; shift ;;
+      --state)       state_name="$2"; shift 2 ;;
+      --state=*)     state_name="${1#--state=}"; shift ;;
+      --label)       labels_extra+=("$2"); shift 2 ;;
+      --label=*)     labels_extra+=("${1#--label=}"); shift ;;
+      *)             _rest+=("$1"); shift ;;
+    esac
+  done
+  description="$(_resolve_description_arg "${_rest[@]+"${_rest[@]}"}")"
+  [[ -n "$title" ]]       || die "linear.sh create-issue: --title is required"
+  [[ -n "$type_label" ]]  || die "linear.sh create-issue: --type-label is required"
+  [[ -n "$description" ]] || die "linear.sh create-issue: --description is required"
+  [[ -z "$state_name" ]] && state_name="Backlog"
+
+  local team_id project_id
+  team_id="$(config_get '.linear.team_id')"
+  project_id="$(_require_project_id)"
+  local type_label_uuid state_uuid parent_uuid
+  type_label_uuid="$(label_id "$type_label")"
+  [[ "$type_label_uuid" != "null" && -n "$type_label_uuid" ]] \
+    || die "label not in cache: $type_label (run refresh-cache)"
+  state_uuid="$(state_id "$state_name")"
+  [[ "$state_uuid" != "null" && -n "$state_uuid" ]] \
+    || die "state not in cache: $state_name (run refresh-cache)"
+  parent_uuid=""
+  if [[ -n "$parent_id" ]]; then
+    parent_uuid="$(_resolve_issue_uuid "$parent_id")"
+  fi
+  local label_ids_json="[\"$type_label_uuid\"]"
+  if (( ${#labels_extra[@]} > 0 )); then
+    local extra_uuids=()
+    for ln in "${labels_extra[@]}"; do
+      local lu; lu="$(label_id "$ln")"
+      [[ "$lu" != "null" && -n "$lu" ]] || die "label not in cache: $ln (run refresh-cache)"
+      extra_uuids+=("\"$lu\"")
+    done
+    label_ids_json="[\"$type_label_uuid\",$(IFS=,; printf '%s' "${extra_uuids[*]}")]"
+  fi
+
+  if [[ "${PIPELINE_DRY_RUN:-0}" == "1" ]]; then
+    log "[DRY_RUN] would create issue: title='${title:0:80}' parent=${parent_id:-none} type=$type_label state=$state_name"
+    log "[DRY_RUN] description: ${description:0:80}"
+    printf '%s\n' "ENG-DRYRUN"
+    return 0
+  fi
+
+  local q='mutation($title: String!, $description: String!, $teamId: String!, $projectId: String, $stateId: String, $parentId: String, $labelIds: [String!]) { issueCreate(input: { title: $title, description: $description, teamId: $teamId, projectId: $projectId, stateId: $stateId, parentId: $parentId, labelIds: $labelIds }) { success issue { id identifier url } } }'
+  local vars
+  vars="$(jq -cn \
+    --arg title "$title" \
+    --arg description "$description" \
+    --arg teamId "$team_id" \
+    --arg projectId "$project_id" \
+    --arg stateId "$state_uuid" \
+    --arg parentId "$parent_uuid" \
+    --argjson labelIds "$label_ids_json" \
+    '{title:$title, description:$description, teamId:$teamId, projectId:$projectId, stateId:$stateId, parentId:(if $parentId == "" then null else $parentId end), labelIds:$labelIds}')"
+  local resp new_ident
+  resp="$(linear_query "$q" "$vars")"
+  new_ident="$(jq -r '.data.issueCreate.issue.identifier // empty' <<<"$resp")"
+  [[ -n "$new_ident" ]] || die "linear.sh create-issue: response missing identifier (resp=${resp:0:200})"
+  printf '%s\n' "$new_ident"
+  log "created issue $new_ident (parent=${parent_id:-none}, type=$type_label, state=$state_name)"
+}
+
+# ENG-193: search Linear for an existing follow-up issue carrying the
+# per-finding idempotency marker
+# `<!-- meta: follow-up-source dispatch=<id> finding_class_key=<key> -->`
+# in its description. Returns the matching identifier on stdout (single
+# line, no trailing newline), or empty stdout on miss. Soft on Linear
+# API failure (parse failure / GraphQL error) — treats as miss.
+find_follow_up() {
+  _check_lane "find" "child_issue" || return $?
+  local dispatch_id="" finding_class_key=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --dispatch-id)        dispatch_id="$2"; shift 2 ;;
+      --dispatch-id=*)      dispatch_id="${1#--dispatch-id=}"; shift ;;
+      --finding-class-key)  finding_class_key="$2"; shift 2 ;;
+      --finding-class-key=*) finding_class_key="${1#--finding-class-key=}"; shift ;;
+      *)                    shift ;;
+    esac
+  done
+  [[ -n "$dispatch_id" ]]        || die "linear.sh find-follow-up: --dispatch-id is required"
+  [[ -n "$finding_class_key" ]]  || die "linear.sh find-follow-up: --finding-class-key is required"
+
+  # Sanitise the finding-class-key — must byte-match what create-issue
+  # embedded into the description marker. Same `<!-- → <\!--` + `\n,\r → space`
+  # rule as the orchestrator's helper.
+  local sanitised_fck="$finding_class_key"
+  sanitised_fck="${sanitised_fck//$'\n'/ }"
+  sanitised_fck="${sanitised_fck//$'\r'/ }"
+  sanitised_fck="${sanitised_fck//<!--/<\\!--}"
+
+  local marker_substring="follow-up-source dispatch=${dispatch_id} finding_class_key=${sanitised_fck}"
+  local q='query($q: String!) { searchIssues(term: $q, first: 5, includeArchived: true) { nodes { id identifier title } } }'
+  local vars; vars="$(jq -cn --arg q "$marker_substring" '{q:$q}')"
+  local resp; resp="$(linear_query "$q" "$vars" 2>/dev/null || printf '')"
+  [[ -n "$resp" ]] || { log "find-follow-up: linear_query failed; treating as miss"; return 0; }
+
+  # Iterate candidate nodes; defensively re-fetch each candidate's
+  # description and byte-match the literal marker line. Returns the
+  # FIRST candidate whose description contains the exact marker.
+  local node_idents
+  node_idents="$(jq -r '.data.searchIssues.nodes[]?.identifier // empty' <<<"$resp")"
+  local literal_marker="<!-- meta: ${marker_substring} -->"
+  local found=""
+  while IFS= read -r ident_at_i; do
+    [[ -z "$ident_at_i" ]] && continue
+    local desc
+    desc="$(get_issue "$ident_at_i" 2>/dev/null | jq -r '.data.issue.description // empty' 2>/dev/null || printf '')"
+    if printf '%s' "$desc" | grep -qF "$literal_marker"; then
+      found="$ident_at_i"
+      break
+    fi
+  done <<< "$node_idents"
+  if [[ -n "$found" ]]; then
+    printf '%s' "$found"
+  fi
+  return 0
+}
+
 refresh_cache() {
   require_env LINEAR_API_KEY
   local team_id
@@ -939,6 +1145,8 @@ main() {
     has-label)              has_label "$@" ;;
     has-comment-since)      has_comment_since "$@" ;;
     get-comments)           get_comments "$@" ;;
+    create-issue)           create_issue "$@" ;;
+    find-follow-up)         find_follow_up "$@" ;;
     refresh-cache)          refresh_cache ;;
     *)                      die "unknown command: $cmd (see linear.sh header)" ;;
   esac
