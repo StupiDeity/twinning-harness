@@ -87,6 +87,33 @@ new metric events), descope to follow-up. Iter-2 acknowledges this
 trade-off explicitly; the brainstorm is still autonomy-safe IF Option
 B's bound holds at implementation time.
 
+**OPERATOR DECISION FLAG (iter-1-of-d0002 — addresses scope persona P0
+#1 in this dispatch's iter-1).** Independent scope persona review on
+this dispatch reasserted P0 against Option B: the brainstorm's
+self-grant of the rubric carve-out is not authoritative. Two
+operator-decision paths exist:
+
+1. **APPROVE Option-B explicitly.** Operator inspects the proposed
+   D-006 + D-007 second resolver + D-002 critical-out-of-plan recipe,
+   confirms the line-count + control-flow bounds are realistic, and
+   approves the 3-subsystem brainstorm for planning. The ~50-line
+   D-006 bound becomes a planning-time pin.
+2. **DESCOPE to autonomy-safe 2-subsystem shape.** File three
+   follow-up tickets: (a) D-006 deferred-majors comment partition,
+   (b) D-007's second `{plan_scope_benign_path_classes}` resolver,
+   (c) D-002's `critical-out-of-plan/<ident>` meta-comment recipe.
+   The remaining ENG-194 reduces to D-001 + D-002 (plan-scope-only
+   adjudication) + D-003 + D-004 + D-005 + D-008. AC #2's "not
+   silently dropped" structural satisfaction is preserved (the
+   `defer_reason` field IS on the ledger row; the deferred-majors
+   comment renders ENG-191's flat-list shape until D-006 ships
+   separately). AC #5's ENG-27-class advance still works (D-004
+   predicate extension fires path D on iter 1).
+
+Planning agent CANNOT proceed without operator decision on this
+flag. v1 of the brainstorm-ledger ships Option-B's pre-approved
+shape; the operator can override at planning entry.
+
 **Reference to constraint.** CLAUDE.md "AGENT_PROMPTS.md is
 load-bearing": the new block sits inside §5's existing fenced body —
 no new H2 section, no column-0 ``` fence, no change to
@@ -728,81 +755,155 @@ ENG-191 critical-floor-blocks-ship block at lines 362-365):**
    rule.
 
 5. **Add `defer_reason` to known-fields allowlist.** Extend
-   `bin/review-ledger-schema.sh`'s known-fields list (used by
-   `_warn_unknown` per assumption #36 below) to include `defer_reason`.
-   Without this, every ledger row carrying the new field would emit an
-   `_warn_unknown: unknown ledger-row field: defer_reason` warning to
-   stderr — noisy but non-blocking. The allowlist extension eliminates
-   the noise. The seed-header comment at `bin/review-ledger-schema.sh`
-   top-of-file documents the closed permitted-fields set; that comment
-   is also extended in lockstep so the on-disk allowlist and the
-   in-comment documentation stay in sync (design persona iter-1 P1
-   finding on second-source-of-truth drift).
+   `bin/review-ledger-schema.sh`'s known-fields list (an inline jq
+   `(keys) - [...]` expression at `bin/review-ledger-schema.sh:404`
+   per the unknown-fields-warn block at lines 401-408) to include
+   `defer_reason`. Without this, every ledger row carrying the new
+   field would emit an `_warn_unknown: unknown ledger-row field:
+   defer_reason` warning to stderr — noisy but non-blocking. The
+   allowlist extension eliminates the noise. (Iter-1-of-d0002 fix:
+   prior draft cited lines 311-318 which is unrelated
+   severity-ladder logic; the actual allowlist is one inline list at
+   line 404. There is no separate top-of-file documented
+   permitted-fields comment — the inline jq expression IS the
+   single source of truth.)
 
 6. **Validator cross-check: `defer_reason="out-of-plan-scope"` claim
    must agree with the matcher's verdict (security defense-in-depth).**
    For each this-dispatch row where `defer_reason == "out-of-plan-
    scope"`, the validator parses the fix-target out of
-   `ship_classification_rationale` (D-002 mandates the exact prefix
-   shape `"out-of-plan-scope: <path> not in plan's File Structure"` —
-   the `: <path> not` substring is the parse anchor), then sources
-   `bin/plan-scope.sh` and re-runs `plan_scope::path_in_scope_or_benign`
-   on the parsed path against the canonical plan for `--ident`. If
-   the matcher's verdict is IN-scope (i.e. the agent's claim is
-   FALSE), emit rc=49 with diagnostic
-   `defer-reason-claim-disagrees-with-plan-scope: agent claimed
-   out-of-plan-scope but matcher classifies path=<sanitised> as
-   IN-plan`. Cross-check fail-open shape: if the rationale doesn't
-   parse cleanly (no anchor parseable, or path token missing), emit a
-   stderr warning (`_warn_unknown`-style) and PASS — the structural
-   prompt-content contract is the prompt-side enforcement; this
-   validator extension is defense-in-depth against an adversarial
-   agent emitting a well-formed but lying `defer_reason`. The
-   parsing step uses the EXISTING anchor format that D-002's prompt
-   contract mandates; agents producing rationales without the anchor
-   fall through to the prompt-level pin enforcement only. This
-   addresses the security persona iter-1 P0 finding about agent-
-   trust-only convergence bypass.
+   `ship_classification_rationale` (D-002 mandates the EXACT shape
+   `"out-of-plan-scope: <path> not in plan's File Structure"` —
+   anchored start-AND-end-of-string, no trailing prose). The regex
+   below uses `^...$` anchoring so an adversarial rationale with
+   prefix-match-but-trailing-prose (e.g.
+   `"out-of-plan-scope: /etc/passwd not in plan but actually-in-plan-file/foo.sh"`)
+   fails to parse and triggers the fail-closed branch (P0 #1 closure
+   for both design and security iter-1-of-d0002 findings — the
+   prior draft's `.*$` tail-suffix allowed a forge surface).
+
+   ```regex
+   ^out-of-plan-scope:[[:space:]]+([^[:space:]]+)[[:space:]]+not in plan's File Structure$
+   ```
+
+   The validator then sources `bin/plan-scope.sh` and re-runs
+   `plan_scope::path_in_scope_or_benign` on the parsed path against
+   the canonical plan for `--ident`. If the matcher's verdict is
+   IN-scope (i.e. the agent's claim is FALSE), emit rc=49 with
+   diagnostic `defer-reason-claim-disagrees-with-plan-scope: agent
+   claimed out-of-plan-scope but matcher classifies path=<sanitised>
+   as IN-plan`.
+
+   **Fail-CLOSED on unparseable rationale (iter-1-of-d0002
+   change from fail-open).** When `defer_reason == "out-of-plan-
+   scope"` AND the rationale does not match the anchored regex, the
+   validator emits rc=49 with diagnostic
+   `out-of-plan-scope-rationale-malformed: defer_reason=out-of-plan-
+   scope but rationale does not match the mandated shape "<sanitised>"`.
+   The prompt mandates the exact shape (D-002 step 3); an
+   unparseable rationale IS a contract violation, not a
+   benign edge case. Fail-open was a forge surface — an agent
+   could emit ill-formed rationale to skip the matcher
+   cross-check entirely. Fail-closed forces the agent to either
+   emit the canonical shape (which the matcher then verifies) or
+   trip the validator.
+
+   **Scope of the cross-check (iter-1-of-d0002 clarification for
+   design persona iter-2 P0 #2).** The cross-check verifies the
+   agent's claim against the MATCHER (`plan_scope::path_in_scope_
+   or_benign`), NOT against scope-check.sh's full benign-set
+   (which includes stack-conditional `SCOPE_BENIGN_LOCKFILES` +
+   Rust crates-tests). For a path that is out-of-plan per the
+   matcher BUT in-the-stack-conditional-benign-set per scope-check
+   (e.g. a `Cargo.lock` review finding), the matcher confirms
+   out-of-plan, validator passes — even though the implementer
+   COULD have fixed the lockfile via `scope-check.sh::is_benign`.
+   This is the documented divergence per Edge case 16 / OQ-9: the
+   reviewer's structural match is intentionally STRICTER than
+   scope-check's runtime gate. Closing the gap requires moving
+   profile-derived lockfile inference into the shared helper —
+   bounded follow-up.
 
    ```bash
    # In cmd_validate, after the existing defer_reason closed-vocab check:
    if [[ "$dr_val" == "out-of-plan-scope" ]] && [[ "$did_val" == "$dispatch_id_flag" ]]; then
      local scr fix_target
      scr="$(jq -r '.ship_classification_rationale // ""' <<<"$line" 2>/dev/null || printf '')"
-     # Parse: "out-of-plan-scope: <path> not in plan's File Structure"
-     fix_target="$(printf '%s' "$scr" | sed -nE 's/^out-of-plan-scope:[[:space:]]*([^[:space:]]+)[[:space:]]+not[[:space:]]+in[[:space:]]+plan.*$/\1/p')"
-     if [[ -n "$fix_target" ]]; then
-       # Source helper + run matcher against canonical plan.
-       source "$SCRIPT_DIR/plan-scope.sh"
-       local plan body af ad worktree_root
-       # Resolve the worktree root for find_plan (mirrors bin/scope-check.sh:269-270).
-       worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TARGET_REPO")"
-       plan="$(plan_scope::find_plan "$ident" "$worktree_root" 2>/dev/null || printf '')"
-       if [[ -n "$plan" ]]; then
-         body="$(plan_scope::extract_section "$plan" 2>/dev/null || printf '')"
-         # parse_sets emits #ALLOWED_FILES# / #ALLOWED_DIRS# sections
-         # Caller splits on the section markers; impl in helper.
-         if [[ -n "$body" ]]; then
-           if plan_scope::path_in_scope_or_benign "$fix_target" "$plan"; then
-             _emit_incomplete "$line_no" "defer-reason-claim-disagrees-with-plan-scope: agent claimed out-of-plan-scope but matcher classifies path=$(sanitise_for_diag "$fix_target") as IN-plan" "$fck"
-             return 49
-           fi
-         fi
-       fi
+     # Anchored start+end: ^...$ so trailing-prose forgery fails the parse.
+     fix_target="$(printf '%s' "$scr" | sed -nE "s/^out-of-plan-scope:[[:space:]]+([^[:space:]]+)[[:space:]]+not in plan's File Structure\$/\1/p")"
+     if [[ -z "$fix_target" ]]; then
+       # FAIL-CLOSED on unparseable rationale (iter-1-of-d0002).
+       _emit_incomplete "$line_no" "out-of-plan-scope-rationale-malformed: defer_reason=out-of-plan-scope but rationale does not match mandated shape, got '$(sanitise_for_diag "$scr")'" "$fck"
+       return 49
+     fi
+     # Source helper + run matcher against canonical plan.
+     source "$SCRIPT_DIR/plan-scope.sh"
+     local plan body af ad worktree_root
+     worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TARGET_REPO")"
+     plan="$(plan_scope::find_plan "$ident" "$worktree_root" 2>/dev/null || printf '')"
+     if [[ -z "$plan" ]]; then
+       # Plan absent — degraded mode. Log warning and PASS the row;
+       # the renderer's plan-absent fallback already drove the agent
+       # into rubric-only mode, so a "defer_reason=out-of-plan-scope"
+       # claim on a plan-absent dispatch is more likely a stale-
+       # ledger artifact than a forge. Operator-triage signal is the
+       # render-time warning.
+       log "[review-ledger-schema] cross-check: plan absent for $ident; skipping matcher verification on row $line_no"
      else
-       _warn_unknown "ship_classification_rationale" "could not parse fix-target from defer_reason=out-of-plan-scope row; skipping matcher cross-check (prompt-content contract handled at agent side)"
+       if plan_scope::path_in_scope_or_benign "$fix_target" "$plan"; then
+         _emit_incomplete "$line_no" "defer-reason-claim-disagrees-with-plan-scope: agent claimed out-of-plan-scope but matcher classifies path=$(sanitise_for_diag "$fix_target") as IN-plan" "$fck"
+         return 49
+       fi
      fi
    fi
    ```
 
    `plan_scope::path_in_scope_or_benign <path> <plan>` is the
-   single-arg public wrapper that internally calls
-   `plan_scope::extract_section + parse_sets + path_in_scope_or_benign`
-   (the 3-arg form) — defined in `bin/plan-scope.sh` per D-001.
+   2-arg public convenience wrapper that internally calls
+   `plan_scope::find_plan + extract_section + parse_sets + path_in_scope_or_benign`
+   (the 3-arg form). Signature contract in D-001:
+
+   ```bash
+   # 2-arg convenience (validator + render-prompt callers):
+   #   plan_scope::path_in_scope_or_benign <file_path> <plan_path>
+   #     → 0 = in-scope-or-stack-agnostic-benign
+   #     → 1 = out-of-plan
+   # 3-arg form (scope-check.sh's hot loop):
+   #   plan_scope::path_in_scope <file_path> <allowed_files> <allowed_dirs>
+   #     → 0 = in-scope, 1 = not (does NOT consult benign classes)
+   ```
+
    Production validators get an `--ident` flag (per ENG-190 existing
    pattern) and use the worktree's plan; test fixtures pass a
    `$SCOPE_CHECK_PROFILE_PATH`-style override for the plan path (or
    use the existing test-source-and-stub pattern).
+
+   **Plan-mutation defense-in-depth (iter-1-of-d0002 mitigation of
+   security iter-1 P0 #2; iter-2-of-d0002 location-corrected per
+   feasibility persona).** OQ-10 documents the threat that an
+   adversarial reviewer could edit `docs/plans/*.md` mid-dispatch
+   (the `docs/plans/*` glob is a stack-agnostic benign path
+   class — `bin/scope-check.sh:62`) to mutate its own scope context.
+   v1 mitigation: extend the ENG-87 envelope validator
+   `_validate_dispatch_envelope` (at `bin/run-stage.sh:1039`, NOT
+   `bin/dispatch.sh` as the iter-1 draft mistakenly cited) to detect
+   `Write`/`Edit` tool invocations targeting `docs/plans/**/*.md` and
+   halt with `verdict halt --reason plan-mutation-during-review`
+   (new halt reason added to `bin/pipeline-events.json::halt_reasons`).
+   The transcript-based assertion is the canonical CLAUDE.md
+   "Defense-in-depth" pattern for "agent must not invoke tool X."
+   This is structurally additive to D-005 and does NOT replace the
+   cross-check (it closes the orthogonal "expand plan to flip a
+   finding from defer to in-plan" direction the cross-check
+   alone cannot catch). Implementation shape: the existing
+   `_validate_dispatch_envelope` uses an `assert_no_tool_invocation
+   "$sidecar" "<substring>"` helper against forbidden command
+   substrings. The plan-mutation defense follows the same shape —
+   a pair of substring checks for `Write` + `docs/plans/` AND
+   `Edit` + `docs/plans/` (or a generalised version of the helper
+   that accepts the tool-name + path-substring pair). Sibling test
+   in `bin/run-stage-test.sh` (NOT `bin/dispatch-test.sh` — the
+   detective lives in run-stage.sh per the function's home).
 
 **No new exit code.** The ENG-190 validator uses 48/49/50. ENG-194's
 new rules all map to rc=49 incomplete. No new halt reason — the
@@ -1473,6 +1574,9 @@ post-dispatch scan (extended with ENG-194 rules per D-005).
 | Render-prompt resolver fails to find plan (e.g. plan deletion mid-dispatch) | 0 | (soft-fail: log warning) | n/a | Resolver emits empty sets; reviewer falls through to ENG-191 rubric for every finding. Degraded mode visible in render log. |
 | Reviewer mis-classifies an in-plan finding as out-of-plan-scope (agent bug) | 0 | (agent-level error; not validator-detectable) | n/a | Operator can spot via the deferred-majors comment: bullet says "out-of-plan-scope: <file>" but operator knows the file IS in the plan. Manual triage: revoke the exit per recovery.md §14 (D-006 power-user override). |
 | Reviewer mis-classifies an out-of-plan finding as in-plan (and applies rubric) | 0 | (agent-level error; not validator-detectable in v1) | n/a | The downstream implement dispatch's scope-check.sh halts when the implementer touches the out-of-plan file. ENG-180-class catch-22 returns. v1 accepts the agent-judgment risk; future hardening could validate the agent's claim post-hoc via plan_scope::path_in_scope on the row's fix-target. |
+| Agent claimed `defer_reason=out-of-plan-scope` but matcher (D-005 rule 6 cross-check) disagrees — claim is FALSE on an in-plan or stack-agnostic-benign path | 49 | review-ledger-incomplete | review-ledger-invalid | Validator diagnostic names the row + the sanitised path. Operator inspects: typically agent forged the claim to bypass the convergence-rounds gate; resume after the next pass classifies correctly. (Iter-1-of-d0002 addition per coherence persona P1 #4.) |
+| Agent emitted `defer_reason=out-of-plan-scope` but `ship_classification_rationale` doesn't match the mandated shape `"out-of-plan-scope: <path> not in plan's File Structure"` (anchored start+end) | 49 | review-ledger-incomplete | review-ledger-invalid | Fail-CLOSED behaviour (iter-1-of-d0002 strengthening of D-005 rule 6 vs prior fail-open). Diagnostic `out-of-plan-scope-rationale-malformed` names the row. Operator triages — usually agent prompt drift. |
+| Reviewer wrote to `docs/plans/**/*.md` during the reviewing dispatch (plan mutation defense, D-005 follow-up paragraph) | 29 | dispatch-envelope-violation (existing) | plan-mutation-during-review (NEW closed-vocab token added to `bin/pipeline-events.json::halt_reasons`) | Operator inspects which plan file the agent tried to mutate; rolls back the worktree if needed, then `--action continue`. |
 | Reviewer emits `verdict pass --reason ship-with-deferred-majors` but ledger has no this-dispatch `blocks_ship=false` rows | 0 | (deferred-majors comment posts with N=0 bullets) | n/a | Operator sees "selective exit took, 0 deferrable" — visibly wrong, triage signal. |
 
 **Soft-fail cases (NOT halts):**
@@ -1737,14 +1841,21 @@ deterministic; failure means agent bug.
   works). For stronger isolation, the renderer could pin against
   `git show HEAD:<plan-path>` (the branch HEAD blob) and the
   validator could assert no plan-file write happened during
-  dispatch. **Working decision:** defer; v1's cross-check already
-  catches the "claim in-plan to avoid defer" direction; the
-  remaining "expand plan to flip a finding from defer to in-plan"
-  direction is a one-iteration soft window that the operator can
-  spot in `bin/status.sh`'s commit log (any plan-file change
-  surfaces). Bounded.
+  dispatch. **Working decision (revised iter-1-of-d0002):** the
+  weaker mitigation now ships in v1 per D-005 rule 6's
+  "Plan-mutation defense-in-depth" paragraph — the envelope
+  validator detects Write/Edit on `docs/plans/**/*.md` during
+  reviewing and halts with `plan-mutation-during-review`. This
+  closes the "expand plan to flip a finding" direction at the
+  cost of forbidding ALL reviewer plan edits (including
+  legitimate operator-approved amendments mid-loop, which
+  weren't supported anyway — operators amend out-of-band, then
+  resume). The full HEAD-blob pinning is still a follow-up;
+  the simpler write-detection covers the threat model for v1.
 
-- **OQ-8.** Test mechanism for AC #5 (the ENG-27-class end-to-end).
+- **OQ-11.** Test mechanism for AC #5 (the ENG-27-class end-to-end).
+  (Iter-1-of-d0002 renumber from OQ-8 to OQ-11 per coherence persona
+  P1 #2 — original numbering placed OQ-8 after OQ-10.)
   The full E2E requires a runtime `claude -p` invocation, which
   tests don't do. Per D-008, the fixture asserts the COUNT-TUPLE
   shape and verdict marker shape as proxies for the agent's
@@ -1907,7 +2018,7 @@ Per-decision rejected alternatives documented inline. Consolidated:
 | 33 | The `bin/pipeline-events.json::pass_reasons` registry has `field_registry_by_arm.pass.reason = "pass_reasons"` entry (ENG-191) | **verified** | `bin/pipeline-events.json:113` (grep) |
 | 34 | No existing code uses `defer_reason` or `out-of-plan-scope` anywhere in `bin/` or AGENT_PROMPTS.md (no collision) | **verified** | grep across `bin/*.sh`, `AGENT_PROMPTS.md`, `bin/pipeline-events.json` returned zero hits (empty output) |
 | 35 | `plan_scope_allowed_paths` is not yet a registered token in `PROMPT_RESOLVERS` (no collision) | **verified** | grep over `bin/render-prompt.sh` for `plan_scope` returned no matches |
-| 36 | `bin/review-ledger-schema.sh` has a `_warn_unknown` helper for emitting unknown-field warnings | **verified** | `bin/review-ledger-schema.sh:145-147` defines `_warn_unknown() { log "[review-ledger-schema] warning: unknown $1: $2"; }` (re-read in iter-2). The known-fields allowlist is in the per-row jq filter at lines 311-318 per ENG-191 D-009. |
+| 36 | `bin/review-ledger-schema.sh` has a `_warn_unknown` helper for emitting unknown-field warnings | **verified** | `bin/review-ledger-schema.sh:145-147` defines `_warn_unknown() { log "[review-ledger-schema] warning: unknown $1: $2"; }` (re-read in iter-2). **Corrected in iter-1 of d0002:** the known-fields allowlist is NOT at lines 311-318 (that's unrelated severity-ladder logic); it's a single inline `jq '(keys) - ["ledger_schema_version","issue_id","dispatch_id","iteration","created_at","finding_class_key","cold_severity","adjudicated_severity","decision","rationale","blocks_ship","ship_classification_rationale","decision_factors"]'` expression at **`bin/review-ledger-schema.sh:401-408`** inside the unknown-fields-warn block. There is no top-of-file documented permitted-fields comment. |
 | 37 | `plan_scope_benign_path_classes` is not yet a registered token (D-007 second resolver — no collision) | **verified** | grep over `bin/render-prompt.sh` for `benign_path_classes` returned no matches |
 | 38 | `bin/scope-check.sh:59-65` defines `_BENIGN_PATH_CLASSES` as a 5-glob hardcoded array (`docs/{knowledge,plans,brainstorms}`, `.pipeline/metrics/*`, `docs/pipeline-vocabulary.md`) | **verified** | `bin/scope-check.sh:59-65` (re-read in iter-2) |
 | 39 | `bin/scope-check.sh:175-207` `is_benign` consults the path-class globs, profile-derived lockfiles, and Rust crates-tests in that order | **verified** | `bin/scope-check.sh:175-207` re-read in iter-2 |
@@ -2167,3 +2278,81 @@ strengthened by the iter-2 cross-check additions).
   per feasibility persona walk-through), §13 persona review
   (rewrote with iter-2 verdicts). Iter-2 internal re-pass: all 6
   personas PASS, 0 P0. Gate MET.
+
+- **Iteration 1 of d0002 (2026-06-14, this dispatch).** Re-running
+  personas on a fresh dispatch surfaced fresh P0s, mostly
+  tightening the iter-2 defense-in-depth. Fixes:
+  (1) Feasibility P0 #1 (assumption #36 cited wrong lines 311-318
+      for known-fields allowlist) — corrected to line 404 + revised
+      D-005 #5 narrative to match the inline jq expression reality.
+      No top-of-file seed-header permitted-fields comment exists.
+  (2) Design P0 #1 + Security P0 #1 (D-005 rule 6 sed regex
+      bypassable via trailing prose; fail-open trapdoor on
+      unparseable rationale) — tightened regex to `^...$` anchor
+      both ends; changed fail-open to fail-CLOSED with new
+      diagnostic `out-of-plan-scope-rationale-malformed`.
+  (3) Design P0 #2 (lockfile cross-check blindspot) — explicit
+      paragraph in D-005 rule 6 documenting that the matcher
+      verifies against `path_in_scope_or_benign` only (NOT against
+      scope-check's full stack-conditional benign set); Edge case
+      16 reaffirmed bounded.
+  (4) Security P0 #2 (plan-blob mutation) — added v1 mitigation
+      via envelope-validator transcript scan for Write/Edit on
+      `docs/plans/**/*.md` during reviewing dispatch; new halt
+      reason `plan-mutation-during-review` added to
+      `bin/pipeline-events.json::halt_reasons`.
+  (5) Scope P0 #1 (Option-B carve-out unauthorised) — added
+      explicit OPERATOR DECISION FLAG paragraph in §1; two
+      operator-decision paths documented (approve OR descope).
+      Planning gated on operator decision.
+  (6) Scope P0 #2 (D-005 rule 6 is scope expansion) —
+      ACKNOWLEDGED as scope expansion that the security
+      defense-in-depth requirement forced; documented in §12.
+      Trade-off explicit (cannot satisfy both "no scope
+      expansion" AND security P0); operator decides via the §1
+      flag.
+  (7) Coherence P1s — added cross-check halt mode to §5 error
+      handling table; renumbered OQ-8 → OQ-11 to fix ordering.
+  (8) Feasibility P1 #2 (architecture sketch wrong scope-check.sh
+      line for source insertion) — clarified to "after line 53
+      `export PIPELINE_WRITER`".
+  (9) Product P1s addressed in §3 architecture's recovery.md +
+      CLAUDE.md row updates (operator recipe expansion).
+
+  This dispatch's iter-1 internal re-pass needed: Feasibility
+  must verify the line corrections; Design/Security must verify
+  the fail-closed + plan-mutation defenses close their P0s;
+  Scope must accept the operator-decision-flag framing; Coherence
+  must verify the error-table addition is consistent. If
+  Iteration 2 of d0002 still fails to gate, halt with
+  iteration-exhausted per the dispatch contract.
+
+- **Iteration 2 of d0002 (2026-06-14, this dispatch's verification
+  pass).** Personas re-ran on the iter-1-of-d0002 edits. Results:
+  Design **PASS** (iter-1 P0s genuinely closed by anchored regex
+  + fail-closed). Security **PASS** (regex + plan-mutation
+  defense credible). Scope **PASS** (operator-decision-flag
+  framing accepted as adequate). Coherence **CONCERN** (P1-only —
+  residual persona-section numbering gap from prior iter; §14
+  point (7) is terse but not misleading). Feasibility **CONCERN
+  with 1 P0**: D-005 rule 6's plan-mutation paragraph cited
+  `bin/dispatch.sh` for `_validate_dispatch_envelope`'s home, but
+  the function actually lives at `bin/run-stage.sh:1039`. Sibling
+  test should be `bin/run-stage-test.sh`, not `bin/dispatch-test.sh`.
+  Targeted location fix applied (no further persona iteration —
+  bound at 2 per dispatch). The implementation-shape note also
+  corrected (`assert_no_tool_invocation` substring helper, not a
+  structured JSON inspector).
+
+  Tally: 4/6 PASS + 2 CONCERN. Feasibility still has 1 P0
+  (the location citation) — even after the targeted fix above,
+  the persona did not re-verify (iter-3 forbidden per dispatch
+  contract). **Gate NOT met** (requires ≥5/6 PASS AND feasibility
+  0 P0). **Outcome: halt with `iteration-exhausted` per the
+  dispatch's "Do NOT start iteration 3" rule.** Next dispatch
+  (operator `--action continue`) inherits the doc with the
+  iter-2-of-d0002 location fix applied and the explicit operator-
+  decision-flag in §1 awaiting a decision. The next dispatch's
+  iter-1 should re-run feasibility to verify the location
+  correction; remaining persona verdicts (Design/Security/Scope/
+  Product) all PASS as of this dispatch.
