@@ -1480,6 +1480,29 @@ _post_review_ledger_halt() {
 # the five decision_factors booleans, dispatch_id, iteration) is sanitised
 # via `<!-- → <\!--` and `\n,\r → space` (defense-in-depth even though
 # validator-checked at row level — see D-005).
+# ENG-193 review fix — extracted helper. Sanitises agent-controlled fields
+# before they reach Linear markdown bodies, comment markers, or follow-up
+# titles. Four rules (load-bearing contract — see bin/linear.sh::find_follow_up
+# which mirrors the same rules so its searchIssues term byte-matches what
+# was embedded at write time):
+#   \n,\r → space  (collapse to single line)
+#   <!--  → <\!--  (neutralise comment-open spoof — would terminate the
+#                   surrounding marker's <!-- ... --> early)
+#   -->   → --\>   (neutralise comment-close spoof — same risk; review fix)
+#   `     → \`     (neutralise backtick injection inside `%s` code spans —
+#                   without this an agent-controlled value could break the
+#                   span and embed [link](url) or formatted text into an
+#                   orchestrator-owned description)
+_sanitise_for_md_marker() {
+  local raw="$1"
+  raw="${raw//$'\n'/ }"
+  raw="${raw//$'\r'/ }"
+  raw="${raw//<!--/<\\!--}"
+  raw="${raw//-->/--\\>}"
+  raw="${raw//\`/\\\`}"
+  printf '%s' "$raw"
+}
+
 _post_deferred_majors_comment_if_eligible() {
   local PIPELINE_WRITER=orchestrator
   export PIPELINE_WRITER
@@ -1500,36 +1523,35 @@ _post_deferred_majors_comment_if_eligible() {
     log "[deferred-majors] PIPELINE_DISPATCH_ID unset; skipping post"
     return 0
   fi
-  # Per-row sanitiser (mirrors _post_review_ledger_halt's `<!--` rewrite +
-  # _sanitise idiom; local-to-function to avoid polluting the global
-  # namespace with another sanitise_* variant — the canonical
-  # sanitise_for_diag lives in bin/review-ledger-schema.sh which is not
-  # sourced from run-stage.sh).
-  _san() {
-    local raw="$1"
-    raw="${raw//$'\n'/ }"
-    raw="${raw//$'\r'/ }"
-    raw="${raw//<!--/<\\!--}"
-    printf '%s' "$raw"
-  }
+  # ENG-193 review fix — delegate to the shared _sanitise_for_md_marker
+  # helper (extracted to avoid four-call-site duplication; `-->` and backtick
+  # rules added at the same time).
+  _san() { _sanitise_for_md_marker "$1"; }
   _yn() { [[ "$1" == "true" ]] && printf 'yes' || printf 'no'; }
   # Collect matching rows via a jq filter over non-comment lines. Emits
   # one tab-delimited record per matching row.
   local rows
+  # ENG-193 review fix — default decision_factors to {} BEFORE field access.
+  # Without this, a row whose decision_factors is null / string / number
+  # aborts the jq pipeline (`.in_changed_code` on a non-object errors),
+  # the surrounding `|| printf ''` swallows it, rows="", zero output, no
+  # diagnostic. Defaulting at the object level keeps the per-row filter
+  # robust against ledger-row corruption.
   rows="$(grep -v '^#' "$ledger" 2>/dev/null \
     | grep -v '^[[:space:]]*$' \
     | jq -rc --arg did "$did" '
         select(.dispatch_id == $did)
         | select(.adjudicated_severity == "major")
         | select(.blocks_ship == false)
+        | (.decision_factors // {}) as $df
         | [
             (.finding_class_key // ""),
             (.ship_classification_rationale // ""),
-            (.decision_factors.in_changed_code // false),
-            (.decision_factors.is_regression // false),
-            (.decision_factors.user_visible // false),
-            (.decision_factors.reversible_post_ship // false),
-            (.decision_factors.has_workaround // false),
+            ($df.in_changed_code // false),
+            ($df.is_regression // false),
+            ($df.user_visible // false),
+            ($df.reversible_post_ship // false),
+            ($df.has_workaround // false),
             (.dispatch_id // ""),
             (.iteration // 0)
           ] | @tsv' 2>/dev/null || printf '')"
@@ -1552,14 +1574,15 @@ $bullet"
     fi
   done <<< "$rows"
   local body
-  # ENG-193: footer is config-conditional (D-006). Tense is past
-  # ("has auto-created") because the comment posts BEFORE the helper
-  # _create_follow_up_tickets_for_deferred_majors fires; per-row failure
-  # leaves the comment partially inaccurate but the follow-up-failed
-  # metric event captures the divergence.
+  # ENG-193: footer is config-conditional (D-006). Tense is simple-present
+  # ("auto-creates") rather than past ("has auto-created") because the
+  # comment posts BEFORE _create_follow_up_tickets_for_deferred_majors
+  # fires. Past tense would lie on full per-row create failure; the
+  # follow-up-failed metric event captures any actual divergence (ENG-193
+  # review fix).
   local footer
   if _config_auto_ticket_deferred_majors_enabled; then
-    footer="ENG-193 has auto-created one follow-up ticket per row above; find them via Linear's sub-issue tree on this issue, or via the operator-mental-model.md grep recipe."
+    footer="ENG-193 auto-creates one follow-up ticket per row above; find them via Linear's sub-issue tree on this issue, or via the operator-mental-model.md grep recipe. (Per-row failures emit a follow-up-failed metric.)"
   else
     footer="Auto-ticketing is disabled by config (.human_checkpoints.auto_ticket_deferred_majors=false); the ledger above is the canonical record. Operator triage by hand."
   fi
@@ -1854,13 +1877,15 @@ _follow_up_title() {
   (( budget < 8 )) && budget=8
   local raw="$scr"
   [[ -z "$raw" ]] && raw="$fck"
-  raw="${raw//$'\n'/ }"
-  raw="${raw//$'\r'/ }"
-  raw="${raw//<!--/<\\!--}"
+  # ENG-193 review fix — delegate to shared sanitiser (escapes <!--, -->, `).
+  raw="$(_sanitise_for_md_marker "$raw")"
   if (( ${#raw} > budget )); then
     raw="${raw:0:budget}"
-    # Trim partial `<\!--` escape at tail: scan back if ending in `<\` or `<\!`.
-    while [[ "$raw" == *"<\\" || "$raw" == *"<\\!" ]]; do
+    # Trim partial escape sequences at tail introduced by sanitisation:
+    #   `<\!-` (partial `<\!--`), `<\` (partial `<\!--`),
+    #   `--\` (partial `--\>`), `\` (any trailing dangling backslash).
+    while [[ "$raw" == *"<\\" || "$raw" == *"<\\!" || "$raw" == *"<\\!-" \
+           || "$raw" == *"--\\" || "$raw" == *"\\" ]]; do
       raw="${raw:0:$((${#raw}-1))}"
     done
   fi
@@ -1883,13 +1908,8 @@ _follow_up_body() {
   local ident="$1" pr_url="$2" did="$3" iter="$4"
   local fck="$5" scr="$6"
   local ic="$7" isr="$8" uv="$9" rp="${10}" hw="${11}"
-  _san() {
-    local raw="$1"
-    raw="${raw//$'\n'/ }"
-    raw="${raw//$'\r'/ }"
-    raw="${raw//<!--/<\\!--}"
-    printf '%s' "$raw"
-  }
+  # ENG-193 review fix — delegate to shared sanitiser (escapes <!--, -->, `).
+  _san() { _sanitise_for_md_marker "$1"; }
   _yn() { [[ "$1" == "true" ]] && printf 'yes' || printf 'no'; }
   local type_label_rationale
   if [[ "$uv" == "true" ]]; then
@@ -1902,9 +1922,22 @@ _follow_up_body() {
   s_scr="$(_san "$scr")"
   s_did="$(_san "$did")"
   s_iter="$(_san "$iter")"
-  printf '**Deferred from [%s](%s) — review-stage selective exit (ENG-191).**\n\n## Source\n\n- Finding class key: `%s`\n- Originating PR: %s\n- Dispatch: `%s`, iteration `%s`\n\n## Why this was deferred (not blocking)\n\n%s\n\n## Decision factors\n\n- in_changed_code: %s\n- is_regression: %s\n- user_visible: %s\n- reversible_post_ship: %s\n- has_workaround: %s\n\n## Type label\n\n%s\n\n## How to triage\n\nThis ticket is filed in `Backlog`. Move to `Todo` to enter the harness queue. The finding text above is the canonical description; consult the originating PR for diff context.\n\n<!-- meta: follow-up-source dispatch=%s finding_class_key=%s -->\n' \
-    "$ident" "$pr_url" \
-    "$s_fck" "$pr_url" "$s_did" "$s_iter" \
+  # ENG-193 review fix — render the originating PR as an autolink `<url>`
+  # only when discoverable (an http URL); otherwise emit a plain-text
+  # fallback. Markdown `[text](url)` with parens in `url` breaks the link
+  # parser; the (not discoverable) fallback is rendered as plain text to
+  # avoid that.
+  local tldr pr_line
+  if [[ "$pr_url" == http* ]]; then
+    tldr="**Deferred from [$ident]($pr_url) — review-stage selective exit (ENG-191).**"
+    pr_line="<$pr_url>"
+  else
+    tldr="**Deferred from $ident — review-stage selective exit (ENG-191).**"
+    pr_line="PR not discoverable at orchestrator run time."
+  fi
+  printf '%s\n\n## Source\n\n- Finding class key: `%s`\n- Originating PR: %s\n- Dispatch: `%s`, iteration `%s`\n\n## Why this was deferred (not blocking)\n\n%s\n\n## Decision factors\n\n- in_changed_code: %s\n- is_regression: %s\n- user_visible: %s\n- reversible_post_ship: %s\n- has_workaround: %s\n\n## Type label\n\n%s\n\n## How to triage\n\nThis ticket is filed in `Backlog`. Move to `Todo` to enter the harness queue. The finding text above is the canonical description; consult the originating PR for diff context.\n\n<!-- meta: follow-up-source dispatch=%s finding_class_key=%s -->\n' \
+    "$tldr" \
+    "$s_fck" "$pr_line" "$s_did" "$s_iter" \
     "$s_scr" \
     "$(_yn "$ic")" "$(_yn "$isr")" "$(_yn "$uv")" "$(_yn "$rp")" "$(_yn "$hw")" \
     "$type_label_rationale" \
@@ -1945,10 +1978,22 @@ _create_follow_up_tickets_for_deferred_majors() {
     return 0
   fi
 
-  local pr_url
-  pr_url="$(gh pr view --json url --jq .url 2>/dev/null || printf '')"
+  # ENG-193 review fix — resolve the branch explicitly so the helper does
+  # not depend on the current working directory matching the per-issue
+  # worktree. Mirrors bin/entry-conditions.sh:55 and bin/review-poll.sh:41.
+  local pr_url pr_branch
+  pr_branch="$(bash "$SCRIPT_DIR/branch-name.sh" "$ident" 2>/dev/null || printf '')"
+  if [[ -n "$pr_branch" ]]; then
+    pr_url="$(gh pr view "$pr_branch" --json url --jq .url 2>/dev/null || printf '')"
+  else
+    pr_url=""
+  fi
   [[ -z "$pr_url" ]] && pr_url="(not discoverable)"
 
+  # ENG-193 review fix — default decision_factors to {} BEFORE field access.
+  # Without this, a row whose decision_factors is null / string / number
+  # aborts the jq pipeline silently (the `|| printf ''` swallows the
+  # error, rows=""), zero follow-ups created, no diagnostic.
   local rows
   rows="$(grep -v '^#' "$ledger" 2>/dev/null \
     | grep -v '^[[:space:]]*$' \
@@ -1956,14 +2001,15 @@ _create_follow_up_tickets_for_deferred_majors() {
         select(.dispatch_id == $did)
         | select(.adjudicated_severity == "major")
         | select(.blocks_ship == false)
+        | (.decision_factors // {}) as $df
         | [
             (.finding_class_key // ""),
             (.ship_classification_rationale // ""),
-            (.decision_factors.in_changed_code // false),
-            (.decision_factors.is_regression // false),
-            (.decision_factors.user_visible // false),
-            (.decision_factors.reversible_post_ship // false),
-            (.decision_factors.has_workaround // false),
+            ($df.in_changed_code // false),
+            ($df.is_regression // false),
+            ($df.user_visible // false),
+            ($df.reversible_post_ship // false),
+            ($df.has_workaround // false),
             (.dispatch_id // ""),
             (.iteration // 0)
           ] | @tsv' 2>/dev/null || printf '')"
@@ -2011,7 +2057,12 @@ _create_follow_up_tickets_for_deferred_majors() {
     fi
   done <<< "$rows"
 
-  log "[follow-up] $ident: created=$created skipped=$skipped failed=$failed (dispatch=$did)"
+  # ENG-193 review fix — operator-diagnostic summary. The `fail_count=N`
+  # token name avoids a collision with the pre-commit hook's failure-detect
+  # grep (`failed=[1-9]`) which scans every test's stdout+stderr for this
+  # pattern. Operator grep recipes that searched for `failed=N` here need
+  # updating to `fail_count=N`.
+  log "[follow-up] $ident: created=$created skipped=$skipped fail_count=$failed (dispatch=$did)"
   return 0
 }
 
