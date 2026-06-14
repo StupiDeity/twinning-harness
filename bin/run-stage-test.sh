@@ -8713,6 +8713,89 @@ else
     "first-sig='$_th15_first_sig' cleared_ok=$_th15_cleared_ok second-sig='$_th15_second_sig' second-pipe='$_th15_second_pipe'"
 fi
 
+
+# ─── ENG-118 adversarial TH tests (TH-ADV-1 to TH-ADV-4) ─────────────
+# QA-authored tests for edge cases not in the plan's Failure Mode → Test Map.
+
+# ─── TH-ADV-1 (score exactly at threshold → must NOT coerce) ──────────
+# Verifies strict `< $t` comparison: score == threshold passes the gate.
+_reset_th_capture
+export PIPELINE_DISPATCH_ID=ENG-118THA1-d0001
+_write_th_qa_payload ENG-118THA1 coverage=0.8
+_tha1_cfg="$_TH_CFG_DIR/tha1.json"
+_write_th_config "$_tha1_cfg" '{"qa":{"thresholds":{"coverage":0.8}}}'
+CONFIG="$_tha1_cfg" _validate_qa_thresholds ENG-118THA1 || true
+_tha1_sig="$(_th_dim_sig)"
+_tha1_pipe="$(_th_pipeline_calls)"
+if [[ -z "$_tha1_sig" ]] && [[ -z "$_tha1_pipe" ]]; then
+  pass_at "ENG-118 TH-ADV-1: score exactly at threshold (0.8 == 0.8) → strict-lt guard, no coerce"
+else
+  fail_at "ENG-118 TH-ADV-1: at-threshold no-coerce" \
+    "sig='$_tha1_sig' pipe='$_tha1_pipe'"
+fi
+
+# ─── TH-ADV-2 (.qa.thresholds absent → gate no-op for qa stage) ───────
+# TH7 only tests absent .review.thresholds. This mirrors it for .qa.thresholds.
+_reset_th_capture
+export PIPELINE_DISPATCH_ID=ENG-118THA2-d0001
+_write_th_qa_payload ENG-118THA2 coverage=0.1
+_tha2_cfg="$_TH_CFG_DIR/tha2.json"
+_write_th_config "$_tha2_cfg" '{"review":{"thresholds":{"correctness":"pass"}}}'
+CONFIG="$_tha2_cfg" _validate_qa_thresholds ENG-118THA2 || true
+_tha2_sig="$(_th_dim_sig)"
+_tha2_pipe="$(_th_pipeline_calls)"
+if [[ -z "$_tha2_sig" ]] && [[ -z "$_tha2_pipe" ]]; then
+  pass_at "ENG-118 TH-ADV-2: .qa.thresholds absent → gate no-op (qa stage mirror of TH7)"
+else
+  fail_at "ENG-118 TH-ADV-2: absent qa block no-op" \
+    "sig='$_tha2_sig' pipe='$_tha2_pipe'"
+fi
+
+# ─── TH-ADV-3 (multiple qa dims failing → sib body enumerates all) ────
+# Tests that _emit_threshold_coerce_post renders bullets for each failed dim.
+_reset_th_capture
+export PIPELINE_DISPATCH_ID=ENG-118THA3-d0001
+_write_th_qa_payload ENG-118THA3 coverage=0.5 test_quality=0.4
+_tha3_cfg="$_TH_CFG_DIR/tha3.json"
+_write_th_config "$_tha3_cfg" '{"qa":{"thresholds":{"coverage":0.8,"test_quality":0.7}}}'
+CONFIG="$_tha3_cfg" _validate_qa_thresholds ENG-118THA3 || true
+_tha3_sig="$(_th_dim_sig)"
+_tha3_body="$(_th_dim_body)"
+_tha3_pipe="$(_th_pipeline_calls)"
+if [[ "$_tha3_sig" == "dimensional-threshold/qa/ENG-118THA3" ]] \
+   && printf '%s' "$_tha3_body" | grep -q 'coverage' \
+   && printf '%s' "$_tha3_body" | grep -q 'test_quality' \
+   && printf '%s' "$_tha3_pipe" | grep -q 'dimensional-threshold-not-met'; then
+  pass_at "ENG-118 TH-ADV-3: multiple qa dims failing → sib body enumerates both + metric emitted"
+else
+  fail_at "ENG-118 TH-ADV-3: multi-dim sib enumeration" \
+    "sig='$_tha3_sig' coverage_in_body=$(printf '%s' "$_tha3_body" | grep -c 'coverage') tq_in_body=$(printf '%s' "$_tha3_body" | grep -c 'test_quality') pipe='$_tha3_pipe'"
+fi
+
+# ─── TH-ADV-4 (all qa thresholds wrong type → all skipped, no coerce) ─
+# Verifies that type-rejection degrades gracefully: with ALL entries
+# rejected (string instead of number), the gate fires no coerce and
+# emits no metric.
+_reset_th_capture
+export PIPELINE_DISPATCH_ID=ENG-118THA4-d0001
+_write_th_qa_payload ENG-118THA4 coverage=0.1 test_quality=0.1
+_tha4_cfg="$_TH_CFG_DIR/tha4.json"
+_write_th_config "$_tha4_cfg" '{"qa":{"thresholds":{"coverage":"high","test_quality":"medium"}}}'
+CONFIG="$_tha4_cfg" _validate_qa_thresholds ENG-118THA4 2>"$STUB_DIR/tha4.stderr" || true
+_tha4_sig="$(_th_dim_sig)"
+_tha4_pipe="$(_th_pipeline_calls)"
+_tha4_metric="$(_th_metric_calls)"
+_tha4_warns="$(grep -c '\[threshold-gate\] warning' "$STUB_DIR/tha4.stderr" 2>/dev/null || printf '0')"
+if [[ -z "$_tha4_sig" ]] && [[ -z "$_tha4_pipe" ]] \
+   && [[ -z "$_tha4_metric" ]] && (( _tha4_warns >= 2 )); then
+  pass_at "ENG-118 TH-ADV-4: all qa.thresholds wrong type → all entries skipped, no coerce, no metric, 2 warnings"
+else
+  fail_at "ENG-118 TH-ADV-4: all-bad-type degradation" \
+    "sig='$_tha4_sig' pipe='$_tha4_pipe' metric='$_tha4_metric' warns=$_tha4_warns"
+fi
+
+unset PIPELINE_DISPATCH_ID
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
