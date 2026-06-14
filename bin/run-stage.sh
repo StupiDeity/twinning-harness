@@ -1624,8 +1624,8 @@ $bullet"; fi
 
 %s
 
-Recovery: loosen `.%s.thresholds.<dim>` in `.pipeline-config/config.json` (raise to floor, or remove entirely), then `bash bin/pipeline.sh decide %s --action continue`. See `docs/runbooks/recovery.md` §14.' \
-    "$stage" "$bullets" "$stage" "$ident")"
+Recovery: see `docs/runbooks/recovery.md` §14.' \
+    "$stage" "$bullets")"
   # Coerced verdict marker — closed-vocabulary token `dimensional-threshold-not-met`
   # in fail_reasons; per-arm override field_registry_by_arm.fail.reason
   # narrows the field so any unknown reason on the fail arm is rejected.
@@ -1688,14 +1688,16 @@ _validate_review_thresholds() {
     log "_validate_review_thresholds: agent self-rejected (verdict=$agent_verdict); no coercion needed"
     return 0
   fi
-  # Enum ordinal helper: fail<concern<pass.
+  # Enum ordinal helper: fail<concern<pass. Both callers pass values
+  # that have already been schema/enum-checked upstream (config thr at
+  # 1708-1714; payload score by review-payload-schema.sh), so no
+  # catch-all arm is needed — internal-invariant per CLAUDE.md.
   local _rev_ord
   _rev_ord() {
     case "$1" in
       fail) printf '0' ;;
       concern) printf '1' ;;
       pass) printf '2' ;;
-      *) printf '-1' ;;
     esac
   }
   local failed_json='[]'
