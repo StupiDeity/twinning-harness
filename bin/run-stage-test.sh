@@ -9535,6 +9535,68 @@ else
     "gate-text='${_w7adv_gate:0:500}'"
 fi
 
+# ─── QA-ADV-1: _follow_up_title truncation + partial-escape tail-trim ────────
+# Coverage gap: W5 uses a 26-char SCR that never exercises the `if ((
+# ${#raw} > budget ))` branch — the truncation path and trim-loop are entirely
+# skipped on short input. These sub-tests put the budget cut inside a
+# sanitised escape sequence so both truncation AND the while-loop fire.
+#
+# budget([deferred from QA-ADV1] ) = 80 - 24 = 56
+#
+# (a) open-comment boundary: 54a + "<!--" → sanitise → 54a + "<\!--" (59 chars)
+#     59 > 56 → truncate to 56 → 54a + "<\" → trim-loop strips "\" → 54a + "<"
+_qa_adv1a_scr="$(printf 'a%.0s' {1..54})<!--"
+_qa_adv1a_title="$(_follow_up_title "$_qa_adv1a_scr" "fallback-fck" "QA-ADV1")"
+if [[ "${#_qa_adv1a_title}" -le 80 ]] \
+   && [[ "$_qa_adv1a_title" == "[deferred from QA-ADV1] "* ]] \
+   && [[ "$_qa_adv1a_title" != *$'\\'* ]]; then
+  pass_at "ENG-193 QA-ADV-1a: _follow_up_title truncation, open-comment boundary — len=${#_qa_adv1a_title} ≤ 80, no trailing backslash"
+else
+  fail_at "ENG-193 QA-ADV-1a: _follow_up_title truncation (open-comment)" \
+    "len='${#_qa_adv1a_title}' title='${_qa_adv1a_title:0:100}'"
+fi
+
+# (b) close-comment boundary: 53a + "-->" → sanitise → 53a + "--\>" (57 chars)
+#     57 > 56 → truncate to 56 → 53a + "--\" → trim-loop strips "\" → 53a + "--"
+_qa_adv1b_scr="$(printf 'a%.0s' {1..53})-->"
+_qa_adv1b_title="$(_follow_up_title "$_qa_adv1b_scr" "fallback-fck" "QA-ADV1")"
+if [[ "${#_qa_adv1b_title}" -le 80 ]] \
+   && [[ "$_qa_adv1b_title" == "[deferred from QA-ADV1] "* ]] \
+   && [[ "$_qa_adv1b_title" != *$'\\'* ]]; then
+  pass_at "ENG-193 QA-ADV-1b: _follow_up_title truncation, close-comment boundary — len=${#_qa_adv1b_title} ≤ 80, no trailing backslash"
+else
+  fail_at "ENG-193 QA-ADV-1b: _follow_up_title truncation (close-comment)" \
+    "len='${#_qa_adv1b_title}' title='${_qa_adv1b_title:0:100}'"
+fi
+
+# ─── QA-ADV-2: _config_auto_ticket_deferred_majors_enabled * (invalid) branch ──
+# Coverage gap: W7 tests the exact string "false" → rc=1 (disabled). The `*`
+# branch (invalid/unrecognised value) must default-true (return 0) and emit a
+# warning — no test verifies this. Two sub-cases:
+# (a) arbitrary non-boolean string hits `*` → return 0 (enabled)
+_qa_adv2a_rc=255
+_eng193_set_config '42'
+_config_auto_ticket_deferred_majors_enabled && _qa_adv2a_rc=0 || _qa_adv2a_rc=$?
+if [[ "$_qa_adv2a_rc" == "0" ]]; then
+  pass_at "ENG-193 QA-ADV-2a: config invalid value '42' → * branch default-true (rc=0)"
+else
+  fail_at "ENG-193 QA-ADV-2a: config invalid value '42'" "rc='$_qa_adv2a_rc'"
+fi
+_eng193_reset_config
+
+# (b) space-padded " false" does NOT match case `false` → * branch → rc=0
+# Documents the explicit fail-open contract: malformed config is not
+# treated as "disabled"; operator must write the literal string "false".
+_qa_adv2b_rc=255
+_eng193_set_config ' false'
+_config_auto_ticket_deferred_majors_enabled && _qa_adv2b_rc=0 || _qa_adv2b_rc=$?
+if [[ "$_qa_adv2b_rc" == "0" ]]; then
+  pass_at "ENG-193 QA-ADV-2b: config ' false' (space-padded) → * branch default-true (rc=0, fail-open contract)"
+else
+  fail_at "ENG-193 QA-ADV-2b: config ' false' (space-padded)" "rc='$_qa_adv2b_rc'"
+fi
+_eng193_reset_config
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
