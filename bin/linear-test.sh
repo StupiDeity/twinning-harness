@@ -1806,13 +1806,26 @@ unset _eng193_out _eng193_rc _eng193_l7_vars _eng193_l7_desc _eng193_l7_vars_f
 export PIPELINE_DRY_RUN=1
 
 # ─── L-1-adv: create-issue with malformed Linear response (no identifier)
-# ENG-193 review fix — the die path at bin/linear.sh:1023 (`response missing
+# ENG-193 review fix — the die path at bin/linear.sh:1007 (`response missing
 # identifier`) had no fixture. Exercise the non-dry-run path with a stubbed
 # linear_query returning `{"data":{"issueCreate":{"issue":{}}}}` (success
 # field absent, identifier missing); subcommand must die non-zero with the
 # operator-recognisable diagnostic.
+#
+# create_issue calls `_resolve_issue_uuid "$parent_id"` BEFORE the mutation
+# (bin/linear.sh:977-980), which routes back through linear_query for the
+# `issue(id: $id)` lookup. A naive stub that returns the malformed JSON for
+# ALL query types dies in _resolve_issue_uuid with `issue not found: ENG-1`
+# — the assertion target `response missing identifier` is never reached.
+# Mirror L-7's stub shape: synthetic issue for the parent-id query, malformed
+# JSON only for the mutation.
 unset PIPELINE_DRY_RUN
 linear_query() {
+  local q="$1"
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"u-parent","identifier":"ENG-1","title":"t","description":"","state":{"id":"s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
   printf '{"data":{"issueCreate":{"issue":{}}}}\n'
 }
 _eng193_rc=0
