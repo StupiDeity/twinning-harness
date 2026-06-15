@@ -9597,6 +9597,57 @@ else
 fi
 _eng193_reset_config
 
+# ─── QA-ADV-3: _sanitise_for_md_marker direct unit — literal \n/\r ──────────
+# Coverage gap: W8 tests sanitisation through the jq @tsv pipeline, which
+# pre-encodes literal newlines/CR to two-char backslash-escape sequences —
+# so _sanitise_for_md_marker's ${raw//$'\n'/ } and ${raw//$'\r'/ } branches
+# are dead code in the normal call-chain. This fixture calls the helper
+# directly with a literal newline + CR, confirming those branches are correct
+# even though they are currently unreachable via the @tsv pipeline.
+_qadv3_in=$'foo\nbar\rbaz'
+_qadv3_out="$(_sanitise_for_md_marker "$_qadv3_in")"
+if [[ "$_qadv3_out" != *$'\n'* ]] \
+   && [[ "$_qadv3_out" != *$'\r'* ]] \
+   && [[ "$_qadv3_out" == "foo bar baz" ]]; then
+  pass_at "QA-ADV-3: _sanitise_for_md_marker — literal \\n/\\r → space (direct; @tsv dead-code path verified)"
+else
+  fail_at "QA-ADV-3: _sanitise_for_md_marker \\n/\\r" \
+    "out='$_qadv3_out' (expected 'foo bar baz')"
+fi
+
+# ─── QA-ADV-4: W7 OFF-footer in _post_deferred_majors_comment_if_eligible ───
+# Coverage gap: W7 tests _create_follow_up_tickets_for_deferred_majors with
+# config=false (zero creates + zero finds). It does NOT verify that
+# _post_deferred_majors_comment_if_eligible emits the "Auto-ticketing is
+# disabled by config" footer in the add-comment body when the gate is off.
+# Z9 fills that gap: asserts the disabled footer appears and the enabled
+# footer ("auto-creates one follow-up ticket") does NOT.
+reset_capture
+_eng193_set_config 'false'
+mkdir -p "$(issue_dir ENG-193Z9)"
+_z9_lgr="$(issue_dir ENG-193Z9)/review-findings-ledger.jsonl"
+rm -f "$_z9_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193Z9 >/dev/null 2>&1
+)
+_eng191_write_row "$_z9_lgr" ENG-193Z9 ENG-193Z9-d0001 1 "z9:typo" major major carry \
+  false "z9 rationale" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193Z9-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_post_deferred_majors_comment_if_eligible ENG-193Z9
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_z9_body="$(captured_body)"
+if [[ "$_z9_body" == *"Auto-ticketing is disabled by config"* ]] \
+   && [[ "$_z9_body" != *"auto-creates one follow-up ticket"* ]]; then
+  pass_at "QA-ADV-4: W7 OFF-footer — _post_deferred_majors_comment_if_eligible config=false → disabled-footer, not enabled-footer"
+else
+  fail_at "QA-ADV-4: W7 OFF-footer" \
+    "body-head='${_z9_body:0:400}'"
+fi
+_eng193_reset_config
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
