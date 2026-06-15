@@ -2021,6 +2021,36 @@ unset _eng193_out _eng193_rc
 mv "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json.bak" \
    "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json"
 
+# ─── L-13: find_follow_up sanitises --> in finding_class_key ─────────────────
+# Coverage gap: W8 exercises --> sanitisation through the orchestrator path;
+# no L-block test directly verifies find_follow_up's own --> → --\> rule.
+# Stubs linear_query to capture $vars (arg $2) to a temp file — must use a
+# file because linear_query is invoked inside $() (subshell), so variable
+# assignments don't reach the parent shell. Decodes .q with jq -r and
+# asserts the search term contains --\> (escaped) not --> (raw).
+_eng193_l13_tmp="$(mktemp)"
+_eng193_l13_lq_backup="$(declare -f linear_query)"
+linear_query() {
+  printf '%s' "$2" > "$_eng193_l13_tmp"
+  printf '{"data":{"searchIssues":{"nodes":[]}}}\n'
+}
+_eng193_l13_rc=0
+PIPELINE_WRITER=orchestrator find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key 'x:-->:y' 2>/dev/null \
+  || _eng193_l13_rc=$?
+_eng193_l13_q="$(jq -r '.q // ""' < "$_eng193_l13_tmp" 2>/dev/null || printf '')"
+if [[ "$_eng193_l13_rc" == 0 ]] \
+   && printf '%s' "$_eng193_l13_q" | grep -qF -- '--\>:y' 2>/dev/null \
+   && ! printf '%s' "$_eng193_l13_q" | grep -qF -- '-->:y' 2>/dev/null; then
+  pass_at "ENG-193 L-13: find_follow_up sanitises --> → --\\> in search term"
+else
+  fail_at "ENG-193 L-13: find_follow_up --> sanitisation" \
+    "rc=$_eng193_l13_rc q='${_eng193_l13_q:0:200}'"
+fi
+eval "$_eng193_l13_lq_backup"
+rm -f "$_eng193_l13_tmp"
+unset _eng193_l13_lq_backup _eng193_l13_tmp _eng193_l13_q _eng193_l13_rc
+
 # Restore the original linear_query so any further test code uses the
 # canonical chokepoint (none today; placed for forward-compat).
 eval "$_l193_lq_backup"

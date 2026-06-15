@@ -9648,6 +9648,74 @@ else
 fi
 _eng193_reset_config
 
+# ─── QA-ADV-1c: _follow_up_title bare-backslash arm (backtick at cut boundary) ──
+# budget([deferred from QA-ADV1] ) = 80 - 24 = 56.
+# scr = 55 a's + backtick + "extra" → sanitise → 55 a's + \` + "extra" (62 chars)
+# → truncate to 56 → 55 a's + \ → *"\\" arm fires → trim → 55 a's.
+# Distinct from 1a (<\ open-comment boundary) and 1b (--\ close-comment boundary).
+_adv1c_aa="$(printf 'a%.0s' {1..55})"
+_adv1c_got="$(_follow_up_title "${_adv1c_aa}\`extra" "fallback-fck" "QA-ADV1")"
+_adv1c_want="[deferred from QA-ADV1] ${_adv1c_aa}"
+if [[ "$_adv1c_got" == "$_adv1c_want" ]]; then
+  pass_at "ENG-193 QA-ADV-1c: _follow_up_title bare-backslash arm — backtick at cut boundary stripped"
+else
+  fail_at "ENG-193 QA-ADV-1c: bare-backslash arm" \
+    "got='${_adv1c_got}' want='${_adv1c_want}'"
+fi
+unset _adv1c_aa _adv1c_got _adv1c_want
+
+# ─── QA-ADV-5: _follow_up_body non-http pr_url → plain-text fallback ────────
+# Coverage gap: W1-W5 exercise the non-http pr_url path (MOCK_GH_PR_URL unset
+# → gh returns empty → pr_url="(not discoverable)") but never assert on body
+# text. This test calls _follow_up_body directly with a non-http pr_url and
+# verifies: (a) "PR not discoverable at orchestrator run time." appears, and
+# (b) the TL;DR is plain-text (no markdown link [ident](url)).
+_adv5_body="$(_follow_up_body \
+  "ENG-193ADV5" "(not discoverable)" "ENG-193ADV5-d0001" "3" \
+  "adv5:key" "adv5 rationale" "false" "false" "false" "true" "false")"
+if [[ "$_adv5_body" == *"PR not discoverable at orchestrator run time."* ]] \
+   && [[ "$_adv5_body" == *"**Deferred from ENG-193ADV5"* ]] \
+   && [[ "$_adv5_body" != *"**Deferred from [ENG-193ADV5]"* ]]; then
+  pass_at "ENG-193 QA-ADV-5: _follow_up_body non-http pr_url → plain-text TL;DR + PR-not-discoverable line"
+else
+  fail_at "ENG-193 QA-ADV-5: _follow_up_body non-http pr_url" \
+    "body-head='${_adv5_body:0:400}'"
+fi
+unset _adv5_body
+
+# ─── QA-ADV-6: decision_factors=null row → .decision_factors // {} guard ─────
+# Coverage gap: _eng191_write_row always provides a populated decision_factors
+# object; the jq .decision_factors // {} guard is never exercised with an actual
+# null input. A null-df row MUST still produce one follow-up ticket (all df
+# fields default false via // false → Improvement type label).
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193ADV6)"
+_adv6_lgr="$(issue_dir ENG-193ADV6)/review-findings-ledger.jsonl"
+rm -f "$_adv6_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193ADV6 >/dev/null 2>&1
+)
+printf '%s\n' '{"ledger_schema_version":1,"issue_id":"ENG-193ADV6","dispatch_id":"ENG-193ADV6-d0001","iteration":1,"created_at":"2026-06-16T00:00:00Z","finding_class_key":"adv6:null-df","cold_severity":"major","adjudicated_severity":"major","decision":"carry","rationale":"adv6 rationale","blocks_ship":false,"ship_classification_rationale":"adv6 scr","decision_factors":null}' \
+  >> "$_adv6_lgr"
+export PIPELINE_DISPATCH_ID=ENG-193ADV6-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193ADV6
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_adv6_count="$(captured_create_issue_count)"
+_adv6_labels="$(captured_create_issue_type_labels)"
+if [[ "$_adv6_count" == "1" ]] && [[ "$_adv6_labels" == "Improvement" ]]; then
+  pass_at "ENG-193 QA-ADV-6: decision_factors=null row — // {} guard produces 1 Improvement ticket"
+else
+  fail_at "ENG-193 QA-ADV-6: decision_factors=null guard" \
+    "count='$_adv6_count' labels='$_adv6_labels'"
+fi
+_eng193_reset_config
+unset _adv6_lgr _adv6_count _adv6_labels
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
