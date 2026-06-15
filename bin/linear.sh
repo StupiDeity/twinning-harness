@@ -715,27 +715,11 @@ _resolve_body_arg() {
 }
 
 # ENG-193: --description multi-mode resolver (mirrors _resolve_body_arg).
-# Accepts --description <val>, --description - (stdin), --description=<val>,
-# --description-file <path>, --description-file=<path>.
+# Accepts --description <val>, --description - (stdin), --description=<val>.
 _resolve_description_arg() {
   local description=""
-  local got_flag=0
   while (( $# > 0 )); do
     case "$1" in
-      --description-file)
-        [[ -n "${2:-}" ]] || die "linear.sh: --description-file requires a path"
-        [[ -f "$2" ]] || die "linear.sh: --description-file path not found: $2"
-        description="$(cat "$2")"
-        got_flag=1
-        shift 2
-        ;;
-      --description-file=*)
-        local p="${1#--description-file=}"
-        [[ -f "$p" ]] || die "linear.sh: --description-file path not found: $p"
-        description="$(cat "$p")"
-        got_flag=1
-        shift
-        ;;
       --description)
         [[ $# -ge 2 ]] || die "linear.sh: --description requires a value (use - for stdin)"
         if [[ "$2" == "-" ]]; then
@@ -743,12 +727,10 @@ _resolve_description_arg() {
         else
           description="$2"
         fi
-        got_flag=1
         shift 2
         ;;
       --description=*)
         description="${1#--description=}"
-        got_flag=1
         shift
         ;;
       --)
@@ -756,9 +738,6 @@ _resolve_description_arg() {
         break
         ;;
       *)
-        if (( ! got_flag )) && (( $# == 1 )); then
-          description="$1"
-        fi
         shift
         ;;
     esac
