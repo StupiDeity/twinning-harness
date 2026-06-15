@@ -179,6 +179,34 @@ else
     "expected \"plan-structural-defect\" in .pivot_reasons array of $REG"
 fi
 
+# ─── ENG-118: dimensional-threshold-not-met in fail_reasons registry ──
+# Verifies that the new fail reason token added by ENG-118 is present in
+# the closed vocabulary so that `bash bin/pipeline.sh event ... verdict
+# fail --target implementing --reason dimensional-threshold-not-met`
+# passes registry validation. The per-arm override
+# field_registry_by_arm.fail.reason = "fail_reasons" scopes the token to
+# the fail arm only; cross-arm leaks (e.g. halt --reason
+# dimensional-threshold-not-met) are rejected by the halt-arm's
+# halt_reasons|wait_reasons union — see bin/pipeline-test.sh PE-118A/B/C.
+if jq -e '.fail_reasons | index("dimensional-threshold-not-met") != null' "$REG" >/dev/null 2>&1; then
+  pass_at "case-6: dimensional-threshold-not-met in fail_reasons registry"
+else
+  fail_at "case-6: dimensional-threshold-not-met in fail_reasons registry" \
+    "expected \"dimensional-threshold-not-met\" in .fail_reasons array of $REG"
+fi
+
+# ─── ENG-118: dimensional_threshold_coerced in metric_names registry ──
+# Verifies that the new metric name token added by ENG-118 is present in
+# the closed vocabulary so the post-dispatch threshold-gate detective's
+# metric emission (bash bin/metrics.sh dimensional_threshold_coerced ...)
+# is documented in the closed registry. Mirrors case-6 above.
+if jq -e '.metric_names | index("dimensional_threshold_coerced") != null' "$REG" >/dev/null 2>&1; then
+  pass_at "case-7: dimensional_threshold_coerced in metric_names registry"
+else
+  fail_at "case-7: dimensional_threshold_coerced in metric_names registry" \
+    "expected \"dimensional_threshold_coerced\" in .metric_names array of $REG"
+fi
+
 # ─── Summary ─────────────────────────────────────────────────────────
 printf '\nvocabulary-cleanliness-test: passed=%s failed=%s\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1

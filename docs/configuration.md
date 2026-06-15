@@ -268,6 +268,93 @@ The skip path emits paired `stage-start` + `stage-end` metric events with
 outcome `dispatch-skipped`, so the retrospective's §1 event-pairing pass
 sees no orphaned terminal event.
 
+### `review.thresholds` / `qa.thresholds` (ENG-118)
+
+Operator-configured per-dimension floors that the orchestrator enforces
+AFTER a reviewing or qa dispatch. When the agent self-emits a passing
+verdict (review `verdict approve` or qa `verdict pass`) AND any
+payload-emitted dimension scores below its configured floor, the
+post-dispatch detective (`bin/run-stage.sh::_validate_review_thresholds`
+or `_validate_qa_thresholds`) posts a coerced
+`verdict fail --target implementing --reason dimensional-threshold-not-met`
+Linear comment that wins `find_fresh_verdict`'s strict-id-match path
+within the same `PIPELINE_DISPATCH_ID`. `verdict_handler`'s existing
+`pipeline-rejection` branch loops the issue back to `stage:implementing`
+unchanged — no new exit codes, no `verdict_handler.sh` changes.
+
+**Asymmetric value types** (the two blocks are NOT interchangeable):
+
+| Block | Value type | Comparison | Source schema |
+|---|---|---|---|
+| `.review.thresholds.<dim>` | enum string `{fail, concern, pass}` | ordinal `fail<concern<pass` | `bin/review-payload-schema.sh` |
+| `.qa.thresholds.<dim>` | number in `[0.0, 1.0]` | numeric `<` | `bin/qa-payload-schema.sh` |
+
+**Recommended defaults** (drop into `.pipeline-config/config.json`):
+
+```json
+{
+  "review": {
+    "thresholds": {
+      "correctness": "concern",
+      "testing": "concern",
+      "maintainability": "concern",
+      "scope": "concern"
+    }
+  },
+  "qa": {
+    "thresholds": {
+      "coverage": 0.7,
+      "regression_intent": 0.8
+    }
+  }
+}
+```
+
+**Behavioural rules:**
+
+- **Absent block (either side)** → gate is a no-op; pre-ENG-118
+  behaviour preserved. Adopting ENG-118 on an existing target requires
+  zero migration; thresholds are opt-in.
+- **Agent self-rejection** → gate short-circuits. Review's
+  `verdict-review.json::verdict` enum is
+  `{approve, request-changes, premise-failure, halt}`; only `approve`
+  triggers gating. QA's `verdict-qa.json::verdict` enum is
+  `{pass, fail, halt}`; only `pass` triggers gating.
+- **Missing payload dimension** (operator names `foo` in
+  `.review.thresholds`, agent emitted no `foo` dim) → **fail-CLOSED**.
+  The dimension lands in the sib comment's `failed_dimensions[]` with
+  `reason: "missing-in-payload"` and the gate coerces. The orchestrator
+  enforces operator intent over agent omission (D-008).
+- **Malformed config** (e.g. `review.thresholds.correctness = 0.7`,
+  `qa.thresholds.coverage = "high"`) → **fail-OPEN**. The malformed
+  entry is logged via `log` and skipped; remaining entries still gate.
+  Type-check is strict — string-typed numerics and out-of-range numbers
+  are rejected (D-009).
+- **Composition with ENG-190 critical-floor halt** — the
+  `_validate_review_ledger` halt (rc=49) runs FIRST in the post-dispatch
+  sequence; on a ledger-halt the threshold gate is never reached.
+- **Composition with ENG-191 selective exit** — when the operator sets
+  `review.thresholds.correctness == "pass"` AND the agent took the
+  `ship-with-deferred-majors` path with `correctness.score = "concern"`,
+  both the deferred-majors enumeration AND the threshold-coerce comment
+  post. Operator-tunable composition: set
+  `review.thresholds.correctness ∈ {concern, fail}` to allow the
+  selective exit through to qa unchanged.
+
+**Audit recipe.** To inspect threshold-gate firings across the project:
+
+```bash
+jq -r 'select(.event=="dimensional_threshold_coerced") | "\(.ts) \(.issue_id) \(.stage) \(.notes)"' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl" \
+  | sort | tail -50
+```
+
+The agent's self-reported `threshold_met` / `thresholds_met[]` fields are
+forensic-only (calibration substrate for ENG-39); the orchestrator
+computes its own gate decision from `score` and the configured floor and
+ignores the self-grade entirely. Disagreement between agent-self-PASS
+and orchestrator-coerce is the calibration signal ENG-39 consumes.
+
 ## `dispatch.tools` — per-stage allowlist extras <a id="dispatchtools--per-stage-allowlist-extras"></a>
 
 Every `claude -p` invocation passes `--allowed-tools <comma-list>`. The

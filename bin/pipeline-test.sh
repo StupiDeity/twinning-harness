@@ -135,6 +135,24 @@ out="$(run_pipe event ENG-PE-191B verdict pass --stage reviewing --reason unknow
 out="$(run_pipe event ENG-PE-191C verdict halt --reason ship-with-deferred-majors 2>&1 || true)"
 [[ "$out" == *"not in halt_reasons"* ]] && pass_at "PE-191C: ship-with-deferred-majors rejected on halt arm" || fail_at "PE-191C: ship-with-deferred-majors rejected on halt arm" "got: $out"
 
+# ENG-118 PE-118A/B/C: fail arm gains the per-arm `fail_reasons` override
+# (dimensional-threshold-not-met). The override narrows the fail.reason field
+# to fail_reasons (just `dimensional-threshold-not-met` today). Halt arm still
+# reads halt_reasons|wait_reasons union, so an arm-cross leak
+# (verdict halt --reason dimensional-threshold-not-met) MUST be rejected.
+
+# PE-118A: fail --target implementing --reason dimensional-threshold-not-met → accepted
+out="$(run_pipe event ENG-PE-118A verdict fail --target implementing --reason dimensional-threshold-not-met)"
+[[ "$out" == *"result=fail target=implementing reason=dimensional-threshold-not-met"* ]] && pass_at "PE-118A: fail+reason dimensional-threshold-not-met accepted" || fail_at "PE-118A: fail+reason dimensional-threshold-not-met accepted" "got: $out"
+
+# PE-118B: fail --reason unknown-token → rejected by per-arm fail_reasons override
+out="$(run_pipe event ENG-PE-118B verdict fail --target implementing --reason unknown-token 2>&1 || true)"
+[[ "$out" == *"not in fail_reasons"* ]] && pass_at "PE-118B: unknown fail reason rejected (per-arm scope)" || fail_at "PE-118B: unknown fail reason rejected (per-arm scope)" "got: $out"
+
+# PE-118C: halt --reason dimensional-threshold-not-met → rejected (per-arm override is fail-only)
+out="$(run_pipe event ENG-PE-118C verdict halt --reason dimensional-threshold-not-met 2>&1 || true)"
+[[ "$out" == *"not in halt_reasons"* ]] && pass_at "PE-118C: dimensional-threshold-not-met rejected on halt arm" || fail_at "PE-118C: dimensional-threshold-not-met rejected on halt arm" "got: $out"
+
 printf '\n--- bin/pipeline.sh: event transition ---\n'
 
 # PT1: valid transition — body uses two k=v pairs (from=X to=Y) per T2.6

@@ -889,6 +889,136 @@ comment is operator-visibility convenience.
 
 ---
 
+## 14. Dimensional threshold coercion (ENG-118)
+
+**Symptom.** An issue you expected to advance from `stage:reviewing` →
+`stage:qa` (or `stage:qa` → `stage:building`) is instead back at
+`stage:implementing` with TWO fresh orchestrator-authored Linear
+comments:
+
+1. A coerced verdict marker: `<!-- pipeline: verdict result=fail
+   target=implementing reason=dimensional-threshold-not-met -->`.
+2. A sib enumeration under sig
+   `dimensional-threshold/<stage>/<ident>` listing the violating
+   dimensions (`name`, `score`, `threshold`, `miss-reason` ∈
+   `{below-threshold, missing-in-payload}`).
+
+The agent's `verdict-review.json` or `verdict-qa.json` payload self-PASSed
+(review `verdict=approve` or qa `verdict=pass`), but one or more
+payload-emitted dimensions scored below the operator's configured floor
+in `.review.thresholds.<dim>` or `.qa.thresholds.<dim>`. The
+post-dispatch threshold-gate detective
+(`bin/run-stage.sh::_validate_review_thresholds` /
+`_validate_qa_thresholds`) coerced the verdict to fail; the orchestrator's
+fresh fail-marker won `find_fresh_verdict`'s strict-id-match path within
+the same `PIPELINE_DISPATCH_ID`, and `verdict_handler`'s existing
+`pipeline-rejection` branch routed the loopback to `stage:implementing`.
+
+**Detect.** Grep the issue's Linear comment thread for the closed-
+vocabulary reason token:
+
+```bash
+bash bin/linear.sh get-comments ENG-N \
+  | jq -r '.[] | select(.body | contains("reason=dimensional-threshold-not-met")) | .body' \
+  | head -1
+```
+
+**Diagnose.** Inspect the payload + the configured floors to identify
+the violated dimension(s):
+
+```bash
+# What did the agent claim?
+cat "$(bash bin/common.sh && issue_dir ENG-N)/verdict-review.json" | jq .dimensions
+# or for qa:
+cat "$(bash bin/common.sh && issue_dir ENG-N)/verdict-qa.json" | jq .dimensions
+
+# What did the operator configure?
+jq '.review.thresholds, .qa.thresholds' "$TARGET_REPO/.pipeline-config/config.json"
+
+# The sib comment under dimensional-threshold/<stage>/<ident> lists the
+# exact violating dims + their score vs threshold — usually the fastest
+# path. The orchestrator's per-dispatch metric is also in the JSONL log:
+jq -r 'select(.event=="dimensional_threshold_coerced") | "\(.ts) \(.issue_id) \(.stage) \(.notes)"' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl" \
+  | grep ENG-N | tail -5
+```
+
+**Recover.** Four-step escalation (start at #1; escalate only if the
+prior step's outcome is still unsatisfactory):
+
+1. **Loosen the threshold for the violated dim.** Edit
+   `.pipeline-config/config.json`. For review,
+   `correctness:"concern"` (was `"pass"`) accepts a `concern`-graded
+   pass; for qa, `coverage:0.7` (was `0.8`) accepts a 0.65 cover-grade.
+   The operator's calibration loop converges here.
+2. **Remove the entry** if the dim is genuinely not enforceable yet
+   (delete `correctness` from `.review.thresholds`).
+3. **Remove the whole block** to disable the gate entirely
+   (`.review.thresholds` / `.qa.thresholds` → absent → gate no-op,
+   pre-ENG-118 behaviour preserved).
+4. **Resume.** `bash bin/pipeline.sh decide ENG-N --action continue`
+   re-allocates a fresh dispatch_id, clears `verdict-{review,qa}.json`,
+   and the next launchd tick re-dispatches the stage.
+
+**Recommended defaults** (drop-in, suitable for most targets):
+
+```json
+{
+  "review": {
+    "thresholds": {
+      "correctness": "concern",
+      "testing": "concern",
+      "maintainability": "concern",
+      "scope": "concern"
+    }
+  },
+  "qa": {
+    "thresholds": {
+      "coverage": 0.7,
+      "regression_intent": 0.8
+    }
+  }
+}
+```
+
+**Cross-issue audit recipes:**
+
+```bash
+# Most-recent 50 threshold-gate firings across the project:
+jq -r 'select(.event=="dimensional_threshold_coerced") | "\(.ts) \(.issue_id) \(.stage) \(.notes)"' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl" \
+  | sort | tail -50
+
+# Per-issue firing counts (helps spot calibration anti-patterns):
+jq -r 'select(.event=="dimensional_threshold_coerced") | .issue_id' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl" \
+  | sort | uniq -c | sort -rn
+```
+
+**Related** — the gate is a layered enforcement on top of the agent's
+self-grade. The agent's `threshold_met` (qa) / `thresholds_met[]`
+(review) fields are **forensic-only** (the calibration substrate
+ENG-39 consumes); the orchestrator computes its own gate decision from
+`score` and the configured floor. Disagreement between
+agent-self-PASS and orchestrator-coerce is the calibration signal —
+NOT a defect in either side.
+
+**Composition gotchas:**
+
+- ENG-190 critical-floor halt (rc=49) runs FIRST in the post-dispatch
+  sequence; on a ledger-halt the threshold gate is never reached and
+  no coerce comment posts.
+- ENG-191 selective exit (`ship-with-deferred-majors`) composes
+  operator-tunably with the gate. Tight threshold
+  (`review.thresholds.correctness == "pass"`) coerces a
+  `correctness=concern` deferred-majors path back to implementing AND
+  leaves the deferred-majors enumeration comment in the thread (a
+  documented "orphan" — operator can grep it for forensic context
+  later). Loose threshold (`{concern, fail}`) lets the selective exit
+  through to qa unchanged.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:
