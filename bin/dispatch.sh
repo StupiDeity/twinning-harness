@@ -76,7 +76,14 @@ _render_and_capture_stream() {
   # it post-dispatch. Idempotent pre-clean (D-008).
   local envelope_sidecar="${issue_dir}/.envelope-transcript-${stage}"
   rm -f "$violation_file" "$envelope_sidecar"
-  trap 'rm -f "$raw_capture"' RETURN
+  # Self-clearing + ${:-}-guarded: a bare `trap '… "$raw_capture"' RETURN`
+  # LEAKS — a RETURN trap set inside a function fires again on every
+  # caller's return (main()'s included), where the function-local
+  # $raw_capture is unbound, so `set -u` aborts main() (rc=1) on the
+  # no-result-event soft-fail path. `trap - RETURN` inside the handler
+  # clears it after the function's own return so it cannot leak; the
+  # `${raw_capture:-}` guard makes any stray firing a harmless `rm -f ""`.
+  trap 'rm -f "${raw_capture:-}"; trap - RETURN' RETURN
   mkdir -p "$issue_dir"
 
   # Single jq fork for the whole stream (F4 P0). `tee` mirrors raw NDJSON

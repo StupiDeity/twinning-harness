@@ -341,6 +341,7 @@ set -uo pipefail
     human-override expiry-verification confirmation-bias-audit recency-bias
     survivorship-bias knowledge-budget pipeline-health-score
     prompt-workflow-amendment
+    tool-denial-trends runtime-invariant-audit claude-version-drift
   )
   array_matches=yes
   if (( ${#SHAPES[@]} != ${#expected[@]} )); then
@@ -586,7 +587,10 @@ exit 1
 GHFAIL
   chmod +x "$STUB_BIN/gh"
   rc=0
-  main >/dev/null 2>&1 || rc=$?
+  # Subshell: the coordinator's gh-failure path calls `exit 20` (not
+  # `return`), which would terminate THIS test harness if main ran in the
+  # current shell. `( main )` contains the exit so `|| rc=$?` can capture it.
+  ( main ) >/dev/null 2>&1 || rc=$?
   slack_last="$(tail -1 "$SLACK_LOG")"
   slack_error=$(printf '%s' "$slack_last" | grep -q '^error.*gh pr create failed' && echo yes || echo no)
   if (( rc == 20 )) && [[ "$slack_error" == "yes" ]]; then
