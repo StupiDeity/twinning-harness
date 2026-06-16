@@ -1024,6 +1024,28 @@ else
   pass_at "scratch: path-boundary — .scratchpad is NOT benign"
 fi
 
+# ─── ENG-194 T_plan_scope_helper_sourced ──────────────────────────────
+# Asserts scope-check.sh sources bin/plan-scope.sh and exposes the
+# plan_scope::path_in_scope function in the caller's bash environment.
+# Also confirms the _BENIGN_PATH_CLASSES array (system invariant —
+# "docs/plans/* benign-path class is unchanged") survives the refactor.
+printf '\n--- ENG-194: plan_scope helper sourced + benign array intact ---\n'
+
+if declare -f plan_scope::path_in_scope >/dev/null; then
+  pass_at "ENG-194: plan_scope::path_in_scope reachable after source scope-check.sh"
+else
+  fail_at "ENG-194: plan_scope helper not sourced" "scope-check.sh did not pull plan-scope.sh into scope"
+fi
+
+bp_entries=$(printf '%s\n' "${_BENIGN_PATH_CLASSES[@]}")
+for entry in 'docs/knowledge/*' 'docs/plans/*' 'docs/brainstorms/*'; do
+  if grep -qxF "$entry" <<<"$bp_entries"; then
+    pass_at "ENG-194: _BENIGN_PATH_CLASSES still contains $entry"
+  else
+    fail_at "ENG-194: _BENIGN_PATH_CLASSES missing $entry" "post-refactor array drifted"
+  fi
+done
+
 echo
 echo "scope-check-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
