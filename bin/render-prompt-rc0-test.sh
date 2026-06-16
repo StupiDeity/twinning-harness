@@ -27,6 +27,20 @@ PASS=0; FAIL=0
 ok()   { printf '  ✅ %s\n' "$1"; PASS=$((PASS+1)); }
 fail() { printf '  ❌ %s — %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 
+# Guard every render invocation with a hard timeout. A perf regression in
+# render-prompt.sh (e.g. the bash-3.2 multibyte ${//} catastrophe — render
+# busy-loops for effectively-forever under a UTF-8 locale on macOS system
+# bash) must FAIL this test fast, not stall the entire bin/*-test.sh suite
+# and the pre-commit hook indefinitely. gtimeout is a hard harness
+# dependency (CLAUDE.md "PATH expectations"); fall back to `timeout`, then
+# to a bare call, so the test still runs where neither is present.
+RENDER_TIMEOUT="${RENDER_TIMEOUT:-60}"
+_timeout() {
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$RENDER_TIMEOUT" "$@"
+  elif command -v timeout >/dev/null 2>&1; then timeout "$RENDER_TIMEOUT" "$@"
+  else "$@"; fi
+}
+
 # Sandbox: a copy of bin/render-prompt.sh + bin/common.sh sit alongside
 # stub linear.sh + branch-name.sh, plus a symlink to AGENT_PROMPTS.md and
 # learned-rules/. render-prompt.sh's `$SCRIPT_DIR` resolves to the copy
@@ -96,7 +110,7 @@ run_render() {
     TARGET_REPO="$sandbox/target" \
     PROJECT_SLUG=test-slug-rc0 \
     HARNESS_ROOT="$sandbox" \
-    bash "$sandbox/bin/render-prompt.sh" "$stage" ENG-87R6X \
+    _timeout bash "$sandbox/bin/render-prompt.sh" "$stage" ENG-87R6X \
       >/dev/null 2>"$err" || rc=$?
   if (( rc == 0 )); then
     ok "Case-87-R6: bash bin/render-prompt.sh $stage ENG-X exits 0"
@@ -134,7 +148,7 @@ out_a="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   PROJECT_STATE_DIR="" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-A 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-A 2>/dev/null || true)"
 if grep -q '(no prior review for this issue' <<<"$out_a"; then
   ok "ENG-105 case A: absent reviewing summary → '(no prior review …)' sentinel"
 else
@@ -152,7 +166,7 @@ out_b="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   PROJECT_STATE_DIR="" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-B 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-B 2>/dev/null || true)"
 if grep -qF "$REVIEW_SENTINEL" <<<"$out_b"; then
   ok "ENG-105 case B: present reviewing summary → inlined verbatim in implementing prompt"
 else
@@ -182,7 +196,7 @@ out_c="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-C 2>"$err_c" || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-C 2>"$err_c" || true)"
 if grep -qF "$ISSUE_DIR_C/progress.md" <<<"$out_c"; then
   ok "ENG-108 case C: absent progress.md → resolved absolute path appears in implementing prompt body"
 else
@@ -207,7 +221,7 @@ out_d="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-D 2>"$err_d" || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-D 2>"$err_d" || true)"
 if grep -qF "$ISSUE_DIR_D/progress.md" <<<"$out_d"; then
   ok "ENG-108 case D: present progress.md → resolved absolute path appears in implementing prompt body"
 else
@@ -239,7 +253,7 @@ PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-E >/dev/null 2>"$err_e" || true
+  _timeout bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-E >/dev/null 2>"$err_e" || true
 if grep -qF 'progress-md missing' "$err_e"; then
   fail "ENG-108 case E: qa stage + absent progress.md → NO 'progress-md missing' info-log" \
        "stderr unexpectedly contained 'progress-md missing': $(tail -3 "$err_e" | tr '\n' ' ')"
@@ -256,7 +270,7 @@ out_f="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-F 2>"$err_f" || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-F 2>"$err_f" || true)"
 if grep -qF "$ISSUE_DIR_F/progress.md" <<<"$out_f"; then
   ok "ENG-108 case F: zero-byte progress.md → resolved absolute path appears in implementing prompt"
 else
@@ -310,7 +324,7 @@ out_g="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-G 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-G 2>/dev/null || true)"
 if grep -qF "$LB_SENTINEL" <<<"$out_g"; then
   ok "ENG-139 case G: PIPELINE_LOOPBACK_SOURCE=reviewing + file present → findings inlined"
 else
@@ -329,7 +343,7 @@ out_h="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-H 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-H 2>/dev/null || true)"
 if grep -qF "$LB_SENTINEL" <<<"$out_h"; then
   fail "ENG-139 case H: source=building → sentinel (NOT findings)" \
        "stale review findings leaked into build-loopback dispatch — out tail: $(tail -5 <<<"$out_h" | tr '\n' ' ')"
@@ -352,7 +366,7 @@ out_i="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-I 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-I 2>/dev/null || true)"
 if grep -qF "$LB_SENTINEL" <<<"$out_i"; then
   fail "ENG-139 case I: source=qa → sentinel (NOT findings)" \
        "stale review findings leaked into qa-loopback dispatch — out tail: $(tail -5 <<<"$out_i" | tr '\n' ' ')"
@@ -371,7 +385,7 @@ out_j="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-J 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-J 2>/dev/null || true)"
 if grep -qF "$LB_SENTINEL" <<<"$out_j"; then
   fail "ENG-139 case J: source=planning → sentinel (NOT findings)" \
        "stale review findings leaked into fresh-from-planning dispatch — out tail: $(tail -5 <<<"$out_j" | tr '\n' ' ')"
@@ -391,7 +405,7 @@ out_k="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-K 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-K 2>/dev/null || true)"
 if grep -qF "$LB_SENTINEL" <<<"$out_k"; then
   ok "ENG-139 case K: PIPELINE_LOOPBACK_SOURCE unset + file present → findings inlined (back-compat)"
 else
@@ -424,7 +438,7 @@ out_l="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-L 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-L 2>/dev/null || true)"
 if grep -qF "$QA_SENTINEL_L" <<<"$out_l"; then
   ok "ENG-140 case L: PIPELINE_LOOPBACK_SOURCE=qa + stage-summary-qa.md present → findings inlined"
 else
@@ -449,7 +463,7 @@ out_m="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-M 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-M 2>/dev/null || true)"
 if grep -qF "$QA_SENTINEL_M" <<<"$out_m"; then
   fail "ENG-140 case M: source=building → sentinel (NOT findings)" \
        "stale qa findings leaked into build-loopback dispatch — out tail: $(tail -5 <<<"$out_m" | tr '\n' ' ')"
@@ -472,7 +486,7 @@ out_n="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-N 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" implementing ENG-87R6X-N 2>/dev/null || true)"
 if grep -qF "$QA_SENTINEL_N" <<<"$out_n"; then
   fail "ENG-140 case N: source=reviewing → sentinel (NOT findings)" \
        "stale qa findings leaked into review-loopback dispatch — out tail: $(tail -5 <<<"$out_n" | tr '\n' ' ')"
@@ -494,7 +508,7 @@ out_o="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
-  bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-O 2>/dev/null || true)"
+  _timeout bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-O 2>/dev/null || true)"
 EXPECTED_O="$sandbox/state/test-slug-rc0/ENG-87R6X-O/qa-predicate-ENG-87R6X-O.json"
 if grep -qF "$EXPECTED_O" <<<"$out_o"; then
   ok "ENG-113 case O: {qa_predicate_path} resolves to $EXPECTED_O on qa-stage render"

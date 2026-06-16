@@ -429,6 +429,22 @@ _lookup_resolver() {
 resolve_block_tokens() {
   local rendered="$1"
   local tokens t name resolver value
+  # macOS system bash (3.2.57) has a catastrophic-performance bug in its
+  # multibyte-aware ${var//pat/repl} parameter substitution: under a UTF-8
+  # locale, one substitution over a multi-KB string that contains non-ASCII
+  # bytes busy-loops in the pattern matcher for minutes-to-effectively-
+  # forever. AGENT_PROMPTS.md's §0 + per-stage blocks carry ~100 lines of
+  # em-dashes / smart-quotes / ellipses, and the per-token loop below runs
+  # one ${rendered//$t/$value} substitution per token — so a default-locale
+  # render of the larger stage blocks (implementing/qa/reviewing) hangs the
+  # whole dispatch (and any bin/*-test.sh that drives it). Forcing a byte
+  # locale for the duration of this function makes the substitutions O(n):
+  # the {token} patterns are pure-ASCII and the replacement is literal, so
+  # byte-wise processing is exactly correct and the multibyte content passes
+  # through unchanged. Scoped `local` — bash applies it on assignment and
+  # restores the caller's locale on return. (Homebrew bash 5.x lacks the bug
+  # but the fix is harmless there.)
+  local LC_ALL=C
   # Extract distinct tokens from the source. \{[a-z_]+\} matches the
   # established convention in AGENT_PROMPTS.md.
   tokens="$(grep -oE '\{[a-z_]+\}' <<<"$rendered" | sort -u || true)"
