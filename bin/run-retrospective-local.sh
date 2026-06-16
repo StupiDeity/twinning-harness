@@ -155,8 +155,11 @@ main() {
   #   - retro-shape-claude-version-drift.sh
   local -a succeeded_shapes=()
   local -a failed_shapes=()
-  local -A shape_rcs=()  # bash 4.4+ (assoc array + set -u empty-array expansion); host runs bash 5 per CLAUDE.md
-  local shape artifact prev rc
+  # bash-3.2-safe (host /bin/bash is 3.2.57, NOT bash 5): parallel array,
+  # not an associative array. failed_shape_rcs grows in lockstep with
+  # failed_shapes — index i in one maps to index i in the other.
+  local -a failed_shape_rcs=()
+  local shape artifact prev rc i
 
   for shape in "${SHAPES[@]}"; do
     artifact="$shape_artifact_dir/${shape}.md"
@@ -172,7 +175,7 @@ main() {
       succeeded_shapes+=("$shape")
     else
       failed_shapes+=("$shape")
-      shape_rcs[$shape]="$rc"
+      failed_shape_rcs+=("$rc")
       log "coordinator: shape '$shape' failed (rc=$rc); continuing with remaining shapes"
     fi
   done
@@ -185,27 +188,41 @@ main() {
   {
     printf '## Period\n'
     printf '%s → %s\n' "$period_start_iso" "$period_end_iso"
-    for shape in "${succeeded_shapes[@]}"; do
-      if [[ -s "$shape_artifact_dir/${shape}.md" ]]; then
-        printf '\n---\n\n'
-        cat "$shape_artifact_dir/${shape}.md"
-      fi
-    done
+    # Count-guard the value expansion: under bash 3.2 + `set -u`, expanding
+    # an empty array as "${arr[@]}" aborts with "unbound variable" (the
+    # all-shapes-failed case). ${#arr[@]} on a declared-empty array is safe.
+    if (( ${#succeeded_shapes[@]} > 0 )); then
+      for shape in "${succeeded_shapes[@]}"; do
+        if [[ -s "$shape_artifact_dir/${shape}.md" ]]; then
+          printf '\n---\n\n'
+          cat "$shape_artifact_dir/${shape}.md"
+        fi
+      done
+    fi
     if (( ${#failed_shapes[@]} > 0 )); then
       printf '\n---\n\n## Failed shapes\n\n'
-      for shape in "${failed_shapes[@]}"; do
+      # C-style index loop reads the lockstep failed_shape_rcs parallel array
+      # (bash-3.2 has no associative arrays).
+      for (( i = 0; i < ${#failed_shapes[@]}; i++ )); do
+        shape="${failed_shapes[$i]}"
         # ENG-130 review n2: resolve the actual most-recent log file for
         # this shape rather than emitting a literal `*.log` glob the
         # operator has to expand by hand. Fall back to the logs/ dir hint
         # when no log was produced (e.g., shape crashed before logging).
+        # `|| true` inside the substitution: with no matching log, `ls`
+        # exits non-zero and `set -o pipefail` propagates it, which under
+        # `set -e` would abort the footer mid-list.
         local resolved_log
-        resolved_log="$(ls -t "$PROJECT_STATE_DIR/logs/retro-shape-${shape}-"*.log 2>/dev/null | head -1)"
+        resolved_log="$(ls -t "$PROJECT_STATE_DIR/logs/retro-shape-${shape}-"*.log 2>/dev/null | head -1 || true)"
+        # `printf --`: the row format starts with `- `, which bash printf
+        # otherwise parses as an option ("printf: - : invalid option", rc=2,
+        # no output) — the footer would print the header but zero rows.
         if [[ -n "$resolved_log" ]]; then
-          printf '- %s (rc=%s, log=%s)\n' \
-            "$shape" "${shape_rcs[$shape]}" "$resolved_log"
+          printf -- '- %s (rc=%s, log=%s)\n' \
+            "$shape" "${failed_shape_rcs[$i]}" "$resolved_log"
         else
-          printf '- %s (rc=%s, log=%s/logs/)\n' \
-            "$shape" "${shape_rcs[$shape]}" "$PROJECT_STATE_DIR"
+          printf -- '- %s (rc=%s, log=%s/logs/)\n' \
+            "$shape" "${failed_shape_rcs[$i]}" "$PROJECT_STATE_DIR"
         fi
       done
     fi
