@@ -60,6 +60,7 @@ init_sh_path=_resolve_init_sh_path
 qa_predicate_path=_resolve_qa_predicate_path
 artifacts_dir=_resolve_artifacts_dir
 review_converge_rounds=_resolve_review_converge_rounds
+plan_scope_allowed_paths=_resolve_plan_scope_allowed_paths
 '
 # ENG-87 review-iter-7 n2: dispatch_id resolver is consistent with the
 # _RENDER_* sibling pattern post-M9 — main() binds _RENDER_DISPATCH_ID
@@ -300,6 +301,45 @@ _resolve_review_converge_rounds() {
     fi
     printf '2'
   fi
+}
+# ENG-194: emit the plan's File Structure allow-set as a two-section
+# payload (#ALLOWED_FILES# / #ALLOWED_DIRS#) so the §5 reviewer's
+# Plan-scope adjudication block can match a finding's canonical
+# `path/to/file.ext:LINE` anchor against the plan's structural scope.
+# The parse runs through bin/plan-scope.sh — the SAME helper that
+# bin/scope-check.sh sources — so the reviewer-defer and
+# scope-check-halt decisions are byte-identical on identical input
+# (AC #4 structural invariant).
+#
+# Returns structured data, NOT a path — so it is NOT registered in
+# _write_rendered_paths_sidecar (ENG-156 D-004 closed-allowlist
+# contract; the sidecar tracks ONLY path-shaped resolvers so the
+# detective can match denied paths against the harness contract
+# surface).
+#
+# Soft-fail on plan-absent / empty section: emit both headers with
+# empty bodies and log a warning. The reviewer reads "no in-plan
+# paths declared" → every finding falls through to the rubric (the
+# plan_scope adjudication block short-circuits only on out-of-scope
+# matches). The orchestrator does NOT halt the dispatch.
+_resolve_plan_scope_allowed_paths() {
+  # shellcheck source=plan-scope.sh
+  source "$SCRIPT_DIR/plan-scope.sh"
+  local issue_id="${_RENDER_ISSUE_ID-}" worktree_root plan body af ad
+  worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "${TARGET_REPO-}")"
+  plan="$(plan_scope::find_plan "$issue_id" "$worktree_root" 2>/dev/null || printf '')"
+  if [[ -z "$plan" ]]; then
+    log "[render] plan_scope_allowed_paths: no plan for $issue_id; emitting empty sets" >&2
+    printf '#ALLOWED_FILES#\n#ALLOWED_DIRS#\n'
+    return 0
+  fi
+  body="$(plan_scope::extract_section "$plan" 2>/dev/null || printf '')"
+  af="$(plan_scope::parse_allowed_files "$body" 2>/dev/null || printf '')"
+  ad="$(plan_scope::parse_allowed_dirs "$body" 2>/dev/null || printf '')"
+  printf '#ALLOWED_FILES#\n'
+  [[ -n "$af" ]] && printf '%s\n' "$af"
+  printf '#ALLOWED_DIRS#\n'
+  [[ -n "$ad" ]] && printf '%s\n' "$ad"
 }
 _resolve_learned_rules_dir() { printf '%s' "$_RENDER_LEARNED_RULES_DIR"; }
 # ENG-87 review-iter-7 M9: read _RENDER_DISPATCH_ID like the sibling
