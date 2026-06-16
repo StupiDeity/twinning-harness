@@ -92,6 +92,21 @@ qa_predicate_path() {
   printf '%s/qa-predicate-%s.json' "$(issue_dir "$issue")" "$issue"
 }
 
+# ENG-203: per-issue body-only sidecar paths. The qa agent writes content-only
+# JSON to these paths; the orchestrator (or verify-qa.sh --body) merges the
+# schema envelope onto the body before validation, so the agent never types
+# qa_payload_schema_version / issue_id / dispatch_id boilerplate.
+qa_payload_body_path() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "qa_payload_body_path: missing issue id"
+  printf '%s/verdict-qa.body.json' "$(issue_dir "$issue")"
+}
+qa_predicate_body_path() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "qa_predicate_body_path: missing issue id"
+  printf '%s/qa-predicate-%s.body.json' "$(issue_dir "$issue")" "$issue"
+}
+
 # Shared per-pass_criterion validator (brainstorm D-007 — single source
 # of truth for plan.json and qa-predicate JSON validation). Callers:
 # plan-schema.sh::cmd_validate (plan.json) and verify-qa.sh::cmd_validate
@@ -681,6 +696,53 @@ validate_init_sh() {
   return 0
 }
 
+# ENG-203: orchestrator-side artifact-envelope merge helper. Reads a
+# content-only body JSON, splices in a closed-keyset envelope (constructed
+# by the caller from already-trusted inputs like $PIPELINE_DISPATCH_ID and
+# $ident), and atomically writes a merged canonical document. Exit codes
+# (within failure_outcome_for_exit qa-payload range):
+#   0  success
+#   39 body malformed (not an object / parse error / oversize)
+#   41 body missing
+#   42 body is symlink OR envelope arg is not a JSON object
+#   50 mktemp / jq / mv write failure
+# Caller (NOT the helper) owns envelope-keyset discipline — see U-10 in
+# common-test.sh. Right-biased: envelope keys overwrite body keys on
+# collision (jq stdlib semantic). Forensic `envelope-overwrite` metric
+# is best-effort; failure to emit is non-fatal.
+merge_artifact_envelope() {
+  local body="$1" env_json="$2" canonical="$3"
+  [[ -f "$body" ]] || { printf 'merge: body missing: %s\n' "$body" >&2; return 41; }
+  [[ -L "$body" ]] && { printf 'merge: body is symlink: %s\n' "$body" >&2; return 42; }
+  local sz; sz="$(wc -c <"$body" 2>/dev/null | tr -d ' ')"
+  if [[ -z "$sz" ]] || (( sz <= 0 || sz > 65536 )); then
+    printf 'merge: body size out of range: %s bytes\n' "${sz:-0}" >&2; return 39
+  fi
+  jq -e 'type == "object"' "$body" >/dev/null 2>&1 \
+    || { printf 'merge: body is not a JSON object: %s\n' "$body" >&2; return 39; }
+  jq -e 'type == "object"' <<<"$env_json" >/dev/null 2>&1 \
+    || { printf 'merge: envelope is not a JSON object\n' >&2; return 42; }
+  local tmp
+  tmp="$(mktemp "${canonical}.tmp.XXXXXX" 2>/dev/null)" \
+    || { printf 'merge: mktemp failed for %s\n' "$canonical" >&2; return 50; }
+  if ! jq -n --slurpfile b "$body" --argjson env "$env_json" '$b[0] + $env' > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"; printf 'merge: jq failed\n' >&2; return 50
+  fi
+  local overlap_csv overlap_n
+  overlap_csv="$(jq -nr --slurpfile b "$body" --argjson env "$env_json" \
+    '($b[0] | keys) - (($b[0] | keys) - ($env | keys)) | join(",")' 2>/dev/null || printf '')"
+  overlap_n=0
+  [[ -n "$overlap_csv" ]] && overlap_n="$(awk -F, '{print NF}' <<<"$overlap_csv")"
+  mv "$tmp" "$canonical" \
+    || { rm -f "$tmp"; printf 'merge: atomic mv failed\n' >&2; return 50; }
+  if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]] && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]; then
+    bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite" \
+      "${PIPELINE_ISSUE_ID}" "${PIPELINE_STAGE:-unknown}" "merged" "0" \
+      "count=$overlap_n keys=$overlap_csv body=$body" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 # ─── Exit-code → outcome taxonomy (ENG-10 D-002) ─────────────────────
 # Map a run-stage.sh exit code (and optional subcode) to the canonical
 # typed outcome name the retrospective agent's §1 filter and status.sh's
@@ -898,7 +960,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied merge_artifact_envelope qa_payload_body_path qa_predicate_body_path
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
