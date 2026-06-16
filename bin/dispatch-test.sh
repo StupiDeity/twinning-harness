@@ -4005,10 +4005,21 @@ fi
 rm -f "$TB_CAPTURE" "$TB_PGID_FILE"
 
 # ─── ENG-155 AC-GIT-ADD-AUDIT: per-stage git add allowlist audit ─────────
-# Pins the deliberate OQ-2 decision: planning stage intentionally omits
-# git add/commit from its allowlist; implementing/ui contain the literal
-# Bash(git add:*); qa uses the wider Bash(git:*) wildcard.
-# When OQ-2's follow-up ticket adds git add to planning, invert the last assertion.
+# implementing/ui contain the literal Bash(git add:*); qa uses the wider
+# Bash(git:*) wildcard.
+#
+# OQ-2 RESOLVED (ENG-194, 2026-06-16): planning now ALSO grants git add +
+# git commit. ENG-155 deferred this on the premise that the plan agent's
+# "Commit artifacts" directive "has always been orchestrator-fulfilled" — but
+# the git history disproves that: post-ENG-179 plans carry the AGENT's
+# `chore(pipeline): plan for ENG-N` message, not the orchestrator sweep's
+# `chore(pipeline): planning for ENG-N`. ENG-179's _validate_plan_contract
+# gate checks the plan is in branch HEAD *before* the orchestrator sweep runs,
+# which makes agent self-commit mandatory. The grant was masked while older
+# claude CLIs ran non-allowlisted Bash anyway; once the CLI tightened headless
+# enforcement, git add/commit were denied and every fresh plan dispatch halted
+# plan-contract-missing (exit 35). Per the original "invert the last
+# assertion" note, planning is now audited for PRESENCE of both verbs.
 printf '\n--- ENG-155 AC-GIT-ADD-AUDIT: per-stage git-add allowlist audit ---\n'
 
 for _git_stage in implementing ui; do
@@ -4030,13 +4041,18 @@ else
     "tools=$_qa_tools"
 fi
 
-# planning intentionally omits git add — pinning D-005's deliberate omission
+# planning MUST grant git add + git commit (OQ-2 resolved, ENG-194) so the
+# plan agent can self-commit the plan .md + sibling .json that ENG-179's
+# _validate_plan_contract gate requires in branch HEAD.
 _planning_tools="$(allowed_tools_for "planning" 2>/dev/null)"
-if ! printf '%s' "$_planning_tools" | grep -qF 'Bash(git add:*)' \
-   && ! printf '%s' "$_planning_tools" | grep -qF 'Bash(git:*)'; then
-  pass_at "AC-GIT-ADD-AUDIT: stage=planning correctly omits Bash(git add:*) and Bash(git:*) (D-005/OQ-2)"
+_plan_git_missing=""
+for _pg in 'Bash(git add:*)' 'Bash(git commit:*)'; do
+  printf '%s' "$_planning_tools" | grep -qF "$_pg" || _plan_git_missing+="$_pg "
+done
+if [[ -z "$_plan_git_missing" ]]; then
+  pass_at "AC-GIT-ADD-AUDIT: stage=planning grants git add + git commit (OQ-2 resolved, ENG-194)"
 else
-  fail_at "AC-GIT-ADD-AUDIT: stage=planning must NOT contain Bash(git add:*) or Bash(git:*)" \
+  fail_at "AC-GIT-ADD-AUDIT: stage=planning missing git self-commit grant: $_plan_git_missing" \
     "tools=$_planning_tools"
 fi
 
