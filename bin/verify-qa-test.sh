@@ -1319,6 +1319,22 @@ else
 fi
 rm -f "$VQ5_FILE"
 
+# VQ-6 (ENG-203 review-loopback M1): --body + positional ARG_FILE → rc=42 with
+# mutual-exclusion diagnostic. Pre-fix, cmd_validate's body-merge phase silently
+# clobbered ARG_FILE with the canonical, making the positional unobservable
+# (footgun for future callers).
+VQ6_BODY="$(write_body_sidecar 'qa-predicate-ENG-1.body.json')"
+VQ6_FILE="$PROJECT_STATE_DIR/ENG-1/positional-decoy.json"
+printf '{"qa_predicate_schema_version":1,"issue_id":"ENG-1","pass_criteria":[]}\n' > "$VQ6_FILE"
+rc=0
+out="$(bash "$VERIFIER" validate "$VQ6_FILE" --body "$VQ6_BODY" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *'mutually exclusive'* ]]; then
+  pass_at "VQ-6: --body + positional file → rc=42 (mutually-exclusive guard)"
+else
+  fail_at "VQ-6: mutual exclusion" "expected rc=42 + 'mutually exclusive'; got rc=$rc, out=$out"
+fi
+rm -f "$VQ6_BODY" "$VQ6_FILE"
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
