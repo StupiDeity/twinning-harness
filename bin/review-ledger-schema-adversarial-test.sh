@@ -204,13 +204,18 @@ else
 fi
 
 # AC-AD-4: major row missing decision_factors entirely → rc=49.
+# ENG-194 update: defer_reason:"rubric" is required on deferred-major
+# rows (rule 2). Without it, rule 2 fires before the (d) check we want
+# to exercise — defer_reason:"rubric" satisfies rule 2 and rule 3 still
+# requires decision_factors for the non-out-of-plan-scope branch.
 f="$FIXTURE_DIR/ad4.jsonl"
 write_seed_header "$f"
 jq -cn '{
   ledger_schema_version:1, issue_id:"ENG-191", dispatch_id:"ENG-191-d0001",
   iteration:1, created_at:"2026-06-13T00:00:00Z", finding_class_key:"k1",
   cold_severity:"major", adjudicated_severity:"major", decision:"carry",
-  rationale:"r", blocks_ship:false, ship_classification_rationale:"x"
+  rationale:"r", blocks_ship:false, ship_classification_rationale:"x",
+  defer_reason:"rubric"
 }' >> "$f"
 rc=0; out="$(bash "$VALIDATOR" validate "$f" --ident ENG-191 --dispatch-id ENG-191-d0001 2>&1)" || rc=$?
 if (( rc == 49 )) && [[ "$out" == *"decision_factors must be object"* ]]; then
@@ -270,7 +275,18 @@ jq -cn '{
   cold_severity:"major", adjudicated_severity:"major", decision:"carry",
   rationale:"pre-ENG-191"
 }' >> "$f"
-adv_write_row "$f" ENG-191 ENG-191-d0002 2 "k-current" major major carry "r" false "defers" "$DF_FULL"
+# ENG-194 update: deferred-major this-dispatch row needs defer_reason
+# to satisfy rule 2. The test's primary intent is the schema-grace
+# exemption for the prior-dispatch row above; emit the this-dispatch
+# row directly so we can carry defer_reason:"rubric".
+jq -cn '{
+  ledger_schema_version:1, issue_id:"ENG-191", dispatch_id:"ENG-191-d0002",
+  iteration:2, created_at:"2026-06-13T00:00:00Z", finding_class_key:"k-current",
+  cold_severity:"major", adjudicated_severity:"major", decision:"carry",
+  rationale:"r", blocks_ship:false, ship_classification_rationale:"defers",
+  decision_factors:{in_changed_code:true, is_regression:true, user_visible:true, reversible_post_ship:true, has_workaround:true},
+  defer_reason:"rubric"
+}' >> "$f"
 rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-191 --dispatch-id ENG-191-d0002 >/dev/null 2>&1 || rc=$?
 if (( rc == 0 )); then
   pass_at "AC-AD-8: schema-grace — prior-dispatch row exempt, this-dispatch passes → rc=0"
@@ -317,15 +333,230 @@ fi
 # AC-AD-11 (QA-ADV): decision_factors with all five required keys + one extra unknown
 # key (boolean value) → rc=0. Validator warns on unknown top-level row fields but
 # does not fail on extra keys inside decision_factors objects.
+# ENG-194 update: deferred-major rows now need defer_reason (rule 2);
+# emit inline to carry defer_reason:"rubric".
 f="$FIXTURE_DIR/ad11.jsonl"
 write_seed_header "$f"
-adv_write_row "$f" ENG-191 ENG-191-d0001 1 "k1" major major carry "r" false "defers: docs" \
-  '{in_changed_code:true, is_regression:false, user_visible:false, reversible_post_ship:true, has_workaround:true, extra_unknown_key:true}'
+jq -cn '{
+  ledger_schema_version:1, issue_id:"ENG-191", dispatch_id:"ENG-191-d0001",
+  iteration:1, created_at:"2026-06-13T00:00:00Z", finding_class_key:"k1",
+  cold_severity:"major", adjudicated_severity:"major", decision:"carry",
+  rationale:"r", blocks_ship:false, ship_classification_rationale:"defers: docs",
+  decision_factors:{in_changed_code:true, is_regression:false, user_visible:false, reversible_post_ship:true, has_workaround:true, extra_unknown_key:true},
+  defer_reason:"rubric"
+}' >> "$f"
 rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-191 --dispatch-id ENG-191-d0001 >/dev/null 2>&1 || rc=$?
 if (( rc == 0 )); then
   pass_at "AC-AD-11 (QA-ADV): decision_factors with extra unknown key (bool) → rc=0"
 else
   fail_at "AC-AD-11 (QA-ADV): extra-key-passthrough" "rc=$rc"
+fi
+
+# ─── ENG-194 AC-AD-10..18: defer_reason rules + matcher cross-check ───
+printf '\n--- review-ledger-schema-adversarial-test: ENG-194 AC-AD-10..18 ---\n'
+
+# Build a fixture worktree at $1 with a git init AND a plan file scoping
+# the comma-separated MODIFIED tokens passed as $2. Returns the worktree
+# path on stdout. Used by AC-AD-10/14/15/16; AC-AD-11/12/13 and AC-AD-17
+# do NOT need a plan (rule 6 skips cross-check) and AC-AD-18 uses a
+# plan-absent fixture.
+eng194_fixture_worktree() {
+  local root="$1" tokens="$2" plan_path
+  mkdir -p "$root/docs/plans"
+  (
+    cd "$root"
+    git init -q
+    git config user.email t@example.com
+    git config user.name 'Test'
+  ) >/dev/null 2>&1
+  plan_path="$root/docs/plans/2026-06-16-eng-194-fixture.md"
+  {
+    printf -- '---\nlinear: ENG-194\n---\n## File Structure\n\nMODIFIED:\n'
+    local IFS=','
+    for tok in $tokens; do
+      printf -- '- `%s` — fixture\n' "$tok"
+    done
+  } > "$plan_path"
+  printf '%s\n' "$root"
+}
+
+# Build a ledger row carrying defer_reason via direct jq emission so we
+# can include/omit the field per fixture. df_arg is either:
+#   - the literal string "null"   → emit decision_factors:null
+#   - the literal string "omit"   → omit the field entirely
+#   - a jq object expression      → emit as decision_factors:<expr>
+# defer_arg is either:
+#   - the literal string "omit"   → omit defer_reason entirely
+#   - any other value             → emit as defer_reason:"<value>"
+eng194_write_row() {
+  local file="$1" iid="$2" did="$3" cold="$4" adj="$5" dec="$6" bs="$7" scr="$8" \
+        df_arg="$9" defer_arg="${10}"
+  local df_expr defer_expr
+  case "$df_arg" in
+    null) df_expr=', decision_factors:null' ;;
+    omit) df_expr='' ;;
+    *)    df_expr=", decision_factors:$df_arg" ;;
+  esac
+  case "$defer_arg" in
+    omit) defer_expr='' ;;
+    *)    defer_expr=", defer_reason:\"$defer_arg\"" ;;
+  esac
+  jq -cn \
+    --arg iid "$iid" --arg did "$did" --arg cold "$cold" --arg adj "$adj" \
+    --arg dec "$dec" --argjson bs "$bs" --arg scr "$scr" \
+    "{
+       ledger_schema_version:1, issue_id:\$iid, dispatch_id:\$did,
+       iteration:1, created_at:\"2026-06-13T00:00:00Z\",
+       finding_class_key:\"fck\", cold_severity:\$cold,
+       adjudicated_severity:\$adj, decision:\$dec, rationale:\"r\",
+       blocks_ship:\$bs, ship_classification_rationale:\$scr
+       $df_expr $defer_expr
+     }" \
+    >> "$file"
+}
+
+# AC-AD-10 (ENG-194): scope-deferred major + decision_factors:null +
+# correct anchored rationale + path genuinely out-of-plan → rc=0.
+# Plan scopes bin/setup.sh; rationale names docs/install.md (out-of-plan).
+f="$FIXTURE_DIR/eng194-ad10.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false \
+  "out-of-plan-scope: docs/install.md not in plan's File Structure" \
+  null out-of-plan-scope
+wt="$(eng194_fixture_worktree "$FIXTURE_DIR/eng194-ad10-wt" 'bin/setup.sh')"
+rc=0; out="$(cd "$wt" && bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 0 )); then
+  pass_at "AC-AD-10 (ENG-194): scope-deferred major + null df + correct rationale + out-of-plan path → rc=0"
+else
+  fail_at "AC-AD-10 (ENG-194): scope-deferred positive" "rc=$rc out=$out"
+fi
+
+# AC-AD-11 (ENG-194): rubric-deferred major + decision_factors:null →
+# rc=49 `decision_factors must be object` (ENG-191 rule preserved when
+# defer_reason != out-of-plan-scope).
+f="$FIXTURE_DIR/eng194-ad11.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false "rubric: minor in-scope behaviour" \
+  null rubric
+rc=0; out="$(bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"decision_factors must be object"* ]]; then
+  pass_at "AC-AD-11 (ENG-194): rubric-deferred + null df → rc=49 (ENG-191 contract preserved)"
+else
+  fail_at "AC-AD-11 (ENG-194): rubric null-df rejection" "rc=$rc out=$out"
+fi
+
+# AC-AD-12 (ENG-194): defer_reason="bogus-token" → rc=49 closed-vocabulary diag.
+f="$FIXTURE_DIR/eng194-ad12.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false "rationale" \
+  "$DF_FULL" bogus-token
+rc=0; out="$(bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"defer_reason must be 'out-of-plan-scope' or 'rubric'"* ]]; then
+  pass_at "AC-AD-12 (ENG-194): defer_reason='bogus-token' → rc=49 closed-vocabulary diag"
+else
+  fail_at "AC-AD-12 (ENG-194): closed-vocabulary rejection" "rc=$rc out=$out"
+fi
+
+# AC-AD-13 (ENG-194): scope-deferred major + defer_reason MISSING
+# (this-dispatch row) → rc=49 `defer_reason-missing-on-deferred-major`.
+f="$FIXTURE_DIR/eng194-ad13.jsonl"
+write_seed_header "$f"
+jq -cn '{
+  ledger_schema_version:1, issue_id:"ENG-194", dispatch_id:"ENG-194-d0001",
+  iteration:1, created_at:"2026-06-13T00:00:00Z", finding_class_key:"fck",
+  cold_severity:"major", adjudicated_severity:"major", decision:"carry",
+  rationale:"r", blocks_ship:false, ship_classification_rationale:"rationale",
+  decision_factors:{in_changed_code:true, is_regression:true, user_visible:true, reversible_post_ship:true, has_workaround:true}
+}' >> "$f"
+rc=0; out="$(bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"defer_reason-missing-on-deferred-major"* ]]; then
+  pass_at "AC-AD-13 (ENG-194): deferred major without defer_reason → rc=49 + diag"
+else
+  fail_at "AC-AD-13 (ENG-194): missing defer_reason" "rc=$rc out=$out body=$(cat "$f")"
+fi
+
+# AC-AD-14 (ENG-194): critical + blocks_ship=true + defer_reason="out-of-plan-scope"
+# (informational) → rc=0. Critical-floor invariant holds; rule 6 cross-
+# check still runs and the matcher confirms the path is out-of-plan.
+f="$FIXTURE_DIR/eng194-ad14.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 critical critical block true \
+  "out-of-plan-scope: docs/install.md not in plan's File Structure" \
+  "$DF_FULL" out-of-plan-scope
+wt="$(eng194_fixture_worktree "$FIXTURE_DIR/eng194-ad14-wt" 'bin/setup.sh')"
+rc=0; out="$(cd "$wt" && bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 0 )); then
+  pass_at "AC-AD-14 (ENG-194): critical+blocks_ship=true+defer_reason=out-of-plan-scope → rc=0 (informational)"
+else
+  fail_at "AC-AD-14 (ENG-194): critical informational" "rc=$rc out=$out"
+fi
+
+# AC-AD-15 (ENG-194): scope-deferred + rationale with trailing prose →
+# anchored regex fails → rc=49 `out-of-plan-scope-rationale-malformed`.
+f="$FIXTURE_DIR/eng194-ad15.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false \
+  "out-of-plan-scope: /etc/passwd not in plan but bin/setup.sh" \
+  null out-of-plan-scope
+wt="$(eng194_fixture_worktree "$FIXTURE_DIR/eng194-ad15-wt" 'bin/setup.sh')"
+rc=0; out="$(cd "$wt" && bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"out-of-plan-scope-rationale-malformed"* ]]; then
+  pass_at "AC-AD-15 (ENG-194): trailing-prose rationale → rc=49 fail-CLOSED"
+else
+  fail_at "AC-AD-15 (ENG-194): trailing-prose forgery" "rc=$rc out=$out"
+fi
+
+# AC-AD-16 (ENG-194): scope-deferred + rationale names path the plan
+# DOES scope → matcher disagrees → rc=49 `defer-reason-claim-disagrees-with-plan-scope`.
+f="$FIXTURE_DIR/eng194-ad16.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false \
+  "out-of-plan-scope: bin/setup.sh not in plan's File Structure" \
+  null out-of-plan-scope
+wt="$(eng194_fixture_worktree "$FIXTURE_DIR/eng194-ad16-wt" 'bin/setup.sh')"
+rc=0; out="$(cd "$wt" && bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"defer-reason-claim-disagrees-with-plan-scope"* ]]; then
+  pass_at "AC-AD-16 (ENG-194): rationale names IN-plan path → rc=49 matcher disagreement"
+else
+  fail_at "AC-AD-16 (ENG-194): matcher cross-check" "rc=$rc out=$out"
+fi
+
+# AC-AD-17 (ENG-194): scope-deferred + malformed rationale BUT
+# dispatch_id (row) != --dispatch-id (flag) → schema-grace → rc=0.
+f="$FIXTURE_DIR/eng194-ad17.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false \
+  "anything goes prior-dispatch" \
+  null out-of-plan-scope
+# Pass a DIFFERENT dispatch-id; row's d0001 ≠ flag's d0002.
+rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0002 >/dev/null 2>&1 || rc=$?
+if (( rc == 0 )); then
+  pass_at "AC-AD-17 (ENG-194): prior-dispatch row with malformed rationale → rc=0 schema-grace"
+else
+  fail_at "AC-AD-17 (ENG-194): schema-grace exemption" "rc=$rc"
+fi
+
+# AC-AD-18 (ENG-194): scope-deferred + correct rationale BUT no plan
+# exists for the issue → cross-check soft-fails with stderr warning →
+# rc=0. Fixture worktree has docs/plans/ but no matching frontmatter.
+f="$FIXTURE_DIR/eng194-ad18.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false \
+  "out-of-plan-scope: docs/install.md not in plan's File Structure" \
+  null out-of-plan-scope
+ad18_wt="$FIXTURE_DIR/eng194-ad18-wt"
+mkdir -p "$ad18_wt/docs/plans"
+(
+  cd "$ad18_wt"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+) >/dev/null 2>&1
+rc=0; out="$(cd "$ad18_wt" && bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 0 )) && [[ "$out" == *"cross-check: plan absent"* ]]; then
+  pass_at "AC-AD-18 (ENG-194): plan-absent + correct rationale → rc=0 + stderr 'cross-check: plan absent'"
+else
+  fail_at "AC-AD-18 (ENG-194): plan-absent soft-fail" "rc=$rc out=$out"
 fi
 
 printf '\nreview-ledger-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
