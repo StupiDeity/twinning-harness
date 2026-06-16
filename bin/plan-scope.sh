@@ -50,15 +50,21 @@ plan_scope::extract_section() {
   ' "$plan"
 }
 
+# LC_ALL=C pins the sort collation so both callers (scope-check.sh and
+# render-prompt.sh's resolver) emit byte-identical ordering regardless of
+# the dispatch host's LANG/LC_COLLATE. Without it a UTF-8 locale collates
+# case-insensitively (CLAUDE.md sorts among lowercase tokens) while C-locale
+# orders uppercase first — the exact byte-for-byte divergence ENG-194 D-001
+# forbids, and what plan-scope-test.sh T1 asserts against.
 plan_scope::parse_allowed_files() {
   local body="$1"
-  grep -oE '([a-zA-Z0-9_./-]+/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+' <<<"$body" | sort -u || true
+  grep -oE '([a-zA-Z0-9_./-]+/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+' <<<"$body" | LC_ALL=C sort -u || true
 }
 
 plan_scope::parse_allowed_dirs() {
   local body="$1"
   grep -oE '([a-zA-Z0-9_.-]+/){1,}' <<<"$body" \
-    | awk '!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.[a-zA-Z0-9]+\/$/' | sort -u || true
+    | awk '!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.[a-zA-Z0-9]+\/$/' | LC_ALL=C sort -u || true
 }
 
 plan_scope::path_in_scope() {
