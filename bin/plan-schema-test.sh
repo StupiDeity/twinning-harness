@@ -511,6 +511,24 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_mixed_markers_multiline.md"
   && pass_at "T_validate_md_mixed_markers_multiline: ENG-192 real shape (asterisk + wrap) → rc=0" \
   || fail_at "T_validate_md_mixed_markers_multiline" "expected rc=0, got rc=$rc"
 
+# ─── ENG-203: markdown-emphasis around the verified_by: label ─────────
+# Planning agents emit `**verified_by:** task:T2` (bold label). The
+# closing `**` sits between the colon and the token; the pre-ENG-203
+# separator `[[:space:]]*` could not span it, so a semantically-valid
+# plan halted with plan-md-malformed (rc=33). The separator now also
+# tolerates `*`/`_`/backtick emphasis runs.
+cat > "$FIXTURE_DIR/md_bold_label.md" <<'MDEOF'
+## System invariants
+
+- I-1: orchestrator owns the envelope. **verified_by:** task:T2
+  (adds AP-1/AP-2 prompt-content assertions).
+- I-2: merge helper is pure. **verified_by:** bin/common-test.sh:U_merge
+MDEOF
+rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR/md_bold_label.md" >/dev/null 2>&1 || rc=$?
+(( rc == 0 )) \
+  && pass_at "T_validate_md_bold_label: '**verified_by:**' bold label → rc=0 (ENG-203)" \
+  || fail_at "T_validate_md_bold_label" "expected rc=0, got rc=$rc"
+
 # ─── T_validate_md_multiline_missing_token: wrapped bullet, NO token anywhere
 # Guard: multi-line accumulation must not mask a genuinely missing reference.
 cat > "$FIXTURE_DIR/md_multiline_missing.md" <<'MDEOF'

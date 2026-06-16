@@ -244,9 +244,14 @@ cmd_validate() {
 # accumulated body is then scanned for the `verified_by:` token shape.
 # This makes the validator robust to:
 #   • any of the three CommonMark unordered-list markers (ENG-192:
-#     planning agents emit `*` and `+`, not just `-`), and
+#     planning agents emit `*` and `+`, not just `-`),
 #   • line-wrapped bullets whose `verified_by:` token lands on a
-#     continuation line (ENG-192: the common emission shape).
+#     continuation line (ENG-192: the common emission shape), and
+#   • markdown emphasis runs around the label (ENG-203: planning
+#     agents emit `**verified_by:** task:T2`, where the closing `**`
+#     sits between the colon and the token). The separator between the
+#     `verified_by:` label and the token tolerates `*`/`_`/backtick
+#     emphasis characters in addition to whitespace.
 # Nesting is still not modelled — an indented marker is treated as a
 # continuation line of the enclosing top-level bullet, not a sub-bullet.
 # Heading match is strictly the literal `## System invariants`
@@ -289,7 +294,7 @@ cmd_validate_md() {
       # `<path>:<test-name>` shape: two non-space tokens separated by `:`.
       # `task:T<N>` shape: literal `task:T` + ≥1 digit. Either form anywhere
       # in the bullet body counts.
-      if (match(buf, /verified_by:[[:space:]]*([^[:space:]]+:[^[:space:]]+|task:T[0-9]+)/)) {
+      if (match(buf, /verified_by:[[:space:]*_`]*([^[:space:]]+:[^[:space:]]+|task:T[0-9]+)/)) {
         # parseable token — bullet OK
       } else if (match(buf, /verified_by:/)) {
         # token present but neither shape matched
