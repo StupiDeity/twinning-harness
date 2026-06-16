@@ -1446,6 +1446,27 @@ eng203_merge_envelope_tests() {
   else
     fail_at "U-10: merge rc!=0" "rc=$rc"
   fi
+
+  # U-11 (ENG-203 review M3): empty-string dispatch_id in envelope. Pins the
+  # most-likely caller-bug shape (PIPELINE_DISPATCH_ID unset → ${VAR:-} is
+  # ""); the helper must pass through cleanly (rc=0). The downstream
+  # qa-payload schema regex rejects empty dispatch_id with rc=40, but the
+  # helper itself is a content-bias merger and must NOT crash on empty
+  # identity-key values. U-10 documents the broader caller-discipline
+  # contract; this case nails down the specific empty-dispatch-id shape.
+  body="$tdir/u11-body.json"
+  canonical="$tdir/u11-canonical.json"
+  printf '%s' '{"verdict":"pass","dimensions":[]}' > "$body"
+  rc=0
+  merge_artifact_envelope "$body" \
+    '{"qa_payload_schema_version":1,"issue_id":"ENG-1","dispatch_id":""}' \
+    "$canonical" 2>/dev/null || rc=$?
+  if [[ "$rc" == "0" ]]; then
+    assert_eq "U-11: empty dispatch_id envelope key passes through" "" "$(jq -r '.dispatch_id' "$canonical")"
+    assert_eq "U-11: empty dispatch_id preserves issue_id" "ENG-1" "$(jq -r '.issue_id' "$canonical")"
+  else
+    fail_at "U-11: empty dispatch_id helper rc!=0" "rc=$rc"
+  fi
 }
 eng203_merge_envelope_tests
 

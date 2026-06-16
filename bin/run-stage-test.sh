@@ -9731,10 +9731,16 @@ _os_dir() {
   printf '%s/%s' "$PROJECT_STATE_DIR" "$ident"
 }
 
-# OS-1 (AC#4 ENG-118 regression): body without envelope keys merges to a
-# canonical with all five keys; _validate_qa_payload returns 0.
-mkdir -p "$(_os_dir ENG-203OS1)"
-cat > "$(_os_dir ENG-203OS1)/verdict-qa.body.json" <<'EOF'
+# OS-1 (AC#4 ENG-118 regression — ENG-203 review M2 refactor): body without
+# envelope keys merges to a canonical with all five keys AND _validate_qa_payload
+# returns 0 against the merged canonical. The original OS-1 used issue_id
+# `ENG-203OS1` (does not match the schema's ^ENG-[0-9]+$ regex), so calling
+# _validate_qa_payload was impossible without a hand-built fixture. Use a
+# synthetic `ENG-9203001` (regex-valid, does not collide with the real
+# ENG-203 issue dir) so the test exercises the end-to-end merge → validator
+# pipeline that production runs every dispatch.
+mkdir -p "$(_os_dir ENG-9203001)"
+cat > "$(_os_dir ENG-9203001)/verdict-qa.body.json" <<'EOF'
 {
   "verdict": "pass",
   "dimensions": [
@@ -9742,16 +9748,21 @@ cat > "$(_os_dir ENG-203OS1)/verdict-qa.body.json" <<'EOF'
   ]
 }
 EOF
-rm -f "$(_os_dir ENG-203OS1)/verdict-qa.json"
-export PIPELINE_DISPATCH_ID=ENG-203OS1-d0001
+rm -f "$(_os_dir ENG-9203001)/verdict-qa.json"
+export PIPELINE_DISPATCH_ID=ENG-9203001-d0001
 _os1_rc=0
-_merge_qa_payload_envelope ENG-203OS1 2>/dev/null || _os1_rc=$?
-if (( _os1_rc == 0 )) && [[ -f "$(_os_dir ENG-203OS1)/verdict-qa.json" ]] \
-  && jq -e '.qa_payload_schema_version == 1 and .issue_id == "ENG-203OS1" and .dispatch_id == "ENG-203OS1-d0001" and .verdict == "pass" and (.dimensions | length == 1)' "$(_os_dir ENG-203OS1)/verdict-qa.json" >/dev/null 2>&1; then
-  pass_at "ENG-203 OS-1: clean body → merged canonical has all five envelope+body keys"
+_merge_qa_payload_envelope ENG-9203001 2>/dev/null || _os1_rc=$?
+_os1_validator_rc=0
+if (( _os1_rc == 0 )); then
+  _validate_qa_payload ENG-9203001 >/dev/null 2>&1 || _os1_validator_rc=$?
+fi
+if (( _os1_rc == 0 )) && (( _os1_validator_rc == 0 )) \
+  && [[ -f "$(_os_dir ENG-9203001)/verdict-qa.json" ]] \
+  && jq -e '.qa_payload_schema_version == 1 and .issue_id == "ENG-9203001" and .dispatch_id == "ENG-9203001-d0001" and .verdict == "pass" and (.dimensions | length == 1)' "$(_os_dir ENG-9203001)/verdict-qa.json" >/dev/null 2>&1; then
+  pass_at "ENG-203 OS-1: clean body → merged canonical has all five keys + _validate_qa_payload rc=0"
 else
-  fail_at "ENG-203 OS-1: clean body merge" \
-    "rc=$_os1_rc canonical-exists=$([[ -f "$(_os_dir ENG-203OS1)/verdict-qa.json" ]] && echo yes || echo no)"
+  fail_at "ENG-203 OS-1: clean body merge + validator roundtrip" \
+    "merge-rc=$_os1_rc validator-rc=$_os1_validator_rc canonical-exists=$([[ -f "$(_os_dir ENG-9203001)/verdict-qa.json" ]] && echo yes || echo no)"
 fi
 unset PIPELINE_DISPATCH_ID
 
@@ -9864,6 +9875,12 @@ export PIPELINE_DISPATCH_ID=ENG-203OS6-d0001
 _merge_qa_payload_envelope ENG-203OS6 >/dev/null 2>&1 || true
 unset PIPELINE_DISPATCH_ID
 eval "$_os6_real_def"
+# ENG-203 review nit N4: common.sh exports merge_artifact_envelope via
+# `export -f`; the eval-restore above replays the body but loses the export
+# attribute. Re-export so subshell-spawning callers (e.g. the in-dispatch
+# verify-qa.sh shape in OS-5 / OS-7) still inherit the real implementation
+# after this restore.
+export -f merge_artifact_envelope
 _os6_keys=""
 if [[ -s "$_os6_capture" ]]; then
   _os6_keys="$(jq -r 'keys | sort | join(",")' < "$_os6_capture" 2>/dev/null || printf '')"
@@ -9875,6 +9892,26 @@ else
     "captured keys='$_os6_keys' (expected 'dispatch_id,issue_id,qa_payload_schema_version')"
 fi
 rm -f "$_os6_capture"
+
+# OS-6b (ENG-203 review M4): structural pin against stub-bypass refactors.
+# OS-6 stubs merge_artifact_envelope as a bash function override. A refactor
+# to `command merge_artifact_envelope` (bypasses functions), an inline `jq`
+# call site, or a different helper name would silently bypass the stub and
+# leave OS-6 passing on an empty capture. Anchor on the source file via awk
+# rather than `declare -f` so set-euo guards don't interact with rc=1 on a
+# missing function (parent shell sources run-stage.sh, so the function IS
+# defined — but the awk shape is robust either way and self-contained).
+_os6b_body=""
+_os6b_body="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+_os6b_fail=""
+[[ "$_os6b_body" == *"merge_artifact_envelope"* ]] || _os6b_fail+="missing merge_artifact_envelope call; "
+[[ "$_os6b_body" != *"command merge_artifact_envelope"* ]] || _os6b_fail+="found 'command merge_artifact_envelope' (bypasses function stubs); "
+if [[ -z "$_os6b_fail" ]]; then
+  pass_at "ENG-203 OS-6b: _merge_qa_payload_envelope routes through stub-overridable shared helper"
+else
+  fail_at "ENG-203 OS-6b: stub-bypass guard" "$_os6b_fail"
+fi
+unset _os6b_body _os6b_fail
 
 # OS-7: caller-side envelope-keyset discipline (qa-predicate side via
 # verify-qa.sh --body). Same stub-capture shape. Source verify-qa.sh's
@@ -9914,6 +9951,50 @@ else
     "captured keys='$_os7_keys' (expected 'issue_id,qa_predicate_schema_version')"
 fi
 rm -f "$_os7_capture"
+
+# OS-7b (ENG-203 review M4): structural pin for the verify-qa.sh --body call
+# site. Same bypass-refactor concern as OS-6b — assert that cmd_validate's
+# body-merge phase in bin/verify-qa.sh calls merge_artifact_envelope through
+# the shared helper (no `command` prefix). cmd_validate is sourced only
+# inside OS-7's subshell, so anchor on the source file via awk.
+_os7b_body=""
+_os7b_body="$(awk '/^cmd_validate\(\) \{/,/^\}/' "$HARNESS_DIR/verify-qa.sh" 2>/dev/null || true)"
+_os7b_fail=""
+[[ "$_os7b_body" == *"merge_artifact_envelope"* ]] || _os7b_fail+="missing merge_artifact_envelope call; "
+[[ "$_os7b_body" != *"command merge_artifact_envelope"* ]] || _os7b_fail+="found 'command merge_artifact_envelope' (bypasses function stubs); "
+if [[ -z "$_os7b_fail" ]]; then
+  pass_at "ENG-203 OS-7b: cmd_validate body-merge phase routes through stub-overridable shared helper"
+else
+  fail_at "ENG-203 OS-7b: stub-bypass guard (verify-qa.sh)" "$_os7b_fail"
+fi
+unset _os7b_body _os7b_fail
+
+# OS-8 (ENG-203 review M5): structural pin for the qa-stage hook in run-stage.sh.
+# OS-2/OS-3 exercise the _merge_qa_payload_envelope helper directly and verify
+# its rc + halt-comment, but never exercise the wrapping case-statement that
+# routes a non-zero merge rc through classify_failure and exit. A regression
+# that drops `classify_failure`, switches the policy off `skip-until-human-acts`,
+# breaks the `failure_outcome_for_exit` reason composition, or omits the
+# `exit "$_qa_merge_rc"` would not be caught by the helper-direct tests.
+# Anchor on the source file: extract the qa-arm of the merge hook (case-block
+# bounded by the ENG-203 header comment and the closing `esac`) and assert
+# the four load-bearing tokens are all present together.
+_os8_hook="$(awk '
+  /^  # ENG-203: qa-payload envelope merge\./ { capture=1 }
+  capture { print }
+  capture && /^  fi$/ { exit }
+' "$HARNESS_DIR/run-stage.sh")"
+_os8_fail=""
+[[ "$_os8_hook" == *"_merge_qa_payload_envelope \"\$ident\""* ]] || _os8_fail+="missing _merge_qa_payload_envelope call; "
+[[ "$_os8_hook" == *"classify_failure \"\$ident\" \"\$stage\" \"skip-until-human-acts\""* ]] || _os8_fail+="missing classify_failure with skip-until-human-acts policy; "
+[[ "$_os8_hook" == *"failure_outcome_for_exit \"\$_qa_merge_rc\""* ]] || _os8_fail+="missing failure_outcome_for_exit subcode mapping; "
+[[ "$_os8_hook" == *"exit \"\$_qa_merge_rc\""* ]] || _os8_fail+="missing exit \"\$_qa_merge_rc\"; "
+if [[ -z "$_os8_fail" ]]; then
+  pass_at "ENG-203 OS-8: qa-stage hook wires merge → classify_failure(skip-until-human-acts) → failure_outcome_for_exit → exit"
+else
+  fail_at "ENG-203 OS-8: qa-stage hook wire-up" "$_os8_fail"
+fi
+unset _os8_hook _os8_fail
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
