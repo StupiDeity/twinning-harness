@@ -130,6 +130,14 @@ _parse_validate_argv() {
   if [[ -z "$ARG_FILE" && -z "$ARG_BODY" ]]; then
     printf 'verify-qa.sh: validate: file argument required (or --body)\n' >&2; return 42
   fi
+  # ENG-203 review M1: --body and a positional ARG_FILE are mutually
+  # exclusive. The body-merge phase below would silently clobber the
+  # caller's positional with the canonical computed from --ident; reject
+  # at the CLI boundary so a future caller cannot misroute.
+  if [[ -n "$ARG_FILE" && -n "$ARG_BODY" ]]; then
+    printf 'verify-qa.sh: validate: --body and positional file argument are mutually exclusive\n' >&2
+    return 42
+  fi
   return 0
 }
 
