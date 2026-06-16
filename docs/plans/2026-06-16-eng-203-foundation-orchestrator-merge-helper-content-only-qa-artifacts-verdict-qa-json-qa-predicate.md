@@ -310,35 +310,35 @@ boundaries themselves; line numbers below are informational hints only.
   `dispatch_id` into any artifact it Writes. The orchestrator constructs
   the envelope from `$PIPELINE_DISPATCH_ID` + `$ident` and merges it onto
   the agent's body via `merge_artifact_envelope` before the schema
-  validator runs. **verified_by:** task:T2 (adds AP-1/AP-2/AP-4/AP-5
+  validator runs. verified_by: task:T2 (adds AP-1/AP-2/AP-4/AP-5
   prompt-content assertions in `bin/agent-prompts-content-test.sh`).
 - `merge_artifact_envelope <body> <env-json> <canonical>` is a pure
   structural function (read body, jq-merge envelope right-biased, atomic
   mv to canonical). Exit codes 0/39/41/42/50 stay within
   `failure_outcome_for_exit`'s qa-payload range; the caller (not the
-  helper) owns envelope-keyset discipline. **verified_by:** task:T1
+  helper) owns envelope-keyset discipline. verified_by: task:T1
   (adds U-1..U-10 helper cases in `bin/common-test.sh`).
 - `_clear_current_stage_slots` qa-stage branch clears both body sidecars
   AND both canonical files (`verdict-qa.json`, `verdict-qa.body.json`,
   `qa-predicate-<ident>.json`, `qa-predicate-<ident>.body.json`) on
   qa-stage dispatch start, honoring the ENG-87 per-medium primitive.
-  Other stages' files are preserved for loopback. **verified_by:**
+  Other stages' files are preserved for loopback. verified_by:
   task:T4 (adds OS-4 in `bin/run-stage-test.sh`).
 - Merge runs BEFORE `_validate_qa_payload`. On merge failure, the
   orchestrator halts with `qa-payload-invalid: <subcode>` (using
   `failure_outcome_for_exit` mapping); the validator never sees a
-  body-only document. **verified_by:** task:T4 (adds OS-1..OS-3 in
+  body-only document. verified_by: task:T4 (adds OS-1..OS-3 in
   `bin/run-stage-test.sh`).
 - `verify-qa.sh validate --body <path>` enforces a realpath fence on the
   body path against `$PROJECT_STATE_DIR` (mirroring the existing
   `$ARG_FILE` fence), merges in-dispatch via the shared helper, and
   validates the merged canonical. Without `--body` the existing
-  no-flag form is byte-identical to today. **verified_by:** task:T3
+  no-flag form is byte-identical to today. verified_by: task:T3
   (adds VQ-1..VQ-5 in `bin/verify-qa-test.sh`).
 - `envelope-overwrite` is registered in
   `bin/pipeline-events.json::metric_names` and emitted by the helper
   on key-overlap (forensic signal only; no Linear comment, no halt).
-  **verified_by:** task:T6 (adds case-8 in
+  verified_by: task:T6 (adds case-8 in
   `bin/vocabulary-cleanliness-test.sh`).
 
 ## File Structure
