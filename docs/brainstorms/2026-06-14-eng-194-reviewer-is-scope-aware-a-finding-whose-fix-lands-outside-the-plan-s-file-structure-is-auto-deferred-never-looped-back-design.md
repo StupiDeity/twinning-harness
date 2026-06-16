@@ -76,16 +76,13 @@ considered:
   already ENG-191-shipped and the change is a partition of its jq
   filter into two branches). Risk: rubric drift if accepted.
 
-**Working decision: Option B.** D-006's change is genuinely small in
-the orchestrator subsystem — it modifies ONE existing function's body
-without adding new entry points or new validators or new pipeline
-markers; the partition is data-driven on `defer_reason`. Calling D-006
-a "second subordinate" rather than a third primary subsystem touch is
-honest. If the implementation-time line count balloons beyond ~50
-lines or D-006 grows new control flow (e.g., new error handling paths,
-new metric events), descope to follow-up. Iter-2 acknowledges this
-trade-off explicitly; the brainstorm is still autonomy-safe IF Option
-B's bound holds at implementation time.
+**Working decision: Option B — SUPERSEDED by the operator DESCOPE
+decision below (2026-06-16).** The iter-2 working position was to carve
+out D-006 and keep all three subordinates in-scope. The operator
+overrode this in favour of the autonomy-safe 2-subsystem shape; D-006
+(and D-007's second resolver + D-002's recipe trailer) are deferred to
+follow-up tickets. See the OPERATOR DECISION block at the end of this
+section for the authoritative scope.
 
 **OPERATOR DECISION FLAG (iter-1-of-d0002 — addresses scope persona P0
 #1 in this dispatch's iter-1).** Independent scope persona review on
@@ -110,9 +107,23 @@ operator-decision paths exist:
    separately). AC #5's ENG-27-class advance still works (D-004
    predicate extension fires path D on iter 1).
 
-Planning agent CANNOT proceed without operator decision on this
-flag. v1 of the brainstorm-ledger ships Option-B's pre-approved
-shape; the operator can override at planning entry.
+**OPERATOR DECISION (2026-06-16, rajat.goyal): DESCOPE to the
+autonomy-safe 2-subsystem shape (path 2 above).** Rationale: the
+CLAUDE.md ticket-sizing rubric's "3+ subsystems → split before filing"
+trigger is dispositive when two subordinates are present; the
+brainstorm's Option-B self-grant is not authoritative (scope persona
+P0). ENG-194's authoritative scope is now **D-001 + D-002 (plan-scope-only
+adjudication) + D-003 + D-004 + D-005 + D-008**. The three carve-outs —
+(a) D-006 deferred-majors comment partition, (b) D-007's second
+`{plan_scope_benign_path_classes}` resolver, (c) D-002's
+`critical-out-of-plan/<ident>` meta-comment recipe — are deferred to
+follow-up tickets filed against this parent. AC #2 ("not silently
+dropped") remains structurally satisfied by the `defer_reason` ledger
+field; the deferred-majors comment renders ENG-191's flat-list shape
+until D-006 ships separately. AC #5's ENG-27-class advance is unaffected
+(D-004 predicate extension fires path D on iter 1). **The planning agent
+MUST plan only the reduced scope above and MUST NOT plan D-006, D-007's
+second resolver, or D-002's recipe trailer.**
 
 **Reference to constraint.** CLAUDE.md "AGENT_PROMPTS.md is
 load-bearing": the new block sits inside §5's existing fenced body —
