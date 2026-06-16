@@ -355,6 +355,7 @@ boundaries themselves; line numbers below are informational hints only.
 | `bin/run-stage-test.sh` | modify | add OS-1..OS-7 (orchestration + caller-side envelope-keyset tests) |
 | `bin/verify-qa-test.sh` | modify | add VQ-1..VQ-5 (`--body` flag cases incl. realpath fence + caller-side rc remap) |
 | `bin/agent-prompts-content-test.sh` | modify | add AP-1..AP-7 (§6 prompt-content pins) |
+| `bin/render-prompt-rc0-test.sh` | modify | flip ENG-113 case O (~lines 497-518): `EXPECTED_O` basename `qa-predicate-<ident>.json` → `qa-predicate-<ident>.body.json`, rename the label/comment `{qa_predicate_path}` → `{qa_predicate_body_path}` — mirrors the §6 token flip in Task 2 (plan-gap fix, plan iter 2: this file was absent from iter-1 File Structure, which auto-deferred the flip and halted implement dispatch d0006) |
 | `bin/vocabulary-cleanliness-test.sh` | modify | add case-8: `envelope-overwrite in metric_names registry` |
 | `docs/runbooks/recovery.md` | modify | append §15 `qa-payload merge failure (ENG-203)` |
 | `CLAUDE.md` | modify | append one row to "Failure-mode quick reference" pointing at §15 |
@@ -548,6 +549,18 @@ no new API surface (this is internal-harness plumbing; no FE↔BE handler change
       Use `s6="$(section_body "## 6. QA Agent")"` (already present in the
       file at lines 76 and 1861) as the extraction primitive. Reuse the
       existing `ok` / `nope` helpers.
+- [ ] **Finally, flip `bin/render-prompt-rc0-test.sh` ENG-113 case O**
+      (`bin/render-prompt-rc0-test.sh`, ~lines 497-518) so it tracks the §6
+      token rename. The case renders the qa-stage prompt and asserts the output
+      contains `EXPECTED_O`. Change `EXPECTED_O`'s basename from
+      `qa-predicate-<ident>.json` to `qa-predicate-<ident>.body.json` (it must
+      match `_resolve_qa_predicate_body_path`'s output, per the Task 5 resolver),
+      and rename the case label/comment from `{qa_predicate_path}` to
+      `{qa_predicate_body_path}`. Without this flip the case fails as soon as the
+      §6 edit above lands, hard-blocking the Task 2/Task 4 commits at the
+      pre-commit gate (this is the plan-iter-1 gap; see the remove-side sweep
+      in Test Strategy). Content anchor: the literal
+      `EXPECTED_O="$sandbox/state/test-slug-rc0/`.
 
 ### Task 3: Add `--body` flag to `bin/verify-qa.sh`
 
@@ -927,7 +940,22 @@ these tokens:
   not remove `qa_predicate_path` as dead code without realising
   `common.sh::qa_predicate_path` is still load-bearing for verify-qa.sh).
   No File Structure addition needed.
-- Other `bin/*-test.sh` — no other test grep-matches these tokens.
+- `bin/render-prompt-rc0-test.sh` — **IS in File Structure (added plan iter 2).**
+  ENG-113 case O (~lines 497-518) renders the qa-stage prompt and asserts the
+  output resolves `{qa_predicate_path}` to `EXPECTED_O` (`qa-predicate-<ident>.json`).
+  After Task 2 flips §6 to `{qa_predicate_body_path}`, the rendered path becomes
+  `qa-predicate-<ident>.body.json`, so case O's `EXPECTED_O` basename + its label
+  flip to `.body.json` / `{qa_predicate_body_path}` — mechanically identical to the
+  `bin/agent-prompts-content-test.sh` flip in Task 2. **This live assertion is the
+  gap the plan-iter-1 sweep missed; it halted implement dispatch d0006 (the agent
+  correctly auto-deferred the out-of-File-Structure fix per the scope-aware rule).**
+- `bin/dispatch-test.sh` — matches the token only inside a COMMENT
+  (line ~108, the ENG-113 verify-qa.sh dual-path note); no live assertion on §6
+  content, so no change needed. No File Structure addition.
+- Other `bin/*-test.sh` — no further test has a live `{qa_predicate_path}`
+  assertion (verified: `grep -lF '{qa_predicate_path}' bin/*-test.sh` ⇒
+  agent-prompts-content-test.sh [Task 2] + render-prompt-rc0-test.sh [this entry]
+  + dispatch-test.sh [comment-only]).
 
 **Test-gate closure (add-side sweep — feasibility persona):** This plan
 adds NO new `bin/*-test.sh` files. All new assertions extend existing
