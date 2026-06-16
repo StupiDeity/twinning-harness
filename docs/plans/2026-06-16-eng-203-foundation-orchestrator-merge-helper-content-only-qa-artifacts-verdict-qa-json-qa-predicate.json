@@ -1,0 +1,244 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-203",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Orchestrator-merge helper (common.sh::merge_artifact_envelope) + body-path resolvers + qa-stage post-dispatch merge wired before _validate_qa_payload + verify-qa.sh --body flag + §6 prompt edits + clear-on-dispatch-start extension covering all four qa-stage files; the ENG-118 clean-pass content-only body no longer halts.",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^merge_artifact_envelope\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^qa_payload_body_path\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^qa_predicate_body_path\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "export -f .* merge_artifact_envelope",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "export -f .* qa_payload_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "export -f .* qa_predicate_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "^_merge_qa_payload_envelope\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_merge_qa_payload_envelope \"\\$ident\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "verdict-qa\\.body\\.json",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "qa-predicate-\\$\\{ident\\}\\.body\\.json",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "qa-predicate-\\$\\{ident\\}\\.json",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/verify-qa.sh",
+          "pattern": "--body\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/verify-qa.sh",
+          "pattern": "ARG_BODY=\"\\$2\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/verify-qa.sh",
+          "pattern": "merge_artifact_envelope \"\\$ARG_BODY\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/verify-qa.sh",
+          "pattern": "--body must resolve under \\$PROJECT_STATE_DIR",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "qa_payload_body_path=_resolve_qa_payload_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "qa_predicate_body_path=_resolve_qa_predicate_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_QA_PAYLOAD_BODY_PATH",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_QA_PREDICATE_BODY_PATH",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{qa_payload_body_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{qa_predicate_body_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "bash bin/verify-qa\\.sh validate --body \\{qa_predicate_body_path\\} --ident \\{issue_id\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/pipeline-events.json",
+          "pattern": "\"envelope-overwrite\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/vocabulary-cleanliness-test.sh",
+          "pattern": "case-8: envelope-overwrite in metric_names registry",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common-test.sh",
+          "pattern": "ENG-203: merge_artifact_envelope helper",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-203: orchestrator-merge \\+ clear-on-start",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/verify-qa-test.sh",
+          "pattern": "ENG-203: --body flag",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-203: §6 content-only body contract",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "\\{qa_predicate_body_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "## 15\\. qa-payload merge failure \\(ENG-203\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/common.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/run-stage.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/verify-qa.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/render-prompt.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/common-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/verify-qa-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/vocabulary-cleanliness-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/runbooks/recovery.md"
+        }
+      ]
+    }
+  ]
+}
