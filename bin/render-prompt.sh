@@ -58,6 +58,8 @@ verdict_review_path=_resolve_verdict_review_path
 review_ledger_path=_resolve_review_ledger_path
 init_sh_path=_resolve_init_sh_path
 qa_predicate_path=_resolve_qa_predicate_path
+qa_payload_body_path=_resolve_qa_payload_body_path
+qa_predicate_body_path=_resolve_qa_predicate_body_path
 artifacts_dir=_resolve_artifacts_dir
 review_converge_rounds=_resolve_review_converge_rounds
 '
@@ -107,6 +109,8 @@ _write_rendered_paths_sidecar() {
     [[ -n "${_RENDER_PROGRESS_MD_PATH:-}" ]]   && printf 'progress_md_path\t%s\n'   "$_RENDER_PROGRESS_MD_PATH"
     [[ -n "${_RENDER_ARTIFACTS_DIR:-}" ]]      && printf 'artifacts_dir\t%s\n'      "$_RENDER_ARTIFACTS_DIR"
     [[ -n "${_RENDER_REVIEW_LEDGER_PATH:-}" ]] && printf 'review_ledger_path\t%s\n' "$_RENDER_REVIEW_LEDGER_PATH"
+    [[ -n "${_RENDER_QA_PAYLOAD_BODY_PATH:-}" ]]   && printf 'qa_payload_body_path\t%s\n'   "$_RENDER_QA_PAYLOAD_BODY_PATH"
+    [[ -n "${_RENDER_QA_PREDICATE_BODY_PATH:-}" ]] && printf 'qa_predicate_body_path\t%s\n' "$_RENDER_QA_PREDICATE_BODY_PATH"
     # plan_json's resolver `_resolve_plan_json` returns the FILE
     # CONTENTS, not the path — so we cannot reuse it here. The path
     # this sidecar is named after is `${_RENDER_PLAN_FILE%.md}.json`
@@ -281,6 +285,8 @@ _resolve_verdict_review_path() { printf '%s' "$_RENDER_VERDICT_REVIEW_PATH"; }
 _resolve_review_ledger_path() { printf '%s' "${_RENDER_REVIEW_LEDGER_PATH-}"; }
 _resolve_init_sh_path() { printf '%s' "$_RENDER_INIT_SH_PATH"; }
 _resolve_qa_predicate_path() { printf '%s' "$_RENDER_QA_PREDICATE_PATH"; }
+_resolve_qa_payload_body_path() { printf '%s' "$_RENDER_QA_PAYLOAD_BODY_PATH"; }
+_resolve_qa_predicate_body_path() { printf '%s' "$_RENDER_QA_PREDICATE_BODY_PATH"; }
 _resolve_artifacts_dir() { printf '%s' "$_RENDER_ARTIFACTS_DIR"; }
 # ENG-191 D-010: config-driven convergence-rounds gate for path-D
 # (ship-with-deferred-majors). Default 2 (lowest defensible plateau);
@@ -635,6 +641,11 @@ main() {
   # qa-predicate-<ident>.json (D-001 path-shaped resolver). Composes on
   # common.sh::qa_predicate_path which mirrors progress_md_path's shape.
   _RENDER_QA_PREDICATE_PATH="$(qa_predicate_path "$issue_id")"
+  # ENG-203: per-issue qa-payload + qa-predicate BODY sidecar paths
+  # (content-only artifacts the QA agent Writes; the orchestrator merges
+  # the schema envelope onto these before validation runs).
+  _RENDER_QA_PAYLOAD_BODY_PATH="$(qa_payload_body_path "$issue_id")"
+  _RENDER_QA_PREDICATE_BODY_PATH="$(qa_predicate_body_path "$issue_id")"
   # ENG-27: per-issue artifacts directory (Playwright screenshots etc.).
   # Resolver returns the absolute path with trailing slash; the ui/qa
   # AGENT_PROMPTS.md bodies reference it as {artifacts_dir} for the

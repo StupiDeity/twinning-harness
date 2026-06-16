@@ -80,7 +80,7 @@ _verify_qa_cleanup_snap() {
 # Returns 0 with parsed values in ARG_FILE/ARG_IDENT/ARG_WORKTREE
 # globals; emits diagnostics + returns 42 (malformed) on argv shape errors.
 _parse_validate_argv() {
-  ARG_FILE=""; ARG_IDENT=""; ARG_WORKTREE=""
+  ARG_FILE=""; ARG_IDENT=""; ARG_WORKTREE=""; ARG_BODY=""
   local first=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -104,6 +104,14 @@ _parse_validate_argv() {
           printf 'verify-qa.sh: --worktree requires a non-flag value, got: %s\n' "$2" >&2; return 42
         fi
         ARG_WORKTREE="$2"; shift 2 ;;
+      --body)
+        if [[ $# -lt 2 ]]; then
+          printf 'verify-qa.sh: --body requires a value\n' >&2; return 42
+        fi
+        if [[ "$2" == --* ]]; then
+          printf 'verify-qa.sh: --body requires a non-flag value, got: %s\n' "$2" >&2; return 42
+        fi
+        ARG_BODY="$2"; shift 2 ;;
       --*)     printf 'verify-qa.sh: unknown flag %s\n' "$1" >&2; return 42 ;;
       *)
         if (( first )); then ARG_FILE="$1"; first=0
@@ -113,7 +121,15 @@ _parse_validate_argv() {
         ;;
     esac
   done
-  [[ -n "$ARG_FILE" ]] || { printf 'verify-qa.sh: validate: file argument required\n' >&2; return 42; }
+  # ENG-203: --body substitutes for the canonical file argument. The
+  # caller writes a content-only body sidecar; cmd_validate's body-merge
+  # phase fences the realpath, calls merge_artifact_envelope to splice
+  # the schema envelope onto the body, and rewrites ARG_FILE to point at
+  # the canonical for the unchanged downstream phases. Defer the
+  # `ARG_FILE` requirement when --body is present.
+  if [[ -z "$ARG_FILE" && -z "$ARG_BODY" ]]; then
+    printf 'verify-qa.sh: validate: file argument required (or --body)\n' >&2; return 42
+  fi
   return 0
 }
 
@@ -602,6 +618,59 @@ cmd_validate() {
   # tests that source this script do not inherit our EXIT handler.
   trap '_verify_qa_cleanup_snap' EXIT
   _parse_validate_argv "$@" || return $?
+  # ─── ENG-203: --body in-dispatch merge phase ───────────────────────
+  # When --body is set, the caller wrote a content-only predicate body
+  # (no envelope keys). Fence its realpath against $PROJECT_STATE_DIR
+  # (mirrors the canonical $ARG_FILE fence), build the schema envelope
+  # `{qa_predicate_schema_version, issue_id}`, call merge_artifact_envelope
+  # to atomically write the merged canonical at qa_predicate_path(ident),
+  # and remap helper rcs (39→42, 41→44, 42→42, 50→42) into the verify-qa
+  # taxonomy so downstream callers see a single qa-predicate-* surface.
+  # On success, overwrite ARG_FILE to point at the canonical so phases
+  # 2-5 (authority check, worktree fence, snapshot, schema validate,
+  # execute) run unchanged on the merged file.
+  if [[ -n "$ARG_BODY" ]]; then
+    if [[ -L "$ARG_BODY" ]]; then
+      printf 'qa-predicate-malformed: --body must not be a symlink: %s\n' "$ARG_BODY" >&2
+      return 42
+    fi
+    if [[ ! -f "$ARG_BODY" ]]; then
+      printf 'qa-predicate-missing: --body file not found: %s\n' "$ARG_BODY" >&2
+      return 44
+    fi
+    local body_dir body_parent_real body_real
+    body_dir="$(dirname "$ARG_BODY")"
+    if ! body_parent_real="$(cd "$body_dir" 2>/dev/null && pwd -P)"; then
+      printf 'qa-predicate-malformed: cannot resolve realpath of --body parent: %s\n' "$body_dir" >&2
+      return 42
+    fi
+    body_real="$body_parent_real/$(basename "$ARG_BODY")"
+    local prefix_real
+    prefix_real="$(cd "$PROJECT_STATE_DIR" && pwd -P)"
+    if [[ "$body_real" != "$prefix_real"/* ]]; then
+      printf 'qa-predicate-malformed: --body must resolve under $PROJECT_STATE_DIR; got %s\n' "$body_real" >&2
+      return 42
+    fi
+    if [[ -z "$ARG_IDENT" ]]; then
+      printf 'qa-predicate-incomplete: --body requires --ident <ENG-N>\n' >&2
+      return 43
+    fi
+    local canonical env_json merge_rc=0
+    canonical="$(qa_predicate_path "$ARG_IDENT")"
+    env_json="$(jq -nc --arg ii "$ARG_IDENT" \
+      '{qa_predicate_schema_version: 1, issue_id: $ii}')"
+    PIPELINE_ISSUE_ID="$ARG_IDENT" PIPELINE_STAGE=qa \
+      merge_artifact_envelope "$ARG_BODY" "$env_json" "$canonical" \
+      || merge_rc=$?
+    case "$merge_rc" in
+      0)  ARG_FILE="$canonical" ;;
+      39) return 42 ;;
+      41) return 44 ;;
+      42) return 42 ;;
+      50) return 42 ;;
+      *)  return 42 ;;
+    esac
+  fi
   _check_canonical_path_available
   _authority_check "$ARG_FILE" || return $?
   _worktree_fence "$ARG_WORKTREE" || return $?

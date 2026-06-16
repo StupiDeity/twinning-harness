@@ -962,13 +962,21 @@ _clear_current_stage_slots() {
   if [[ "$stage" == "reviewing" ]]; then
     rm -f "$d/verdict-review.json" 2>/dev/null || true
   fi
-  # ENG-117: pre-clean verdict-qa.json on qa-stage dispatch start.
+  # ENG-117 + ENG-203: pre-clean all four qa-stage payload + predicate
+  # files (canonical + body sidecar) on qa-stage dispatch start.
   # Stage-gated to qa for the same reason as ENG-119's reviewing-gated
-  # clear: the file is qa-specific; clearing on other stages would erase
+  # clear: the files are qa-specific; clearing on other stages would erase
   # prior-iteration payloads the threshold / retrospective sub-tickets
-  # may read during loopback.
+  # may read during loopback. ENG-203 D-005 extends the clear to include
+  # the body sidecars (verdict-qa.body.json,
+  # qa-predicate-<ident>.body.json) AND the qa-predicate canonical —
+  # otherwise a stale prior-dispatch canonical could survive when the
+  # agent forgets to call verify-qa.sh on re-dispatch.
   if [[ "$stage" == "qa" ]]; then
-    rm -f "$d/verdict-qa.json" 2>/dev/null || true
+    rm -f "$d/verdict-qa.json"                      2>/dev/null || true
+    rm -f "$d/verdict-qa.body.json"                 2>/dev/null || true
+    rm -f "$d/qa-predicate-${ident}.json"           2>/dev/null || true
+    rm -f "$d/qa-predicate-${ident}.body.json"      2>/dev/null || true
   fi
   return 0
 }
@@ -2066,6 +2074,43 @@ _create_follow_up_tickets_for_deferred_majors() {
   return 0
 }
 
+# ENG-203: orchestrator-side qa-payload envelope merge. Splices the
+# schema envelope {qa_payload_schema_version, issue_id, dispatch_id}
+# onto the agent-authored content-only body sidecar
+# ($issue_dir/verdict-qa.body.json) and atomically writes the merged
+# canonical at $issue_dir/verdict-qa.json. Runs BEFORE
+# _validate_qa_payload in the qa-stage post-dispatch sequence so the
+# validator sees a fully-formed canonical with envelope keys.
+#
+# Returns: 0 = merged; 39/41/42/50 from merge_artifact_envelope
+# (failure_outcome_for_exit's qa-payload range). On non-zero, posts the
+# halt comment via _post_qa_payload_halt and the caller hooks into
+# classify_failure.
+_merge_qa_payload_envelope() {
+  local ident="$1"
+  local d; d="$(issue_dir "$ident")"
+  local body="$d/verdict-qa.body.json"
+  local canonical="$d/verdict-qa.json"
+  local env_json
+  env_json="$(jq -nc --arg ii "$ident" --arg di "${PIPELINE_DISPATCH_ID:-}" \
+    '{qa_payload_schema_version: 1, issue_id: $ii, dispatch_id: $di}')"
+  local rc=0 raw=""
+  raw="$(PIPELINE_ISSUE_ID="$ident" PIPELINE_STAGE=qa \
+    merge_artifact_envelope "$body" "$env_json" "$canonical" 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    local defect
+    case "$rc" in
+      41) defect="qa-payload-missing" ;;
+      39|42|50) defect="qa-payload-malformed" ;;
+      *)  defect="qa-payload-malformed" ;;
+    esac
+    _post_qa_payload_halt "$ident" "$defect" \
+      "merge_artifact_envelope failed (rc=$rc) for body=$body${raw:+ — $raw}"
+    return "$rc"
+  fi
+  return 0
+}
+
 # ENG-117: qa-payload validator. Filesystem detective — checks that the qa
 # agent wrote a well-formed $issue_dir/verdict-qa.json with current
 # dispatch_id. Returns 0=valid, 39=malformed, 40=incomplete,
@@ -2974,6 +3019,29 @@ main() {
       reviewing)
         _validate_review_thresholds "$ident" || true
         _create_follow_up_tickets_for_deferred_majors "$ident" || true
+        ;;
+    esac
+  fi
+
+  # ENG-203: qa-payload envelope merge. Post-dispatch; qa stage only.
+  # Reads $(issue_dir)/verdict-qa.body.json (agent-authored, content
+  # only), splices the orchestrator-constructed envelope keys
+  # ({qa_payload_schema_version, issue_id, dispatch_id}) onto a fresh
+  # canonical verdict-qa.json, halts with qa-payload-invalid on merge
+  # failure (body missing → rc=41, body malformed → rc=39, write
+  # failure → rc=50, envelope-not-object → rc=42). The downstream
+  # _validate_qa_payload below runs on the merged canonical.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      qa)
+        local _qa_merge_rc=0
+        _merge_qa_payload_envelope "$ident" || _qa_merge_rc=$?
+        if (( _qa_merge_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "qa-payload-invalid: $(failure_outcome_for_exit "$_qa_merge_rc")" \
+            "$_qa_merge_rc"
+          exit "$_qa_merge_rc"
+        fi
         ;;
     esac
   fi

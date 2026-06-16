@@ -9716,6 +9716,205 @@ fi
 _eng193_reset_config
 unset _adv6_lgr _adv6_count _adv6_labels
 
+# ─── ENG-203: orchestrator-merge + clear-on-start (OS-1..OS-7) ────────
+# Validates the qa-stage merge_artifact_envelope wire-up,
+# _clear_current_stage_slots's qa-stage extension (all four files), the
+# verify-qa.sh --body in-dispatch merge path, and caller-side envelope-
+# keyset discipline on both merge call sites.
+printf '\n--- ENG-203: orchestrator-merge + clear-on-start (OS-1..OS-7) ---\n'
+
+# Fresh sandbox for the OS-* block. Use a sub-dir of PROJECT_STATE_DIR so
+# issue_dir() resolves correctly and merge_artifact_envelope writes into
+# a real fs.
+_os_dir() {
+  local ident="$1"
+  printf '%s/%s' "$PROJECT_STATE_DIR" "$ident"
+}
+
+# OS-1 (AC#4 ENG-118 regression): body without envelope keys merges to a
+# canonical with all five keys; _validate_qa_payload returns 0.
+mkdir -p "$(_os_dir ENG-203OS1)"
+cat > "$(_os_dir ENG-203OS1)/verdict-qa.body.json" <<'EOF'
+{
+  "verdict": "pass",
+  "dimensions": [
+    { "name": "coverage", "score": 0.9, "rationale": "covers all FM rows.", "threshold_met": true }
+  ]
+}
+EOF
+rm -f "$(_os_dir ENG-203OS1)/verdict-qa.json"
+export PIPELINE_DISPATCH_ID=ENG-203OS1-d0001
+_os1_rc=0
+_merge_qa_payload_envelope ENG-203OS1 2>/dev/null || _os1_rc=$?
+if (( _os1_rc == 0 )) && [[ -f "$(_os_dir ENG-203OS1)/verdict-qa.json" ]] \
+  && jq -e '.qa_payload_schema_version == 1 and .issue_id == "ENG-203OS1" and .dispatch_id == "ENG-203OS1-d0001" and .verdict == "pass" and (.dimensions | length == 1)' "$(_os_dir ENG-203OS1)/verdict-qa.json" >/dev/null 2>&1; then
+  pass_at "ENG-203 OS-1: clean body → merged canonical has all five envelope+body keys"
+else
+  fail_at "ENG-203 OS-1: clean body merge" \
+    "rc=$_os1_rc canonical-exists=$([[ -f "$(_os_dir ENG-203OS1)/verdict-qa.json" ]] && echo yes || echo no)"
+fi
+unset PIPELINE_DISPATCH_ID
+
+# OS-2: body file absent → merge rc=41 → halt comment posted with reason
+# `qa-payload-invalid: qa-payload-missing`.
+mkdir -p "$(_os_dir ENG-203OS2)"
+rm -f "$(_os_dir ENG-203OS2)/verdict-qa.body.json"
+rm -f "$(_os_dir ENG-203OS2)/verdict-qa.json"
+reset_capture
+export PIPELINE_DISPATCH_ID=ENG-203OS2-d0001
+_os2_rc=0
+_merge_qa_payload_envelope ENG-203OS2 2>/dev/null || _os2_rc=$?
+_os2_body="$(captured_body)"
+if (( _os2_rc == 41 )) \
+  && [[ "$_os2_body" == *'verdict result=halt reason=qa-payload-invalid'* ]] \
+  && [[ "$_os2_body" == *'qa-payload-missing'* ]]; then
+  pass_at "ENG-203 OS-2: body absent → rc=41 + qa-payload-missing halt comment"
+else
+  fail_at "ENG-203 OS-2: body absent" \
+    "rc=$_os2_rc body-head=${_os2_body:0:240}"
+fi
+unset PIPELINE_DISPATCH_ID
+
+# OS-3: body file is parse error → merge rc=39 → halt reason
+# `qa-payload-invalid: qa-payload-malformed`.
+mkdir -p "$(_os_dir ENG-203OS3)"
+printf '{not json\n' > "$(_os_dir ENG-203OS3)/verdict-qa.body.json"
+rm -f "$(_os_dir ENG-203OS3)/verdict-qa.json"
+reset_capture
+export PIPELINE_DISPATCH_ID=ENG-203OS3-d0001
+_os3_rc=0
+_merge_qa_payload_envelope ENG-203OS3 2>/dev/null || _os3_rc=$?
+_os3_body="$(captured_body)"
+if (( _os3_rc == 39 )) \
+  && [[ "$_os3_body" == *'verdict result=halt reason=qa-payload-invalid'* ]] \
+  && [[ "$_os3_body" == *'qa-payload-malformed'* ]]; then
+  pass_at "ENG-203 OS-3: body parse error → rc=39 + qa-payload-malformed halt comment"
+else
+  fail_at "ENG-203 OS-3: body malformed" \
+    "rc=$_os3_rc body-head=${_os3_body:0:240}"
+fi
+unset PIPELINE_DISPATCH_ID
+
+# OS-4: pre-seed all four qa-stage slot files + one reviewing-stage file;
+# call _clear_current_stage_slots ENG-203OS4 qa; assert all four qa files
+# absent post-clear AND verdict-review.json still present.
+_os4_d="$(_os_dir ENG-203OS4)"
+mkdir -p "$_os4_d"
+printf '{}\n' > "$_os4_d/verdict-qa.json"
+printf '{}\n' > "$_os4_d/verdict-qa.body.json"
+printf '{}\n' > "$_os4_d/qa-predicate-ENG-203OS4.json"
+printf '{}\n' > "$_os4_d/qa-predicate-ENG-203OS4.body.json"
+printf '{}\n' > "$_os4_d/verdict-review.json"
+_clear_current_stage_slots ENG-203OS4 qa
+if [[ ! -e "$_os4_d/verdict-qa.json" ]] \
+  && [[ ! -e "$_os4_d/verdict-qa.body.json" ]] \
+  && [[ ! -e "$_os4_d/qa-predicate-ENG-203OS4.json" ]] \
+  && [[ ! -e "$_os4_d/qa-predicate-ENG-203OS4.body.json" ]] \
+  && [[ -e "$_os4_d/verdict-review.json" ]]; then
+  pass_at "ENG-203 OS-4: qa-stage clear removes all four qa files; reviewing file preserved"
+else
+  fail_at "ENG-203 OS-4: qa-stage clear" \
+    "verdict-qa.json=$([[ -e "$_os4_d/verdict-qa.json" ]] && echo present || echo absent) verdict-qa.body=$([[ -e "$_os4_d/verdict-qa.body.json" ]] && echo present || echo absent) pred=$([[ -e "$_os4_d/qa-predicate-ENG-203OS4.json" ]] && echo present || echo absent) pred.body=$([[ -e "$_os4_d/qa-predicate-ENG-203OS4.body.json" ]] && echo present || echo absent) review=$([[ -e "$_os4_d/verdict-review.json" ]] && echo present || echo absent)"
+fi
+
+# OS-5: in-dispatch verify-qa.sh --body merges and validates predicate.
+# Body has only pass_criteria[]; verify-qa.sh --body $body --ident ENG-2030005
+# succeeds (rc=0) and canonical at qa_predicate_path ENG-2030005 exists
+# with merged envelope. The --worktree fence requires the path resolve
+# under TARGET_REPO or $PROJECT_STATE_DIR — build a fake worktree under
+# the per-issue dir (which IS under PROJECT_STATE_DIR) so the fence
+# passes without leaking onto the real harness checkout.
+_os5_d="$(_os_dir ENG-2030005)"
+mkdir -p "$_os5_d/worktree/bin"
+printf '#!/usr/bin/env bash\n' > "$_os5_d/worktree/bin/marker.sh"
+cat > "$_os5_d/qa-predicate-ENG-2030005.body.json" <<'EOF'
+{
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "bin/marker.sh" }
+  ]
+}
+EOF
+rm -f "$_os5_d/qa-predicate-ENG-2030005.json"
+_os5_rc=0
+_os5_out="$(bash "$HARNESS_DIR/verify-qa.sh" validate \
+  --body "$_os5_d/qa-predicate-ENG-2030005.body.json" \
+  --ident ENG-2030005 --worktree "$_os5_d/worktree" 2>&1)" || _os5_rc=$?
+if (( _os5_rc == 0 )) && [[ -f "$_os5_d/qa-predicate-ENG-2030005.json" ]] \
+  && jq -e '.qa_predicate_schema_version == 1 and .issue_id == "ENG-2030005" and (.pass_criteria | length == 1)' "$_os5_d/qa-predicate-ENG-2030005.json" >/dev/null 2>&1; then
+  pass_at "ENG-203 OS-5: verify-qa.sh --body merges + validates predicate"
+else
+  fail_at "ENG-203 OS-5: verify-qa.sh --body" \
+    "rc=$_os5_rc canonical-exists=$([[ -f "$_os5_d/qa-predicate-ENG-2030005.json" ]] && echo yes || echo no) out=${_os5_out:0:240}"
+fi
+
+# OS-6: caller-side envelope-keyset discipline (qa-payload side).
+# Stub merge_artifact_envelope to capture the env_json argument and
+# assert its keys are exactly {qa_payload_schema_version, issue_id,
+# dispatch_id}. Restore the real implementation after.
+_os6_capture="$PROJECT_STATE_DIR/.os6-envjson-capture"
+rm -f "$_os6_capture"
+_os6_real_def="$(declare -f merge_artifact_envelope)"
+merge_artifact_envelope() {
+  printf '%s' "$2" > "$_os6_capture"
+  return 0
+}
+mkdir -p "$(_os_dir ENG-203OS6)"
+printf '{"verdict":"pass","dimensions":[]}\n' > "$(_os_dir ENG-203OS6)/verdict-qa.body.json"
+export PIPELINE_DISPATCH_ID=ENG-203OS6-d0001
+_merge_qa_payload_envelope ENG-203OS6 >/dev/null 2>&1 || true
+unset PIPELINE_DISPATCH_ID
+eval "$_os6_real_def"
+_os6_keys=""
+if [[ -s "$_os6_capture" ]]; then
+  _os6_keys="$(jq -r 'keys | sort | join(",")' < "$_os6_capture" 2>/dev/null || printf '')"
+fi
+if [[ "$_os6_keys" == "dispatch_id,issue_id,qa_payload_schema_version" ]]; then
+  pass_at "ENG-203 OS-6: _merge_qa_payload_envelope envelope keys = {qa_payload_schema_version, issue_id, dispatch_id}"
+else
+  fail_at "ENG-203 OS-6: caller-side qa-payload envelope keyset" \
+    "captured keys='$_os6_keys' (expected 'dispatch_id,issue_id,qa_payload_schema_version')"
+fi
+rm -f "$_os6_capture"
+
+# OS-7: caller-side envelope-keyset discipline (qa-predicate side via
+# verify-qa.sh --body). Same stub-capture shape. Source verify-qa.sh's
+# cmd_validate logic in a subshell so we can intercept
+# merge_artifact_envelope at the function level.
+_os7_capture="$PROJECT_STATE_DIR/.os7-envjson-capture"
+rm -f "$_os7_capture"
+_os7_d="$(_os_dir ENG-203OS7)"
+mkdir -p "$_os7_d"
+cat > "$_os7_d/qa-predicate-ENG-203OS7.body.json" <<'EOF'
+{
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "bin/verify-qa.sh" }
+  ]
+}
+EOF
+(
+  set +e
+  export OS7_CAPTURE="$_os7_capture"
+  # shellcheck source=verify-qa.sh
+  source "$HARNESS_DIR/verify-qa.sh"
+  merge_artifact_envelope() {
+    printf '%s' "$2" > "$OS7_CAPTURE"
+    return 0
+  }
+  cmd_validate --body "$_os7_d/qa-predicate-ENG-203OS7.body.json" \
+    --ident ENG-203OS7 --worktree "$HARNESS_DIR/.." >/dev/null 2>&1 || true
+)
+_os7_keys=""
+if [[ -s "$_os7_capture" ]]; then
+  _os7_keys="$(jq -r 'keys | sort | join(",")' < "$_os7_capture" 2>/dev/null || printf '')"
+fi
+if [[ "$_os7_keys" == "issue_id,qa_predicate_schema_version" ]]; then
+  pass_at "ENG-203 OS-7: verify-qa.sh --body envelope keys = {qa_predicate_schema_version, issue_id}"
+else
+  fail_at "ENG-203 OS-7: caller-side qa-predicate envelope keyset" \
+    "captured keys='$_os7_keys' (expected 'issue_id,qa_predicate_schema_version')"
+fi
+rm -f "$_os7_capture"
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
