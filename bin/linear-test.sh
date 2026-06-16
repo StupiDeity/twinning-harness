@@ -1622,6 +1622,440 @@ else
 fi
 unset PIPELINE_DISPATCH_ID PIPELINE_STAGE _eng87_l8_input _eng87_l8_out
 
+# ─── ENG-193: create-issue + find-follow-up subcommands (L1-L12) ───
+printf '\n--- ENG-193 L-block: create-issue + find-follow-up ---\n'
+
+# Earlier blocks unset PIPELINE_DRY_RUN (line ~1467); set it back so
+# the dry-run gate inside create_issue fires.
+export PIPELINE_DRY_RUN=1
+
+# Extend linear-ids cache with Bug/Improvement labels + Backlog state.
+# Done in-line so cache-miss fixtures (L-11/L-12) can `jq 'del(...)'` later.
+jq -n '{
+  labels: {
+    "stage:brainstorming": "uuid-stage-brainstorming",
+    "stage:planning":      "uuid-stage-planning",
+    "pipeline:halted":     "uuid-pipeline-halted",
+    "pipeline:supersede":  "uuid-pipeline-supersede",
+    "pipeline:skip-until-code-changes": "uuid-skip-until",
+    "custom:label":        "uuid-custom",
+    "Bug":                 "uuid-label-bug",
+    "Improvement":         "uuid-label-improvement"
+  },
+  states: {
+    "Backlog": "uuid-state-backlog"
+  }
+}' > "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json"
+
+# Save the real linear_query so we can restore it at the end of the block.
+_l193_lq_backup="$(declare -f linear_query)"
+
+# Default L-block stub: returns a synthetic issue lookup, an empty search
+# result, and a dry-run-style mutation response.  Per-fixture stubs
+# below override this as needed.
+linear_query() {
+  local q="$1"
+  if [[ "$q" == *mutation* ]]; then
+    printf '{"data":{"dry_run":true}}\n'
+    return 0
+  fi
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"uuid-resolved","identifier":"ENG-STUB","title":"t","description":"","state":{"id":"uuid-s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
+  if [[ "$q" == *searchIssues* ]]; then
+    printf '{"data":{"searchIssues":{"nodes":[]}}}\n'
+    return 0
+  fi
+  printf '{}\n'
+}
+
+# ─── L-1: create-issue dry-run happy path ──────────────────────────────
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 'test title' \
+  --type-label Improvement \
+  --parent-id ENG-1 \
+  --state Backlog \
+  --description 'test desc' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 && "$_eng193_out" == *"ENG-DRYRUN"* ]]; then
+  pass_at "ENG-193 L-1: create-issue dry-run returns ENG-DRYRUN placeholder"
+else
+  fail_at "ENG-193 L-1: create-issue dry-run" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+# ─── L-2: lane fence — agent denied for create child_issue ─────────────
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=agent create_issue \
+  --title 't' --type-label Improvement --parent-id ENG-1 --description 'd' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 13 && "$_eng193_out" == *"lane=agent denied: create child_issue"* ]]; then
+  pass_at "ENG-193 L-2: lane fence — agent denied for create child_issue"
+else
+  fail_at "ENG-193 L-2: lane fence agent denied" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+# ─── L-3: lane fence — agent denied for find child_issue ───────────────
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=agent find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key foo 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 13 && "$_eng193_out" == *"lane=agent denied: find child_issue"* ]]; then
+  pass_at "ENG-193 L-3: lane fence — agent denied for find child_issue"
+else
+  fail_at "ENG-193 L-3: lane fence find denied" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+# ─── L-4: lane fence — orchestrator allowed for create child_issue ─────
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator _check_lane create child_issue 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 ]]; then
+  pass_at "ENG-193 L-4: lane fence — orchestrator allowed for create child_issue"
+else
+  fail_at "ENG-193 L-4: lane fence orchestrator allowed" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+# ─── L-5: required flags ───────────────────────────────────────────────
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --type-label Improvement --parent-id ENG-1 --description 'd' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" != 0 && "$_eng193_out" == *"--title is required"* ]]; then
+  pass_at "ENG-193 L-5a: required flags — --title missing dies"
+else
+  fail_at "ENG-193 L-5a: required flags --title" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --parent-id ENG-1 --description 'd' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" != 0 && "$_eng193_out" == *"--type-label is required"* ]]; then
+  pass_at "ENG-193 L-5b: required flags — --type-label missing dies"
+else
+  fail_at "ENG-193 L-5b: required flags --type-label" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --type-label Improvement --parent-id ENG-1 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" != 0 && "$_eng193_out" == *"--description is required"* ]]; then
+  pass_at "ENG-193 L-5c: required flags — --description missing dies"
+else
+  fail_at "ENG-193 L-5c: required flags --description" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+# ─── L-6: description from stdin ───────────────────────────────────────
+_eng193_rc=0
+_eng193_out="$(printf 'body-from-stdin-xyz' | PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --type-label Improvement --parent-id ENG-1 --description - 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 && "$_eng193_out" == *"ENG-DRYRUN"* && "$_eng193_out" == *"body-from-stdin-xyz"* ]]; then
+  pass_at "ENG-193 L-6: --description - reads body from stdin"
+else
+  fail_at "ENG-193 L-6: stdin body" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+# ─── L-7: create-issue does NOT auto-inject the follow-up marker ───────
+# ENG-193 review fix — the dry-run path returns BEFORE variables are
+# interpolated, so a pre-fix test that asserted the marker is absent in
+# dry-run stdout was tautological (it could never appear regardless of
+# implementation). Run on the NON-dry-run path with a capturing
+# linear_query stub: inspect the GraphQL `vars` payload directly. The
+# subcommand must NOT auto-inject the marker — orchestrator-side
+# _follow_up_body owns that contract.
+unset PIPELINE_DRY_RUN
+# create_issue runs under `$(...)` (command substitution), so any stub
+# variable assignment vanishes when the subshell exits. Use a tempfile
+# instead — the stub writes vars to it, and the parent reads back after.
+_eng193_l7_vars_f="$(mktemp)"
+linear_query() {
+  local q="$1"
+  # create_issue calls `_resolve_issue_uuid` → `get_issue` → linear_query
+  # for parent-id resolution BEFORE the mutation; route that to a synthetic
+  # issue lookup so the mutation step is reached without dying on parent.
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"u-parent","identifier":"ENG-1","title":"t","description":"","state":{"id":"s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
+  # Capture the mutation's `vars` payload (subshell-safe via tempfile).
+  printf '%s' "$2" > "$_eng193_l7_vars_f"
+  printf '{"data":{"issueCreate":{"success":true,"issue":{"id":"u","identifier":"ENG-CHILD-XYZ","url":""}}}}\n'
+}
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --type-label Improvement --parent-id ENG-1 --description 'plain body' 2>&1)" || _eng193_rc=$?
+_eng193_l7_vars="$(cat "$_eng193_l7_vars_f" 2>/dev/null || printf '')"
+# Assert the captured vars payload's `description` is the LITERAL plain
+# body — no marker spliced in by the subcommand.
+_eng193_l7_desc="$(jq -r '.description' <<<"$_eng193_l7_vars" 2>/dev/null)"
+if [[ "$_eng193_rc" == 0 \
+   && "$_eng193_l7_desc" == "plain body" \
+   && "$_eng193_l7_desc" != *"follow-up-source dispatch="* \
+   && "$_eng193_l7_vars" != *"follow-up-source dispatch="* ]]; then
+  pass_at "ENG-193 L-7: create-issue does NOT auto-inject the follow-up marker (non-dry-run vars-capture)"
+else
+  fail_at "ENG-193 L-7: marker not auto-injected" \
+    "rc=$_eng193_rc desc='$_eng193_l7_desc' vars='${_eng193_l7_vars:0:200}' out='${_eng193_out:0:200}'"
+fi
+rm -f "$_eng193_l7_vars_f"
+unset _eng193_out _eng193_rc _eng193_l7_vars _eng193_l7_desc _eng193_l7_vars_f
+export PIPELINE_DRY_RUN=1
+
+# ─── L-1-adv: create-issue with malformed Linear response (no identifier)
+# ENG-193 review fix — the die path at bin/linear.sh:1007 (`response missing
+# identifier`) had no fixture. Exercise the non-dry-run path with a stubbed
+# linear_query returning `{"data":{"issueCreate":{"issue":{}}}}` (success
+# field absent, identifier missing); subcommand must die non-zero with the
+# operator-recognisable diagnostic.
+#
+# create_issue calls `_resolve_issue_uuid "$parent_id"` BEFORE the mutation
+# (bin/linear.sh:977-980), which routes back through linear_query for the
+# `issue(id: $id)` lookup. A naive stub that returns the malformed JSON for
+# ALL query types dies in _resolve_issue_uuid with `issue not found: ENG-1`
+# — the assertion target `response missing identifier` is never reached.
+# Mirror L-7's stub shape: synthetic issue for the parent-id query, malformed
+# JSON only for the mutation.
+unset PIPELINE_DRY_RUN
+linear_query() {
+  local q="$1"
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"u-parent","identifier":"ENG-1","title":"t","description":"","state":{"id":"s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
+  printf '{"data":{"issueCreate":{"issue":{}}}}\n'
+}
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --type-label Improvement --parent-id ENG-1 --description 'd' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" != 0 && "$_eng193_out" == *"response missing identifier"* ]]; then
+  pass_at "ENG-193 L-1-adv: create-issue malformed response dies with 'response missing identifier' diagnostic"
+else
+  fail_at "ENG-193 L-1-adv: malformed response" \
+    "rc=$_eng193_rc out='${_eng193_out:0:300}'"
+fi
+unset _eng193_out _eng193_rc
+export PIPELINE_DRY_RUN=1
+# Restore the default L-block stub so downstream fixtures don't inherit
+# the malformed-response stub.
+linear_query() {
+  local q="$1"
+  if [[ "$q" == *mutation* ]]; then
+    printf '{"data":{"dry_run":true}}\n'
+    return 0
+  fi
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"uuid-resolved","identifier":"ENG-STUB","title":"t","description":"","state":{"id":"uuid-s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
+  if [[ "$q" == *searchIssues* ]]; then
+    printf '{"data":{"searchIssues":{"nodes":[]}}}\n'
+    return 0
+  fi
+  printf '{}\n'
+}
+
+# ─── L-8: find-follow-up miss (empty nodes) ────────────────────────────
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key 'x:y:z' 2>/dev/null)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 && -z "$_eng193_out" ]]; then
+  pass_at "ENG-193 L-8: find-follow-up miss (empty nodes) returns empty stdout, rc=0"
+else
+  fail_at "ENG-193 L-8: find-follow-up miss" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+
+# ─── L-8b: find-follow-up soft-fail when linear_query fails ────────────
+# ENG-193 review fix — L-8 covered the empty-nodes path; the OTHER soft-fail
+# branch at bin/linear.sh:1061 (`linear_query failed; treating as miss`)
+# was uncovered. A linear_query stub that returns non-zero exercises it:
+# the helper must still exit 0 with empty stdout so the orchestrator's
+# per-row loop treats the row as a miss and proceeds to create.
+_eng193_l8b_lq_backup="$(declare -f linear_query)"
+linear_query() {
+  printf 'simulated GraphQL outage\n' >&2
+  return 1
+}
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key 'x:y:z' 2>/dev/null)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 && -z "$_eng193_out" ]]; then
+  pass_at "ENG-193 L-8b: find-follow-up soft-fail (linear_query non-zero) returns empty stdout, rc=0"
+else
+  fail_at "ENG-193 L-8b: find-follow-up soft-fail" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+eval "$_eng193_l8b_lq_backup"
+unset _eng193_l8b_lq_backup
+
+# ─── L-9: find-follow-up hit + defensive byte-match success ────────────
+# Stub: search returns one node; get_issue returns description WITH marker.
+# ENG-193 review fix — L-9 originally redefined both `linear_query` and
+# `get_issue` but only restored `linear_query` at the end of the L-block,
+# leaving L-9's synthetic `get_issue` definition in place for any future
+# test below. Backup BOTH function definitions and restore BOTH after the
+# fixture (mirrors the L-8b pattern).
+_eng193_l9_lq_backup="$(declare -f linear_query)"
+_eng193_l9_gi_backup="$(declare -f get_issue 2>/dev/null || printf '')"
+_eng193_l9_marker='<!-- meta: follow-up-source dispatch=ENG-1-d0001 finding_class_key=x:y:z -->'
+_eng193_l9_search="$(jq -cn '{data:{searchIssues:{nodes:[{id:"u-1",identifier:"ENG-CHILD-1",title:"matched"}]}}}')"
+_eng193_l9_issue="$(jq -cn --arg m "$_eng193_l9_marker" '{data:{issue:{id:"u-1",identifier:"ENG-CHILD-1",title:"matched",description:("leading\n" + $m + "\ntail"),state:{id:"s",name:"Backlog"},labels:{nodes:[]},url:"",createdAt:"",updatedAt:""}}}')"
+# An earlier test redefined get_issue to ignore unknown identifiers; restore
+# a synthetic version that defers to linear_query (the canonical shape).
+get_issue() {
+  local ident="$1"
+  local q='query($id: String!) { issue(id: $id) { id identifier title description state { id name } labels { nodes { id name } } url createdAt updatedAt } }'
+  local vars; vars="$(jq -cn --arg id "$ident" '{id:$id}')"
+  linear_query "$q" "$vars"
+}
+linear_query() {
+  local q="$1"
+  if [[ "$q" == *searchIssues* ]]; then
+    printf '%s\n' "$_eng193_l9_search"
+    return 0
+  fi
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '%s\n' "$_eng193_l9_issue"
+    return 0
+  fi
+  printf '{}\n'
+}
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key 'x:y:z' 2>/dev/null)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 && "$_eng193_out" == "ENG-CHILD-1" ]]; then
+  pass_at "ENG-193 L-9: find-follow-up hit + defensive byte-match returns identifier"
+else
+  fail_at "ENG-193 L-9: find-follow-up hit" "rc=$_eng193_rc out='$_eng193_out'"
+fi
+unset _eng193_out _eng193_rc _eng193_l9_marker _eng193_l9_search _eng193_l9_issue
+# Restore BOTH functions — leaking get_issue silently broke earlier
+# downstream cases (review fix).
+eval "$_eng193_l9_lq_backup"
+if [[ -n "$_eng193_l9_gi_backup" ]]; then
+  eval "$_eng193_l9_gi_backup"
+else
+  unset -f get_issue 2>/dev/null || true
+fi
+unset _eng193_l9_lq_backup _eng193_l9_gi_backup
+
+# ─── L-10: find-follow-up defensive byte-match — false-positive ────────
+# Stub: search returns one node but its description does NOT contain marker.
+_eng193_l10_search="$(jq -cn '{data:{searchIssues:{nodes:[{id:"u-1",identifier:"ENG-CHILD-1",title:"matched"}]}}}')"
+_eng193_l10_issue="$(jq -cn '{data:{issue:{id:"u-1",identifier:"ENG-CHILD-1",title:"x",description:"unrelated description, no marker",state:{id:"s",name:"Backlog"},labels:{nodes:[]},url:"",createdAt:"",updatedAt:""}}}')"
+linear_query() {
+  local q="$1"
+  if [[ "$q" == *searchIssues* ]]; then
+    printf '%s\n' "$_eng193_l10_search"
+    return 0
+  fi
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '%s\n' "$_eng193_l10_issue"
+    return 0
+  fi
+  printf '{}\n'
+}
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key 'x:y:z' 2>/dev/null)" || _eng193_rc=$?
+if [[ "$_eng193_rc" == 0 && -z "$_eng193_out" ]]; then
+  pass_at "ENG-193 L-10: find-follow-up defensive byte-match — false-positive defended"
+else
+  fail_at "ENG-193 L-10: defensive byte-match" "rc=$_eng193_rc out='$_eng193_out'"
+fi
+unset _eng193_out _eng193_rc _eng193_l10_search _eng193_l10_issue
+
+# Restore the default L-block stub for L-11/L-12.
+linear_query() {
+  local q="$1"
+  if [[ "$q" == *mutation* ]]; then
+    printf '{"data":{"dry_run":true}}\n'
+    return 0
+  fi
+  if [[ "$q" == *"issue(id: \$id)"* ]]; then
+    printf '{"data":{"issue":{"id":"uuid-resolved","identifier":"ENG-STUB","title":"t","description":"","state":{"id":"uuid-s","name":"Backlog"},"labels":{"nodes":[]},"url":"","createdAt":"","updatedAt":""}}}\n'
+    return 0
+  fi
+  if [[ "$q" == *searchIssues* ]]; then
+    printf '{"data":{"searchIssues":{"nodes":[]}}}\n'
+    return 0
+  fi
+  printf '{}\n'
+}
+
+# ─── L-11: cache miss — type label Bug ─────────────────────────────────
+cp "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json" \
+   "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json.bak"
+jq 'del(.labels.Bug)' "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json.bak" \
+  > "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json"
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --type-label Bug --parent-id ENG-1 --description 'd' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" != 0 && "$_eng193_out" == *"label not in cache: Bug"* && "$_eng193_out" == *"run refresh-cache"* ]]; then
+  pass_at "ENG-193 L-11: cache miss — type label Bug dies with refresh-cache hint"
+else
+  fail_at "ENG-193 L-11: cache miss type label" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+mv "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json.bak" \
+   "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json"
+
+# ─── L-12: cache miss — state Backlog ──────────────────────────────────
+cp "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json" \
+   "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json.bak"
+jq 'del(.states.Backlog)' "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json.bak" \
+  > "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json"
+_eng193_rc=0
+_eng193_out="$(PIPELINE_WRITER=orchestrator create_issue \
+  --title 't' --type-label Improvement --parent-id ENG-1 --state Backlog --description 'd' 2>&1)" || _eng193_rc=$?
+if [[ "$_eng193_rc" != 0 && "$_eng193_out" == *"state not in cache: Backlog"* && "$_eng193_out" == *"run refresh-cache"* ]]; then
+  pass_at "ENG-193 L-12: cache miss — state Backlog dies with refresh-cache hint"
+else
+  fail_at "ENG-193 L-12: cache miss state" "rc=$_eng193_rc out=$_eng193_out"
+fi
+unset _eng193_out _eng193_rc
+mv "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json.bak" \
+   "$TARGET_REPO/.pipeline-config/schemas/linear-ids.json"
+
+# ─── L-13: find_follow_up sanitises --> in finding_class_key ─────────────────
+# Coverage gap: W8 exercises --> sanitisation through the orchestrator path;
+# no L-block test directly verifies find_follow_up's own --> → --\> rule.
+# Stubs linear_query to capture $vars (arg $2) to a temp file — must use a
+# file because linear_query is invoked inside $() (subshell), so variable
+# assignments don't reach the parent shell. Decodes .q with jq -r and
+# asserts the search term contains --\> (escaped) not --> (raw).
+_eng193_l13_tmp="$(mktemp)"
+_eng193_l13_lq_backup="$(declare -f linear_query)"
+linear_query() {
+  printf '%s' "$2" > "$_eng193_l13_tmp"
+  printf '{"data":{"searchIssues":{"nodes":[]}}}\n'
+}
+_eng193_l13_rc=0
+PIPELINE_WRITER=orchestrator find_follow_up \
+  --dispatch-id ENG-1-d0001 --finding-class-key 'x:-->:y' 2>/dev/null \
+  || _eng193_l13_rc=$?
+_eng193_l13_q="$(jq -r '.q // ""' < "$_eng193_l13_tmp" 2>/dev/null || printf '')"
+if [[ "$_eng193_l13_rc" == 0 ]] \
+   && printf '%s' "$_eng193_l13_q" | grep -qF -- '--\>:y' 2>/dev/null \
+   && ! printf '%s' "$_eng193_l13_q" | grep -qF -- '-->:y' 2>/dev/null; then
+  pass_at "ENG-193 L-13: find_follow_up sanitises --> → --\\> in search term"
+else
+  fail_at "ENG-193 L-13: find_follow_up --> sanitisation" \
+    "rc=$_eng193_l13_rc q='${_eng193_l13_q:0:200}'"
+fi
+eval "$_eng193_l13_lq_backup"
+rm -f "$_eng193_l13_tmp"
+unset _eng193_l13_lq_backup _eng193_l13_tmp _eng193_l13_q _eng193_l13_rc
+
+# Restore the original linear_query so any further test code uses the
+# canonical chokepoint (none today; placed for forward-compat).
+eval "$_l193_lq_backup"
+unset _l193_lq_backup
+
 # ─── Summary ────────────────────────────────────────────────────────────
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

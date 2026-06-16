@@ -181,6 +181,22 @@ the operator can cross-reference against
 `$(issue_dir)/review-findings-ledger.jsonl`. See `docs/runbooks/recovery.md`
 §13 for the full lifecycle.
 
+**Find auto-created follow-up tickets for an issue (ENG-193):**
+
+```bash
+TARGET_REPO=/path/to/target bash bin/linear.sh query \
+  'query { searchIssues(term: "follow-up-source dispatch=ENG-N", first: 50) { nodes { id identifier title state { name } } } }' '{}' \
+  | jq '.data.searchIssues.nodes'
+```
+
+Each match is a follow-up auto-filed by the orchestrator's
+`_create_follow_up_tickets_for_deferred_majors` hook. Group by
+`dispatch_id` substring in the title (the `[deferred from ENG-N]`
+prefix) or re-fetch the description via
+`bash bin/linear.sh get-issue ENG-M` to see the finding details. The
+marker line in the description is
+`<!-- meta: follow-up-source dispatch=ENG-N-d<NNNN> finding_class_key=<key> -->`.
+
 **`PIPELINE_WRITER` env var lane-fences writes.** If you run
 `bash bin/linear.sh add-comment` from a shell without setting
 `PIPELINE_WRITER=human`, comments containing certain marker shapes

@@ -26,6 +26,9 @@ cat > "$STUB_DIR/linear.sh" <<SH
 # ENG-45: get-comments returns \$MOCK_COMMENTS_JSON (default '[]') so unit tests
 # of _fresh_wait_reason can inject fixture comment streams without standing up
 # a full Linear stub.
+# ENG-193: create-issue + find-follow-up branches added. find-follow-up reads
+# \$MOCK_FIND_FOLLOW_UP_HIT (default empty = miss) and prints it; create-issue
+# captures title / type-label / parent-id / state / body (via stdin when --description -).
 case "\${1:-}" in
   get-comments)
     printf '%s' "\${MOCK_COMMENTS_JSON-[]}"
@@ -44,6 +47,58 @@ case "\${1:-}" in
     done
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
       "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
+  create-issue)
+    subcmd="\$1"; shift
+    title=""; type_label=""; parent_id=""; state_name=""; body=""
+    # Tolerate a single leading positional (caller convenience).
+    if (( \$# > 0 )) && [[ "\$1" != --* ]]; then
+      shift
+    fi
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --title)         title="\$2";                shift 2 ;;
+        --title=*)       title="\${1#--title=}";     shift   ;;
+        --type-label)    type_label="\$2";            shift 2 ;;
+        --type-label=*)  type_label="\${1#--type-label=}"; shift ;;
+        --parent-id)     parent_id="\$2";             shift 2 ;;
+        --parent-id=*)   parent_id="\${1#--parent-id=}";   shift ;;
+        --state)         state_name="\$2";            shift 2 ;;
+        --state=*)       state_name="\${1#--state=}"; shift   ;;
+        --description)
+          if [[ "\${2:-}" == "-" ]]; then
+            body="\$(cat)"; shift 2
+          else
+            body="\$2"; shift 2
+          fi
+          ;;
+        --description=*) body="\${1#--description=}"; shift ;;
+        *)               shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nTITLE=%s\nTYPE_LABEL=%s\nPARENT_ID=%s\nSTATE=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$title" "\$type_label" "\$parent_id" "\$state_name" "\$body" >> "$CAPTURE_FILE"
+    # Print a synthetic child identifier on stdout (the orchestrator
+    # captures it as new_ident).
+    printf '%s\n' "\${MOCK_CREATE_ISSUE_IDENT:-ENG-CHILD-MOCK}"
+    ;;
+  find-follow-up)
+    subcmd="\$1"; shift
+    dispatch_id=""; finding_class_key=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --dispatch-id)         dispatch_id="\$2";         shift 2 ;;
+        --dispatch-id=*)       dispatch_id="\${1#--dispatch-id=}";   shift ;;
+        --finding-class-key)   finding_class_key="\$2";    shift 2 ;;
+        --finding-class-key=*) finding_class_key="\${1#--finding-class-key=}"; shift ;;
+        *)                     shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nDISPATCH_ID=%s\nFINDING_CLASS_KEY=%s\n---\n' \
+      "\$subcmd" "\$dispatch_id" "\$finding_class_key" >> "$CAPTURE_FILE"
+    # Default empty (miss). Caller sets MOCK_FIND_FOLLOW_UP_HIT to a
+    # synthetic identifier to simulate the idempotency-hit path.
+    printf '%s' "\${MOCK_FIND_FOLLOW_UP_HIT-}"
     ;;
   *)
     printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
@@ -152,6 +207,15 @@ fail_at() { printf '  ❌ %s\n     %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 reset_capture()   { : > "$CAPTURE_FILE"; }
 captured_sig()    { awk -F= '/^SIG=/  {print $2; exit}' "$CAPTURE_FILE"; }
 captured_body()   { awk '/^BODY_BEGIN$/{flag=1; next} /^BODY_END$/{flag=0} flag' "$CAPTURE_FILE"; }
+# ENG-193: helpers for the create-issue / find-follow-up stub branches.
+captured_create_issue_count()       { grep -c '^SUBCMD=create-issue$' "$CAPTURE_FILE" 2>/dev/null || true; }
+captured_find_follow_up_count()     { grep -c '^SUBCMD=find-follow-up$' "$CAPTURE_FILE" 2>/dev/null || true; }
+captured_create_issue_titles()      { awk -F= '/^TITLE=/  {sub(/^TITLE=/,""); print}'      "$CAPTURE_FILE"; }
+captured_create_issue_type_labels() { awk -F= '/^TYPE_LABEL=/ {sub(/^TYPE_LABEL=/,""); print}' "$CAPTURE_FILE"; }
+captured_create_issue_parents()     { awk -F= '/^PARENT_ID=/ {sub(/^PARENT_ID=/,""); print}' "$CAPTURE_FILE"; }
+# Single concatenated body capture — when only one create-issue ran, this is
+# that body verbatim.
+captured_create_issue_bodies()      { awk '/^BODY_BEGIN$/{flag=1; next} /^BODY_END$/{flag=0} flag' "$CAPTURE_FILE"; }
 
 # ─── Case 1: happy path (non-empty file, not symlink) ───────────────────
 reset_capture
@@ -7958,7 +8022,7 @@ if [[ "$_z1_sig" == "deferred-majors/ENG-191Z1" ]] \
    && [[ "$_z1_body" == *"1 major finding(s) deferred"* ]] \
    && [[ "$_z1_body" == *"docs:foo:typo"* ]] \
    && [[ "$_z1_body" == *"defers: docs polish"* ]] \
-   && [[ "$_z1_body" == *"ENG-193 will auto-create follow-up tickets"* ]]; then
+   && [[ "$_z1_body" == *"ENG-193 auto-creates one follow-up ticket per row above"* ]]; then
   pass_at "ENG-191 Z1 (AC #1): deferrable-only exit posts deferred-majors comment with lede + per-row bullet + ENG-193 footer"
 else
   fail_at "ENG-191 Z1 (AC #1): deferred-majors comment shape" \
@@ -8841,6 +8905,816 @@ else
 fi
 
 unset PIPELINE_DISPATCH_ID
+
+# ─── ENG-193: _create_follow_up_tickets_for_deferred_majors (W1-W9) ─────
+# Exercises the post-dispatch follow-up-ticket creation hook. Each W-case
+# extends the Z-block scaffolding: stubs find_fresh_verdict to return the
+# pass-arm marker projection with event.reason=ship-with-deferred-majors,
+# seeds a ledger, and invokes the helper. Asserts against the linear.sh
+# stub's CAPTURE_FILE — the new branches capture create-issue title /
+# type-label / parent-id / body and find-follow-up dispatch-id /
+# finding-class-key.
+
+# Re-establish the linear.sh stub with create-issue + find-follow-up arms.
+# An earlier ENG-62 block (line ~3550) overwrote the stub without those
+# branches; without this rewrite, the stub falls through to the *) branch
+# and captures positional args as the comment body.
+# ENG-193 review fix — the W-block tests the reviewing-stage hook; the
+# realistic stage label is `stage:reviewing` (not `stage:building`). The
+# stub honours MOCK_STAGE_OF for fixtures that need to vary it.
+# PIPELINE_WRITER capture: write the value to a sentinel marker so W1 can
+# assert the orchestrator helper exported orchestrator-lane in the subshell.
+cat > "$STUB_DIR/linear.sh" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  get-comments) printf '%s' "\${MOCK_COMMENTS_JSON-[]}" ;;
+  stage-of)     printf '%s\n' "\${MOCK_STAGE_OF:-stage:reviewing}" ;;
+  add-comment)
+    subcmd="\$1"; ident="\${2:-}"; shift 2 2>/dev/null || true
+    sig=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --sig)    sig="\$2";              shift 2 ;;
+        --sig=*)  sig="\${1#--sig=}";     shift   ;;
+        --body)   body="\$2";             shift 2 ;;
+        --body=*) body="\${1#--body=}";   shift   ;;
+        *)        [[ -z "\$body" ]] && body="\$1"; shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$sig" "\$ident" "\$body" >> "$CAPTURE_FILE"
+    ;;
+  create-issue)
+    subcmd="\$1"; shift
+    title=""; type_label=""; parent_id=""; state_name=""; body=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --title)         title="\$2";                shift 2 ;;
+        --title=*)       title="\${1#--title=}";     shift   ;;
+        --type-label)    type_label="\$2";            shift 2 ;;
+        --type-label=*)  type_label="\${1#--type-label=}"; shift ;;
+        --parent-id)     parent_id="\$2";             shift 2 ;;
+        --parent-id=*)   parent_id="\${1#--parent-id=}";   shift ;;
+        --state)         state_name="\$2";            shift 2 ;;
+        --state=*)       state_name="\${1#--state=}"; shift   ;;
+        --description)
+          if [[ "\${2:-}" == "-" ]]; then body="\$(cat)"; shift 2
+          else body="\$2"; shift 2; fi
+          ;;
+        --description=*) body="\${1#--description=}"; shift ;;
+        *)               shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nTITLE=%s\nTYPE_LABEL=%s\nPARENT_ID=%s\nSTATE=%s\nWRITER=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\$subcmd" "\$title" "\$type_label" "\$parent_id" "\$state_name" \
+      "\${PIPELINE_WRITER-}" "\$body" >> "$CAPTURE_FILE"
+    # When MOCK_CREATE_ISSUE_IDENT is set-but-empty (force soft-fail path),
+    # exit non-zero with no stdout — simulates Linear API failure / shape
+    # divergence. When unset, fall through to the synthetic default.
+    if [[ -n "\${MOCK_CREATE_ISSUE_IDENT+set}" ]] && [[ -z "\${MOCK_CREATE_ISSUE_IDENT-}" ]]; then
+      exit 1
+    fi
+    printf '%s\n' "\${MOCK_CREATE_ISSUE_IDENT:-ENG-CHILD-MOCK}"
+    ;;
+  find-follow-up)
+    subcmd="\$1"; shift
+    dispatch_id=""; finding_class_key=""
+    while (( \$# > 0 )); do
+      case "\$1" in
+        --dispatch-id)         dispatch_id="\$2";         shift 2 ;;
+        --dispatch-id=*)       dispatch_id="\${1#--dispatch-id=}";   shift ;;
+        --finding-class-key)   finding_class_key="\$2";    shift 2 ;;
+        --finding-class-key=*) finding_class_key="\${1#--finding-class-key=}"; shift ;;
+        *)                     shift ;;
+      esac
+    done
+    printf 'SUBCMD=%s\nDISPATCH_ID=%s\nFINDING_CLASS_KEY=%s\nWRITER=%s\n---\n' \
+      "\$subcmd" "\$dispatch_id" "\$finding_class_key" \
+      "\${PIPELINE_WRITER-}" >> "$CAPTURE_FILE"
+    printf '%s' "\${MOCK_FIND_FOLLOW_UP_HIT-}"
+    ;;
+  *)
+    printf 'SUBCMD=%s\nSIG=%s\nIDENT=%s\nBODY_BEGIN\n%s\nBODY_END\n---\n' \
+      "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" >> "$CAPTURE_FILE"
+    ;;
+esac
+exit 0
+SH
+chmod +x "$STUB_DIR/linear.sh"
+
+# ENG-193 review fix — capture stubs for the envelope-leak defenders so
+# W3 / W7-adv / W11 / W12 can assert no direct Linear API call (curl /
+# wget / gh api) ever runs. Each writes a DISCRIMINATOR line into
+# $CAPTURE_FILE on invocation; the bypass-detection assertion greps for
+# the discriminator and fails if any line is present.
+cat > "$STUB_DIR/curl" <<SH
+#!/usr/bin/env bash
+printf 'ENVELOPE_LEAK=curl args=%s\n---\n' "\$*" >> "$CAPTURE_FILE"
+exit 0
+SH
+chmod +x "$STUB_DIR/curl"
+cat > "$STUB_DIR/wget" <<SH
+#!/usr/bin/env bash
+printf 'ENVELOPE_LEAK=wget args=%s\n---\n' "\$*" >> "$CAPTURE_FILE"
+exit 0
+SH
+chmod +x "$STUB_DIR/wget"
+
+# ENG-193 review fix — capture metric events so W1 / W2 / W10 can assert
+# the follow-up-{created,skipped,failed} emission contract.
+cat > "$STUB_DIR/metrics.sh" <<SH
+#!/usr/bin/env bash
+printf 'METRIC=%s ident=%s stage=%s outcome=%s dur=%s notes=%s\n' \
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${4:-}" "\${5:-}" "\${6:-}" \
+  >> "$CAPTURE_FILE"
+exit 0
+SH
+chmod +x "$STUB_DIR/metrics.sh"
+
+captured_metric_count() {
+  local m="$1"
+  grep -c "^METRIC=$m " "$CAPTURE_FILE" 2>/dev/null || true
+}
+captured_metric_notes() {
+  local m="$1"
+  awk -v m="^METRIC=$m " '$0 ~ m { sub(/^.*notes=/,""); print }' "$CAPTURE_FILE"
+}
+captured_envelope_leak_count() {
+  grep -c '^ENVELOPE_LEAK=' "$CAPTURE_FILE" 2>/dev/null || true
+}
+captured_writer() {
+  awk -F= '/^WRITER=/ {sub(/^WRITER=/,""); print; exit}' "$CAPTURE_FILE"
+}
+
+printf '\n--- ENG-193: _create_follow_up_tickets_for_deferred_majors (W1-W9) ---\n'
+
+# Stub config_get to allow per-fixture toggle of the auto_ticket gate.
+# Default returns "true"; W7 overrides to "false".
+_eng193_config_get_real="$(declare -f config_get)"
+_eng193_set_config() {
+  local v="$1"
+  eval "config_get() { case \"\$1\" in
+    '.human_checkpoints.auto_ticket_deferred_majors') printf '%s' \"$v\";;
+    *) :;;
+  esac; }"
+}
+_eng193_reset_config() {
+  if [[ -n "$_eng193_config_get_real" ]]; then
+    eval "$_eng193_config_get_real"
+  else
+    unset -f config_get
+  fi
+}
+
+# ─── W1 (AC #1): K deferrable rows → K create-issue calls ───────────────
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W1)"
+_w1_lgr="$(issue_dir ENG-193W1)/review-findings-ledger.jsonl"
+rm -f "$_w1_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W1 >/dev/null 2>&1
+)
+# Three this-dispatch deferrable-major rows.
+_eng191_write_row "$_w1_lgr" ENG-193W1 ENG-193W1-d0001 1 "docs:a:typo" major major carry \
+  false "rationale-a" true false true true true
+_eng191_write_row "$_w1_lgr" ENG-193W1 ENG-193W1-d0001 1 "docs:b:typo" major major carry \
+  false "rationale-b" true false false true true
+_eng191_write_row "$_w1_lgr" ENG-193W1 ENG-193W1-d0001 1 "docs:c:typo" major major carry \
+  false "rationale-c" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W1-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193W1
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w1_count="$(captured_create_issue_count)"
+_w1_parents="$(captured_create_issue_parents | sort -u | tr '\n' ',')"
+_w1_titles="$(captured_create_issue_titles)"
+# ENG-193 review fix — assert metric emission contract AND PIPELINE_WRITER
+# export. metrics.sh stub captures one line per emission; on K=3 successful
+# creates we expect 3 follow-up-created events and 0 follow-up-failed.
+# PIPELINE_WRITER must be `orchestrator` (the helper sets+exports it).
+_w1_created_metrics="$(captured_metric_count follow-up-created)"
+_w1_failed_metrics="$(captured_metric_count follow-up-failed)"
+_w1_writer="$(captured_writer)"
+_w1_metric_notes="$(captured_metric_notes follow-up-created | head -1)"
+if [[ "$_w1_count" == "3" ]] \
+   && [[ "$_w1_parents" == "ENG-193W1," ]] \
+   && [[ "$_w1_titles" == *"[deferred from ENG-193W1]"* ]] \
+   && [[ "$_w1_created_metrics" == "3" ]] \
+   && [[ "$_w1_failed_metrics" == "0" ]] \
+   && [[ "$_w1_writer" == "orchestrator" ]] \
+   && [[ "$_w1_metric_notes" == *"parent=ENG-193W1"* ]] \
+   && [[ "$_w1_metric_notes" == *"finding_class_key=docs:"* ]] \
+   && [[ "$_w1_metric_notes" == *"dispatch_id=ENG-193W1-d0001"* ]]; then
+  pass_at "ENG-193 W1 (AC #1): K deferrable rows → K creates + K created-metrics + PIPELINE_WRITER=orchestrator"
+else
+  fail_at "ENG-193 W1 (AC #1): K creates" \
+    "count='$_w1_count' parents='$_w1_parents' titles='${_w1_titles:0:200}' \
+created-metrics='$_w1_created_metrics' failed-metrics='$_w1_failed_metrics' \
+writer='$_w1_writer' notes='${_w1_metric_notes:0:200}'"
+fi
+_eng193_reset_config
+
+# ─── W2 (AC #2): idempotency — find-follow-up hit suppresses create ─────
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W2)"
+_w2_lgr="$(issue_dir ENG-193W2)/review-findings-ledger.jsonl"
+rm -f "$_w2_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W2 >/dev/null 2>&1
+)
+_eng191_write_row "$_w2_lgr" ENG-193W2 ENG-193W2-d0001 1 "docs:x:typo" major major carry \
+  false "rationale" true false true true true
+_eng191_write_row "$_w2_lgr" ENG-193W2 ENG-193W2-d0001 1 "docs:y:typo" major major carry \
+  false "rationale" true false true true true
+_eng191_write_row "$_w2_lgr" ENG-193W2 ENG-193W2-d0001 1 "docs:z:typo" major major carry \
+  false "rationale" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W2-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+export MOCK_FIND_FOLLOW_UP_HIT=ENG-EXISTING-1
+_create_follow_up_tickets_for_deferred_majors ENG-193W2
+unset MOCK_FIND_FOLLOW_UP_HIT
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w2_creates="$(captured_create_issue_count)"
+_w2_finds="$(captured_find_follow_up_count)"
+_w2_skipped_metrics="$(captured_metric_count follow-up-skipped)"
+_w2_created_metrics="$(captured_metric_count follow-up-created)"
+if [[ "$_w2_creates" == "0" ]] && [[ "$_w2_finds" == "3" ]] \
+   && [[ "$_w2_skipped_metrics" == "3" ]] && [[ "$_w2_created_metrics" == "0" ]]; then
+  pass_at "ENG-193 W2 (AC #2): idempotency hit → 0 creates, K finds, K follow-up-skipped metrics"
+else
+  fail_at "ENG-193 W2 (AC #2): idempotency hit" \
+    "creates='$_w2_creates' finds='$_w2_finds' \
+skipped-metrics='$_w2_skipped_metrics' created-metrics='$_w2_created_metrics'"
+fi
+_eng193_reset_config
+
+# ─── W3 (AC #3): envelope-clean — only bin/linear.sh invocations captured
+# The stub IS the only Linear-write path on PATH; the helper cannot bypass
+# without resolving a different binary. We assert every captured SUBCMD
+# is in the closed set {create-issue, find-follow-up}.
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W3)"
+_w3_lgr="$(issue_dir ENG-193W3)/review-findings-ledger.jsonl"
+rm -f "$_w3_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W3 >/dev/null 2>&1
+)
+_eng191_write_row "$_w3_lgr" ENG-193W3 ENG-193W3-d0001 1 "docs:w3:typo" major major carry \
+  false "rationale" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W3-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_create_follow_up_tickets_for_deferred_majors ENG-193W3
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w3_unknown="$(awk -F= '/^SUBCMD=/ {sub(/^SUBCMD=/,""); if ($0 != "create-issue" && $0 != "find-follow-up") print}' "$CAPTURE_FILE")"
+# ENG-193 review fix — also assert NO direct Linear API call ran. curl /
+# wget stubs in $STUB_DIR write an ENVELOPE_LEAK=… line on every invocation;
+# a count of zero means the helper never bypassed bin/linear.sh. (The agent
+# transcript-side envelope validator at run-stage.sh:1039-1123 catches
+# mcp__plugin_linear / gh api graphql / unset PIPELINE_DISPATCH_ID; this
+# orchestrator-side W3 covers the curl/wget complement.)
+_w3_envelope_leaks="$(captured_envelope_leak_count)"
+if [[ -z "$_w3_unknown" ]] && [[ "$_w3_envelope_leaks" == "0" ]]; then
+  pass_at "ENG-193 W3 (AC #3): every captured SUBCMD is create-issue or find-follow-up; zero curl/wget leak"
+else
+  fail_at "ENG-193 W3 (AC #3): unexpected subcommands or envelope leak" \
+    "unknown='$_w3_unknown' envelope-leaks='$_w3_envelope_leaks'"
+fi
+_eng193_reset_config
+
+# ─── W4: type-label mapping by decision_factors.user_visible ────────────
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W4)"
+_w4_lgr="$(issue_dir ENG-193W4)/review-findings-ledger.jsonl"
+rm -f "$_w4_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W4 >/dev/null 2>&1
+)
+# Row 1: user_visible=true → Bug.   Row 2: user_visible=false → Improvement.
+_eng191_write_row "$_w4_lgr" ENG-193W4 ENG-193W4-d0001 1 "k-visible" major major carry \
+  false "r1" true false true true true
+_eng191_write_row "$_w4_lgr" ENG-193W4 ENG-193W4-d0001 1 "k-hidden" major major carry \
+  false "r2" true false false true true
+export PIPELINE_DISPATCH_ID=ENG-193W4-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193W4
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w4_labels="$(captured_create_issue_type_labels | sort | tr '\n' ',')"
+if [[ "$_w4_labels" == "Bug,Improvement," ]]; then
+  pass_at "ENG-193 W4: type-label mapping — user_visible=true → Bug; user_visible=false → Improvement"
+else
+  fail_at "ENG-193 W4: type-label mapping" \
+    "labels='$_w4_labels'"
+fi
+_eng193_reset_config
+
+# ─── W5: title shape — [deferred from <ident>] <sanitised scr> ──────────
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W5)"
+_w5_lgr="$(issue_dir ENG-193W5)/review-findings-ledger.jsonl"
+rm -f "$_w5_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W5 >/dev/null 2>&1
+)
+_eng191_write_row "$_w5_lgr" ENG-193W5 ENG-193W5-d0001 1 "docs:w5:typo" major major carry \
+  false "trailing-whitespace polish" true false false true true
+export PIPELINE_DISPATCH_ID=ENG-193W5-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193W5
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w5_title="$(captured_create_issue_titles)"
+if [[ "$_w5_title" == "[deferred from ENG-193W5] trailing-whitespace polish" ]]; then
+  pass_at "ENG-193 W5: title shape — [deferred from ENG-193W5] trailing-whitespace polish"
+else
+  fail_at "ENG-193 W5: title shape" \
+    "title='$_w5_title'"
+fi
+_eng193_reset_config
+
+# ─── W6: body shape — required sections + footer marker ────────────────
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W6)"
+_w6_lgr="$(issue_dir ENG-193W6)/review-findings-ledger.jsonl"
+rm -f "$_w6_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W6 >/dev/null 2>&1
+)
+# ENG-193 review fix — W6 now exercises a row whose iteration value is 7
+# (a load-bearing per-finding context field) and asserts the captured body
+# (a) carries that iteration verbatim and (b) embeds the gh-stub-provided
+# PR URL via the autolink-or-plain fallback. Without these assertions a
+# formatting regression that dropped iteration / pr_url would still pass.
+_eng191_write_row "$_w6_lgr" ENG-193W6 ENG-193W6-d0001 7 "docs:w6:typo" major major carry \
+  false "rationale-W6" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W6-d0001
+export MOCK_GH_PR_URL=https://github.com/example/repo/pull/169
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193W6
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID MOCK_GH_PR_URL
+_w6_body="$(captured_create_issue_bodies)"
+if [[ "$_w6_body" == *"## Source"* ]] \
+   && [[ "$_w6_body" == *"## Why this was deferred"* ]] \
+   && [[ "$_w6_body" == *"## Decision factors"* ]] \
+   && [[ "$_w6_body" == *"## Type label"* ]] \
+   && [[ "$_w6_body" == *"## How to triage"* ]] \
+   && [[ "$_w6_body" == *"**Deferred from [ENG-193W6]"* ]] \
+   && [[ "$_w6_body" == *"iteration \`7\`"* ]] \
+   && [[ "$_w6_body" == *"https://github.com/example/repo/pull/169"* ]] \
+   && [[ "$_w6_body" == *"<!-- meta: follow-up-source dispatch=ENG-193W6-d0001 finding_class_key=docs:w6:typo -->"* ]]; then
+  pass_at "ENG-193 W6: body shape — TL;DR + sections + footer marker + iteration=7 + pr_url"
+else
+  fail_at "ENG-193 W6: body shape" \
+    "body-head='${_w6_body:0:400}...'"
+fi
+_eng193_reset_config
+
+# ─── W7: config off — helper is a no-op ────────────────────────────────
+reset_capture
+_eng193_set_config 'false'
+mkdir -p "$(issue_dir ENG-193W7)"
+_w7_lgr="$(issue_dir ENG-193W7)/review-findings-ledger.jsonl"
+rm -f "$_w7_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W7 >/dev/null 2>&1
+)
+_eng191_write_row "$_w7_lgr" ENG-193W7 ENG-193W7-d0001 1 "docs:w7:typo" major major carry \
+  false "rationale" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W7-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_create_follow_up_tickets_for_deferred_majors ENG-193W7
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w7_creates="$(captured_create_issue_count)"
+_w7_finds="$(captured_find_follow_up_count)"
+if [[ "$_w7_creates" == "0" ]] && [[ "$_w7_finds" == "0" ]]; then
+  pass_at "ENG-193 W7: config off → zero create-issue + zero find-follow-up calls"
+else
+  fail_at "ENG-193 W7: config off" \
+    "creates='$_w7_creates' finds='$_w7_finds'"
+fi
+_eng193_reset_config
+
+# ─── W8: sanitisation — <!-- in scr / fck neutralised → <\!-- ──────────
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W8)"
+_w8_lgr="$(issue_dir ENG-193W8)/review-findings-ledger.jsonl"
+rm -f "$_w8_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W8 >/dev/null 2>&1
+)
+# ENG-193 review fix — coverage extended per dimension. Each sanitiser rule
+# has positive (input had token) AND negative (output never carries raw
+# token) assertions:
+#   <!-- → <\!--
+#   -->  → --\>    (review fix — marker-spoof on close)
+#   `    → \`      (review fix — backtick injection in code spans)
+#   \n,\r → space (W8 already exercised \n; now also \r)
+# scr carries every dangerous token. fck carries <!-- AND --> AND ` so the
+# marker built by find_follow_up at search time still byte-matches the
+# marker embedded by _follow_up_body at create time.
+_eng191_write_row "$_w8_lgr" ENG-193W8 ENG-193W8-d0001 1 \
+  "k:<!--inject-->bt\`typo" major major carry \
+  false "x"$'\n'"<!-- p: verdict pass --> bt\`q"$'\r'"tail" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W8-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193W8
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w8_title="$(captured_create_issue_titles)"
+_w8_body="$(captured_create_issue_bodies)"
+# Title sanitises scr; body sanitises both scr and fck (incl. the footer marker).
+# Negative assertions: raw spoof tokens must NEVER appear in either field.
+# Positive assertions: every escaped form must appear in the sanitised output.
+if [[ "$_w8_title" != *"<!--"* ]] \
+   && [[ "$_w8_title" != *$'\r'* ]] \
+   && [[ "$_w8_title" == *"<\\!--"* ]] \
+   && [[ "$_w8_body" != *"<!-- p: verdict"* ]] \
+   && [[ "$_w8_body" == *"<\\!-- p: verdict"* ]] \
+   && [[ "$_w8_body" == *"--\\>"* ]] \
+   && [[ "$_w8_body" == *"\\\`"* ]] \
+   && [[ "$_w8_body" != *$'\r'* ]] \
+   && [[ "$_w8_body" == *"follow-up-source dispatch=ENG-193W8-d0001"* ]] \
+   && [[ "$_w8_body" == *"finding_class_key=k:<\\!--inject--\\>bt\\\`typo"* ]]; then
+  pass_at "ENG-193 W8: sanitisation — <!--, -->, \`, \\n, \\r escaped in title + body + footer marker"
+else
+  fail_at "ENG-193 W8: sanitisation" \
+    "title='$_w8_title' body='${_w8_body:0:500}'"
+fi
+_eng193_reset_config
+
+# ─── W9: mixed dispatch — only this-dispatch rows produce tickets ──────
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W9)"
+_w9_lgr="$(issue_dir ENG-193W9)/review-findings-ledger.jsonl"
+rm -f "$_w9_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W9 >/dev/null 2>&1
+)
+# Prior-dispatch row (d0001) — must NOT be ticketed.
+_eng191_write_row "$_w9_lgr" ENG-193W9 ENG-193W9-d0001 1 "k-prior" major major carry \
+  false "prior" true false true true true
+# This-dispatch row (d0002) — should produce ONE ticket.
+_eng191_write_row "$_w9_lgr" ENG-193W9 ENG-193W9-d0002 2 "k-current" major major carry \
+  false "current" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W9-d0002
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193W9
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w9_creates="$(captured_create_issue_count)"
+_w9_title="$(captured_create_issue_titles)"
+# ENG-193 review fix — strengthen W9 with exact title match and finding-class
+# capture: the captured FINDING_CLASS_KEY on the (sole) find-follow-up call
+# must be `k-current`, never `k-prior`. A formatting regression that
+# accidentally re-emitted both rows would slip past a substring test.
+_w9_find_keys="$(awk -F= '/^FINDING_CLASS_KEY=/ {sub(/^FINDING_CLASS_KEY=/,""); print}' "$CAPTURE_FILE" | tr '\n' ',')"
+_w9_expected_title="[deferred from ENG-193W9] current"
+if [[ "$_w9_creates" == "1" ]] \
+   && [[ "$_w9_title" == "$_w9_expected_title" ]] \
+   && [[ "$_w9_find_keys" == "k-current," ]]; then
+  pass_at "ENG-193 W9: mixed dispatch — exactly the this-dispatch row produces a ticket (exact title match + find_key check)"
+else
+  fail_at "ENG-193 W9: mixed dispatch" \
+    "creates='$_w9_creates' title='$_w9_title' find-keys='$_w9_find_keys'"
+fi
+_eng193_reset_config
+
+# ─── W10: per-row failure → follow-up-failed metric, no halt ────────────
+# Force the linear.sh create-issue stub to exit non-zero with empty stdout
+# (simulates Linear API outage / shape divergence). Helper's soft-fail
+# branch must fire: failed counter bumps, follow-up-failed metric emits,
+# create-issue captured (the stub records BEFORE the exit), no halt.
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W10)"
+_w10_lgr="$(issue_dir ENG-193W10)/review-findings-ledger.jsonl"
+rm -f "$_w10_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W10 >/dev/null 2>&1
+)
+_eng191_write_row "$_w10_lgr" ENG-193W10 ENG-193W10-d0001 1 "k-fail" major major carry \
+  false "rationale-fail" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193W10-d0001
+export MOCK_CREATE_ISSUE_IDENT=""
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_w10_rc=0
+_create_follow_up_tickets_for_deferred_majors ENG-193W10 || _w10_rc=$?
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID MOCK_CREATE_ISSUE_IDENT
+_w10_create_calls="$(captured_create_issue_count)"
+_w10_failed_metrics="$(captured_metric_count follow-up-failed)"
+_w10_created_metrics="$(captured_metric_count follow-up-created)"
+_w10_failed_notes="$(captured_metric_notes follow-up-failed | head -1)"
+if [[ "$_w10_rc" == "0" ]] \
+   && [[ "$_w10_create_calls" == "1" ]] \
+   && [[ "$_w10_failed_metrics" == "1" ]] \
+   && [[ "$_w10_created_metrics" == "0" ]] \
+   && [[ "$_w10_failed_notes" == *"finding_class_key=k-fail"* ]] \
+   && [[ "$_w10_failed_notes" == *"dispatch_id=ENG-193W10-d0001"* ]]; then
+  pass_at "ENG-193 W10: per-row create failure → follow-up-failed metric + helper returns 0 (soft-fail)"
+else
+  fail_at "ENG-193 W10: per-row failure" \
+    "rc='$_w10_rc' creates='$_w10_create_calls' failed='$_w10_failed_metrics' \
+created='$_w10_created_metrics' failed-notes='${_w10_failed_notes:0:200}'"
+fi
+_eng193_reset_config
+
+# ─── W11: PIPELINE_DISPATCH_ID unset → helper short-circuits ────────────
+# Per ENG-87 cross-dispatch staleness contract: every dispatch carries a
+# fresh PIPELINE_DISPATCH_ID. If it is unset (forensic / manual-replay
+# scenario), the helper must return 0 with zero creates and zero finds —
+# the source-stage's ledger row's dispatch_id can never match.
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W11)"
+_w11_lgr="$(issue_dir ENG-193W11)/review-findings-ledger.jsonl"
+rm -f "$_w11_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193W11 >/dev/null 2>&1
+)
+_eng191_write_row "$_w11_lgr" ENG-193W11 ENG-193W11-d0001 1 "k-w11" major major carry \
+  false "rationale" true false true true true
+unset PIPELINE_DISPATCH_ID
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_w11_rc=0
+_create_follow_up_tickets_for_deferred_majors ENG-193W11 || _w11_rc=$?
+unset -f find_fresh_verdict
+_w11_creates="$(captured_create_issue_count)"
+_w11_finds="$(captured_find_follow_up_count)"
+if [[ "$_w11_rc" == "0" ]] && [[ "$_w11_creates" == "0" ]] && [[ "$_w11_finds" == "0" ]]; then
+  pass_at "ENG-193 W11: PIPELINE_DISPATCH_ID unset → short-circuit (zero creates, zero finds, rc=0)"
+else
+  fail_at "ENG-193 W11: unset dispatch id" \
+    "rc='$_w11_rc' creates='$_w11_creates' finds='$_w11_finds'"
+fi
+_eng193_reset_config
+
+# ─── W12: ledger absent → helper short-circuits ────────────────────────
+# When the review stage exits cleanly before writing a ledger (e.g. the
+# upstream `review-ledger-missing` rc=50 path), the helper must not try
+# to enumerate rows. Zero creates, zero finds, rc=0.
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193W12)"
+_w12_lgr="$(issue_dir ENG-193W12)/review-findings-ledger.jsonl"
+rm -f "$_w12_lgr"
+export PIPELINE_DISPATCH_ID=ENG-193W12-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_w12_rc=0
+_create_follow_up_tickets_for_deferred_majors ENG-193W12 || _w12_rc=$?
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_w12_creates="$(captured_create_issue_count)"
+_w12_finds="$(captured_find_follow_up_count)"
+if [[ "$_w12_rc" == "0" ]] && [[ "$_w12_creates" == "0" ]] && [[ "$_w12_finds" == "0" ]]; then
+  pass_at "ENG-193 W12: ledger absent → short-circuit (zero creates, zero finds, rc=0)"
+else
+  fail_at "ENG-193 W12: ledger absent" \
+    "rc='$_w12_rc' creates='$_w12_creates' finds='$_w12_finds'"
+fi
+_eng193_reset_config
+
+# ─── W7-adv: source-pin assertion that the reviewing-stage gate is present
+# The Failure-Mode→Test-Map row "Orchestrator helper invoked outside
+# reviewing stage | W7-adv" is enforced by the case-statement gate at the
+# main() post-dispatch hook. A behavioural test (invoke main() with
+# stage=building) is heavier than the contract is worth; instead, source-pin
+# that the `case "$stage" in reviewing) ... esac` gate exists around the
+# _create_follow_up_tickets_for_deferred_majors call. If a future refactor
+# accidentally drops the gate, this assertion fails before the binding test
+# would have caught it (and at much lower cost).
+_w7adv_src="$HARNESS_DIR/run-stage.sh"
+# Pull the 5-line block ending in the load-bearing call shape — the call
+# `_create_follow_up_tickets_for_deferred_majors "$ident" || true` only
+# appears once (the call-site in main()); the function DEFINITION line
+# nearby is `_create_follow_up_tickets_for_deferred_majors() {` and is
+# excluded by the trailing `"$ident" || true`. The preceding 4 lines must
+# carry both `case "$stage" in` and `reviewing)` for the gate to be
+# correctly fenced.
+_w7adv_gate="$(grep -B4 -F '_create_follow_up_tickets_for_deferred_majors "$ident" || true' "$_w7adv_src" 2>/dev/null \
+  | tail -5)"
+if [[ "$_w7adv_gate" == *"case \"\$stage\" in"* ]] \
+   && [[ "$_w7adv_gate" == *"reviewing)"* ]] \
+   && [[ "$_w7adv_gate" == *"_create_follow_up_tickets_for_deferred_majors \"\$ident\" || true"* ]]; then
+  pass_at "ENG-193 W7-adv: source-pin — reviewing-stage case gate present around _create_follow_up_tickets_for_deferred_majors call-site"
+else
+  fail_at "ENG-193 W7-adv: stage gate" \
+    "gate-text='${_w7adv_gate:0:500}'"
+fi
+
+# ─── QA-ADV-1: _follow_up_title truncation + partial-escape tail-trim ────────
+# Coverage gap: W5 uses a 26-char SCR that never exercises the `if ((
+# ${#raw} > budget ))` branch — the truncation path and trim-loop are entirely
+# skipped on short input. These sub-tests put the budget cut inside a
+# sanitised escape sequence so both truncation AND the while-loop fire.
+#
+# budget([deferred from QA-ADV1] ) = 80 - 24 = 56
+#
+# (a) open-comment boundary: 54a + "<!--" → sanitise → 54a + "<\!--" (59 chars)
+#     59 > 56 → truncate to 56 → 54a + "<\" → trim-loop strips "\" → 54a + "<"
+_qa_adv1a_scr="$(printf 'a%.0s' {1..54})<!--"
+_qa_adv1a_title="$(_follow_up_title "$_qa_adv1a_scr" "fallback-fck" "QA-ADV1")"
+if [[ "${#_qa_adv1a_title}" -le 80 ]] \
+   && [[ "$_qa_adv1a_title" == "[deferred from QA-ADV1] "* ]] \
+   && [[ "$_qa_adv1a_title" != *$'\\'* ]]; then
+  pass_at "ENG-193 QA-ADV-1a: _follow_up_title truncation, open-comment boundary — len=${#_qa_adv1a_title} ≤ 80, no trailing backslash"
+else
+  fail_at "ENG-193 QA-ADV-1a: _follow_up_title truncation (open-comment)" \
+    "len='${#_qa_adv1a_title}' title='${_qa_adv1a_title:0:100}'"
+fi
+
+# (b) close-comment boundary: 53a + "-->" → sanitise → 53a + "--\>" (57 chars)
+#     57 > 56 → truncate to 56 → 53a + "--\" → trim-loop strips "\" → 53a + "--"
+_qa_adv1b_scr="$(printf 'a%.0s' {1..53})-->"
+_qa_adv1b_title="$(_follow_up_title "$_qa_adv1b_scr" "fallback-fck" "QA-ADV1")"
+if [[ "${#_qa_adv1b_title}" -le 80 ]] \
+   && [[ "$_qa_adv1b_title" == "[deferred from QA-ADV1] "* ]] \
+   && [[ "$_qa_adv1b_title" != *$'\\'* ]]; then
+  pass_at "ENG-193 QA-ADV-1b: _follow_up_title truncation, close-comment boundary — len=${#_qa_adv1b_title} ≤ 80, no trailing backslash"
+else
+  fail_at "ENG-193 QA-ADV-1b: _follow_up_title truncation (close-comment)" \
+    "len='${#_qa_adv1b_title}' title='${_qa_adv1b_title:0:100}'"
+fi
+
+# ─── QA-ADV-2: _config_auto_ticket_deferred_majors_enabled * (invalid) branch ──
+# Coverage gap: W7 tests the exact string "false" → rc=1 (disabled). The `*`
+# branch (invalid/unrecognised value) must default-true (return 0) and emit a
+# warning — no test verifies this. Two sub-cases:
+# (a) arbitrary non-boolean string hits `*` → return 0 (enabled)
+_qa_adv2a_rc=255
+_eng193_set_config '42'
+_config_auto_ticket_deferred_majors_enabled && _qa_adv2a_rc=0 || _qa_adv2a_rc=$?
+if [[ "$_qa_adv2a_rc" == "0" ]]; then
+  pass_at "ENG-193 QA-ADV-2a: config invalid value '42' → * branch default-true (rc=0)"
+else
+  fail_at "ENG-193 QA-ADV-2a: config invalid value '42'" "rc='$_qa_adv2a_rc'"
+fi
+_eng193_reset_config
+
+# (b) space-padded " false" does NOT match case `false` → * branch → rc=0
+# Documents the explicit fail-open contract: malformed config is not
+# treated as "disabled"; operator must write the literal string "false".
+_qa_adv2b_rc=255
+_eng193_set_config ' false'
+_config_auto_ticket_deferred_majors_enabled && _qa_adv2b_rc=0 || _qa_adv2b_rc=$?
+if [[ "$_qa_adv2b_rc" == "0" ]]; then
+  pass_at "ENG-193 QA-ADV-2b: config ' false' (space-padded) → * branch default-true (rc=0, fail-open contract)"
+else
+  fail_at "ENG-193 QA-ADV-2b: config ' false' (space-padded)" "rc='$_qa_adv2b_rc'"
+fi
+_eng193_reset_config
+
+# ─── QA-ADV-3: _sanitise_for_md_marker direct unit — literal \n/\r ──────────
+# Coverage gap: W8 tests sanitisation through the jq @tsv pipeline, which
+# pre-encodes literal newlines/CR to two-char backslash-escape sequences —
+# so _sanitise_for_md_marker's ${raw//$'\n'/ } and ${raw//$'\r'/ } branches
+# are dead code in the normal call-chain. This fixture calls the helper
+# directly with a literal newline + CR, confirming those branches are correct
+# even though they are currently unreachable via the @tsv pipeline.
+_qadv3_in=$'foo\nbar\rbaz'
+_qadv3_out="$(_sanitise_for_md_marker "$_qadv3_in")"
+if [[ "$_qadv3_out" != *$'\n'* ]] \
+   && [[ "$_qadv3_out" != *$'\r'* ]] \
+   && [[ "$_qadv3_out" == "foo bar baz" ]]; then
+  pass_at "QA-ADV-3: _sanitise_for_md_marker — literal \\n/\\r → space (direct; @tsv dead-code path verified)"
+else
+  fail_at "QA-ADV-3: _sanitise_for_md_marker \\n/\\r" \
+    "out='$_qadv3_out' (expected 'foo bar baz')"
+fi
+
+# ─── QA-ADV-4: W7 OFF-footer in _post_deferred_majors_comment_if_eligible ───
+# Coverage gap: W7 tests _create_follow_up_tickets_for_deferred_majors with
+# config=false (zero creates + zero finds). It does NOT verify that
+# _post_deferred_majors_comment_if_eligible emits the "Auto-ticketing is
+# disabled by config" footer in the add-comment body when the gate is off.
+# Z9 fills that gap: asserts the disabled footer appears and the enabled
+# footer ("auto-creates one follow-up ticket") does NOT.
+reset_capture
+_eng193_set_config 'false'
+mkdir -p "$(issue_dir ENG-193Z9)"
+_z9_lgr="$(issue_dir ENG-193Z9)/review-findings-ledger.jsonl"
+rm -f "$_z9_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193Z9 >/dev/null 2>&1
+)
+_eng191_write_row "$_z9_lgr" ENG-193Z9 ENG-193Z9-d0001 1 "z9:typo" major major carry \
+  false "z9 rationale" true false true true true
+export PIPELINE_DISPATCH_ID=ENG-193Z9-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_post_deferred_majors_comment_if_eligible ENG-193Z9
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_z9_body="$(captured_body)"
+if [[ "$_z9_body" == *"Auto-ticketing is disabled by config"* ]] \
+   && [[ "$_z9_body" != *"auto-creates one follow-up ticket"* ]]; then
+  pass_at "QA-ADV-4: W7 OFF-footer — _post_deferred_majors_comment_if_eligible config=false → disabled-footer, not enabled-footer"
+else
+  fail_at "QA-ADV-4: W7 OFF-footer" \
+    "body-head='${_z9_body:0:400}'"
+fi
+_eng193_reset_config
+
+# ─── QA-ADV-1c: _follow_up_title bare-backslash arm (backtick at cut boundary) ──
+# budget([deferred from QA-ADV1] ) = 80 - 24 = 56.
+# scr = 55 a's + backtick + "extra" → sanitise → 55 a's + \` + "extra" (62 chars)
+# → truncate to 56 → 55 a's + \ → *"\\" arm fires → trim → 55 a's.
+# Distinct from 1a (<\ open-comment boundary) and 1b (--\ close-comment boundary).
+_adv1c_aa="$(printf 'a%.0s' {1..55})"
+_adv1c_got="$(_follow_up_title "${_adv1c_aa}\`extra" "fallback-fck" "QA-ADV1")"
+_adv1c_want="[deferred from QA-ADV1] ${_adv1c_aa}"
+if [[ "$_adv1c_got" == "$_adv1c_want" ]]; then
+  pass_at "ENG-193 QA-ADV-1c: _follow_up_title bare-backslash arm — backtick at cut boundary stripped"
+else
+  fail_at "ENG-193 QA-ADV-1c: bare-backslash arm" \
+    "got='${_adv1c_got}' want='${_adv1c_want}'"
+fi
+unset _adv1c_aa _adv1c_got _adv1c_want
+
+# ─── QA-ADV-5: _follow_up_body non-http pr_url → plain-text fallback ────────
+# Coverage gap: W1-W5 exercise the non-http pr_url path (MOCK_GH_PR_URL unset
+# → gh returns empty → pr_url="(not discoverable)") but never assert on body
+# text. This test calls _follow_up_body directly with a non-http pr_url and
+# verifies: (a) "PR not discoverable at orchestrator run time." appears, and
+# (b) the TL;DR is plain-text (no markdown link [ident](url)).
+_adv5_body="$(_follow_up_body \
+  "ENG-193ADV5" "(not discoverable)" "ENG-193ADV5-d0001" "3" \
+  "adv5:key" "adv5 rationale" "false" "false" "false" "true" "false")"
+if [[ "$_adv5_body" == *"PR not discoverable at orchestrator run time."* ]] \
+   && [[ "$_adv5_body" == *"**Deferred from ENG-193ADV5"* ]] \
+   && [[ "$_adv5_body" != *"**Deferred from [ENG-193ADV5]"* ]]; then
+  pass_at "ENG-193 QA-ADV-5: _follow_up_body non-http pr_url → plain-text TL;DR + PR-not-discoverable line"
+else
+  fail_at "ENG-193 QA-ADV-5: _follow_up_body non-http pr_url" \
+    "body-head='${_adv5_body:0:400}'"
+fi
+unset _adv5_body
+
+# ─── QA-ADV-6: decision_factors=null row → .decision_factors // {} guard ─────
+# Coverage gap: _eng191_write_row always provides a populated decision_factors
+# object; the jq .decision_factors // {} guard is never exercised with an actual
+# null input. A null-df row MUST still produce one follow-up ticket (all df
+# fields default false via // false → Improvement type label).
+reset_capture
+_eng193_set_config 'true'
+mkdir -p "$(issue_dir ENG-193ADV6)"
+_adv6_lgr="$(issue_dir ENG-193ADV6)/review-findings-ledger.jsonl"
+rm -f "$_adv6_lgr"
+(
+  unset PIPELINE_DRY_RUN
+  _ensure_review_ledger ENG-193ADV6 >/dev/null 2>&1
+)
+printf '%s\n' '{"ledger_schema_version":1,"issue_id":"ENG-193ADV6","dispatch_id":"ENG-193ADV6-d0001","iteration":1,"created_at":"2026-06-16T00:00:00Z","finding_class_key":"adv6:null-df","cold_severity":"major","adjudicated_severity":"major","decision":"carry","rationale":"adv6 rationale","blocks_ship":false,"ship_classification_rationale":"adv6 scr","decision_factors":null}' \
+  >> "$_adv6_lgr"
+export PIPELINE_DISPATCH_ID=ENG-193ADV6-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+unset MOCK_FIND_FOLLOW_UP_HIT
+_create_follow_up_tickets_for_deferred_majors ENG-193ADV6
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_adv6_count="$(captured_create_issue_count)"
+_adv6_labels="$(captured_create_issue_type_labels)"
+if [[ "$_adv6_count" == "1" ]] && [[ "$_adv6_labels" == "Improvement" ]]; then
+  pass_at "ENG-193 QA-ADV-6: decision_factors=null row — // {} guard produces 1 Improvement ticket"
+else
+  fail_at "ENG-193 QA-ADV-6: decision_factors=null guard" \
+    "count='$_adv6_count' labels='$_adv6_labels'"
+fi
+_eng193_reset_config
+unset _adv6_lgr _adv6_count _adv6_labels
 
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
