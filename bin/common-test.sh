@@ -1492,6 +1492,35 @@ eng212_adversarial_no_env_type_recheck() {
 }
 eng212_adversarial_no_env_type_recheck
 
+# ─── ENG-214: drop paranoid -x metrics.sh guard shape pin ───
+# Regression-pin against re-introduction of the `[[ -x .../metrics.sh ]]`
+# conjunct in `merge_artifact_envelope`'s forensic-emission guard. The
+# invocation form `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh"` does
+# not consult the script's exec bit (see bin/render-prompt-test.sh:671 —
+# the canonical project precedent: "chmod +x omitted: resolver invokes
+# via `bash \"\$SCRIPT_DIR/metrics.sh\"` so exec-bit is not consulted").
+# The `|| true` tail at bin/common.sh:739 already preserves the best-
+# effort contract documented in the function header. ENG-101's
+# defensive-code restraint directive forbids the implement agent from
+# adding such guards; ENG-214 removes a pre-existing instance and pins
+# the guard shape against re-introduction. Mirrors ENG-212's adversarial
+# structural-guard shape (bin/common-test.sh:1484-1492).
+eng214_adversarial_no_metrics_x_guard() {
+  local src body
+  src="$(dirname "${BASH_SOURCE[0]}")/common.sh"
+  body="$(awk '/^merge_artifact_envelope\(\) \{/,/^\}/' "$src" 2>/dev/null || true)"
+  if [[ "$body" == *'(( overlap_n > 0 ))'* ]] \
+    && [[ "$body" == *'[[ -n "${PIPELINE_ISSUE_ID:-}" ]]'* ]] \
+    && [[ "$body" == *'metrics.sh" "envelope-overwrite"'* ]] \
+    && [[ "$body" != *'[[ -x'* ]]; then
+    pass_at "ENG-214 OS-1: merge_artifact_envelope forensic-emit guard has no -x check"
+  else
+    fail_at "ENG-214 OS-1: guard shape" \
+      "expected (( overlap_n > 0 )) && [[ -n PIPELINE_ISSUE_ID ]] only; got: ${body}"
+  fi
+}
+eng214_adversarial_no_metrics_x_guard
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
