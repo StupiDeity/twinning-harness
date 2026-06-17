@@ -1476,6 +1476,22 @@ eng203_body_path_helpers() {
 }
 eng203_body_path_helpers
 
+# ENG-212 adversarial: structural guard — the env_json type recheck removed
+# by ENG-212 must not be reintroduced. Any re-addition would violate §3
+# Self-review "Defensive-code restraint" (ENG-203 rationale: env_json is
+# caller-constructed via `jq -nc '{...}'` — an internal invariant, not a
+# system-boundary input).
+eng212_adversarial_no_env_type_recheck() {
+  local src; src="$(dirname "${BASH_SOURCE[0]}")/common.sh"
+  if grep -q 'jq.*type.*==.*object.*env_json\|env_json.*type.*==.*object' "$src" 2>/dev/null; then
+    fail_at "ENG-212 adversarial: env_json type recheck was reintroduced in common.sh" \
+      "found the removed guard — see ENG-212 for rationale"
+  else
+    : "$(( PASS++ ))"
+  fi
+}
+eng212_adversarial_no_env_type_recheck
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
