@@ -174,7 +174,7 @@ classify_failure() {
         *)                     marker_reason="agent-failure" ;;
       esac
       local comment_body
-      comment_body="$(printf '<!-- pipeline: verdict result=halt reason=%s -->\n\nPipeline: `%s` stage halted — %s\n\n**Policy:** %s\n**Recorded at:** %s\n**Branch:** %s\n**Retry count:** %d\n\n**Resume:** ' \
+      comment_body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=%s -->\n\nPipeline: `%s` stage halted — %s\n\n**Policy:** %s\n**Recorded at:** %s\n**Branch:** %s\n**Retry count:** %d\n\n**Resume:** ' \
         "$marker_reason" "$stage" "$effective_reason" "$effective_policy" "$recorded_at" "${branch:-none}" "$retry_count")"
       case "$effective_policy" in
         skip-until-code-changes)

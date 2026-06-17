@@ -602,6 +602,46 @@ _post_dispatch_apply_halt() {
   fi
 }
 
+# ENG-152 (D-005): orchestrator pass/wait-republish helper. Reads the LATEST
+# <!-- pipeline: stage-completion-claim … --> body carrying the current
+# dispatch_id, extracts result/target/reason via parse_pipeline_marker, and
+# re-emits an authoritative <!-- pipeline: verdict … author=orchestrator -->
+# through the schema-driven CLI (registry-validated). find_fresh_verdict's
+# strict-author filter consumes ONLY this orchestrator-stamped verdict.
+#
+# No-op when the issue carries no claim from the current dispatch (legacy
+# issues whose unstamped verdict the D-007 fallback in find_fresh_verdict
+# still accepts).
+_orchestrator_republish_verdict() {
+  local PIPELINE_WRITER=orchestrator
+  export PIPELINE_WRITER
+  local ident="$1" stage="$2"
+  local comments curr_id claim_body ev result target reason
+  curr_id="$(current_dispatch_id "$ident" 2>/dev/null || printf '')"
+  [[ -n "$curr_id" ]] || return 0
+  comments="$(bash "$SCRIPT_DIR/linear.sh" get-comments "$ident" 2>/dev/null || printf '[]')"
+  [[ "$comments" == "[]" || -z "$comments" ]] && return 0
+  # Latest stage-completion-claim carrying the current dispatch_id marker.
+  claim_body="$(jq -r --arg id "$curr_id" '
+    [.[] | select(.body | contains("<!-- pipeline: stage-completion-claim "))
+         | select(.body | contains("<!-- meta: dispatch id="+$id))]
+    | sort_by(.createdAt) | last | .body // ""' <<<"$comments" 2>/dev/null || printf '')"
+  [[ -z "$claim_body" || "$claim_body" == "null" ]] && return 0
+  ev="$(parse_pipeline_marker "$claim_body" 2>/dev/null || true)"
+  [[ -z "$ev" ]] && return 0
+  [[ "$(jq -r '.event' <<<"$ev")" != "stage-completion-claim" ]] && return 0
+  result="$(jq -r '.result // ""' <<<"$ev")"
+  target="$(jq -r '.target // ""' <<<"$ev")"
+  reason="$(jq -r '.reason // ""' <<<"$ev")"
+  [[ -z "$result" ]] && return 0
+  local flags=()
+  [[ -n "$stage" ]]  && flags+=(--stage "$stage")
+  [[ -n "$target" ]] && flags+=(--target "$target")
+  [[ -n "$reason" ]] && flags+=(--reason "$reason")
+  PIPELINE_WRITER=orchestrator bash "$SCRIPT_DIR/pipeline.sh" event "$ident" verdict "$result" ${flags[@]+"${flags[@]}"} \
+    || log "verdict-republish: failed for $ident (non-fatal — verdict_handler falls back to protocol-violation on next read)"
+}
+
 # ENG-71: defense-in-depth detector for the worktree-on-main symptom.
 # D-002 (in dispatch.sh) catches the contract violation pre-exit; this
 # is the state-of-the-world fallback that runs even if D-002 misses
@@ -770,7 +810,7 @@ _handle_wait() {
 
   if (( exhausted )); then
     local halt_body
-    halt_body="$(printf '<!-- pipeline: verdict result=halt reason=external-signal-budget-exhausted -->\n\nBuild stage halted: %s budget exhausted (%d attempts since %s).\n\n**Resume:** approve the PR as a non-bot Code Owner, then run `bash bin/pipeline.sh decide %s --action continue`. Or raise `orchestrator.external_signal_budget.max_attempts` / `max_minutes` in `.pipeline-config/config.json` to extend the window.' \
+    halt_body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=external-signal-budget-exhausted -->\n\nBuild stage halted: %s budget exhausted (%d attempts since %s).\n\n**Resume:** approve the PR as a non-bot Code Owner, then run `bash bin/pipeline.sh decide %s --action continue`. Or raise `orchestrator.external_signal_budget.max_attempts` / `max_minutes` in `.pipeline-config/config.json` to extend the window.' \
                 "$reason" "$attempts" "$first" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
     # Only delete the wait file if the halt label actually applied. A network
@@ -1056,7 +1096,7 @@ _validate_dispatch_envelope() {
   [[ -s "$sidecar" ]] || return 0
 
   local violations=()
-  local _viol_mcp _viol_curl _viol_curl_post _viol_gh_graphql _viol_unset_id _viol_wget
+  local _viol_mcp _viol_curl _viol_curl_post _viol_gh_graphql _viol_unset_id _viol_wget _viol_agent_verdict
   if _viol_mcp="$(assert_no_tool_invocation "$sidecar" "mcp__plugin_linear")"; then
     :
   else
@@ -1086,6 +1126,20 @@ _validate_dispatch_envelope() {
     :
   else
     violations+=("wget-linear:${_viol_wget}")
+  fi
+  # ENG-152: an agent that hand-crafts an authoritative verdict body and
+  # pipes/embeds it into a Bash invocation of bin/linear.sh (or any echo/
+  # printf into add-comment --body -) bypasses the cmd_event_verdict
+  # lane-fence in bin/pipeline.sh. We scan the Bash command string with
+  # CONTAINS semantics (assert_no_tool_invocation's startswith would never
+  # match a body embedded mid-command). The trailing space after `verdict`
+  # excludes the new `<!-- pipeline: stage-completion-claim ` event (agents
+  # emit that legitimately via bin/pipeline.sh) and the legacy hyphenated
+  # `<!-- pipeline: verdict-` shape.
+  if _viol_agent_verdict="$(assert_no_tool_with_input_path "$sidecar" "Bash" "command" "<!-- pipeline: verdict " "contains")"; then
+    :
+  else
+    violations+=("agent-verdict-body:${_viol_agent_verdict}")
   fi
   if (( ${#violations[@]} > 0 )); then
     # ENG-87 review-iter-7 Critical 3: SANITISE viol_str BEFORE
@@ -1122,7 +1176,7 @@ _validate_dispatch_envelope() {
     # if the env var was somehow unset by the time validation runs (e.g.
     # a downstream caller that forgot to allocate). Lint-safe — neither
     # variable name matches secret-probe-lint.sh's regex.
-    body="$(printf '<!-- pipeline: verdict result=halt reason=dispatch-envelope-violation -->\n\nDispatch envelope violation on dispatch_id=%s stage=%s:\n\n```\n%s\n```\n\nThe agent bypassed bin/linear.sh (auto-injection chokepoint). Inspect: %s\n\n**Resume:** investigate the bypass, fix the agent prompt or tool-allowlist, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+    body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=dispatch-envelope-violation -->\n\nDispatch envelope violation on dispatch_id=%s stage=%s:\n\n```\n%s\n```\n\nThe agent bypassed bin/linear.sh (auto-injection chokepoint). Inspect: %s\n\n**Resume:** investigate the bypass, fix the agent prompt or tool-allowlist, then run `bash bin/pipeline.sh decide %s --action continue`.' \
       "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$viol_str_safe" "$sidecar" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
     return 29
@@ -1287,7 +1341,7 @@ _emit_sandbox_denial_metric() {
       "$matched_token" "$matched_path" \
       > "${d}/.transcript-violation-${stage}"
     local body
-    body="$(printf '<!-- pipeline: verdict result=halt reason=sandbox-contract-violation -->\n\nSandbox blocked agent write to a harness-contract path on dispatch_id=%s stage=%s.\n\nResolver token: `%s`\n\nThe orchestrator rendered this resolver value into the agent prompt and the sandbox denied the agent'\''s tool call against it. Inspect `%s/.transcript-violation-%s` for the denied path; expected fix is the project profile / `--add-dir` / tool-allowlist (NOT the agent prompt).\n\n**Resume:** fix the contract drift, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+    body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=sandbox-contract-violation -->\n\nSandbox blocked agent write to a harness-contract path on dispatch_id=%s stage=%s.\n\nResolver token: `%s`\n\nThe orchestrator rendered this resolver value into the agent prompt and the sandbox denied the agent'\''s tool call against it. Inspect `%s/.transcript-violation-%s` for the denied path; expected fix is the project profile / `--add-dir` / tool-allowlist (NOT the agent prompt).\n\n**Resume:** fix the contract drift, then run `bash bin/pipeline.sh decide %s --action continue`.' \
       "${PIPELINE_DISPATCH_ID:-unknown}" "$stage" "$matched_token" "$d" "$stage" "$ident")"
     bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" \
       || log "[sandbox-denial] halt-comment post failed for $ident/$stage; rc=29 still emitted"
@@ -1388,7 +1442,7 @@ _post_plan_contract_halt() {
   local ident="$1" defect="$2" raw="$3"
   local safe="${raw//<!--/<\\!--}"
   local body
-  body="$(printf '<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->\n\nPlan-contract validation failed on dispatch_id=%s stage=planning:\n\n- Defect: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/plan-schema.sh`.\n\n**Resume:** fix the JSON (or the plan prompt'\''s emission step), commit on the feature branch, then run `bash bin/pipeline.sh decide %s --action continue`.' \
+  body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=plan-contract-invalid -->\n\nPlan-contract validation failed on dispatch_id=%s stage=planning:\n\n- Defect: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/plan-schema.sh`.\n\n**Resume:** fix the JSON (or the plan prompt'\''s emission step), commit on the feature branch, then run `bash bin/pipeline.sh decide %s --action continue`.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$safe" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
@@ -1430,7 +1484,7 @@ _post_review_payload_halt() {
   local safe="${raw//<!--/<\\!--}"
   local payload; payload="$(issue_dir "$ident")/verdict-review.json"
   local body
-  body="$(printf '<!-- pipeline: verdict result=halt reason=review-payload-invalid -->\n\nReview-payload validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §11.' \
+  body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=review-payload-invalid -->\n\nReview-payload validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §11.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$payload" "$safe" "$ident" "$payload" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
@@ -1470,7 +1524,7 @@ _post_review_ledger_halt() {
   local safe="${raw//<!--/<\\!--}"
   local ledger; ledger="$(issue_dir "$ident")/review-findings-ledger.jsonl"
   local body
-  body="$(printf '<!-- pipeline: verdict result=halt reason=review-ledger-invalid -->\n\nReview-ledger validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Ledger: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-ledger-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **NOTE:** the ledger is NOT cleared on resume; the detective will re-halt on the same row until you fix or remove it. Edit the offending row by hand first (`sed -i.bak '"'"'<N>d'"'"' %s`) using the row index in the diagnostic above, or delete the file to restart the ledger from scratch.\n- Manual repair: hand-edit `%s` to satisfy the schema, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §12.' \
+  body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=review-ledger-invalid -->\n\nReview-ledger validation failed on dispatch_id=%s stage=reviewing:\n\n- Defect: %s\n- Ledger: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/review-ledger-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **NOTE:** the ledger is NOT cleared on resume; the detective will re-halt on the same row until you fix or remove it. Edit the offending row by hand first (`sed -i.bak '"'"'<N>d'"'"' %s`) using the row index in the diagnostic above, or delete the file to restart the ledger from scratch.\n- Manual repair: hand-edit `%s` to satisfy the schema, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage reviewing`. See `docs/runbooks/recovery.md` §12.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$ledger" "$safe" "$ident" "$ledger" "$ledger" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
@@ -2143,7 +2197,7 @@ _post_qa_payload_halt() {
   local safe="${raw//<!--/<\\!--}"
   local payload; payload="$(issue_dir "$ident")/verdict-qa.json"
   local body
-  body="$(printf '<!-- pipeline: verdict result=halt reason=qa-payload-invalid -->\n\nQA-payload validation failed on dispatch_id=%s stage=qa:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/qa-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage qa`. See `docs/runbooks/recovery.md` §11.' \
+  body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=qa-payload-invalid -->\n\nQA-payload validation failed on dispatch_id=%s stage=qa:\n\n- Defect: %s\n- Payload: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/qa-payload-schema.sh`.\n\n**Resume options:**\n- Re-dispatch (preferred): `bash bin/pipeline.sh decide %s --action continue`. **WARNING:** this pre-cleans the payload file. Any hand-edit you make first will be erased.\n- Manual repair: hand-edit `%s` to a valid payload, then emit a verdict marker yourself with `bash bin/pipeline.sh event %s verdict pass --stage qa`. See `docs/runbooks/recovery.md` §11.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$payload" "$safe" "$ident" "$payload" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
 }
@@ -2722,7 +2776,7 @@ main() {
           # label. The Verdict Handler leaves the halt intact until
           # pipeline.sh decide --action approve --gate scope posts a decision.
           local halt_body
-          halt_body="$(printf '<!-- pipeline: verdict result=halt reason=scope-violation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/pipeline.sh decide %s --action approve --gate scope\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
+          halt_body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=scope-violation -->\n\nPipeline: `%s` stage touched files outside the plan File Structure on branch `%s`. Notable (adjacent-to-scope) files:\n\n%s\nTo approve and resume:\n\n    bash %s/bin/pipeline.sh decide %s --action approve --gate scope\n\nTo reject, revert the out-of-scope edits and remove `pipeline:halted`. (Benign escapes — pipeline telemetry, Cargo.lock, docs/knowledge, tests under an in-scope crate — are auto-allowed and not listed here.)' \
             "$stage" "$branch" "$fs_patch" "$HARNESS_ROOT" "$ident")"
           bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$halt_body" || true
           bash "$SCRIPT_DIR/linear.sh" add-label   "$ident" "pipeline:halted" || true
@@ -2841,6 +2895,10 @@ main() {
           "${_wait_cost_flags[@]+"${_wait_cost_flags[@]}"}" || true
         # ENG-54: review-stage wait-success branch is gone (review never
         # waits anymore — _fresh_wait_reason narrowed to build only).
+        # ENG-152 (D-005): republish the agent's wait claim as an
+        # author=orchestrator verdict so find_fresh_wait_verdict's
+        # strict-author filter has an authoritative wait marker to read.
+        _orchestrator_republish_verdict "$ident" "$stage"
         log "stage $stage wait on $ident (reason=$_wait_reason)"
         # ENG-87 review-iter-7 M3: writer reads find_fresh_wait_verdict
         # at trap-fire time when find_fresh_verdict returns empty (wait
@@ -3171,6 +3229,12 @@ main() {
   # at trap-fire time). The pre-iter-7 explicit pre-seed here was the
   # success-path mirror of M3's manual seeds at halt/wait sites; with
   # the writer-side derivation it's redundant.
+
+  # ENG-152 (D-005): orchestrator pass-republish. Re-emit the agent's latest
+  # stage-completion-claim for this dispatch as an author=orchestrator verdict
+  # so verdict_handler's strict-author find_fresh_verdict has an authoritative
+  # marker to consume. No-op on legacy issues (D-007 fallback covers them).
+  _orchestrator_republish_verdict "$ident" "$vh_stage"
 
   local vh_rc=0
   verdict_handler "$ident" "$vh_stage" || vh_rc=$?
