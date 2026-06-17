@@ -548,6 +548,20 @@ else
        "expected absolute-path substring '$EXPECTED_P' missing from rendered prompt — out tail: $(tail -10 <<<"$out_p" | tr '\n' ' ')"
 fi
 
+# ─── ENG-216 case P-neg (QA adversarial): token NOT present post-substitution
+# Negative assertion: after resolve_block_tokens substitutes {qa_payload_body_path},
+# the literal token string must NOT appear in the rendered output. If a regression
+# caused the resolver to be skipped but the path to appear via another channel
+# (e.g., the token was added to AGENT_RUNTIME_TOKENS passthrough), Case-P's
+# positive grep would still pass while the agent would see the unresolved token
+# embedded in the prompt. This case catches that class.
+if grep -qF '{qa_payload_body_path}' <<<"$out_p"; then
+  fail "ENG-216 case P-neg: literal token must NOT appear in rendered qa prompt post-substitution" \
+       "token '{qa_payload_body_path}' still present in rendered output — substitution did not fire"
+else
+  ok "ENG-216 case P-neg: {qa_payload_body_path} token fully substituted (not present as literal in rendered prompt)"
+fi
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
