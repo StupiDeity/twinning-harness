@@ -9996,6 +9996,31 @@ else
 fi
 unset _os8_hook _os8_fail
 
+# ─── ENG-213: drop defensive *) arm shape pin ───
+# Regression-pin against re-introduction of the defensive `*)` arm in
+# `_merge_qa_payload_envelope`'s rc→defect case. The arm assigned the
+# same value as the `39|42|50)` arm — a literal no-op for the closed
+# rc set {0, 39, 41, 42, 50} promised by `merge_artifact_envelope`
+# (pinned in bin/common-test.sh U-1..U-9). Removing it tightens the
+# diagnostic surface for any future contract drift: an undocumented
+# rc now lands an empty Defect: line + the raw stderr `(rc=N)`,
+# which is louder than a silent relabel. ENG-101's defensive-code
+# restraint directive forbids the implement agent from adding such
+# arms; ENG-213 removes a pre-existing instance and pins the
+# case-statement shape against re-introduction.
+_eng213_body="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' \
+  "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+if [[ "$_eng213_body" == *'41) defect="qa-payload-missing"'* ]] \
+  && [[ "$_eng213_body" == *'39|42|50) defect="qa-payload-malformed"'* ]] \
+  && [[ "$_eng213_body" != *'*)  defect='* ]] \
+  && [[ "$_eng213_body" != *'*) defect='* ]]; then
+  pass_at "ENG-213 OS-1: _merge_qa_payload_envelope case has no defensive *) arm"
+else
+  fail_at "ENG-213 OS-1: case shape" \
+    "expected 41)+39|42|50) only; got: ${_eng213_body}"
+fi
+unset _eng213_body
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
