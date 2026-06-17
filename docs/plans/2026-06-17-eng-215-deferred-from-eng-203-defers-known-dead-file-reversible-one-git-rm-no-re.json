@@ -1,0 +1,50 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-215",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/probe-test.sh (the ENG-203 review-loopback scratch file) is removed from the worktree via a single git rm with zero companion edits; the pre-commit suite continues to pass green at the new 79-test count and the ENG-196 disk-vs-grant equality assertion in bin/dispatch-test.sh continues to pin glob-discovery correctness post-delete.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "test ! -e bin/probe-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/dispatch-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-196: _dispatch_tools_autotests grants all [0-9]+ bin/\\*-test\\.sh on disk"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash .githooks/pre-commit",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/secret-probe-lint.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/dispatch-test.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": ".githooks/pre-commit"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/dispatch-test.sh",
+          "pattern": "ENG-196: _dispatch_tools_autotests grants all",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
