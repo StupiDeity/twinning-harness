@@ -10142,6 +10142,53 @@ else
 fi
 unset _os9_body _os9_fail
 
+# ENG-213 QA-ADV-1: pin single-space *) form not present in _merge_qa_payload_envelope.
+# OS-9 checks the two-space literal ('*)  defect='); a one-space re-add ('*) defect=')
+# slips past. This block adds the orthogonal single-space negative assertion.
+_qadv1_body=""
+_qadv1_body="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+if [[ "$_qadv1_body" != *'*) defect='* ]]; then
+  pass_at "ENG-213 QA-ADV-1: no single-space *) defect= in _merge_qa_payload_envelope"
+else
+  fail_at "ENG-213 QA-ADV-1: single-space *) defect= found (defensive fallthrough re-added)" ""
+fi
+unset _qadv1_body
+
+# ENG-213 QA-ADV-2: _post_qa_payload_halt called exactly once and after esac.
+# Guards against refactors that move the call inside case arms or duplicate it.
+_qadv2_body=""
+_qadv2_body="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+_qadv2_fail=""
+_qadv2_halt_count="$(echo "$_qadv2_body" | grep -c '_post_qa_payload_halt' 2>/dev/null || echo 0)"
+[[ "$_qadv2_halt_count" == "1" ]] || _qadv2_fail+="expected 1 _post_qa_payload_halt call, got $_qadv2_halt_count; "
+_qadv2_esac_line="$(echo "$_qadv2_body" | grep -n 'esac' | tail -1 | cut -d: -f1)"
+_qadv2_halt_line="$(echo "$_qadv2_body" | grep -n '_post_qa_payload_halt' | tail -1 | cut -d: -f1)"
+if [[ -n "$_qadv2_esac_line" && -n "$_qadv2_halt_line" ]]; then
+  (( _qadv2_halt_line > _qadv2_esac_line )) || _qadv2_fail+="_post_qa_payload_halt not after esac; "
+else
+  _qadv2_fail+="could not locate esac or halt-call line numbers; "
+fi
+if [[ -z "$_qadv2_fail" ]]; then
+  pass_at "ENG-213 QA-ADV-2: _post_qa_payload_halt called once after esac"
+else
+  fail_at "ENG-213 QA-ADV-2: halt-call structure" "$_qadv2_fail"
+fi
+unset _qadv2_body _qadv2_fail _qadv2_halt_count _qadv2_esac_line _qadv2_halt_line
+
+# ENG-213 QA-ADV-3: awk extractor captures meaningful body.
+# If _merge_qa_payload_envelope is renamed or the signature changes, the awk range
+# returns empty string and the positive assertions in OS-9 fail for wrong reasons.
+# A line-count floor guards against silent extractor failure.
+_qadv3_body=""
+_qadv3_body="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+_qadv3_lines="$(echo "$_qadv3_body" | wc -l | tr -d ' ')"
+if (( _qadv3_lines >= 15 )); then
+  pass_at "ENG-213 QA-ADV-3: awk extractor captured $_qadv3_lines lines from _merge_qa_payload_envelope (>= 15)"
+else
+  fail_at "ENG-213 QA-ADV-3: awk extractor returned only $_qadv3_lines lines — function may have moved" ""
+fi
+unset _qadv3_body _qadv3_lines
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
