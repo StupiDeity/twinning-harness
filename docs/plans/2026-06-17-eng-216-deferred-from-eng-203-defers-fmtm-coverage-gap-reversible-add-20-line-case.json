@@ -1,0 +1,70 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-216",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/render-prompt-rc0-test.sh contains a new Case-P block between Case-O's closing fi and the Summary printf that pins end-to-end render-time resolution of {qa_payload_body_path} on the qa stage, mirroring Case-O's _timeout + grep -qF shape with the qa_payload sibling-token substitutions.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-rc0-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-203/ENG-216 case P: \\{qa_payload_body_path\\} resolves to"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/render-prompt-rc0-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/render-prompt-rc0-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "ENG-216 case P: \\{qa_payload_body_path\\} resolves on qa-stage render",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "ISSUE_DIR_P=\"\\$sandbox/state/test-slug-rc0/ENG-87R6X-P\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "EXPECTED_P=\"\\$sandbox/state/test-slug-rc0/ENG-87R6X-P/verdict-qa.body.json\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "_timeout bash \"\\$sandbox/bin/render-prompt.sh\" qa ENG-87R6X-P",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "ENG-203/ENG-216 case P: \\{qa_payload_body_path\\} resolves to",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "qa_payload_body_path=_resolve_qa_payload_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_QA_PAYLOAD_BODY_PATH=\"\\$\\(qa_payload_body_path \"\\$issue_id\"\\)\"",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}

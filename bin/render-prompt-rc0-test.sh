@@ -521,6 +521,47 @@ else
        "expected absolute-path substring '$EXPECTED_O' missing from rendered prompt — out tail: $(tail -10 <<<"$out_o" | tr '\n' ' ')"
 fi
 
+# ─── ENG-216 case P: {qa_payload_body_path} resolves on qa-stage render
+# Mirror of case O above for the sibling Step-9 sidecar token. §6 step 9
+# instructs the agent to Write the dimensional grading payload to
+# {qa_payload_body_path}; render-prompt.sh::PROMPT_RESOLVERS registers
+# `qa_payload_body_path` → `_resolve_qa_payload_body_path`; main() binds
+# _RENDER_QA_PAYLOAD_BODY_PATH via common.sh::qa_payload_body_path(issue_id).
+# The rendered prompt MUST contain the full absolute-path shape
+# `<issue-dir>/verdict-qa.body.json` — basename-only would pass even if a
+# regression dropped the directory prefix and emitted just `verdict-qa.body.json`
+# (broken authority surface; agent would Write into cwd). Note the basename
+# has NO ident embedded (asymmetric vs qa-predicate-<ident>.body.json — see
+# common.sh:99-103 vs 104-108).
+ISSUE_DIR_P="$sandbox/state/test-slug-rc0/ENG-87R6X-P"
+rm -rf "$ISSUE_DIR_P"; mkdir -p "$ISSUE_DIR_P"
+out_p="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
+  TARGET_REPO="$sandbox/target" PROJECT_SLUG=test-slug-rc0 \
+  PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
+  HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
+  _timeout bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-P 2>/dev/null || true)"
+EXPECTED_P="$sandbox/state/test-slug-rc0/ENG-87R6X-P/verdict-qa.body.json"
+if grep -qF "$EXPECTED_P" <<<"$out_p"; then
+  ok "ENG-203/ENG-216 case P: {qa_payload_body_path} resolves to $EXPECTED_P on qa-stage render"
+else
+  fail "ENG-203/ENG-216 case P: {qa_payload_body_path} resolves on qa-stage render" \
+       "expected absolute-path substring '$EXPECTED_P' missing from rendered prompt — out tail: $(tail -10 <<<"$out_p" | tr '\n' ' ')"
+fi
+
+# ─── ENG-216 case P-neg (QA adversarial): token NOT present post-substitution
+# Negative assertion: after resolve_block_tokens substitutes {qa_payload_body_path},
+# the literal token string must NOT appear in the rendered output. If a regression
+# caused the resolver to be skipped but the path to appear via another channel
+# (e.g., the token was added to AGENT_RUNTIME_TOKENS passthrough), Case-P's
+# positive grep would still pass while the agent would see the unresolved token
+# embedded in the prompt. This case catches that class.
+if grep -qF '{qa_payload_body_path}' <<<"$out_p"; then
+  fail "ENG-216 case P-neg: literal token must NOT appear in rendered qa prompt post-substitution" \
+       "token '{qa_payload_body_path}' still present in rendered output — substitution did not fire"
+else
+  ok "ENG-216 case P-neg: {qa_payload_body_path} token fully substituted (not present as literal in rendered prompt)"
+fi
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
