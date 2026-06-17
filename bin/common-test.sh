@@ -1521,6 +1521,18 @@ eng214_adversarial_no_metrics_x_guard() {
 }
 eng214_adversarial_no_metrics_x_guard
 
+# ─── ENG-205: review_payload_body_path shape ───
+# Mirrors the ENG-203 qa_payload_body_path / qa_predicate_body_path shape
+# pins. Verifies the helper returns the correct filename for the body
+# sidecar written by the review agent (content-only JSON; the orchestrator
+# merges the schema envelope before validation).
+eng205_body_path_helper() {
+  local got_rev
+  got_rev="$(review_payload_body_path ENG-1)"
+  assert_eq "REV-CH-1: review_payload_body_path" "$(issue_dir ENG-1)/verdict-review.body.json" "$got_rev"
+}
+eng205_body_path_helper
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'
