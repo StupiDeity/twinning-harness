@@ -1,0 +1,78 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-214",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Drop the paranoid `-x metrics.sh` conjunct from merge_artifact_envelope's emission predicate while leaving rc taxonomy, atomic-write semantics, and the trailing `|| true` best-effort guarantee untouched.",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "\\[\\[ -x \"\\$\\(dirname \"\\$\\{BASH_SOURCE\\[0\\]\\}\"\\)/metrics\\.sh\" \\]\\]",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "\\[\\[ -x ",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "if \\(\\( overlap_n > 0 \\)\\) && \\[\\[ -n \"\\$\\{PIPELINE_ISSUE_ID:-\\}\" \\]\\]; then",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "bash \"\\$\\(dirname \"\\$\\{BASH_SOURCE\\[0\\]\\}\"\\)/metrics\\.sh\" \"envelope-overwrite\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": ">/dev/null 2>&1 \\|\\| true",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^merge_artifact_envelope\\(\\) \\{",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^#   42 body is symlink$",
+          "expect_match": true
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/metrics.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/common.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/common-test.sh"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/common.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/common-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
