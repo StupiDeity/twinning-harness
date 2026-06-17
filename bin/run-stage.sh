@@ -2102,7 +2102,6 @@ _merge_qa_payload_envelope() {
     case "$rc" in
       41) defect="qa-payload-missing" ;;
       39|42|50) defect="qa-payload-malformed" ;;
-      *)  defect="qa-payload-malformed" ;;
     esac
     _post_qa_payload_halt "$ident" "$defect" \
       "merge_artifact_envelope failed (rc=$rc) for body=$body${raw:+ — $raw}"
