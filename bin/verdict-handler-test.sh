@@ -1403,6 +1403,51 @@ else
   fail_at "case-ENG-115-wait-no-shadow-pivot" "proj=$proj (expected pivot not shadowed by wait)"
 fi
 
+# ─── ENG-152: strict-author filter + D-007 fallback ─────────────────
+# AC4: an agent self-claim AND an orchestrator verdict coexist in the same
+# thread; the orchestrator-stamped verdict wins, the claim is never returned.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=ui to=reviewing -->|2026-06-17T10:00:00.000Z" \
+  "<!-- pipeline: stage-completion-claim result=pass stage=reviewing -->|2026-06-17T11:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass author=orchestrator stage=reviewing -->|2026-06-17T11:05:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:reviewing"
+fresh="$(find_fresh_verdict "ENG-152A" 2>/dev/null || printf '')"
+if [[ "$(jq -r '.marker' <<<"$fresh")" == "pipeline-stage-summary" ]] \
+   && [[ "$(jq -r '.event.author' <<<"$fresh")" == "orchestrator" ]]; then
+  pass_at "ENG-152-A: orchestrator verdict wins over coexisting agent claim"
+else
+  fail_at "ENG-152-A: orchestrator verdict wins over coexisting agent claim" "fresh=$fresh"
+fi
+
+# AC2: ONLY an agent claim present (no orchestrator verdict). Strict mode is
+# engaged by the claim marker → the claim is never authoritative → empty.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=ui to=reviewing -->|2026-06-17T10:00:00.000Z" \
+  "<!-- pipeline: stage-completion-claim result=pass stage=reviewing -->|2026-06-17T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:reviewing"
+fresh="$(find_fresh_verdict "ENG-152B" 2>/dev/null || printf '')"
+if [[ -z "$fresh" ]]; then
+  pass_at "ENG-152-B: lone agent claim is never returned as a verdict"
+else
+  fail_at "ENG-152-B: lone agent claim is never returned as a verdict" "fresh=$fresh"
+fi
+
+# D-007: legacy issue — a bare unstamped verdict, no claim markers, no author=
+# verdict anywhere → strict mode stays OFF → the unstamped verdict is accepted.
+reset_calls
+VH_FIXTURE_COMMENTS="$(mk_fixture \
+  "<!-- pipeline: transition from=ui to=reviewing -->|2026-06-17T10:00:00.000Z" \
+  "<!-- pipeline: verdict result=pass stage=reviewing -->|2026-06-17T11:00:00.000Z")"
+VH_CURRENT_STAGE_LABEL="stage:reviewing"
+fresh="$(find_fresh_verdict "ENG-152C" 2>/dev/null || printf '')"
+if [[ "$(jq -r '.marker' <<<"$fresh")" == "pipeline-stage-summary" ]]; then
+  pass_at "ENG-152-C: D-007 legacy fallback accepts unstamped verdict"
+else
+  fail_at "ENG-152-C: D-007 legacy fallback accepts unstamped verdict" "fresh=$fresh"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then

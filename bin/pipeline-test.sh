@@ -56,12 +56,12 @@ printf '\n--- bin/pipeline.sh: event verdict ---\n'
 
 # PE1: pass with valid stage → dry-run prints expected body
 out="$(run_pipe event ENG-PE1 verdict pass --stage implementing)"
-expect='<!-- pipeline: verdict result=pass stage=implementing -->'
+expect='<!-- pipeline: verdict result=pass author=orchestrator stage=implementing -->'
 [[ "$out" == *"$expect"* ]] && pass_at "PE1: verdict pass dry-run body" || fail_at "PE1: verdict pass dry-run body" "got: $out"
 
 # PE2: halt with valid reason
 out="$(run_pipe event ENG-PE2 verdict halt --reason agent-blocked)"
-expect='<!-- pipeline: verdict result=halt reason=agent-blocked -->'
+expect='<!-- pipeline: verdict result=halt author=orchestrator reason=agent-blocked -->'
 [[ "$out" == *"$expect"* ]] && pass_at "PE2: verdict halt dry-run body" || fail_at "PE2: verdict halt dry-run body" "got: $out"
 
 # PE3: registry rejection — bogus reason
@@ -86,7 +86,7 @@ out="$(run_pipe event ENG-PE6 verdict wait --reason awaiting-approval)"
 
 # PE7: verdict pivot — full three-field body (target + stage + reason)
 out="$(run_pipe event ENG-PE7 verdict pivot --target planning --stage implementing --reason plan-structural-defect)"
-expect='<!-- pipeline: verdict result=pivot stage=implementing target=planning reason=plan-structural-defect -->'
+expect='<!-- pipeline: verdict result=pivot author=orchestrator stage=implementing target=planning reason=plan-structural-defect -->'
 [[ "$out" == *"$expect"* ]] && pass_at "PE7: verdict pivot full body" || fail_at "PE7: verdict pivot full body" "got: $out"
 
 # PE7a: pivot missing --reason
@@ -143,7 +143,7 @@ out="$(run_pipe event ENG-PE-191C verdict halt --reason ship-with-deferred-major
 
 # PE-118A: fail --target implementing --reason dimensional-threshold-not-met → accepted
 out="$(run_pipe event ENG-PE-118A verdict fail --target implementing --reason dimensional-threshold-not-met)"
-[[ "$out" == *"result=fail target=implementing reason=dimensional-threshold-not-met"* ]] && pass_at "PE-118A: fail+reason dimensional-threshold-not-met accepted" || fail_at "PE-118A: fail+reason dimensional-threshold-not-met accepted" "got: $out"
+[[ "$out" == *"result=fail author=orchestrator target=implementing reason=dimensional-threshold-not-met"* ]] && pass_at "PE-118A: fail+reason dimensional-threshold-not-met accepted" || fail_at "PE-118A: fail+reason dimensional-threshold-not-met accepted" "got: $out"
 
 # PE-118B: fail --reason unknown-token → rejected by per-arm fail_reasons override
 out="$(run_pipe event ENG-PE-118B verdict fail --target implementing --reason unknown-token 2>&1 || true)"
@@ -193,11 +193,20 @@ out="$(run_pipe decide ENG-PD5 --action continue --gate scope 2>&1 || true)"
 out="$(run_pipe decide ENG-PD6 --action approve --gate bogus-gate 2>&1 || true)"
 [[ "$out" == *"not in decision_gates"* ]] && pass_at "PD6: bogus gate rejected" || fail_at "PD6: bogus gate rejected" "got: $out"
 
-printf '\n--- bin/pipeline.sh: lane fences (warn-only) ---\n'
+printf '\n--- bin/pipeline.sh: lane fences (ENG-152 hard fence on verdict) ---\n'
 
-# PL1: writing a verdict with PIPELINE_WRITER=human → warn but still write
-out="$(PIPELINE_WRITER=human run_pipe event ENG-PL1 verdict pass --stage implementing 2>&1)"
-[[ "$out" == *"lane mismatch"* ]] && pass_at "PL1: verdict-as-human warns" || fail_at "PL1: verdict-as-human warns" "got: $out"
+# PL1 (ENG-152): verdict is orchestrator-only. A non-agent writer auto-stamps
+# author=orchestrator and writes with NO lane-mismatch warning.
+out="$(PIPELINE_WRITER=orchestrator run_pipe event ENG-PL1 verdict pass --stage implementing 2>&1)"
+[[ "$out" == *"author=orchestrator"* && "$out" != *"lane mismatch"* ]] \
+  && pass_at "PL1: verdict-as-orchestrator auto-stamps, no warning" \
+  || fail_at "PL1: verdict-as-orchestrator auto-stamps, no warning" "got: $out"
+
+# PL1b (ENG-152): an agent invoking verdict DIES with the stage-completion-claim redirect.
+out="$(PIPELINE_WRITER=agent run_pipe event ENG-PL1 verdict pass --stage implementing 2>&1 || true)"
+[[ "$out" == *"stage-completion-claim"* ]] \
+  && pass_at "PL1b: verdict-as-agent dies with redirect" \
+  || fail_at "PL1b: verdict-as-agent dies with redirect" "got: $out"
 
 # ─── ENG-58 atomic-reset (ported to pipeline.sh::cmd_decide --action continue) ─────────
 # These tests exercise the live (non-dry-run) path so actual filesystem + Linear stub
@@ -878,7 +887,7 @@ out="$(run_pipe_real event ENG-PE-B4 verdict pass --stage implementing --bogus f
 
 # ENG-112 B-005: schema-driven verdict body shape — halt emits clean body.
 out="$(run_pipe_real event ENG-PE-B5 verdict halt --reason scope-violation)"
-expect='<!-- pipeline: verdict result=halt reason=scope-violation -->'
+expect='<!-- pipeline: verdict result=halt author=orchestrator reason=scope-violation -->'
 [[ "$out" == *"$expect"* ]] && pass_at "ENG-112 B-005: schema-driven halt body" || fail_at "ENG-112 B-005: schema-driven halt body" "got: $out"
 
 # ENG-112 B-006: schema-driven decision body — approve with gate.
@@ -907,6 +916,44 @@ fi
 # ENG-112 B-010: round-trip pin — both sentinel pairs present in output doc.
 sentinel_count="$(grep -c "GENERATED:" "$HARNESS_VOCAB_MD")"
 [[ "$sentinel_count" == "4" ]] && pass_at "ENG-112 B-010: both sentinel pairs in regenerated doc" || fail_at "ENG-112 B-010: sentinel count" "expected 4, got $sentinel_count"
+
+printf '\n--- ENG-152: verdict-author split schema + emit ---\n'
+
+# PE-152-1: verdict event is orchestrator-lane and requires author
+vev="$(jq -c '.events.verdict.linear_comment' "$HARNESS_REG")"
+if [[ "$(jq -r '.writer_lane' <<<"$vev")" == "orchestrator" ]] \
+   && jq -e '.required | index("author")' <<<"$vev" >/dev/null \
+   && [[ "$(jq -r '.field_registry.author' <<<"$vev")" == "verdict_authors" ]]; then
+  pass_at "PE-152-1: verdict event orchestrator-lane + author required/registered"
+else
+  fail_at "PE-152-1: verdict event schema" "got: $vev"
+fi
+
+# PE-152-2: verdict_authors enum
+[[ "$(jq -rc '.verdict_authors' "$HARNESS_REG")" == '["orchestrator"]' ]] \
+  && pass_at "PE-152-2: verdict_authors enum" || fail_at "PE-152-2: verdict_authors enum" "got: $(jq -rc '.verdict_authors' "$HARNESS_REG")"
+
+# PE-152-3: stage-completion-claim event — agent-lane, requires result+stage,
+# pass arm accepts pass_reasons (ENG-191 ship-with-deferred-majors gap closed).
+scc="$(jq -c '.events["stage-completion-claim"].linear_comment' "$HARNESS_REG")"
+if [[ "$(jq -r '.writer_lane' <<<"$scc")" == "agent" ]] \
+   && [[ "$(jq -rc '.required' <<<"$scc")" == '["result"]' ]] \
+   && [[ "$(jq -rc '.required_by_arm.pass' <<<"$scc")" == '["stage"]' ]] \
+   && [[ "$(jq -r '.field_registry_by_arm.pass.reason' <<<"$scc")" == "pass_reasons" ]]; then
+  pass_at "PE-152-3: stage-completion-claim event schema mirrors verdict arms"
+else
+  fail_at "PE-152-3: stage-completion-claim event schema" "got: $scc"
+fi
+
+# PE-152-4: agent calling stage-completion-claim renders without an author field
+out="$(PIPELINE_WRITER=agent run_pipe_real event ENG-152T stage-completion-claim pass --stage qa 2>&1 || true)"
+[[ "$out" == *"stage-completion-claim result=pass"* && "$out" == *"stage=qa"* && "$out" != *"author="* ]] \
+  && pass_at "PE-152-4: stage-completion-claim agent emit body" || fail_at "PE-152-4: stage-completion-claim agent emit body" "got: $out"
+
+# PE-152-5: review Path-D claim (pass --reason ship-with-deferred-majors) validates on the claim event
+out="$(PIPELINE_WRITER=agent run_pipe_real event ENG-152T stage-completion-claim pass --stage reviewing --reason ship-with-deferred-majors 2>&1 || true)"
+[[ "$out" == *"reason=ship-with-deferred-majors"* && "$out" != *"not in"* ]] \
+  && pass_at "PE-152-5: claim pass+ship-with-deferred-majors accepted" || fail_at "PE-152-5: claim pass+ship-with-deferred-majors accepted" "got: $out"
 
 printf '\npipeline-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then

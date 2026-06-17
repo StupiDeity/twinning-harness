@@ -241,7 +241,7 @@ else
   fail_at "A12 classify-failure applies pipeline:halted" "calls=$(cat "$STUB_LOG")"
 fi
 if calls_contains "linear.sh [add-comment] [ENG-812] [--sig] [halt/implement/ENG-812] [--body]" \
-   && grep -qF '<!-- pipeline: verdict result=halt reason=agent-blocked -->' "$STUB_LOG"; then
+   && grep -qF '<!-- pipeline: verdict result=halt author=orchestrator reason=agent-blocked -->' "$STUB_LOG"; then
   pass_at "A12 classify-failure halt comment body contains new-shape halt marker (agent-blocked)"
 else
   fail_at "A12 halt-marker in body" "calls=$(cat "$STUB_LOG")"
@@ -250,7 +250,7 @@ fi
 # ─── A13: classify-failure agent-failure marker for non-human policies ─
 reset_calls
 classify_failure "ENG-813" "implement" "skip-until-code-changes" "build failed" 21 2 >/dev/null 2>&1
-if grep -qF '<!-- pipeline: verdict result=halt reason=agent-failure -->' "$STUB_LOG"; then
+if grep -qF '<!-- pipeline: verdict result=halt author=orchestrator reason=agent-failure -->' "$STUB_LOG"; then
   pass_at "A13 classify-failure skip-until-code-changes uses new-shape agent-failure marker"
 else
   fail_at "A13 classify-failure agent-failure marker" "calls=$(cat "$STUB_LOG")"

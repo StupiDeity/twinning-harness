@@ -52,7 +52,7 @@ _vh_lookup_loopback() {
 _vh_protocol_violation() {
   local issue="$1" case_id="$2" reason="$3"
   local body
-  body="$(printf '<!-- pipeline: verdict result=halt reason=protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
+  body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=protocol-violation -->\n\nProtocol violation (%s): %s' "$case_id" "$reason")"
   bash "$_VH_SCRIPT_DIR/linear.sh" add-comment "$issue" \
     --sig "protocol-violation/$case_id/$issue" --body "$body" || true
   bash "$_VH_SCRIPT_DIR/linear.sh" add-label "$issue" "pipeline:halted" || true
@@ -170,6 +170,17 @@ find_fresh_verdict() {
     _has_any_marker=1
   fi
 
+  # ENG-152: D-007 legacy fallback. Strict-author mode engages when EITHER a
+  # stage-completion-claim marker exists on the issue OR any author= verdict
+  # already does. Legacy in-flight issues (neither present) keep flowing
+  # through the unstamped-verdict-accepting path until the first ENG-152
+  # cycle lands a stamped marker on them.
+  local _strict_author=0
+  if grep -qF '<!-- pipeline: stage-completion-claim ' <<<"$comments" \
+     || grep -qE '<!-- pipeline: verdict [^>]*author=' <<<"$comments"; then
+    _strict_author=1
+  fi
+
   local fresh_ts="" fresh_body="" fresh_id=""
 
   if [[ -n "$_curr_id" && "$_has_any_marker" == "1" ]]; then
@@ -182,6 +193,12 @@ find_fresh_verdict() {
       [[ -z "$ev" ]] && continue
       [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
       [[ "$(jq -r '.result' <<<"$ev")" == "wait" ]] && continue
+      # ENG-152: strict-author filter — only orchestrator-stamped verdicts
+      # count once strict mode engages (a claim marker or any author=
+      # verdict exists). Legacy issues fall through (D-007).
+      if (( _strict_author == 1 )); then
+        [[ "$(jq -r '.author // ""' <<<"$ev")" != "orchestrator" ]] && continue
+      fi
       # Comment body must carry the current dispatch_id marker.
       if ! grep -qF "<!-- meta: dispatch id=$_curr_id" <<<"$body"; then
         continue
@@ -217,6 +234,10 @@ find_fresh_verdict() {
       [[ -z "$ev" ]] && continue
       [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
       [[ "$(jq -r '.result' <<<"$ev")" == "wait" ]] && continue
+      # ENG-152: strict-author filter (legacy-timestamp branch).
+      if (( _strict_author == 1 )); then
+        [[ "$(jq -r '.author // ""' <<<"$ev")" != "orchestrator" ]] && continue
+      fi
       if [[ "$ts" > "$fresh_ts" ]]; then
         fresh_ts="$ts"; fresh_body="$body"; fresh_id="$id"
       fi
@@ -266,6 +287,13 @@ find_fresh_wait_verdict() {
   comments="$(bash "$_VH_SCRIPT_DIR/linear.sh" get-comments "$issue" 2>/dev/null)" || { printf ''; return 0; }
   [[ -z "$comments" || "$comments" == "null" ]] && { printf ''; return 0; }
 
+  # ENG-152: D-007 fallback, mirrors find_fresh_verdict.
+  local _strict_author=0
+  if grep -qF '<!-- pipeline: stage-completion-claim ' <<<"$comments" \
+     || grep -qE '<!-- pipeline: verdict [^>]*author=' <<<"$comments"; then
+    _strict_author=1
+  fi
+
   local last_transition_ts="" ts body ev
   while IFS=$'\t' read -r ts body; do
     ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
@@ -281,6 +309,11 @@ find_fresh_wait_verdict() {
     ev="$(parse_pipeline_marker "$body" 2>/dev/null || true)"
     [[ -z "$ev" ]] && continue
     [[ "$(jq -r '.event' <<<"$ev")" != "verdict" ]] && continue
+    # ENG-152: strict-author filter — orchestrator-stamped verdicts only
+    # once a claim marker or author= verdict exists (D-007 fallback).
+    if (( _strict_author == 1 )); then
+      [[ "$(jq -r '.author // ""' <<<"$ev")" != "orchestrator" ]] && continue
+    fi
     if [[ "$ts" > "$fresh_ts" ]]; then
       fresh_ts="$ts"
       fresh_id="$id"

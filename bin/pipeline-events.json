@@ -7,6 +7,9 @@
     "wait",
     "pivot"
   ],
+  "verdict_authors": [
+    "orchestrator"
+  ],
   "pass_reasons": [
     "ship-with-deferred-majors"
   ],
@@ -96,9 +99,9 @@
   "events": {
     "verdict": {
       "linear_comment": {
-        "body_shape": "<!-- pipeline: verdict result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->",
-        "writer_lane": "agent",
-        "required": ["result"],
+        "body_shape": "<!-- pipeline: verdict result=<result> author=<author>[ stage=<stage>][ target=<target>][ reason=<reason>] -->",
+        "writer_lane": "orchestrator",
+        "required": ["result", "author"],
         "required_by_arm": {
           "pass":  ["stage"],
           "fail":  ["target"],
@@ -108,6 +111,7 @@
         },
         "field_registry": {
           "result": "verdict_results",
+          "author": "verdict_authors",
           "stage":  "stages",
           "target": "fail_targets|pivot_targets",
           "reason": "halt_reasons|wait_reasons"
@@ -130,6 +134,39 @@
           "fail":  null,
           "halt":  "halt/<stage>/<issue>",
           "wait":  "wait/<stage>/<issue>",
+          "pivot": null
+        }
+      }
+    },
+    "stage-completion-claim": {
+      "linear_comment": {
+        "_comment": "ENG-152: informational agent self-claim. NEVER authoritative — verdict-handler ignores it. The orchestrator republishes it as an author=orchestrator verdict.",
+        "body_shape": "<!-- pipeline: stage-completion-claim result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->",
+        "writer_lane": "agent",
+        "required": ["result"],
+        "required_by_arm": {
+          "pass":  ["stage"],
+          "fail":  ["target"],
+          "halt":  ["reason"],
+          "wait":  ["reason"],
+          "pivot": ["target", "stage", "reason"]
+        },
+        "field_registry": {
+          "result": "verdict_results",
+          "stage":  "stages",
+          "target": "fail_targets|pivot_targets",
+          "reason": "halt_reasons|wait_reasons"
+        },
+        "field_registry_by_arm": {
+          "fail":  { "reason": "fail_reasons" },
+          "pass":  { "reason": "pass_reasons" },
+          "pivot": { "target": "pivot_targets", "reason": "pivot_reasons" }
+        },
+        "dedup_sig_by_arm": {
+          "pass":  null,
+          "fail":  null,
+          "halt":  null,
+          "wait":  null,
           "pivot": null
         }
       }

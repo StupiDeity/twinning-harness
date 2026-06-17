@@ -67,11 +67,12 @@ cmd_event() {
   local issue="${1:-}"; shift || true
   [[ -n "$issue" ]] || die "event: issue id required (e.g., bin/pipeline event ENG-1 verdict pass --stage X)"
   local event="${1:-}"; shift || true
-  [[ -n "$event" ]] || die "event: event type required (verdict, transition)"
+  [[ -n "$event" ]] || die "event: event type required (verdict, stage-completion-claim, transition)"
   case "$event" in
-    verdict)    cmd_event_verdict "$issue" "$@" ;;
-    transition) cmd_event_transition "$issue" "$@" ;;
-    *) die "event: unknown event '$event' (allowed: verdict, transition)" ;;
+    verdict)                cmd_event_verdict "$issue" "$@" ;;
+    stage-completion-claim) cmd_event_stage_completion_claim "$issue" "$@" ;;
+    transition)             cmd_event_transition "$issue" "$@" ;;
+    *) die "event: unknown event '$event' (allowed: verdict, stage-completion-claim, transition)" ;;
   esac
 }
 
@@ -264,10 +265,18 @@ _render_body() {
 }
 
 # cmd_event_verdict <issue> <result> [--stage X] [--target Y] [--reason Z]
+# ENG-152: verdict is the orchestrator-only lane — it is the only authoritative
+# marker find_fresh_verdict consumes. Agents emit stage-completion-claim instead.
 cmd_event_verdict() {
   local issue="$1"; shift
   local result="${1:-}"; shift || true
   [[ -n "$issue" && -n "$result" ]] || die "event verdict: usage: <issue> <result> [args]"
+
+  # ENG-152 lane fence: hard-fail the agent path so the redirect message is
+  # visible before _validate_event_payload fires with "--author required".
+  if [[ "${PIPELINE_WRITER:-orchestrator}" == "agent" ]]; then
+    die "cmd_event_verdict invoked under PIPELINE_WRITER=agent — agents emit stage-completion-claim, not verdict. See AGENT_PROMPTS.md §0 Verdict-marker protocol."
+  fi
 
   local stage="" target="" reason=""
   while [[ $# -gt 0 ]]; do
@@ -280,7 +289,10 @@ cmd_event_verdict() {
   done
 
   # ENG-112: schema-driven validation + body render.
-  local args=("result=$result")
+  # ENG-152: auto-stamp author=orchestrator for every non-agent emission so the
+  # required author field renders without caller boilerplate (operator manual
+  # runs default PIPELINE_WRITER=orchestrator via common.sh).
+  local args=("result=$result" "author=orchestrator")
   [[ -n "$stage" ]]  && args+=("stage=$stage")
   [[ -n "$target" ]] && args+=("target=$target")
   [[ -n "$reason" ]] && args+=("reason=$reason")
@@ -288,13 +300,43 @@ cmd_event_verdict() {
   local body
   body="$(_render_body verdict "${args[@]}")"
 
-  # Lane fence: agents emit verdicts. dispatch.sh sets PIPELINE_WRITER=agent
-  # for the agent path; common.sh defaults it to orchestrator for everything
-  # else (operator manual runs, tests). The default-assignment idiom would be
-  # a no-op here because common.sh has already exported the var, so we just
-  # warn instead and tell the caller how to suppress.
-  if [[ "$PIPELINE_WRITER" != "agent" ]]; then
-    log "warning: PIPELINE_WRITER=$PIPELINE_WRITER writing a verdict (lane mismatch — set PIPELINE_WRITER=agent to suppress)"
+  if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then
+    printf '[DRY_RUN] would post on %s: %s\n' "$issue" "$body" >&2
+    return 0
+  fi
+
+  bash "$SCRIPT_DIR/linear.sh" add-comment "$issue" "$body"
+}
+
+# cmd_event_stage_completion_claim <issue> <result> [--stage X] [--target Y] [--reason Z]
+# ENG-152: agent self-claim lane — informational only, NEVER authoritative.
+# dispatch.sh sets PIPELINE_WRITER=agent. The orchestrator republishes the
+# latest claim as an author=orchestrator verdict (run-stage.sh).
+cmd_event_stage_completion_claim() {
+  local issue="$1"; shift
+  local result="${1:-}"; shift || true
+  [[ -n "$issue" && -n "$result" ]] || die "event stage-completion-claim: usage: <issue> <result> [args]"
+
+  local stage="" target="" reason=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --stage)  stage="${2:-}"; shift 2 ;;
+      --target) target="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      *) die "event stage-completion-claim: unknown flag '$1'" ;;
+    esac
+  done
+
+  local args=("result=$result")
+  [[ -n "$stage" ]]  && args+=("stage=$stage")
+  [[ -n "$target" ]] && args+=("target=$target")
+  [[ -n "$reason" ]] && args+=("reason=$reason")
+  _validate_event_payload stage-completion-claim "$result" "${args[@]}"
+  local body
+  body="$(_render_body stage-completion-claim "${args[@]}")"
+
+  if [[ "${PIPELINE_WRITER:-orchestrator}" != "agent" ]]; then
+    log "warning: PIPELINE_WRITER=${PIPELINE_WRITER:-orchestrator} writing a stage-completion-claim (lane mismatch — set PIPELINE_WRITER=agent to suppress)"
   fi
 
   if [[ "${PIPELINE_DRY_RUN:-}" == "1" ]]; then

@@ -76,6 +76,24 @@ validates every emitted body against the schema below.
 - **Required fields:** `name`
 - **Optional fields:** `reason-code`
 
+### `stage-completion-claim`
+
+- **Body shape:** `<!-- pipeline: stage-completion-claim result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->`
+- **Writer lane:** `agent`
+- **Required fields:** `result`
+- **Required by arm:**
+  - `pass`: `stage`
+  - `fail`: `target`
+  - `halt`: `reason`
+  - `wait`: `reason`
+  - `pivot`: `target`, `stage`, `reason`
+- **Dedup sig by arm:**
+  - `pass`: _(append-only)_
+  - `fail`: _(append-only)_
+  - `halt`: _(append-only)_
+  - `wait`: _(append-only)_
+  - `pivot`: _(append-only)_
+
 ### `transition`
 
 - **Body shape:** `<!-- pipeline: transition from=<from> to=<to>[ reason=<reason>] -->`
@@ -85,9 +103,9 @@ validates every emitted body against the schema below.
 
 ### `verdict`
 
-- **Body shape:** `<!-- pipeline: verdict result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->`
-- **Writer lane:** `agent`
-- **Required fields:** `result`
+- **Body shape:** `<!-- pipeline: verdict result=<result> author=<author>[ stage=<stage>][ target=<target>][ reason=<reason>] -->`
+- **Writer lane:** `orchestrator`
+- **Required fields:** `result, author`
 - **Required by arm:**
   - `pass`: `stage`
   - `fail`: `target`
@@ -244,6 +262,10 @@ Source: `bin/pipeline-events.json` — edit there, not here.
 - `halt`
 - `wait`
 - `pivot`
+
+### `verdict_authors`
+
+- `orchestrator`
 
 ### `halt_reasons`
 
