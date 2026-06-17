@@ -1,0 +1,30 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-194",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Reviewer scope-awareness: out-of-plan-scope findings auto-defer via a shared plan-structural matcher; validator cross-checks the agent's claim against the same helper.",
+      "pass_criteria": [
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "file_exists", "path": "bin/plan-scope.sh" },
+        { "kind": "file_exists", "path": "bin/plan-scope-test.sh" },
+        { "kind": "grep", "path": "bin/scope-check.sh", "pattern": "source \"\\$SCRIPT_DIR/plan-scope\\.sh\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "plan_scope_allowed_paths=_resolve_plan_scope_allowed_paths", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "_resolve_plan_scope_allowed_paths\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/review-ledger-schema.sh", "pattern": "defer_reason must be 'out-of-plan-scope' or 'rubric'", "expect_match": true },
+        { "kind": "grep", "path": "bin/review-ledger-schema.sh", "pattern": "defer_reason-missing-on-deferred-major", "expect_match": true },
+        { "kind": "grep", "path": "bin/review-ledger-schema.sh", "pattern": "defer-reason-claim-disagrees-with-plan-scope", "expect_match": true },
+        { "kind": "grep", "path": "bin/review-ledger-schema.sh", "pattern": "out-of-plan-scope-rationale-malformed", "expect_match": true },
+        { "kind": "grep", "path": "bin/review-ledger-schema.sh", "pattern": "\"defer_reason\"", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "Plan-scope adjudication", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "\\{plan_scope_allowed_paths\\}", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "defer_reason == \"out-of-plan-scope\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "Plan-scope adjudication", "expect_match": true },
+        { "kind": "grep", "path": "bin/plan-scope-test.sh", "pattern": "plan_scope::path_in_scope", "expect_match": true },
+        { "kind": "grep", "path": "bin/review-ledger-schema-adversarial-test.sh", "pattern": "AC-AD-1[0-8]", "expect_match": true },
+        { "kind": "grep", "path": "docs/runbooks/recovery.md", "pattern": "Scope-deferred majors \\(ENG-194\\)", "expect_match": true }
+      ]
+    }
+  ]
+}

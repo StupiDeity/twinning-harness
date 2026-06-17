@@ -58,6 +58,13 @@ write_row() {
 # decision_factors keys all default to true (use a custom variant when
 # fixturing a specific key — none of the existing T1-T12 tests depend
 # on a particular decision_factors shape; ENG-191's AC-AD-* covers those).
+#
+# ENG-194: deferred-major rows (adjudicated=major + blocks_ship=false)
+# additionally require a `defer_reason` value of "rubric" or
+# "out-of-plan-scope" (rule 2). The helper defaults to "rubric" when
+# blocks_ship=false so existing T1-T12 + T-191-* fixtures stay aligned
+# with the post-ENG-194 contract without touching every call site;
+# tests probing defer_reason directly live in the adversarial sibling.
 write_row_eng191() {
   local file="$1" iid="$2" did="$3" iter="$4" key="$5" cold="$6" adj="$7" \
         decision="$8" rationale="$9" blocks="${10}" scr="${11}"
@@ -83,7 +90,7 @@ write_row_eng191() {
          in_changed_code:true, is_regression:true, user_visible:true,
          reversible_post_ship:true, has_workaround:true
        }
-     }' \
+     } + (if $bs == false then {defer_reason:"rubric"} else {} end)' \
     >> "$file"
 }
 

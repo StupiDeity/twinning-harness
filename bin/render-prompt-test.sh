@@ -1408,6 +1408,116 @@ unset eng191_r5_stdout eng191_r5_stderr
 printf '%s' "$eng191_config_backup" > "$eng191_config"
 unset eng191_config eng191_config_backup eng191_r3_stdout eng191_r3_stderr
 
+# ─── ENG-194: {plan_scope_allowed_paths} resolver ──────────────────────────
+# Three pins per Task 5:
+#   T_resolver_registered  — registry contains the token; resolver fn defined.
+#   T_plan_scope_allowed_paths_render — fixture plan parses to expected
+#                                       #ALLOWED_FILES# / #ALLOWED_DIRS# payload.
+#   (soft-fail leg)        — plan-absent → empty headers + stderr warning, rc=0.
+printf '\n--- ENG-194: {plan_scope_allowed_paths} resolver ---\n'
+
+# T_resolver_registered — registration + function definition reachable after
+# `source render-prompt.sh`. Subshell-source via run_resolver_body so the
+# registry value and the function are visible at the same call site.
+eng194_registry_check="$(run_resolver_body '
+  [[ "$PROMPT_RESOLVERS" == *plan_scope_allowed_paths=_resolve_plan_scope_allowed_paths* ]] \
+    && declare -f _resolve_plan_scope_allowed_paths >/dev/null \
+    && printf REGISTERED
+' 2>&1)"
+if [[ "$eng194_registry_check" == "REGISTERED" ]]; then
+  pass_at "ENG-194 T_resolver_registered: {plan_scope_allowed_paths} registered + resolver fn defined"
+else
+  fail_at "ENG-194 T_resolver_registered" "got='$eng194_registry_check'"
+fi
+unset eng194_registry_check
+
+# T_plan_scope_allowed_paths_render — fixture worktree with a plan declaring
+# `bin/foo.sh` + `docs/`. Assert the rendered payload contains both literal
+# headers and both fixture tokens in the correct sections.
+eng194_fixture_root="$sandbox/eng194-plan"
+mkdir -p "$eng194_fixture_root/docs/plans"
+cat > "$eng194_fixture_root/docs/plans/2026-06-16-eng-194-foo.md" <<'PLAN'
+---
+linear: ENG-194
+---
+## File Structure
+
+NEW:
+- `bin/foo.sh` — example.
+
+MODIFIED:
+- `docs/`
+PLAN
+
+# Drive the resolver from a fresh subshell pointed at the fixture worktree.
+# `cd` into it so `git rev-parse --show-toplevel` resolves to the fixture
+# root (the resolver's worktree_root fallback chain).
+(
+  cd "$eng194_fixture_root"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+) >/dev/null 2>&1
+eng194_render_out="$(
+  cd "$eng194_fixture_root"
+  run_resolver_body '
+    _RENDER_ISSUE_ID="ENG-194"
+    _resolve_plan_scope_allowed_paths
+  ' 2>/dev/null
+)"
+if grep -qF '#ALLOWED_FILES#' <<<"$eng194_render_out" \
+   && grep -qF '#ALLOWED_DIRS#' <<<"$eng194_render_out" \
+   && grep -qF 'bin/foo.sh' <<<"$eng194_render_out" \
+   && grep -qF 'docs/' <<<"$eng194_render_out"; then
+  pass_at "ENG-194 T_plan_scope_allowed_paths_render: payload contains both headers + fixture tokens"
+else
+  fail_at "ENG-194 T_plan_scope_allowed_paths_render: payload shape" \
+    "out=$(tr '\n' '|' <<<"$eng194_render_out")"
+fi
+
+# Positional check: bin/foo.sh under #ALLOWED_FILES# (between the two
+# section headers), docs/ under #ALLOWED_DIRS# (after the second header).
+files_section="$(awk '/^#ALLOWED_FILES#$/{f=1;next} /^#ALLOWED_DIRS#$/{f=0} f' <<<"$eng194_render_out")"
+dirs_section="$(awk '/^#ALLOWED_DIRS#$/{d=1;next} d' <<<"$eng194_render_out")"
+if grep -qxF 'bin/foo.sh' <<<"$files_section" && grep -qxF 'docs/' <<<"$dirs_section"; then
+  pass_at "ENG-194 T_plan_scope_allowed_paths_render: tokens placed in correct section"
+else
+  fail_at "ENG-194 T_plan_scope_allowed_paths_render: section assignment" \
+    "files='$(tr '\n' '|' <<<"$files_section")' dirs='$(tr '\n' '|' <<<"$dirs_section")'"
+fi
+unset eng194_render_out files_section dirs_section
+
+# Soft-fail leg — empty docs/plans/ directory: resolver emits both empty
+# headers, writes a warning to stderr, returns rc=0 (does NOT die — the
+# orchestrator must not halt the dispatch on a missing plan).
+eng194_softfail_root="$sandbox/eng194-no-plan"
+mkdir -p "$eng194_softfail_root/docs/plans"
+(
+  cd "$eng194_softfail_root"
+  git init -q
+  git config user.email t@example.com
+  git config user.name 'Test'
+) >/dev/null 2>&1
+eng194_softfail_stderr="$sandbox/eng194-softfail.stderr"
+eng194_softfail_stdout="$(
+  cd "$eng194_softfail_root"
+  run_resolver_body '
+    _RENDER_ISSUE_ID="ENG-194"
+    _resolve_plan_scope_allowed_paths
+  ' 2> "$eng194_softfail_stderr"
+)"
+eng194_softfail_stderr_contents="$(cat "$eng194_softfail_stderr" 2>/dev/null)"
+# Expected stdout: literally two header lines, nothing else
+# (printf '#ALLOWED_FILES#\n#ALLOWED_DIRS#\n').
+if [[ "$eng194_softfail_stdout" == $'#ALLOWED_FILES#\n#ALLOWED_DIRS#' ]] \
+   && grep -qF 'plan_scope_allowed_paths: no plan for ENG-194' <<<"$eng194_softfail_stderr_contents"; then
+  pass_at "ENG-194 T_plan_scope_allowed_paths_softfail: empty headers + stderr warning on plan-absent"
+else
+  fail_at "ENG-194 T_plan_scope_allowed_paths_softfail" \
+    "stdout=$(tr '\n' '|' <<<"$eng194_softfail_stdout") stderr=$eng194_softfail_stderr_contents"
+fi
+unset eng194_fixture_root eng194_softfail_root eng194_softfail_stderr eng194_softfail_stdout eng194_softfail_stderr_contents
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"

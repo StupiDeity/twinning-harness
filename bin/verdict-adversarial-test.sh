@@ -62,7 +62,7 @@ done
 # Route script-under-test invocations through the stub dir. Each script
 # tested here resolves siblings via its own SCRIPT_DIR; we point the
 # siblings at the stubs by symlinking the real script into STUB_DIR.
-for real in scope-check.sh guards.sh classify-failure.sh verdict-handler.sh common.sh pipeline.sh pipeline-events.json; do
+for real in scope-check.sh plan-scope.sh guards.sh classify-failure.sh verdict-handler.sh common.sh pipeline.sh pipeline-events.json; do
   ln -sf "$SCRIPT_DIR/$real" "$STUB_DIR/$real"
 done
 

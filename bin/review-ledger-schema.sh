@@ -364,6 +364,72 @@ cmd_validate() {
         _emit_incomplete "$line_no" "critical-floor-blocks-ship-violation: adjudicated=critical but blocks_ship=$(sanitise_for_diag "$bs_val")" "$fck"
         return 49
       fi
+      # ENG-194 rule 1 — defer_reason closed-vocabulary check.
+      # When .defer_reason is present (non-null, non-missing), value MUST
+      # be "out-of-plan-scope" or "rubric". dr_val is reused by rule 6
+      # (matcher cross-check) and rule 3 (decision_factors relaxation).
+      # dr_val='' explicit reset prevents bleed from a prior row: in bash,
+      # `local x` in a loop is idempotent after the first declaration and
+      # does NOT reset x's value; `dr_val=''` here ensures the inner
+      # conditional assignment at rule 1 is the sole source of truth each row.
+      local dr_type dr_val
+      dr_val=''
+      dr_type="$(jq -r '.defer_reason | type' <<<"$line" 2>/dev/null || printf 'missing')"
+      if [[ "$dr_type" != "null" && "$dr_type" != "missing" ]]; then
+        dr_val="$(jq -r '.defer_reason' <<<"$line" 2>/dev/null || printf '')"
+        if [[ "$dr_val" != "out-of-plan-scope" && "$dr_val" != "rubric" ]]; then
+          _emit_incomplete "$line_no" "defer_reason must be 'out-of-plan-scope' or 'rubric' (closed vocabulary), got '$(sanitise_for_diag "$dr_val")'" "$fck"
+          return 49
+        fi
+      fi
+      # ENG-194 rule 6 — matcher cross-check + fail-CLOSED on unparseable
+      # rationale. Forge defense: an agent emitting defer_reason=
+      # out-of-plan-scope must (a) emit the exact anchored rationale shape
+      # the prompt mandates, AND (b) name a path the shared plan-structural
+      # matcher actually classifies as out-of-plan. Either violation halts
+      # rc=49.
+      if [[ "${dr_val:-}" == "out-of-plan-scope" ]]; then
+        local scr fix_target worktree_root plan body af ad
+        scr="$(jq -r '.ship_classification_rationale // ""' <<<"$line" 2>/dev/null || printf '')"
+        # Anchored start+end (^...$): trailing-prose forgery fails the parse.
+        fix_target="$(printf '%s' "$scr" \
+          | sed -nE "s/^out-of-plan-scope:[[:space:]]+([^[:space:]]+)[[:space:]]+not in plan's File Structure\$/\1/p")"
+        if [[ -z "$fix_target" ]]; then
+          _emit_incomplete "$line_no" "out-of-plan-scope-rationale-malformed: defer_reason=out-of-plan-scope but rationale does not match mandated shape, got '$(sanitise_for_diag "$scr")'" "$fck"
+          return 49
+        fi
+        # shellcheck source=plan-scope.sh
+        source "$SCRIPT_DIR/plan-scope.sh"
+        worktree_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "${TARGET_REPO-}")"
+        plan="$(plan_scope::find_plan "$ident" "$worktree_root" 2>/dev/null || printf '')"
+        if [[ -z "$plan" ]]; then
+          log "[review-ledger-schema] cross-check: plan absent for $ident; skipping matcher verification on row $line_no" >&2
+        else
+          body="$(plan_scope::extract_section "$plan" 2>/dev/null || printf '')"
+          af="$(plan_scope::parse_allowed_files "$body" 2>/dev/null || printf '')"
+          ad="$(plan_scope::parse_allowed_dirs "$body" 2>/dev/null || printf '')"
+          if plan_scope::path_in_scope "$fix_target" "$af" "$ad"; then
+            _emit_incomplete "$line_no" "defer-reason-claim-disagrees-with-plan-scope: agent claimed out-of-plan-scope but matcher classifies path=$(sanitise_for_diag "$fix_target") as IN-plan" "$fck"
+            return 49
+          fi
+        fi
+      fi
+      # ENG-194 rule 2 — defer_reason required on this-dispatch deferred-
+      # major rows. When adjudicated_severity=major AND blocks_ship=false,
+      # the row MUST carry a defer_reason (rule 1 has already validated
+      # its closed vocabulary above when present).
+      #
+      # Note: bs_val is captured via `jq -r '.blocks_ship // "MISSING"'`
+      # which collapses JSON `false` and `null` to "MISSING" (jq's `//`
+      # alternative operator semantics). The boolean check `bs_type !=
+      # "boolean"` already returned 49 above on missing/null, so reaching
+      # this point with bs_val != "true" guarantees the JSON value is
+      # boolean `false` (the deferred state) — matching (b)'s pattern.
+      if [[ "$as_val" == "major" && "$bs_val" != "true" ]] \
+         && [[ "$dr_type" == "null" || "$dr_type" == "missing" ]]; then
+        _emit_incomplete "$line_no" "defer_reason-missing-on-deferred-major: adjudicated_severity=major blocks_ship=false" "$fck"
+        return 49
+      fi
       # (c) ship_classification_rationale: non-empty string.
       local scr_type scr_val
       scr_type="$(jq -r '.ship_classification_rationale | type' <<<"$line" 2>/dev/null || printf 'missing')"
@@ -373,35 +439,41 @@ cmd_validate() {
         return 49
       fi
       # (d) decision_factors: object with all five required boolean keys.
-      local df_type
-      df_type="$(jq -r '.decision_factors | type' <<<"$line" 2>/dev/null || printf 'missing')"
-      if [[ "$df_type" != "object" ]]; then
-        _emit_incomplete "$line_no" "decision_factors must be object, got type=$(sanitise_for_diag "$df_type")" "$fck"
-        return 49
-      fi
-      local missing_keys
-      missing_keys="$(jq -r '
-        ["in_changed_code","is_regression","user_visible","reversible_post_ship","has_workaround"] as $req
-        | ($req - (.decision_factors | keys))
-        | join(",")' <<<"$line" 2>/dev/null || printf '')"
-      if [[ -n "$missing_keys" ]]; then
-        _emit_incomplete "$line_no" "decision_factors missing required keys: $(sanitise_for_diag "$missing_keys")" "$fck"
-        return 49
-      fi
-      local wrong_type_keys
-      wrong_type_keys="$(jq -r '
-        [.decision_factors | to_entries[] | select(.value | type != "boolean") | .key]
-        | join(",")' <<<"$line" 2>/dev/null || printf '')"
-      if [[ -n "$wrong_type_keys" ]]; then
-        _emit_incomplete "$line_no" "decision_factors keys must be boolean; non-boolean: $(sanitise_for_diag "$wrong_type_keys")" "$fck"
-        return 49
+      #     ENG-194 rule 3: relaxed when defer_reason="out-of-plan-scope" —
+      #     scope-deferred rows MAY omit decision_factors (or emit null);
+      #     rubric-deferred and rubric-blocking rows still require the
+      #     full five-factor object (ENG-191 contract preserved).
+      if [[ "${dr_val:-}" != "out-of-plan-scope" ]]; then
+        local df_type
+        df_type="$(jq -r '.decision_factors | type' <<<"$line" 2>/dev/null || printf 'missing')"
+        if [[ "$df_type" != "object" ]]; then
+          _emit_incomplete "$line_no" "decision_factors must be object, got type=$(sanitise_for_diag "$df_type")" "$fck"
+          return 49
+        fi
+        local missing_keys
+        missing_keys="$(jq -r '
+          ["in_changed_code","is_regression","user_visible","reversible_post_ship","has_workaround"] as $req
+          | ($req - (.decision_factors | keys))
+          | join(",")' <<<"$line" 2>/dev/null || printf '')"
+        if [[ -n "$missing_keys" ]]; then
+          _emit_incomplete "$line_no" "decision_factors missing required keys: $(sanitise_for_diag "$missing_keys")" "$fck"
+          return 49
+        fi
+        local wrong_type_keys
+        wrong_type_keys="$(jq -r '
+          [.decision_factors | to_entries[] | select(.value | type != "boolean") | .key]
+          | join(",")' <<<"$line" 2>/dev/null || printf '')"
+        if [[ -n "$wrong_type_keys" ]]; then
+          _emit_incomplete "$line_no" "decision_factors keys must be boolean; non-boolean: $(sanitise_for_diag "$wrong_type_keys")" "$fck"
+          return 49
+        fi
       fi
     fi
 
     # Unknown fields: stderr warning, exit 0 path.
     local unknown_keys
     unknown_keys="$(jq -r \
-      '(keys) - ["ledger_schema_version","issue_id","dispatch_id","iteration","created_at","finding_class_key","cold_severity","adjudicated_severity","decision","rationale","blocks_ship","ship_classification_rationale","decision_factors"] | .[]' \
+      '(keys) - ["ledger_schema_version","issue_id","dispatch_id","iteration","created_at","finding_class_key","cold_severity","adjudicated_severity","decision","rationale","blocks_ship","ship_classification_rationale","decision_factors","defer_reason"] | .[]' \
       <<<"$line" 2>/dev/null || true)"
     while IFS= read -r uf; do
       if [[ -n "$uf" ]]; then _warn_unknown "field (row $line_no)" "$uf"; fi

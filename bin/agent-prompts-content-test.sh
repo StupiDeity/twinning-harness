@@ -1141,11 +1141,16 @@ else
 fi
 
 # ENG-191-pin-path-d-predicate: literal path-D mechanical predicate.
-if printf '%s\n' "$s5" | grep -qF 'Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}'; then
+# ENG-194 Task 10 (MANDATORY relax): Task 9 reshapes this predicate across
+# multiple lines and inserts the out-of-plan-scope OR clause, so the old
+# single-line `grep -qF` no longer matches. Pin the un-broken prefix (first
+# line) and suffix (second line) substrings that survive the reshape instead.
+if printf '%s\n' "$s5" | grep -qF 'Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0' \
+   && printf '%s\n' "$s5" | grep -qF 'convergence_rounds_at_zero_critical >= {review_converge_rounds}'; then
   ok "§5 ENG-191: path-D mechanical predicate pinned (ENG-191-pin-path-d-predicate)"
 else
   nope "§5 ENG-191: path-D predicate" \
-    "expected literal 'Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}'"
+    "expected prefix 'Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0' AND suffix 'convergence_rounds_at_zero_critical >= {review_converge_rounds}'"
 fi
 
 # ENG-191-pin-path-d-verdict-command: literal pipeline.sh event command.
@@ -1154,6 +1159,74 @@ if printf '%s\n' "$s5" | grep -qF 'bash bin/pipeline.sh event {issue_id} verdict
 else
   nope "§5 ENG-191: path-D verdict command" \
     "expected literal 'bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors'"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────
+# ENG-194 Task 10: §5 plan-scope adjudication block pins (#1–#7). Each pin is
+# a `grep -F` literal-substring assertion over the §5 body ($s5), mirroring
+# the ENG-191 pin pattern above.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ENG-194-pin-1: §5 carries the "Plan-scope adjudication" block heading phrase.
+if printf '%s\n' "$s5" | grep -qF 'Plan-scope adjudication'; then
+  ok "§5 ENG-194: plan-scope adjudication block present (ENG-194-pin-1)"
+else
+  nope "§5 ENG-194: plan-scope adjudication block" \
+    "expected literal 'Plan-scope adjudication'"
+fi
+
+# ENG-194-pin-2: §5 references the {plan_scope_allowed_paths} resolver token.
+if printf '%s\n' "$s5" | grep -qF '{plan_scope_allowed_paths}'; then
+  ok "§5 ENG-194: plan_scope_allowed_paths resolver token pinned (ENG-194-pin-2)"
+else
+  nope "§5 ENG-194: plan_scope_allowed_paths token" \
+    "expected literal '{plan_scope_allowed_paths}'"
+fi
+
+# ENG-194-pin-3: §5 carries the defer_reason out-of-plan-scope literal.
+if printf '%s\n' "$s5" | grep -qF 'defer_reason="out-of-plan-scope"'; then
+  ok "§5 ENG-194: defer_reason out-of-plan-scope literal pinned (ENG-194-pin-3)"
+else
+  nope "§5 ENG-194: defer_reason literal" \
+    'expected literal defer_reason="out-of-plan-scope"'
+fi
+
+# ENG-194-pin-4: §5 decision_factors relaxation — both OMITTED and null appear.
+if printf '%s\n' "$s5" | grep -qF 'OMITTED' \
+   && printf '%s\n' "$s5" | grep -qF 'null'; then
+  ok "§5 ENG-194: decision_factors OMITTED/null relaxation pinned (ENG-194-pin-4)"
+else
+  nope "§5 ENG-194: decision_factors relaxation" \
+    "expected both 'OMITTED' and 'null' in §5"
+fi
+
+# ENG-194-pin-5: §5 path-D predicate carries the extended out-of-plan-scope OR
+# clause (double-space after OR matches the brainstorm's quoted shape).
+if printf '%s\n' "$s5" | grep -qF 'OR  every adjudicated-major row has defer_reason == "out-of-plan-scope"'; then
+  ok "§5 ENG-194: path-D out-of-plan-scope OR clause pinned (ENG-194-pin-5)"
+else
+  nope "§5 ENG-194: path-D OR clause" \
+    'expected literal OR  every adjudicated-major row has defer_reason == "out-of-plan-scope"'
+fi
+
+# ENG-194-pin-6: positional — "Plan-scope adjudication" precedes the count-tuple
+# "Findings:" heading within §5 (block sits before count-tuple emission).
+eng194_ps_line="$(printf '%s\n' "$s5" | grep -nF 'Plan-scope adjudication' | head -1 | cut -d: -f1)"
+eng194_ft_line="$(printf '%s\n' "$s5" | grep -nF 'Findings:' | head -1 | cut -d: -f1)"
+if [[ -n "$eng194_ps_line" && -n "$eng194_ft_line" ]] && (( eng194_ps_line < eng194_ft_line )); then
+  ok "§5 ENG-194: plan-scope block precedes count-tuple heading (ENG-194-pin-6; ps=$eng194_ps_line ft=$eng194_ft_line)"
+else
+  nope "§5 ENG-194: block ordering" \
+    "expected 'Plan-scope adjudication' (line ${eng194_ps_line:-?}) before 'Findings:' (line ${eng194_ft_line:-?})"
+fi
+
+# ENG-194-pin-7: §5 multi-target tie-break — canonical anchor is the SOLE fix-target.
+if printf '%s\n' "$s5" | grep -qF 'canonical anchor' \
+   && printf '%s\n' "$s5" | grep -qF 'SOLE fix-target'; then
+  ok "§5 ENG-194: multi-target canonical-anchor tie-break pinned (ENG-194-pin-7)"
+else
+  nope "§5 ENG-194: multi-target tie-break" \
+    "expected both 'canonical anchor' and 'SOLE fix-target' in §5"
 fi
 
 # ENG-191-pin-agent-no-deferred-majors-post: defends AC #4 envelope-validator

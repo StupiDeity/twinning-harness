@@ -52,6 +52,13 @@ source "$SCRIPT_DIR/common.sh"
 # labels but not stage:* or pipeline:halted labels.
 export PIPELINE_WRITER=scope-check
 
+# ENG-194: shared plan-structural matcher (5 plan_scope::* functions).
+# scope-check.sh and bin/render-prompt.sh's plan_scope_allowed_paths
+# resolver both source this so the reviewer-defer / scope-check-halt
+# split cannot diverge on identical input.
+# shellcheck source=plan-scope.sh
+source "$SCRIPT_DIR/plan-scope.sh"
+
 # ENG-96: benign-path classes are the four harness-owned globs that are
 # always benign regardless of stack (orchestrator owns these paths:
 # docs/{knowledge,plans,brainstorms}/, .pipeline/metrics/). Compare to
@@ -140,35 +147,16 @@ _profile_lockfile_basenames() {
   } | sort -u
 }
 
+# ENG-194: kept as back-compat wrappers so callers (tests, sourced
+# modules) that resolved the old function names continue to work.
+# Body delegates to bin/plan-scope.sh — the parse + match logic now
+# has exactly one home.
 find_canonical_plan() {
-  local issue_id="$1" root="$2" f
-  while IFS= read -r -d '' f; do
-    if awk -v id="$issue_id" '
-      NR==1 && $0=="---" { in_fm=1; next }
-      in_fm && $0=="---" { exit 1 }
-      in_fm && $0 ~ "^linear:[[:space:]]+" id "[[:space:]]*$" { exit 0 }
-      NR>20 { exit 1 }
-    ' "$f"; then
-      printf '%s\n' "$f"
-      return 0
-    fi
-  done < <(find "$root/docs/plans" -maxdepth 1 -type f -name '*.md' -print0)
-  return 1
+  plan_scope::find_plan "$1" "$2"
 }
 
 extract_scope_section() {
-  local plan="$1"
-  # Accepts `## File Structure`, `### File Structure`, `## N. File Structure`.
-  awk '
-    /^(##|###)[[:space:]]+([0-9]+\.[[:space:]]+)?[Ff]ile [Ss]tructure/ {
-      depth=length($1); in_fs=1; next
-    }
-    in_fs && /^(##|###)[[:space:]]/ {
-      this=length($1)
-      if (this <= depth) { in_fs=0; next }
-    }
-    in_fs { print }
-  ' "$plan"
+  plan_scope::extract_section "$1"
 }
 
 # Does $1 look benign regardless of plan?
@@ -295,23 +283,15 @@ main() {
     || { log "scope-check: plan=$plan_rel: File Structure section missing or empty (expected a '## File Structure' or '### File Structure' heading)"; exit 2; }
 
   local allowed_files allowed_dirs
-  # ENG-25: `*` (not `+`) on the directory-prefix group so repo-root files
-  # (CLAUDE.md, README.md, package.json, …) declared in the plan's File Structure
-  # are parsed into allowed_files. With `+`, zero-prefix tokens like `CLAUDE.md`
-  # never matched and were always SEVERE-flagged.
-  #
-  # The trailing `|| true` on each pipeline guards against grep-no-match (rc=1)
-  # under `set -o pipefail` from aborting the whole script. Plans that declare
-  # only repo-root files (no nested paths) produce no allowed_dirs matches; the
-  # explicit empty check below handles the empty-allowed-set case.
-  allowed_files="$(grep -oE '([a-zA-Z0-9_./-]+/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+' <<<"$body" | sort -u || true)"
-  # Anchored-base awk filter: drop only `<basename>.<ext>/` malformed captures
-  # (e.g., `secret-probe-lint.yml/`), NOT `.<name>/` dotfile dirs (e.g.,
-  # `.github/`). The earlier `\.[a-zA-Z0-9]+\/$` pattern over-matched and
-  # stripped legitimate dotfile directories — first hit by ENG-46's plan
-  # introducing `.github/workflows/`.
-  allowed_dirs="$(grep -oE '([a-zA-Z0-9_.-]+/){1,}' <<<"$body" \
-    | awk '!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.[a-zA-Z0-9]+\/$/' | sort -u || true)"
+  # ENG-194: parse via the shared plan-structural matcher. The pre-refactor
+  # `grep -oE … | sort -u` pipelines lived inline at this site; both have
+  # moved verbatim to bin/plan-scope.sh:plan_scope::parse_allowed_files /
+  # parse_allowed_dirs. Keeping the regex source-of-truth in one place is
+  # the structural defense behind AC #4 (reviewer + scope-check parse
+  # the same body byte-for-byte). The ENG-25 `*` vs `+` directory-prefix
+  # fix and the ENG-46 dotfile-dir awk anchor are preserved in the helper.
+  allowed_files="$(plan_scope::parse_allowed_files "$body")"
+  allowed_dirs="$(plan_scope::parse_allowed_dirs "$body")"
 
   if [[ -z "$allowed_files$allowed_dirs" ]]; then
     log "scope-check: plan=$plan_rel: File Structure section parsed but contains no file or directory tokens"
@@ -355,15 +335,16 @@ main() {
   local notable="" severe="" benign_count=0
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    if [[ -n "$allowed_files" ]] && grep -qxF "$f" <<<"$allowed_files"; then
+    # ENG-194: delegate in-plan check to the shared helper. The
+    # `grep -qxF` + dir-prefix `case` loop are now inside
+    # plan_scope::path_in_scope; keeping them in one home is the
+    # AC #4 invariant. is_benign / is_notable below remain
+    # scope-check-only — those reach into $allowed_files /
+    # $allowed_dirs via dynamic scope (the Rust crates-tests
+    # carve-out at line 200) so the variable names are preserved.
+    if plan_scope::path_in_scope "$f" "$allowed_files" "$allowed_dirs"; then
       continue
     fi
-    local in_dir=0 d
-    while IFS= read -r d; do
-      [[ -z "$d" ]] && continue
-      [[ "$f" == "$d"* ]] && { in_dir=1; break; }
-    done <<<"$allowed_dirs"
-    (( in_dir )) && continue
 
     if is_benign "$f"; then
       benign_count=$((benign_count + 1))
