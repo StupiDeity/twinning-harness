@@ -1518,6 +1518,49 @@ else
 fi
 unset eng194_fixture_root eng194_softfail_root eng194_softfail_stderr eng194_softfail_stdout eng194_softfail_stderr_contents
 
+# ─── ENG-205: {review_payload_body_path} resolver contract ───────────────────
+# Three pins: resolver registered in PROMPT_RESOLVERS (REV-RP-1), resolver
+# function returns _RENDER_REVIEW_PAYLOAD_BODY_PATH (REV-RP-2), and sidecar
+# emits review_payload_body_path when the variable is set (REV-RP-3).
+
+# REV-RP-1: token registered in PROMPT_RESOLVERS.
+if grep -qF 'review_payload_body_path=_resolve_review_payload_body_path' "$RP_SRC"; then
+  pass_at "ENG-205 REV-RP-1: {review_payload_body_path} registered in PROMPT_RESOLVERS"
+else
+  fail_at "ENG-205 REV-RP-1: {review_payload_body_path} in PROMPT_RESOLVERS" \
+    "entry 'review_payload_body_path=_resolve_review_payload_body_path' missing from render-prompt.sh PROMPT_RESOLVERS"
+fi
+
+# REV-RP-2: resolver returns _RENDER_REVIEW_PAYLOAD_BODY_PATH.
+out_rpp="$(run_resolver_body '
+  _RENDER_REVIEW_PAYLOAD_BODY_PATH="/tmp/test-state/ENG-205/verdict-review.body.json"
+  resolve_block_tokens "{review_payload_body_path}"
+' 2>&1)"
+if [[ "$out_rpp" == "/tmp/test-state/ENG-205/verdict-review.body.json" ]]; then
+  pass_at "ENG-205 REV-RP-2: {review_payload_body_path} resolves from _RENDER_REVIEW_PAYLOAD_BODY_PATH"
+else
+  fail_at "ENG-205 REV-RP-2: {review_payload_body_path} token resolves" \
+    "expected='/tmp/test-state/ENG-205/verdict-review.body.json' got='$out_rpp'"
+fi
+unset out_rpp
+
+# REV-RP-3: sidecar emits a review_payload_body_path TSV line when the
+# variable is set. Validates the closed-allowlist addition in
+# _write_rendered_paths_sidecar (ENG-156 D-004).
+eng205_rp3_sidecar="$sandbox/eng205-rp3.tsv"
+run_resolver_body '
+  _RENDER_REVIEW_PAYLOAD_BODY_PATH="/tmp/state/ENG-205/verdict-review.body.json"
+  _write_rendered_paths_sidecar "'"$eng205_rp3_sidecar"'"
+' 2>/dev/null
+if grep -qE '^review_payload_body_path'$'\t' "$eng205_rp3_sidecar" 2>/dev/null \
+   && grep -qF '/tmp/state/ENG-205/verdict-review.body.json' "$eng205_rp3_sidecar"; then
+  pass_at "ENG-205 REV-RP-3: sidecar emits review_payload_body_path line when variable is set"
+else
+  fail_at "ENG-205 REV-RP-3: sidecar review_payload_body_path line" \
+    "expected 'review_payload_body_path<TAB>/tmp/state/ENG-205/verdict-review.body.json' — contents: $(cat "$eng205_rp3_sidecar" 2>/dev/null)"
+fi
+unset eng205_rp3_sidecar
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"

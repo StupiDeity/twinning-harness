@@ -2819,6 +2819,70 @@ else
   nope "ENG-152: §0 protocol split documentation" "preamble missing claim/author=orchestrator language"
 fi
 
+# ─── ENG-205: §5 content-only body contract ───
+# The review agent emits a content-only body sidecar; the orchestrator
+# merges the schema envelope (review_schema_version, issue_id, dispatch_id)
+# before the validator runs. §5 MUST reference {review_payload_body_path}
+# as the Write target, MUST NOT instruct the agent to type the envelope
+# keys, MUST contain the canonical orchestrator-merge sentence, and MUST
+# NOT reference {verdict_review_path} as an agent Write target.
+# REV-PC-1..REV-PC-4 pin those four invariants.
+s5_eng205="$(section_body "## 5. Review Agent")"
+
+# REV-PC-1: §5 contains the literal {review_payload_body_path} token.
+if grep -qF '{review_payload_body_path}' <<<"$s5_eng205"; then
+  ok "§5 ENG-205 REV-PC-1: '{review_payload_body_path}' token present"
+else
+  nope "§5 ENG-205 REV-PC-1: '{review_payload_body_path}' token present" \
+    "literal '{review_payload_body_path}' placeholder missing from §5 — has the Write target been removed or the resolver token renamed?"
+fi
+
+# REV-PC-2: §5 does NOT contain {verdict_review_path} (the canonical is
+# now orchestrator-owned; the prompt must never tell the agent to Write to it).
+if grep -qF '{verdict_review_path}' <<<"$s5_eng205"; then
+  nope "§5 ENG-205 REV-PC-2: '{verdict_review_path}' absent from §5" \
+    "literal '{verdict_review_path}' found in §5 — the canonical is orchestrator-owned post-ENG-205; agent must Write to {review_payload_body_path} only"
+else
+  ok "§5 ENG-205 REV-PC-2: '{verdict_review_path}' absent from §5"
+fi
+
+# REV-PC-3: §5 contains the two key phrases of the orchestrator-merge
+# sentence (split across lines in the source file; checked as two separate
+# single-line substrings rather than one multi-line literal).
+# Part A: the "onto your body before validation; do not" phrase.
+# Part B: "emit those keys yourself" — the agent-prohibition half.
+if grep -qF 'onto your body before validation; do not' <<<"$s5_eng205"; then
+  ok "§5 ENG-205 REV-PC-3a: orchestrator-merge clause (validation half) present"
+else
+  nope "§5 ENG-205 REV-PC-3a: orchestrator-merge clause (validation half) present" \
+    "'onto your body before validation; do not' missing from §5 — was the orchestrator-merge contract removed?"
+fi
+if grep -qF 'emit those keys yourself' <<<"$s5_eng205"; then
+  ok "§5 ENG-205 REV-PC-3b: orchestrator-merge clause (prohibition half) present"
+else
+  nope "§5 ENG-205 REV-PC-3b: orchestrator-merge clause (prohibition half) present" \
+    "'emit those keys yourself' missing from §5 — was the agent-prohibition clause removed?"
+fi
+
+# REV-PC-4: the 'Required top-level fields:' sentence in §5 does NOT
+# enumerate review_schema_version or dispatch_id. These are envelope keys
+# owned by the orchestrator; the agent must only type sha + verdict.
+# Check via regex on the whole §5: if either key appears on the same
+# line as 'Required top-level fields:' the agent's contract is broken.
+if grep -qE 'Required top-level fields:.*review_schema_version' <<<"$s5_eng205"; then
+  nope "§5 ENG-205 REV-PC-4a: 'review_schema_version' absent from Required-fields line" \
+    "'review_schema_version' found on the 'Required top-level fields:' line in §5 — orchestrator owns that envelope key; drop it from the agent contract"
+else
+  ok "§5 ENG-205 REV-PC-4a: 'review_schema_version' absent from Required-fields line"
+fi
+if grep -qE 'Required top-level fields:.*dispatch_id' <<<"$s5_eng205"; then
+  nope "§5 ENG-205 REV-PC-4b: 'dispatch_id' absent from Required-fields line" \
+    "'dispatch_id' found on the 'Required top-level fields:' line in §5 — orchestrator owns that envelope key; drop it from the agent contract"
+else
+  ok "§5 ENG-205 REV-PC-4b: 'dispatch_id' absent from Required-fields line"
+fi
+unset s5_eng205
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
