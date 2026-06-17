@@ -1,0 +1,124 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-205",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Review agent writes content-only verdict-review.body.json; orchestrator post-dispatch merges {review_schema_version, issue_id, dispatch_id} envelope onto a fresh canonical verdict-review.json via merge_artifact_envelope and the existing _validate_review_payload runs on the merged canonical unchanged.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/common.sh bin/render-prompt.sh bin/run-stage.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-205 OS-R1"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-205 AP-R1"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/render-prompt-rc0-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-205 case Q"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^verdict_review_body_path\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "verdict_review_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "verdict_review_body_path=_resolve_verdict_review_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_resolve_verdict_review_body_path\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt.sh",
+          "pattern": "_RENDER_VERDICT_REVIEW_BODY_PATH",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_merge_review_payload_envelope\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "review_schema_version: 1, issue_id: \\$ii, dispatch_id: \\$di",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "rm -f \"\\$d/verdict-review\\.body\\.json\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "\\{verdict_review_body_path\\}",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-205 OS-R6",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-205 AP-R3",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/render-prompt-rc0-test.sh",
+          "pattern": "verdict_review_body_path",
+          "expect_match": true
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/runbooks/recovery.md"
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "^## 16\\. review-payload merge failure",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "CLAUDE.md",
+          "pattern": "review-payload-invalid",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
