@@ -1933,15 +1933,15 @@ Your task:
 
    The plan stage may have emitted a structured plan.json sibling. When present, its contents are already embedded above between the `<<<PLAN_JSON_BEGIN>>>` and `<<<PLAN_JSON_END>>>` delimiters (ENG-124). Build the verification predicate from THAT embedded block — do NOT open the .json file from disk; the embedded body is authoritative for this dispatch.
 
-   Write a JSON document via the `Write` tool at `{qa_predicate_path}` (resolved by the orchestrator to an absolute path under `$PROJECT_STATE_DIR` — outside the worktree; partition_dirty_paths will NOT see it). Document shape:
+   Write a JSON document via the `Write` tool at `{qa_predicate_body_path}` (resolved by the orchestrator to an absolute path under `$PROJECT_STATE_DIR` — outside the worktree; partition_dirty_paths will NOT see it). Document shape:
 
        {
-         "qa_predicate_schema_version": 1,
-         "issue_id": "{issue_id}",
          "pass_criteria": [
            ...
          ]
        }
+
+   The orchestrator merges the schema envelope (`qa_predicate_schema_version`, `issue_id`) onto your body before validation; do not emit those keys yourself.
 
    The `pass_criteria[]` array is a SUPERSET of the plan's: (a) copy every `pass_criteria` entry from each `features[]` element of the embedded plan.json verbatim, and (b) OPTIONALLY add QA-authored smoke / file_exists / grep / http_get criteria that name additional deterministic checks for this issue. Reuse the schema-v1 `kind` taxonomy: `smoke` (`command`, `expect_exit`, optional `expect_stdout_match`), `file_exists` (`path` — worktree-relative, no leading `/`, no `../`), `grep` (`path`, `pattern`, `expect_match`), `http_get` (`url`, `expect_status`, optional `expect_body_match`).
 
@@ -1951,7 +1951,7 @@ Your task:
 
    On Decision-path D (back-fill PR — see end of section), the predicate is written with the plan's pass_criteria verbatim; QA-authored adversarial criteria are not required.
 
-   Validate your predicate before continuing: `bash bin/verify-qa.sh validate {qa_predicate_path} --ident {issue_id}`. Read the final summary JSONL line: if `failed > 0`, address the failing checks BEFORE running the remaining numbered steps; if any per-criterion line has `pass: false`, that's QA's signal that a plan-acceptance criterion is not yet met and the appropriate response is `Decision path B` below (genuine failure → `verdict fail --target implementing`).
+   Validate your predicate before continuing: `bash bin/verify-qa.sh validate --body {qa_predicate_body_path} --ident {issue_id}`. Read the final summary JSONL line: if `failed > 0`, address the failing checks BEFORE running the remaining numbered steps; if any per-criterion line has `pass: false`, that's QA's signal that a plan-acceptance criterion is not yet met and the appropriate response is `Decision path B` below (genuine failure → `verdict fail --target implementing`).
 
 2. **Flaky-pattern triage (first pass — BEFORE running the suite):**
    - Read qa-patterns.md end-to-end. Identify entries whose pattern overlaps this
@@ -2037,13 +2037,12 @@ Your task:
 
 9. **Emit dimensional grading payload (verdict-qa.json):**
    Before exiting (on any decision path — A, B, C, or D), write a
-   dimensional grading payload to `$(issue_dir {issue_id})/verdict-qa.json`
+   dimensional grading payload to `{qa_payload_body_path}`
    describing per-dimension scores. Schema source-of-truth: header comment
-   of `bin/qa-payload-schema.sh`. Required fields:
+   of `bin/qa-payload-schema.sh`. The orchestrator merges the schema envelope
+   (`qa_payload_schema_version`, `issue_id`, `dispatch_id`) onto your body
+   before validation; do not emit those keys yourself. Required fields:
 
-     qa_payload_schema_version  integer, must be 1
-     issue_id                   "{issue_id}"
-     dispatch_id                "{dispatch_id}"   (exported into your env)
      verdict                    one of: pass | fail | halt
      dimensions[]               at least one entry; each must have:
                                   name           snake_case (^[a-z][a-z0-9_]*$)

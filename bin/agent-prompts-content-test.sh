@@ -464,24 +464,136 @@ else
     "literal 'Emit verification predicate' phrase missing from §6 — has the step been removed or its bold header renamed?"
 fi
 
-# ─── ENG-113: §6 references the {qa_predicate_path} render token ─────
-# Finding #16 (review iter 1): the §6 pin must ALSO check that the
-# `{qa_predicate_path}` placeholder is present, so a future edit that
+# ─── ENG-113/ENG-203: §6 references the {qa_predicate_body_path} render token ─
+# Finding #16 (review iter 1) ENG-113 calibration: the §6 pin must ALSO check
+# that the predicate path placeholder is present, so a future edit that
 # removes the step's Write target — but leaves the bold header for
 # context — still trips here. Two assertions: presence + count >= 2
 # (Write step + validator-invocation step both interpolate the token).
-if printf '%s\n' "$s6" | grep -qF '{qa_predicate_path}'; then
-  ok "§6 ENG-113: '{qa_predicate_path}' token present"
+# ENG-203 renamed the token from `{qa_predicate_path}` to
+# `{qa_predicate_body_path}` — §6 now writes the content-only body and the
+# orchestrator merges the schema envelope.
+if printf '%s\n' "$s6" | grep -qF '{qa_predicate_body_path}'; then
+  ok "§6 ENG-113/ENG-203: '{qa_predicate_body_path}' token present"
 else
-  nope "§6 ENG-113: '{qa_predicate_path}' token present" \
-    "literal '{qa_predicate_path}' placeholder missing from §6 — has the resolver token been removed?"
+  nope "§6 ENG-113/ENG-203: '{qa_predicate_body_path}' token present" \
+    "literal '{qa_predicate_body_path}' placeholder missing from §6 — has the resolver token been removed?"
 fi
-qa_pred_count="$(printf '%s\n' "$s6" | grep -cF '{qa_predicate_path}' || true)"
+qa_pred_count="$(printf '%s\n' "$s6" | grep -cF '{qa_predicate_body_path}' || true)"
 if (( qa_pred_count >= 2 )); then
-  ok "§6 ENG-113: '{qa_predicate_path}' appears in both Write + validator-invocation steps (count=$qa_pred_count)"
+  ok "§6 ENG-113/ENG-203: '{qa_predicate_body_path}' appears in both Write + validator-invocation steps (count=$qa_pred_count)"
 else
-  nope "§6 ENG-113: '{qa_predicate_path}' multi-site pin (count=$qa_pred_count, need >=2)" \
+  nope "§6 ENG-113/ENG-203: '{qa_predicate_body_path}' multi-site pin (count=$qa_pred_count, need >=2)" \
     "expected the token in at least the Write target AND the verify-qa validate command line — finding #16 calibration"
+fi
+
+# ─── ENG-203: §6 content-only body contract ─────────────────────────────
+# The QA agent emits content-only bodies; the orchestrator merges the
+# schema envelope keys (qa_payload_schema_version, issue_id, dispatch_id)
+# on top before the validator runs. The §6 prompt MUST NOT instruct the
+# agent to type those envelope keys, and MUST use the *_body_path render
+# tokens for the Write targets. AP-1..AP-7 below pin those invariants.
+#
+# Sub-block extraction: §6 step 1 begins at the bold-header line
+# 'Emit verification predicate' and runs ~30 lines to the next numbered
+# step. §6 step 9 begins at the bold-header line 'Emit dimensional grading
+# payload' and runs ~30 lines. Use awk to slice the window for the
+# negative-presence assertions; the affirmative-presence assertions can
+# scan all of §6 since the body-path tokens are step-local.
+_slice_section_6_step_window() {
+  local _anchor="$1"
+  printf '%s\n' "$s6" | awk -v anchor="$_anchor" '
+    BEGIN { in_block = 0; lines = 0 }
+    index($0, anchor) > 0 { in_block = 1 }
+    in_block == 1 {
+      print
+      lines++
+      if (lines >= 30) exit
+    }
+  '
+}
+step1_window="$(_slice_section_6_step_window 'Emit verification predicate')"
+step9_window="$(_slice_section_6_step_window 'Emit dimensional grading payload')"
+
+# Narrow to the required-fields enumeration sub-block (anchored on
+# `verdict ` opener and the first empty line after `dimensions[]`).
+# The surrounding explanatory sentence is allowed to name envelope keys
+# to tell the agent what the orchestrator merges; AP-1 and AP-2 assert
+# the agent's content-shape doc does not list them.
+step9_required_fields="$(printf '%s\n' "$step9_window" | awk '
+  /verdict / { in_block = 1 }
+  in_block == 1 { print; if (index($0, "dimensions[]") > 0) seen = 1 }
+  seen == 1 && /^$/ { exit }
+')"
+
+# AP-1: §6 step 9 does NOT contain `qa_payload_schema_version` in the
+# content-shape (required-fields) doc — the orchestrator owns the envelope.
+if printf '%s\n' "$step9_required_fields" | grep -qF 'qa_payload_schema_version'; then
+  nope "§6 ENG-203 AP-1: 'qa_payload_schema_version' absent from step 9 required-fields enumeration" \
+    "literal 'qa_payload_schema_version' present in the §6 step-9 required-fields enumeration — agent must not type envelope keys; orchestrator owns the merge"
+else
+  ok "§6 ENG-203 AP-1: 'qa_payload_schema_version' absent from step 9 required-fields enumeration"
+fi
+
+# AP-2: §6 step 9 does NOT contain `dispatch_id` in the content-shape
+# (required-fields) doc.
+if printf '%s\n' "$step9_required_fields" | grep -qF 'dispatch_id'; then
+  nope "§6 ENG-203 AP-2: 'dispatch_id' absent from step 9 required-fields enumeration" \
+    "literal 'dispatch_id' present in the §6 step-9 required-fields enumeration — agent must not type envelope keys"
+else
+  ok "§6 ENG-203 AP-2: 'dispatch_id' absent from step 9 required-fields enumeration"
+fi
+
+# AP-3: §6 contains the literal `{qa_payload_body_path}` token (Write target).
+if printf '%s\n' "$s6" | grep -qF '{qa_payload_body_path}'; then
+  ok "§6 ENG-203 AP-3: '{qa_payload_body_path}' token present"
+else
+  nope "§6 ENG-203 AP-3: '{qa_payload_body_path}' token present" \
+    "literal '{qa_payload_body_path}' placeholder missing from §6 — has the Write target been removed or the resolver token renamed?"
+fi
+
+# AP-4: §6 step 1 does NOT contain `qa_predicate_schema_version` in the
+# content-shape (JSON document) sub-block. Narrow to the indented `{ … }`
+# block — the surrounding explanatory sentence is allowed to name envelope
+# keys to tell the agent what the orchestrator merges.
+step1_json_shape="$(printf '%s\n' "$step1_window" | awk '
+  /^       \{/ { in_block = 1 }
+  in_block == 1 { print }
+  in_block == 1 && /^       \}/ { exit }
+')"
+if printf '%s\n' "$step1_json_shape" | grep -qF 'qa_predicate_schema_version'; then
+  nope "§6 ENG-203 AP-4: 'qa_predicate_schema_version' absent from step 1 JSON document shape" \
+    "literal 'qa_predicate_schema_version' present in the §6 step-1 JSON shape — agent must not type envelope keys; orchestrator owns the merge"
+else
+  ok "§6 ENG-203 AP-4: 'qa_predicate_schema_version' absent from step 1 JSON document shape"
+fi
+
+# AP-5: §6 contains the literal `{qa_predicate_body_path}` token (covered by
+# the ENG-113/ENG-203 presence pin above; AP-5 is the ENG-203-specific name
+# operators may grep for and is asserted here for symmetry with AP-3).
+if printf '%s\n' "$s6" | grep -qF '{qa_predicate_body_path}'; then
+  ok "§6 ENG-203 AP-5: '{qa_predicate_body_path}' token present"
+else
+  nope "§6 ENG-203 AP-5: '{qa_predicate_body_path}' token present" \
+    "literal '{qa_predicate_body_path}' placeholder missing from §6"
+fi
+
+# AP-6: §6 step 1's verify-qa.sh invocation uses --body.
+if printf '%s\n' "$s6" | grep -qF -- '--body {qa_predicate_body_path}'; then
+  ok "§6 ENG-203 AP-6: verify-qa.sh invocation uses '--body {qa_predicate_body_path}'"
+else
+  nope "§6 ENG-203 AP-6: verify-qa.sh invocation uses '--body {qa_predicate_body_path}'" \
+    "expected the literal '--body {qa_predicate_body_path}' in §6 — has the --body flag been dropped from the validator invocation?"
+fi
+
+# AP-7: §6 contains the EXACT literal copy-pastable shape — pins flag
+# positional order so an agent that copies the example cannot drift into
+# a no---body form.
+if printf '%s\n' "$s6" | grep -qF -- 'bash bin/verify-qa.sh validate --body {qa_predicate_body_path} --ident {issue_id}'; then
+  ok "§6 ENG-203 AP-7: exact-literal 'bash bin/verify-qa.sh validate --body {qa_predicate_body_path} --ident {issue_id}' present"
+else
+  nope "§6 ENG-203 AP-7: exact-literal 'bash bin/verify-qa.sh validate --body {qa_predicate_body_path} --ident {issue_id}' present" \
+    "the copy-pastable validator-invocation example has drifted from the pinned shape — flag-positional order matters; future agents copy this example verbatim"
 fi
 
 # ─── ENG-109: {progress_md_path} now present in §§1, 3, 4, 5, 6, 7;

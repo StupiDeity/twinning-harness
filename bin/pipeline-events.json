@@ -74,7 +74,8 @@
     "summary_missing",
     "summary_truncated",
     "worktree-mutated-by-agent",
-    "dimensional_threshold_coerced"
+    "dimensional_threshold_coerced",
+    "envelope-overwrite"
   ],
   "metric_reason_codes": [
     "scope-violation-severe",

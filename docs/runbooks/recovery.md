@@ -1125,3 +1125,84 @@ PIPELINE_FORENSIC_FALLBACK_ISSUE=ENG-68
 Cross-project operators leave the env var unset and rely on the dir +
 the `[forensic] core.bare=true detected … dump at …` line in the tick
 log.
+
+## 15. qa-payload merge failure (ENG-203)
+
+**Symptom.** Issue halts at `stage:qa` with a verdict comment
+`<!-- pipeline: verdict result=halt reason=qa-payload-invalid -->` and
+a defect string starting with one of:
+
+| Defect | rc | Trigger |
+|---|---|---|
+| `qa-payload-missing` | 41 | Agent did not Write `verdict-qa.body.json` |
+| `qa-payload-malformed` | 39 | Body is JSON parse error / array top-level / oversize (>64 KiB) |
+| `qa-payload-malformed` | 42 | Body is a symlink, OR caller passed a non-object envelope |
+| `qa-payload-malformed` | 50 | Canonical write target unwritable (disk full / permissions) |
+
+`failure_outcome_for_exit` cosmetically maps rc=42 and rc=50 to
+`qa-payload-malformed` (the same `qa-payload-*` halt-reason taxonomy
+covers all four shapes; see brainstorm D-006 for the deferred new-slot
+discussion). The halt comment's `Defect:` line names the underlying
+subcode regardless of mapping.
+
+**Diagnosis.** The orchestrator-side `_merge_qa_payload_envelope` runs
+post-dispatch on the qa stage, splices a fresh schema envelope
+(`qa_payload_schema_version`, `issue_id`, `dispatch_id`) onto the
+agent's content-only body at `$(issue_dir <ident>)/verdict-qa.body.json`,
+and writes the merged canonical at `$(issue_dir <ident>)/verdict-qa.json`
+before `_validate_qa_payload` runs. A merge failure means the agent's
+body sidecar was missing or malformed, or the orchestrator could not
+write the canonical.
+
+Inspect the agent's body sidecar (NOT the canonical — the canonical was
+either never written, or was atomically replaced before the validator
+saw it):
+
+```bash
+cat "$PROJECT_STATE_DIR/<slug>/<ENG-N>/verdict-qa.body.json"
+```
+
+For the rc=50 write-failure case, check disk space and the per-issue
+directory's permissions:
+
+```bash
+df -h "$PROJECT_STATE_DIR"
+ls -la "$PROJECT_STATE_DIR/<slug>/<ENG-N>/"
+```
+
+**Recovery.** Standard `--action continue` reset:
+
+```bash
+bash bin/pipeline.sh decide <ENG-N> --action continue
+```
+
+> ⚠️ `_clear_current_stage_slots` pre-cleans **all four** qa-stage
+> files at the next qa dispatch's start: `verdict-qa.json`,
+> `verdict-qa.body.json`, `qa-predicate-<ident>.json`, and
+> `qa-predicate-<ident>.body.json`. A hand-edit on the body file
+> BEFORE resume is therefore erased. Operators wanting to repair the
+> body must instead edit the canonical `verdict-qa.json` and emit the
+> verdict marker themselves with
+> `bash bin/pipeline.sh event <ENG-N> verdict pass --stage qa`
+> (see §11 for the manual-repair recipe — the same shape applies).
+
+**Deploy-cutover edge case.** An issue already in `stage:qa` when an
+operator rolls out ENG-203 will halt on its next post-dispatch with
+`qa-payload-invalid: qa-payload-missing` because the in-flight agent
+ran under the OLD §6 prompt and never wrote `verdict-qa.body.json`.
+Recovery is the same `--action continue`: the next qa dispatch runs
+the new prompt, the agent writes the body, and the merge succeeds.
+The blast radius is bounded to one issue per project (whichever was
+in `stage:qa` at deploy time).
+
+**Forensic signal.** When the helper merges successfully but the
+agent's body collided with one or more envelope keys (e.g. the agent
+typed `qa_payload_schema_version` despite the §6 instruction not to),
+the helper emits an `envelope-overwrite` metric to `events.jsonl` with
+`count=<n> keys=<csv> body=<path>`. Operators auditing prompt-drift
+can grep for these:
+
+```bash
+jq -c 'select(.event == "envelope-overwrite")' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl"
+```

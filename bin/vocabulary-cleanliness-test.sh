@@ -207,6 +207,17 @@ else
     "expected \"dimensional_threshold_coerced\" in .metric_names array of $REG"
 fi
 
+# ─── ENG-203: envelope-overwrite in metric_names registry ──
+# Verifies that the new metric name token added by ENG-203 (emitted by
+# bin/common.sh::merge_artifact_envelope on key-overlap) is present in
+# the closed vocabulary. Mirrors case-7 above.
+if jq -e '.metric_names | index("envelope-overwrite") != null' "$REG" >/dev/null 2>&1; then
+  pass_at "case-8: envelope-overwrite in metric_names registry"
+else
+  fail_at "case-8: envelope-overwrite in metric_names registry" \
+    "expected \"envelope-overwrite\" in .metric_names array of $REG"
+fi
+
 # ─── Summary ─────────────────────────────────────────────────────────
 printf '\nvocabulary-cleanliness-test: passed=%s failed=%s\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1

@@ -1338,6 +1338,151 @@ eng125_rc_taxonomy() {
 }
 eng125_rc_taxonomy
 
+# ─── ENG-203: merge_artifact_envelope helper (U1-U10) ────
+# Pins the helper's structural contract in isolation. Right-bias on
+# collision (U-2 + U-10) is the load-bearing semantic for the qa-payload
+# orchestrator merge — callers (not the helper) own envelope-keyset
+# discipline. Failure-mode rcs (39/41/42/50) align with
+# failure_outcome_for_exit's qa-payload range so the cosmetic mis-map
+# documented in brainstorm D-006 stays bounded.
+eng203_merge_envelope_tests() {
+  local tdir; tdir="$(mktemp -d "$_TEST_ROOT/eng203-merge-XXXXXX")"
+  local body env canonical rc
+
+  # U-1: clean body + envelope → rc=0, canonical contains all five keys.
+  body="$tdir/u1-body.json"
+  canonical="$tdir/u1-canonical.json"
+  printf '%s' '{"verdict":"pass","dimensions":[]}' > "$body"
+  env='{"qa_payload_schema_version":1,"issue_id":"ENG-1","dispatch_id":"ENG-1-d0001"}'
+  rc=0; merge_artifact_envelope "$body" "$env" "$canonical" 2>/dev/null || rc=$?
+  if [[ "$rc" == "0" ]]; then
+    local got_keys; got_keys="$(jq -r 'keys | sort | join(",")' "$canonical")"
+    assert_eq "U-1: rc=0" "0" "$rc"
+    assert_eq "U-1: merged keys" "dimensions,dispatch_id,issue_id,qa_payload_schema_version,verdict" "$got_keys"
+    assert_eq "U-1: envelope value preserved" "ENG-1-d0001" "$(jq -r '.dispatch_id' "$canonical")"
+  else
+    fail_at "U-1: merge rc!=0" "rc=$rc"
+  fi
+
+  # U-2: collision → envelope wins (right-bias contract).
+  body="$tdir/u2-body.json"
+  canonical="$tdir/u2-canonical.json"
+  printf '%s' '{"issue_id":"ENG-99","verdict":"pass","dimensions":[]}' > "$body"
+  env='{"qa_payload_schema_version":1,"issue_id":"ENG-1","dispatch_id":"ENG-1-d0001"}'
+  rc=0; merge_artifact_envelope "$body" "$env" "$canonical" 2>/dev/null || rc=$?
+  if [[ "$rc" == "0" ]]; then
+    assert_eq "U-2: envelope wins on issue_id collision" "ENG-1" "$(jq -r '.issue_id' "$canonical")"
+  else
+    fail_at "U-2: merge rc!=0" "rc=$rc"
+  fi
+
+  # U-3: body missing → rc=41.
+  canonical="$tdir/u3-canonical.json"
+  rc=0; merge_artifact_envelope "$tdir/u3-missing.json" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
+  assert_eq "U-3: body missing → rc=41" "41" "$rc"
+
+  # U-4: body is JSON array → rc=39 (not an object).
+  body="$tdir/u4-body.json"
+  canonical="$tdir/u4-canonical.json"
+  printf '%s' '[{"verdict":"pass"}]' > "$body"
+  rc=0; merge_artifact_envelope "$body" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
+  assert_eq "U-4: body is array → rc=39" "39" "$rc"
+
+  # U-5: body is JSON parse error → rc=39.
+  body="$tdir/u5-body.json"
+  canonical="$tdir/u5-canonical.json"
+  printf '%s' '{not json' > "$body"
+  rc=0; merge_artifact_envelope "$body" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
+  assert_eq "U-5: body is parse error → rc=39" "39" "$rc"
+
+  # U-6: body is symlink → rc=42.
+  local body_target="$tdir/u6-target.json"
+  printf '%s' '{"verdict":"pass"}' > "$body_target"
+  body="$tdir/u6-body.json"
+  ln -s "$body_target" "$body"
+  canonical="$tdir/u6-canonical.json"
+  rc=0; merge_artifact_envelope "$body" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
+  assert_eq "U-6: body is symlink → rc=42" "42" "$rc"
+
+  # U-7: body > 64 KiB → rc=39. Generate ~65 KiB of `{"data":"x...x"}`.
+  body="$tdir/u7-body.json"
+  canonical="$tdir/u7-canonical.json"
+  {
+    printf '{"data":"'
+    awk 'BEGIN{for (i=0;i<65540;i++) printf "x"}'
+    printf '"}'
+  } > "$body"
+  rc=0; merge_artifact_envelope "$body" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
+  assert_eq "U-7: body > 64 KiB → rc=39" "39" "$rc"
+
+  # U-8: envelope arg is non-object JSON string → rc=42.
+  body="$tdir/u8-body.json"
+  canonical="$tdir/u8-canonical.json"
+  printf '%s' '{"verdict":"pass"}' > "$body"
+  rc=0; merge_artifact_envelope "$body" '"hi"' "$canonical" 2>/dev/null || rc=$?
+  assert_eq "U-8: envelope not object → rc=42" "42" "$rc"
+
+  # U-9: canonical write target unwritable → rc=50.
+  local u9_parent="$tdir/u9-parent"
+  mkdir -p "$u9_parent"
+  body="$u9_parent/u9-body.json"
+  printf '%s' '{"verdict":"pass"}' > "$body"
+  canonical="$u9_parent/u9-canonical.json"
+  chmod 0500 "$u9_parent"
+  rc=0; merge_artifact_envelope "$body" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
+  chmod 0700 "$u9_parent"
+  assert_eq "U-9: unwritable canonical parent → rc=50" "50" "$rc"
+
+  # U-10: adversarial — envelope contains a content key (verdict).
+  # The helper is NOT the safety net; callers must construct envelopes from
+  # identity keys only. This test pins the right-bias contract so callers
+  # know to validate their envelope keyset.
+  body="$tdir/u10-body.json"
+  canonical="$tdir/u10-canonical.json"
+  printf '%s' '{"verdict":"pass","dimensions":[]}' > "$body"
+  rc=0; merge_artifact_envelope "$body" '{"verdict":"fail"}' "$canonical" 2>/dev/null || rc=$?
+  if [[ "$rc" == "0" ]]; then
+    assert_eq "U-10: envelope content key wins (caller-discipline pin)" "fail" "$(jq -r '.verdict' "$canonical")"
+  else
+    fail_at "U-10: merge rc!=0" "rc=$rc"
+  fi
+
+  # U-11 (ENG-203 review M3): empty-string dispatch_id in envelope. Pins the
+  # most-likely caller-bug shape (PIPELINE_DISPATCH_ID unset → ${VAR:-} is
+  # ""); the helper must pass through cleanly (rc=0). The downstream
+  # qa-payload schema regex rejects empty dispatch_id with rc=40, but the
+  # helper itself is a content-bias merger and must NOT crash on empty
+  # identity-key values. U-10 documents the broader caller-discipline
+  # contract; this case nails down the specific empty-dispatch-id shape.
+  body="$tdir/u11-body.json"
+  canonical="$tdir/u11-canonical.json"
+  printf '%s' '{"verdict":"pass","dimensions":[]}' > "$body"
+  rc=0
+  merge_artifact_envelope "$body" \
+    '{"qa_payload_schema_version":1,"issue_id":"ENG-1","dispatch_id":""}' \
+    "$canonical" 2>/dev/null || rc=$?
+  if [[ "$rc" == "0" ]]; then
+    assert_eq "U-11: empty dispatch_id envelope key passes through" "" "$(jq -r '.dispatch_id' "$canonical")"
+    assert_eq "U-11: empty dispatch_id preserves issue_id" "ENG-1" "$(jq -r '.issue_id' "$canonical")"
+  else
+    fail_at "U-11: empty dispatch_id helper rc!=0" "rc=$rc"
+  fi
+}
+eng203_merge_envelope_tests
+
+# ENG-203: qa_payload_body_path / qa_predicate_body_path shape pins.
+# Mirrors qa_predicate_path; sibling of progress_md_path. The basename
+# difference (payload is anchor-only, predicate carries the issue slug)
+# matches the canonical filenames consumed by _clear_current_stage_slots.
+eng203_body_path_helpers() {
+  local got_payload got_pred
+  got_payload="$(qa_payload_body_path ENG-1)"
+  got_pred="$(qa_predicate_body_path ENG-1)"
+  assert_eq "eng203_qa_payload_body_path" "$(issue_dir ENG-1)/verdict-qa.body.json" "$got_payload"
+  assert_eq "eng203_qa_predicate_body_path" "$(issue_dir ENG-1)/qa-predicate-ENG-1.body.json" "$got_pred"
+}
+eng203_body_path_helpers
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

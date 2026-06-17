@@ -1217,6 +1217,124 @@ else
 fi
 rm -f "$BIG_FILE"
 
+# ─── ENG-203: --body flag (VQ-1..VQ-5) ────────────────────────────────
+# The QA agent writes a content-only body sidecar; verify-qa.sh validate
+# --body splices in the schema envelope via merge_artifact_envelope and
+# runs the existing validator on the merged canonical. VQ-1..VQ-5 pin
+# the happy path, body-missing, body-malformed remap, realpath fence,
+# and legacy-form byte-identical contract.
+#
+# Each case sources from a clean fixture under
+# $PROJECT_STATE_DIR/ENG-1 so the body realpath fence passes; the
+# canonical is the existing qa_predicate_path() output, so the helper
+# writes through the same path the legacy form uses.
+
+# Helper — write a content-only body sidecar with one file_exists criterion.
+# Usage: write_body_sidecar <relpath-under-PROJECT_STATE_DIR/ENG-1>
+write_body_sidecar() {
+  local rel="$1"
+  local file="$PROJECT_STATE_DIR/ENG-1/$rel"
+  cat > "$file" <<'EOF'
+{
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "bin/verify-qa.sh" }
+  ]
+}
+EOF
+  printf '%s\n' "$file"
+}
+
+# VQ-1: --body $valid_body --ident ENG-1 → rc=0, canonical exists at
+# qa_predicate_path(ENG-1), merge yields envelope keys + body keys.
+rm -f "$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
+VQ1_BODY="$(write_body_sidecar 'qa-predicate-ENG-1.body.json')"
+rc=0
+out="$(bash "$VERIFIER" validate --body "$VQ1_BODY" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+VQ1_CANONICAL="$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
+if (( rc == 0 )) && [[ -f "$VQ1_CANONICAL" ]] \
+  && jq -e '.qa_predicate_schema_version == 1 and .issue_id == "ENG-1" and (.pass_criteria | length == 1)' "$VQ1_CANONICAL" >/dev/null 2>&1; then
+  pass_at "VQ-1: --body valid + --ident → rc=0, canonical merged with envelope + body keys"
+else
+  fail_at "VQ-1: --body happy path" "expected rc=0 + canonical with envelope+body keys; got rc=$rc, out=$out, canonical-exists=$([[ -f "$VQ1_CANONICAL" ]] && echo yes || echo no)"
+fi
+rm -f "$VQ1_BODY" "$VQ1_CANONICAL"
+
+# VQ-2: --body $missing_body → rc=44 (qa-predicate-missing).
+VQ2_BODY="$PROJECT_STATE_DIR/ENG-1/never-existed.body.json"
+rc=0
+out="$(bash "$VERIFIER" validate --body "$VQ2_BODY" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 44 )) && [[ "$out" == *"--body file not found"* ]]; then
+  pass_at "VQ-2: --body missing file → rc=44 (qa-predicate-missing)"
+else
+  fail_at "VQ-2: --body missing" "expected rc=44 + '--body file not found'; got rc=$rc, out=$out"
+fi
+
+# VQ-3: --body $body_with_array_top → rc=42 (caller-side remap of
+# helper rc=39 body-malformed).
+VQ3_BODY="$PROJECT_STATE_DIR/ENG-1/array-top.body.json"
+printf '[{"pass_criteria": []}]\n' > "$VQ3_BODY"
+rc=0
+out="$(bash "$VERIFIER" validate --body "$VQ3_BODY" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )); then
+  pass_at "VQ-3: --body array top-level → rc=42 (caller-side remap of helper rc=39)"
+else
+  fail_at "VQ-3: --body malformed" "expected rc=42; got rc=$rc, out=$out"
+fi
+rm -f "$VQ3_BODY"
+
+# VQ-4: --body OUTSIDE $PROJECT_STATE_DIR → rc=42 with realpath fence
+# diagnostic.
+VQ4_TMP="$(mktemp -d -t verify-qa-vq4.XXXXXX)"
+_assert_temp_path "$VQ4_TMP"
+VQ4_BODY="$VQ4_TMP/poisoned.body.json"
+printf '{"pass_criteria": []}\n' > "$VQ4_BODY"
+rc=0
+out="$(bash "$VERIFIER" validate --body "$VQ4_BODY" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *"--body must resolve under"* ]]; then
+  pass_at "VQ-4: --body outside \$PROJECT_STATE_DIR → rc=42 + realpath fence diagnostic"
+else
+  fail_at "VQ-4: --body realpath fence" "expected rc=42 + '--body must resolve under'; got rc=$rc, out=$out"
+fi
+case "$VQ4_TMP" in /var/folders/*|/tmp/*|/private/var/folders/*|/private/tmp/*) rm -rf "$VQ4_TMP" ;; esac
+
+# VQ-5: legacy form (no --body) → byte-identical to pre-ENG-203 behavior.
+# Write a valid predicate at the canonical path and call the legacy form;
+# expect rc=0 with the same JSONL summary shape as today.
+VQ5_FILE="$PROJECT_STATE_DIR/ENG-1/qa-predicate-ENG-1.json"
+cat > "$VQ5_FILE" <<'EOF'
+{
+  "qa_predicate_schema_version": 1,
+  "issue_id": "ENG-1",
+  "pass_criteria": [
+    { "kind": "file_exists", "path": "bin/verify-qa.sh" }
+  ]
+}
+EOF
+rc=0
+out="$(bash "$VERIFIER" validate "$VQ5_FILE" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 0 )) && [[ "$out" == *'"summary":true'* ]]; then
+  pass_at "VQ-5: legacy form (no --body) → byte-identical pre-ENG-203 contract"
+else
+  fail_at "VQ-5: legacy form" "expected rc=0 + '\"summary\":true' line; got rc=$rc, out=$out"
+fi
+rm -f "$VQ5_FILE"
+
+# VQ-6 (ENG-203 review-loopback M1): --body + positional ARG_FILE → rc=42 with
+# mutual-exclusion diagnostic. Pre-fix, cmd_validate's body-merge phase silently
+# clobbered ARG_FILE with the canonical, making the positional unobservable
+# (footgun for future callers).
+VQ6_BODY="$(write_body_sidecar 'qa-predicate-ENG-1.body.json')"
+VQ6_FILE="$PROJECT_STATE_DIR/ENG-1/positional-decoy.json"
+printf '{"qa_predicate_schema_version":1,"issue_id":"ENG-1","pass_criteria":[]}\n' > "$VQ6_FILE"
+rc=0
+out="$(bash "$VERIFIER" validate "$VQ6_FILE" --body "$VQ6_BODY" --ident ENG-1 --worktree "$WT_DIR" 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *'mutually exclusive'* ]]; then
+  pass_at "VQ-6: --body + positional file → rc=42 (mutually-exclusive guard)"
+else
+  fail_at "VQ-6: mutual exclusion" "expected rc=42 + 'mutually exclusive'; got rc=$rc, out=$out"
+fi
+rm -f "$VQ6_BODY" "$VQ6_FILE"
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

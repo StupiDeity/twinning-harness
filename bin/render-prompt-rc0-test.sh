@@ -494,14 +494,18 @@ else
   ok "ENG-140 case N: PIPELINE_LOOPBACK_SOURCE=reviewing + qa-file present → sentinel (no stale qa-findings leak)"
 fi
 
-# ─── ENG-113 case O: {qa_predicate_path} resolves on a qa-stage render ────
-# The §6 prompt body carries the literal token {qa_predicate_path}, and
-# render-prompt.sh::PROMPT_RESOLVERS registers `qa_predicate_path` →
-# `_resolve_qa_predicate_path`. main() binds _RENDER_QA_PREDICATE_PATH via
-# common.sh::qa_predicate_path(issue_id). After resolution, the rendered
-# prompt MUST contain the full absolute-path shape `<issue-dir>/qa-predicate-<ISSUE>.json`
-# — basename-only would pass even if a regression dropped the directory
-# prefix and emitted just the filename (broken authority surface).
+# ─── ENG-113/ENG-203 case O: {qa_predicate_body_path} resolves on qa-stage render
+# The §6 prompt body carries the literal token {qa_predicate_body_path},
+# and render-prompt.sh::PROMPT_RESOLVERS registers `qa_predicate_body_path`
+# → `_resolve_qa_predicate_body_path`. main() binds
+# _RENDER_QA_PREDICATE_BODY_PATH via common.sh::qa_predicate_body_path(issue_id).
+# After resolution, the rendered prompt MUST contain the full absolute-path
+# shape `<issue-dir>/qa-predicate-<ISSUE>.body.json` — basename-only would
+# pass even if a regression dropped the directory prefix and emitted just
+# the filename (broken authority surface). ENG-203 renamed the §6 token
+# from {qa_predicate_path} to {qa_predicate_body_path} to wire the
+# content-only body sidecar shape; the canonical path resolver remains
+# live (verify-qa.sh::cmd_validate still consumes it).
 ISSUE_DIR_O="$sandbox/state/test-slug-rc0/ENG-87R6X-O"
 rm -rf "$ISSUE_DIR_O"; mkdir -p "$ISSUE_DIR_O"
 out_o="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
@@ -509,11 +513,11 @@ out_o="$(PIPELINE_DRY_RUN=1 LINEAR_API_KEY=test-mock-key \
   PROJECT_STATE_DIR="$sandbox/state/test-slug-rc0" \
   HARNESS_ROOT="$sandbox" HARNESS_STATE_DIR="$sandbox/state" \
   _timeout bash "$sandbox/bin/render-prompt.sh" qa ENG-87R6X-O 2>/dev/null || true)"
-EXPECTED_O="$sandbox/state/test-slug-rc0/ENG-87R6X-O/qa-predicate-ENG-87R6X-O.json"
+EXPECTED_O="$sandbox/state/test-slug-rc0/ENG-87R6X-O/qa-predicate-ENG-87R6X-O.body.json"
 if grep -qF "$EXPECTED_O" <<<"$out_o"; then
-  ok "ENG-113 case O: {qa_predicate_path} resolves to $EXPECTED_O on qa-stage render"
+  ok "ENG-113/ENG-203 case O: {qa_predicate_body_path} resolves to $EXPECTED_O on qa-stage render"
 else
-  fail "ENG-113 case O: {qa_predicate_path} resolves on qa-stage render" \
+  fail "ENG-113/ENG-203 case O: {qa_predicate_body_path} resolves on qa-stage render" \
        "expected absolute-path substring '$EXPECTED_O' missing from rendered prompt — out tail: $(tail -10 <<<"$out_o" | tr '\n' ' ')"
 fi
 
