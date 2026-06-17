@@ -1,0 +1,206 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-206",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Orchestrator owns ledger_schema_version via a 3rd seed-header line in _ensure_review_ledger (fresh-seed + in-place migration); validator byte-checks line 3 with absent/drifted diagnostic and relaxes per-row check to lenient; §5 prompt drops the field, pins the # ledger_schema_version: 1 anchor, and adds the orchestrator-ownership sentence; the ENG-190 rc=49 seed-header/schema-version slip can no longer originate from agent omission.",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "SEED_LINE_3='# ledger_schema_version: 1'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "hdr_line_3=\"\\$\\(sed -n '3p'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "line 3: <absent>; expected",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "must be 1 when present, got:",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema.sh",
+          "pattern": "ENG-206 lenient check: orchestrator declares ledger_schema_version",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "SEED_LINE_3='# ledger_schema_version: 1'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_ensure_review_ledger: ledger is a symlink",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_ensure_review_ledger: migrated .* to 3-line header",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "_ensure_review_ledger: seeded .* \\(3-line header\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "tail -n \"\\+\\$tail_from\" \"\\$lgr\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "orchestrator seeds the ledger header",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "AGENT_PROMPTS.md",
+          "pattern": "# ledger_schema_version: 1` \\(line 3 of the orchestrator-seeded header\\) as the anchor",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-206-pin-no-ledger-schema-version-in-required-fields",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-206-pin-orchestrator-ownership-sentence",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-206-pin-line3-anchor-reference",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/agent-prompts-content-test.sh",
+          "pattern": "ENG-206-pin-anchor-literal-appears-once",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-206 OS-1",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-206 OS-2",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-206 OS-3",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-206 OS-4",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "seeds exactly three #-prefix header lines",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema-test.sh",
+          "pattern": "SEED_LINE_3='# ledger_schema_version: 1'",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema-test.sh",
+          "pattern": "ENG-206 V-1",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema-test.sh",
+          "pattern": "ENG-206 V-6",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/review-ledger-schema-test.sh",
+          "pattern": "ENG-206 V-7",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/review-findings-ledger.md",
+          "pattern": "Lines 1-3 are orchestrator-owned",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "docs/runbooks/recovery.md",
+          "pattern": "ENG-206 cutover edge case",
+          "expect_match": true
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/review-ledger-schema.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/run-stage.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/review-ledger-schema-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/agent-prompts-content-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/runbooks/review-findings-ledger.md"
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/runbooks/recovery.md"
+        }
+      ]
+    }
+  ]
+}
