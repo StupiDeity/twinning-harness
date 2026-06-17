@@ -2819,6 +2819,73 @@ else
   nope "ENG-152: §0 protocol split documentation" "preamble missing claim/author=orchestrator language"
 fi
 
+# ─── ENG-204: PC-1..PC-7 — §2 (Plan Agent) body-only emission contract ────
+# PC-1, PC-2 guard against re-introducing envelope keys to the body block
+# (the orchestrator merges those in via cmd_prepare).
+# PC-3, PC-6 guard `features[]` retention.
+# PC-4, PC-5, PC-7 guard the prepare invocation shape + rc-handling
+# discipline added by Task 6.
+# Extract the plan-schema-v1 fenced block from s2 with the same awk
+# pattern bin/plan-schema-test.sh::T_schema_doc_sync uses, so the
+# section locator is stable across both test files.
+s2_pblock="$(printf '%s\n' "$s2" | awk '
+  /```plan-schema-v1/ { in_block=1; next }
+  in_block && /```/ { in_block=0; exit }
+  in_block { print }
+')"
+if printf '%s' "$s2_pblock" | grep -qF 'plan_schema_version'; then
+  nope "ENG-204 PC-1: plan-schema-v1 block must NOT contain 'plan_schema_version' (envelope key — orchestrator merges)" \
+    "found in block; agent should emit body only"
+else
+  ok "ENG-204 PC-1: plan-schema-v1 block does NOT contain 'plan_schema_version' (body-only emission)"
+fi
+if printf '%s' "$s2_pblock" | grep -qF 'issue_id'; then
+  nope "ENG-204 PC-2: plan-schema-v1 block must NOT contain 'issue_id' (envelope key — orchestrator merges)" \
+    "found in block; agent should emit body only"
+else
+  ok "ENG-204 PC-2: plan-schema-v1 block does NOT contain 'issue_id' (body-only emission)"
+fi
+if printf '%s' "$s2_pblock" | grep -qF 'features'; then
+  ok "ENG-204 PC-3: plan-schema-v1 block contains 'features' (body root retained)"
+else
+  nope "ENG-204 PC-3: plan-schema-v1 block must contain 'features'" \
+    "block missing the body root — agent has nothing to emit"
+fi
+if printf '%s\n' "$s2" | grep -qF '{plan_body_path}'; then
+  ok "ENG-204 PC-4: §2 prompt contains the {plan_body_path} template token"
+else
+  nope "ENG-204 PC-4: §2 prompt missing {plan_body_path} token" \
+    "agent has no resolved sidecar path to Write the body to"
+fi
+# PC-5: prepare invocation tokens MUST appear in §2 in the right order.
+# Use a whitespace-tolerant scan (the prose may wrap the invocation
+# across lines for readability). Asserts (in order): `bash`,
+# `plan-schema.sh prepare`, `--body {plan_body_path}`, `--md`,
+# `docs/plans/{date}-{issue_id_lower}-{slug}.md`, `--ident {issue_id}`.
+# Collapse all whitespace in s2 to single spaces, then grep substring.
+s2_flat="$(printf '%s' "$s2" | tr -s '[:space:]' ' ')"
+if printf '%s' "$s2_flat" | grep -qF 'bash bin/plan-schema.sh prepare --body {plan_body_path} --md docs/plans/{date}-{issue_id_lower}-{slug}.md --ident {issue_id}' \
+  || printf '%s' "$s2_flat" | grep -qF 'bash .pipeline/bin/plan-schema.sh prepare --body {plan_body_path} --md docs/plans/{date}-{issue_id_lower}-{slug}.md --ident {issue_id}'; then
+  ok "ENG-204 PC-5: §2 prompt contains the literal prepare invocation shape (whitespace-tolerant)"
+else
+  nope "ENG-204 PC-5: §2 prompt missing prepare invocation shape" \
+    "expected literal 'bash {.pipeline/,}bin/plan-schema.sh prepare --body {plan_body_path} --md docs/plans/{date}-{issue_id_lower}-{slug}.md --ident {issue_id}'"
+fi
+unset s2_flat
+if printf '%s\n' "$s2" | grep -qF 'features[]'; then
+  ok "ENG-204 PC-6: §2 prompt retains 'features[]' in Required body keys paragraph"
+else
+  nope "ENG-204 PC-6: §2 prompt missing 'features[]'" \
+    "Required body keys paragraph lost the array marker"
+fi
+if printf '%s\n' "$s2" | grep -qF 'If `bash bin/plan-schema.sh prepare' \
+  || printf '%s\n' "$s2" | grep -qF 'If `bash .pipeline/bin/plan-schema.sh prepare'; then
+  ok "ENG-204 PC-7: §2 prompt carries the prepare rc-handling sentence (do not commit on non-zero)"
+else
+  nope "ENG-204 PC-7: §2 prompt missing prepare rc-handling sentence" \
+    "expected sentence beginning 'If \`bash {.pipeline/,}bin/plan-schema.sh prepare\`'"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0

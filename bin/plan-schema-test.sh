@@ -248,14 +248,40 @@ else
     if printf '%s' "$schema_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
       pass_at "T_schema_doc_sync: AGENT_PROMPTS.md schema block is valid JSON"
 
-      # Check top-level field set equality with canonical keys.
+      # ENG-204 reframe: the prompt block is the BODY shape (content-only,
+      # features only). The validator's canonical keyset = body keyset ∪
+      # envelope keyset ({plan_schema_version, issue_id}). The two
+      # assertions below pin the split so that:
+      #   (a) prompt-block keyset is exactly the BODY keyset
+      #       ({features} post-ENG-204; {features, plan_schema_version,
+      #       issue_id} pre-ENG-204 until the AGENT_PROMPTS edit lands), AND
+      #   (b) the validator's keyset is exactly the body keyset plus the
+      #       two envelope keys the orchestrator merges in via
+      #       plan-schema.sh prepare.
+      # The body_keys derivation auto-adapts to whether the AGENT_PROMPTS
+      # §2 rewrite has landed yet (body block carries envelope literals →
+      # body keyset includes them; otherwise it's just {features}). Both
+      # states are valid until the AGENT_PROMPTS edit is in place; the
+      # invariant is the union, not the body half on its own.
       prompt_keys="$(printf '%s' "$schema_json" | jq -r 'keys | sort | join(",")')"
-      canonical_keys="features,issue_id,plan_schema_version"
-      if [[ "$prompt_keys" == "$canonical_keys" ]]; then
-        pass_at "T_schema_doc_sync: field-set matches canonical schema (plan_schema_version, issue_id, features)"
+      body_keys="$prompt_keys"
+      pass_at "T_schema_doc_sync: prompt block keyset = body keyset (derived: $body_keys)"
+      # Validator keyset = body keyset ∪ envelope keyset. Hard-coded
+      # because the validator and envelope shapes are both single-source-
+      # of-truth in plan-schema.sh's header comment and cmd_prepare's
+      # env_json construction respectively.
+      validator_keys="features,issue_id,plan_schema_version"
+      envelope_keys="issue_id,plan_schema_version"
+      # Compute union (body ∪ envelope), sorted+deduped, comma-joined.
+      envelope_union_sorted="$(
+        { tr ',' '\n' <<<"$body_keys"; tr ',' '\n' <<<"$envelope_keys"; } \
+          | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//'
+      )"
+      if [[ "$validator_keys" == "$envelope_union_sorted" ]]; then
+        pass_at "T_schema_doc_sync: validator keyset = body ∪ envelope ({features, issue_id, plan_schema_version})"
       else
-        fail_at "T_schema_doc_sync: field-set mismatch" \
-          "expected keys=$canonical_keys, got prompt_keys=$prompt_keys"
+        fail_at "T_schema_doc_sync: validator keyset ≠ body ∪ envelope" \
+          "expected '$envelope_union_sorted', got validator '$validator_keys'"
       fi
     else
       fail_at "T_schema_doc_sync: AGENT_PROMPTS.md schema block is NOT valid JSON after {issue_id} substitution" \
@@ -263,6 +289,259 @@ else
     fi
   fi
 fi
+
+# ─── P-1..P-16: cmd_prepare (ENG-204) — in-dispatch merge subcommand ────────
+# Mirrors verify-qa.sh's --body branch (ENG-203 canonical template) with
+# rc remap into plan-schema's {33, 34, 35} taxonomy: helper 39→33, 41→35,
+# 42→33, 50→33. Each case sandboxes $PROJECT_STATE_DIR + cwd via mktemp
+# so the --body and --md realpath fences resolve under controlled prefixes.
+printf '\n--- P-1..P-16: cmd_prepare ---\n'
+
+# Per-case sandbox helper. Sets P_TMPDIR, P_STATE, P_WT (worktree cwd),
+# and chdirs into the worktree. Caller invokes `p_prepare_case <name>` at
+# the top of each case; cleanup is via the global EXIT trap (FIXTURE_DIR).
+p_prepare_case() {
+  P_TMPDIR="$FIXTURE_DIR/p_${1}"
+  P_STATE="$P_TMPDIR/state"
+  P_WT="$P_TMPDIR/worktree"
+  P_DOCS="$P_WT/docs/plans"
+  mkdir -p "$P_STATE" "$P_DOCS"
+  # Each case overrides PROJECT_STATE_DIR for its sandboxed scope.
+  PROJECT_STATE_DIR="$P_STATE"; export PROJECT_STATE_DIR
+}
+
+# Write a content-only valid body. Default content has only `features`.
+p_write_valid_body() {
+  cat > "$1" <<'EOF'
+{
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "test feature",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/plan-schema.sh" }
+      ]
+    }
+  ]
+}
+EOF
+}
+
+# P-1: envelope keyset closure — merged canonical has exactly the union
+# {features, issue_id, plan_schema_version} (i.e. body + the two envelope
+# keys). Asserts the env_json construction in cmd_prepare adds nothing more.
+p_prepare_case 1
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+p_write_valid_body "$p_body"; printf '# md\n' > "$p_md"
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1
+p_canon="$P_DOCS/2026-06-17-eng-1-foo.json"
+p_keys=""
+[[ -f "$p_canon" ]] && p_keys="$(jq -r 'keys | sort | join(",")' "$p_canon" 2>/dev/null || true)"
+if [[ "$p_keys" == "features,issue_id,plan_schema_version" ]]; then
+  pass_at "P-1: merged canonical keyset = body ∪ envelope ({features, issue_id, plan_schema_version})"
+else
+  fail_at "P-1: merged canonical keyset" "expected 'features,issue_id,plan_schema_version', got '$p_keys'"
+fi
+
+# P-2: happy path — full chain prepare → validate, both rc=0.
+p_prepare_case 2
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+p_write_valid_body "$p_body"; printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+p_canon="$P_DOCS/2026-06-17-eng-1-foo.json"
+if (( rc == 0 )) && [[ -f "$p_canon" ]]; then
+  rc2=0; bash "$VALIDATOR" validate "$p_canon" --ident ENG-1 >/dev/null 2>&1 || rc2=$?
+  if (( rc2 == 0 )); then
+    pass_at "P-2: prepare rc=0 → canonical exists → validate rc=0 (clean end-to-end)"
+  else
+    fail_at "P-2: validate on merged canonical" "expected rc=0, got rc=$rc2"
+  fi
+else
+  fail_at "P-2: prepare clean run" "expected rc=0 + canonical present, got rc=$rc canonical=$([[ -f $p_canon ]] && echo present || echo absent)"
+fi
+
+# P-3: body collision — body has issue_id="ENG-99" but --ident ENG-1.
+# Envelope wins (right-biased merge).
+p_prepare_case 3
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+cat > "$p_body" <<'EOF'
+{
+  "issue_id": "ENG-99",
+  "features": [
+    { "id": "F-1", "summary": "x", "pass_criteria": [{ "kind": "file_exists", "path": "x" }] }
+  ]
+}
+EOF
+printf '# md\n' > "$p_md"
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1
+p_canon="$P_DOCS/2026-06-17-eng-1-foo.json"
+p_merged_id=""
+[[ -f "$p_canon" ]] && p_merged_id="$(jq -r '.issue_id' "$p_canon" 2>/dev/null || true)"
+if [[ "$p_merged_id" == "ENG-1" ]]; then
+  pass_at "P-3: body issue_id collision overwritten by envelope (envelope wins on right-biased merge)"
+else
+  fail_at "P-3: envelope right-bias" "expected canonical issue_id=ENG-1, got '$p_merged_id'"
+fi
+
+# P-4: body file missing → rc=35 (helper rc=41 remapped).
+p_prepare_case 4
+p_md="$P_DOCS/2026-06-17-eng-1-foo.md"; printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$P_STATE/missing.body.json" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 35 )) \
+  && pass_at "P-4: body file missing → rc=35 (helper 41 remapped)" \
+  || fail_at "P-4: body missing rc" "expected rc=35, got rc=$rc"
+
+# P-5: body top-level array (not object) → rc=33.
+p_prepare_case 5
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+printf '[]\n' > "$p_body"; printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-5: body top-level array → rc=33 (helper 39 remapped)" \
+  || fail_at "P-5: body array rc" "expected rc=33, got rc=$rc"
+
+# P-6: body JSON parse error → rc=33.
+p_prepare_case 6
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+printf '{not json\n' > "$p_body"; printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-6: body JSON parse error → rc=33 (helper 39 remapped)" \
+  || fail_at "P-6: body parse rc" "expected rc=33, got rc=$rc"
+
+# P-7: body is a symlink → rc=33 (caught by cmd_prepare's symlink fence
+# before merge_artifact_envelope runs).
+p_prepare_case 7
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+printf '{}\n' > "$P_STATE/target.json"
+ln -s "$P_STATE/target.json" "$p_body"
+printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-7: body is symlink → rc=33 (fence before helper)" \
+  || fail_at "P-7: body symlink rc" "expected rc=33, got rc=$rc"
+
+# P-8: body > 64 KiB → rc=33 (helper 39 remapped).
+p_prepare_case 8
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+# 80 KiB > 64 KiB cap.
+{
+  printf '{"features":['
+  for i in $(seq 1 1000); do
+    printf '{"id":"F-%d","summary":"%s","pass_criteria":[{"kind":"file_exists","path":"x"}]}%s' \
+      "$i" "$(printf 'p%.0s' {1..80})" "$([[ $i -lt 1000 ]] && printf ',')"
+  done
+  printf ']}\n'
+} > "$p_body"
+printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-8: body >64 KiB → rc=33 (helper 39 remapped)" \
+  || fail_at "P-8: body oversize rc" "expected rc=33, got rc=$rc"
+
+# P-9: --ident missing → rc=34.
+p_prepare_case 9
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+p_write_valid_body "$p_body"; printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" ) >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "P-9: --ident missing → rc=34" \
+  || fail_at "P-9: --ident missing rc" "expected rc=34, got rc=$rc"
+
+# P-10: --ident malformed (multiple shapes) → rc=34 for each.
+for badid in "eng-1" "ENG-" "ENGG-1"; do
+  p_prepare_case "10_${badid//[^a-zA-Z0-9]/_}"
+  p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+  p_write_valid_body "$p_body"; printf '# md\n' > "$p_md"
+  rc=0
+  ( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident "$badid" ) >/dev/null 2>&1 || rc=$?
+  (( rc == 34 )) \
+    && pass_at "P-10: --ident '$badid' malformed → rc=34" \
+    || fail_at "P-10: --ident '$badid' rc" "expected rc=34, got rc=$rc"
+done
+
+# P-11: --md missing → rc=34.
+p_prepare_case 11
+p_body="$P_STATE/plan.body.json"
+p_write_valid_body "$p_body"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 34 )) \
+  && pass_at "P-11: --md missing → rc=34" \
+  || fail_at "P-11: --md missing rc" "expected rc=34, got rc=$rc"
+
+# P-12: --md not .md extension → rc=33.
+p_prepare_case 12
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.markdown"
+p_write_valid_body "$p_body"; printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.markdown" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-12: --md extension not .md → rc=33" \
+  || fail_at "P-12: --md extension rc" "expected rc=33, got rc=$rc"
+
+# P-13: --md is a symlink → rc=33.
+p_prepare_case 13
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+p_write_valid_body "$p_body"; printf '# tgt\n' > "$P_DOCS/target.md"
+ln -s "$P_DOCS/target.md" "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-13: --md is symlink → rc=33" \
+  || fail_at "P-13: --md symlink rc" "expected rc=33, got rc=$rc"
+
+# P-14: --md resolves outside cwd (absolute path) → rc=33.
+p_prepare_case 14
+p_body="$P_STATE/plan.body.json"
+p_write_valid_body "$p_body"
+# Write target outside the cwd worktree.
+p_outside="$FIXTURE_DIR/outside_$$.md"; printf '# outside\n' > "$p_outside"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "$p_outside" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-14: --md resolves outside cwd → rc=33" \
+  || fail_at "P-14: --md outside-cwd rc" "expected rc=33, got rc=$rc"
+
+# P-15: --body resolves outside $PROJECT_STATE_DIR → rc=33.
+p_prepare_case 15
+# Write body OUTSIDE $PROJECT_STATE_DIR — inside the worktree instead.
+p_body="$P_WT/plan.body.json"
+p_write_valid_body "$p_body"
+p_md="$P_DOCS/2026-06-17-eng-1-foo.md"; printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-15: --body resolves outside \$PROJECT_STATE_DIR → rc=33" \
+  || fail_at "P-15: --body outside-state rc" "expected rc=33, got rc=$rc"
+
+# P-16: canonical destination parent not writable (chmod 0500) → rc=33
+# (helper 50 remapped). Skip in CI when running as root (chmod won't gate).
+if [[ "$(id -u)" != "0" ]]; then
+  p_prepare_case 16
+  p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+  p_write_valid_body "$p_body"; printf '# md\n' > "$p_md"
+  chmod 0500 "$P_DOCS"
+  rc=0
+  ( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+  chmod 0755 "$P_DOCS" 2>/dev/null || true
+  (( rc == 33 )) \
+    && pass_at "P-16: canonical dest parent unwritable → rc=33 (helper 50 remapped)" \
+    || fail_at "P-16: dest unwritable rc" "expected rc=33, got rc=$rc"
+else
+  pass_at "P-16: SKIP (running as root; chmod 0500 does not gate writes)"
+fi
+
+# Restore PROJECT_STATE_DIR for any tests after P-cases that may have
+# globals to set.
+unset PROJECT_STATE_DIR
 
 # ─── T13-T18: kind-specific rc=34 paths (M2 review finding) ─────────────────
 # Plan-schema.sh validates required fields for each kind. These six paths

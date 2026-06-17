@@ -1518,6 +1518,44 @@ else
 fi
 unset eng194_fixture_root eng194_softfail_root eng194_softfail_stderr eng194_softfail_stdout eng194_softfail_stderr_contents
 
+# ─── ENG-204: R-1, R-2 — {plan_body_path} resolver + sidecar entry ─────────
+# R-1 pins the resolver function: bound _RENDER_PLAN_BODY_PATH must echo
+# verbatim through `_resolve_plan_body_path`.
+# R-2 pins the closed-allowlist sidecar contract surface (ENG-156 D-004) —
+# adding a new path-shaped resolver requires deliberately appending its
+# emit line to `_write_rendered_paths_sidecar`. R-2 fails if the new line
+# is missing or names the wrong token.
+printf '\n--- ENG-204: R-1, R-2 — plan_body_path resolver + sidecar ---\n'
+
+# R-1: bound _RENDER_PLAN_BODY_PATH → _resolve_plan_body_path returns it
+# verbatim.
+out_pbp="$(run_resolver_body '
+  _RENDER_PLAN_BODY_PATH="/tmp/test-state/ENG-204/plan.body.json"
+  resolve_block_tokens "{plan_body_path}"
+' 2>&1)"
+if [[ "$out_pbp" == "/tmp/test-state/ENG-204/plan.body.json" ]]; then
+  pass_at "ENG-204 R-1: {plan_body_path} resolves from _RENDER_PLAN_BODY_PATH"
+else
+  fail_at "ENG-204 R-1: {plan_body_path} resolver" \
+    "expected='/tmp/test-state/ENG-204/plan.body.json' got='$out_pbp'"
+fi
+
+# R-2: bound _RENDER_PLAN_BODY_PATH → _write_rendered_paths_sidecar emits
+# `plan_body_path\t<value>` line in the sidecar tsv.
+eng204_r2_sidecar="$sandbox/eng204-r2.tsv"
+run_resolver_body '
+  _RENDER_PLAN_BODY_PATH="/tmp/state/ENG-204R2/plan.body.json"
+  _write_rendered_paths_sidecar "'"$eng204_r2_sidecar"'"
+' 2>/dev/null
+if [[ -s "$eng204_r2_sidecar" ]] \
+  && grep -qE '^plan_body_path'$'\t''/tmp/state/ENG-204R2/plan.body.json$' "$eng204_r2_sidecar"; then
+  pass_at "ENG-204 R-2: _write_rendered_paths_sidecar emits plan_body_path TSV row"
+else
+  fail_at "ENG-204 R-2: sidecar plan_body_path row absent" \
+    "contents=$(cat "$eng204_r2_sidecar" 2>/dev/null)"
+fi
+unset out_pbp eng204_r2_sidecar
+
 echo
 echo "━━━ Summary ━━━"
 echo "PASS: $PASS / FAIL: $FAIL"
