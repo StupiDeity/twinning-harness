@@ -1043,6 +1043,42 @@ NOT a defect in either side.
 
 ---
 
+## 15. Scope-deferred majors (ENG-194)
+
+**v1 visual limitation.** The deferred-majors Linear comment (sig
+`deferred-majors/<ENG-N>`) renders scope-deferred bullets
+(`defer_reason="out-of-plan-scope"`) and rubric-deferred bullets
+(`defer_reason="rubric"`) as a single flat list — they are NOT visually
+distinguished in the rendered comment body in v1. The distinction lives only in
+the ledger row's `defer_reason` field. (Grouping the rendered comment by
+`defer_reason` is the ENG-194-A follow-up, ENG-209.)
+
+**Audit recipe.** To list the scope-deferred rows and the out-of-plan fix-target
+paths they name:
+
+```bash
+jq -r 'select(.defer_reason == "out-of-plan-scope")
+       | "\(.finding_class_key)\t\(.ship_classification_rationale)"' \
+  "$(issue_dir <ENG-N>)/review-findings-ledger.jsonl"
+```
+
+**Plan-amend path.** If you conclude the plan SHOULD have scoped the named file,
+amend the plan's `## File Structure` to add it (`docs/plans/**` is a benign scope
+escape, so the edit lands in-band), commit on the feature branch, then
+`bash bin/pipeline.sh decide <ENG-N> --action continue` to let the next dispatch
+re-evaluate the finding as in-scope.
+
+**No-action path.** If you conclude the finding is bogus, no action is needed —
+the deferred-majors comment names the row and ENG-193 has filed (or will file) a
+follow-up ticket. Residual to be aware of: a CRITICAL finding whose fix-target is
+out-of-plan still loops back (the critical-floor invariant unconditionally sets
+`blocks_ship=true`) and halts with `scope-violation`; recover via the
+scope-violation rows in CLAUDE.md's failure-mode quick reference — observing the
+ENG-180 caveat that `decide --action approve --gate scope` is currently broken, so
+a manual force-transition may be required until ENG-180 ships.
+
+---
+
 ## Quick reference: env var requirement
 
 Commands that write `stage:*` labels, remove `pipeline:halted`, or post transition comments require the `PIPELINE_WRITER=human` env var:

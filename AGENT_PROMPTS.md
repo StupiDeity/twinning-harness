@@ -1478,6 +1478,64 @@ justifies the decision. Examples: `blocks: regression of cached-result
 invalidation`, `defers: doc-drift polish — reversible, has workaround`,
 `blocks: irreversible API surface change`.
 
+**Plan-scope adjudication (MANDATORY — ENG-194): out-of-plan-scope findings short-circuit the rubric.**
+
+The orchestrator renders the plan's `## File Structure` into a token
+`{plan_scope_allowed_paths}` whose body is exactly two newline-separated
+sections — `#ALLOWED_FILES#` then `#ALLOWED_DIRS#`. The token is the
+SAME plan-structural parse `bin/scope-check.sh` runs at exit, so a
+finding the reviewer auto-defers here is the same finding the
+downstream scope-check would halt on (ENG-194 D-001 byte-for-byte
+invariant). Soft-fail: if no plan exists for this issue the token
+renders empty headers — every finding falls through to the five-
+question rubric.
+
+For each finding whose `adjudicated_severity ∈ {major, critical}`,
+extract the canonical fix-target file. The canonical anchor is the
+FIRST `path/to/file.ext:LINE` token immediately after the severity
+tag per the Review-comment quality rubric — trim the `:LINE` suffix
+and match the path against `#ALLOWED_FILES#` (exact-match, one
+token per line) AND `#ALLOWED_DIRS#` (prefix-match, one prefix per
+line, prefix already carries its trailing slash). When BOTH miss,
+the finding's canonical anchor is out-of-plan-scope.
+
+Multi-target finding tie-break: a finding body may mention several
+files for context. The canonical anchor is the SOLE fix-target.
+Secondary file references in the finding body are informational and
+NOT consulted by the plan-scope check.
+
+Missing-anchor fallthrough: a finding without a clear fix-target
+(no anchored `path/to/file.ext:LINE` token immediately after the
+severity tag) falls through to the five-question rubric — the
+adjudicator treats it as plan-scope-undetermined and applies the
+existing deferability lens.
+
+Plan-scope decision rule (overrides the rubric for out-of-plan-scope
+hits):
+
+  - If OUT-of-plan-scope AND `adjudicated_severity == major`: set
+    `blocks_ship=false`, set `defer_reason="out-of-plan-scope"`, and
+    set `ship_classification_rationale` to the EXACT shape
+    `out-of-plan-scope: <path> not in plan's File Structure` — the
+    `: <path>` colon-space-path tail is structurally required; the
+    validator parses it back out via an anchored start+end regex,
+    so trailing prose or extra commentary fails rc=49 fail-CLOSED.
+    SKIP the five-question rubric for this finding. `decision_factors`
+    MAY be OMITTED or emitted as null (the validator's rule 3 relaxes
+    decision_factors when `defer_reason=="out-of-plan-scope"`; other
+    defer_reason values still require all five factors).
+  - If OUT-of-plan-scope AND `adjudicated_severity == critical`: the
+    critical-floor invariant (D-002) UNCONDITIONALLY requires
+    `blocks_ship=true` regardless of plan-scope. The agent MAY emit
+    `defer_reason="out-of-plan-scope"` informationally on the row,
+    but path B (review-loopback) fires unchanged on the count-tuple
+    side, the implementer attempts the fix, and the downstream
+    `bin/scope-check.sh` halt is the operator-routing surface. There
+    is no critical scope-deferral path in v1.
+  - If IN-plan-scope: the row goes through the five-question rubric
+    unchanged (existing ENG-191 contract — `defer_reason` is
+    "rubric" when deferred, omitted when blocking).
+
 Count-tuple emission (MANDATORY — ENG-133 + ENG-190 + ENG-191): emit THREE
 structured lines, exact case, exact punctuation, exact order:
 
@@ -1617,9 +1675,13 @@ Mechanical predicates (mutually exclusive; exactly one path fires):
   - Path B (changes requested) — fires iff `Adjudicated critical > 0 OR blocking_majors > 0`.
   - Path C (clean) — fires iff `Adjudicated critical == 0 AND Adjudicated major == 0`.
   - Path D (ship-with-debt) — fires iff
-    `Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}`.
+    `Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0
+     AND ( convergence_rounds_at_zero_critical >= {review_converge_rounds}
+           OR  every adjudicated-major row has defer_reason == "out-of-plan-scope" )`.
   - Path B′ (convergence-waiting) — fires iff
-    `Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical < {review_converge_rounds}`.
+    `Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0
+     AND convergence_rounds_at_zero_critical < {review_converge_rounds}
+     AND at least one adjudicated-major row has defer_reason == "rubric"`.
 
 `convergence_rounds_at_zero_critical` is computed FROM THE LEDGER, not from
 your own memory: walk the ledger's prior-dispatch rows in descending
@@ -1669,7 +1731,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
        pipeline:halted (ENG-56). Human approval is collected later, at
        build's P2 preflight, on the post-QA SHA.
 
-  D. Ship with deferred majors (mechanical: Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical >= {review_converge_rounds}) — ENG-191 selective exit.
+  D. Ship with deferred majors (mechanical: Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND (convergence_rounds_at_zero_critical >= {review_converge_rounds} OR every adjudicated-major row has defer_reason == "out-of-plan-scope")) — ENG-191 selective exit, extended by ENG-194 for the all-scope-deferred shortcut.
      - Post a consolidated COMMENTED-state review with all findings via:
          gh pr review {pr_number} --comment --body "<full summary>"
        Summary line: "Reviewed commit {sha[:8]}. N personas: PASS. 0
@@ -1698,7 +1760,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
        pipeline:halted (ENG-56), AND posts the deferred-majors comment
        under sig `deferred-majors/{issue_id}` via its post-dispatch hook.
 
-  B′. Convergence-waiting loopback (mechanical: Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical < {review_converge_rounds}) — ENG-191 sub-variant.
+  B′. Convergence-waiting loopback (mechanical: Adjudicated critical == 0 AND Adjudicated major > 0 AND blocking_majors == 0 AND convergence_rounds_at_zero_critical < {review_converge_rounds} AND at least one adjudicated-major row has defer_reason == "rubric") — ENG-191 sub-variant.
      - Mechanically identical to path B in EVERY step EXCEPT: do NOT run
        `bash .pipeline/bin/guards.sh bump {issue_id} review_rejection --reason "..."`. The
        review-rejection counter is reserved for genuine blocking findings;
@@ -1789,7 +1851,12 @@ Output:
   BLOCK pattern or the DEFER rubric category that justifies the decision),
   `decision_factors` (object with all five required boolean keys:
   `in_changed_code`, `is_regression`, `user_visible`, `reversible_post_ship`,
-  `has_workaround`). Critical-floor-blocks-ship invariant:
+  `has_workaround`). For `blocks_ship=false` major rows you MUST also emit
+  `"defer_reason": "out-of-plan-scope"` or `"rubric"`. When defer_reason is
+  `"out-of-plan-scope"`, decision_factors MAY be OMITTED or emitted as null
+  (the Plan-scope adjudication block above short-circuits the rubric for
+  these rows; the validator's rule 3 relaxes the decision_factors check
+  accordingly). Critical-floor-blocks-ship invariant:
   `adjudicated_severity == critical ⇒ blocks_ship == true`; the validator
   halts with `critical-floor-blocks-ship-violation` rc=49 on any critical
   this-dispatch row with `blocks_ship != true`.
@@ -1823,7 +1890,7 @@ Post exactly ONE additional append-only comment with your verdict:
 
     bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing
 
-  To ship with deferred majors (path D — Adjudicated critical=0, all adjudicated majors deferrable, convergence rounds satisfied):
+  To ship with deferred majors (path D — Adjudicated critical=0, all adjudicated majors deferrable, AND (convergence rounds satisfied OR every deferred major has defer_reason="out-of-plan-scope")):
 
     bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors
 

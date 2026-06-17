@@ -8217,6 +8217,132 @@ else
     "sig='$_z8_sig' body='${_z8_body:0:200}'"
 fi
 
+# ─── ENG-194: scope-deferred majors integration (P1, P3, P5 — Task 11) ────
+# AC #1 / #3 / #5 fixtures binding the deferred-majors renderer (and, for P5,
+# the review-ledger validator) to the ENG-194 out-of-plan-scope path. Mirrors
+# the ENG-191 Z-fixtures above and review-ledger-schema-adversarial-test.sh's
+# eng194_fixture_worktree idiom. bash-3.2-safe (no ${v,,} / case-modify).
+printf '\n--- ENG-194: scope-deferred majors integration (P1, P3, P5) ---\n'
+
+# Row-writer carrying defer_reason + caller-chosen decision_factors shape.
+#   df_arg:    "null" → decision_factors:null; otherwise a jq object expr.
+#   defer_arg: the defer_reason value (always emitted).
+_eng194_write_row() {
+  local file="$1" iid="$2" did="$3" key="$4" scr="$5" df_arg="$6" defer_arg="$7"
+  local df_expr
+  case "$df_arg" in
+    null) df_expr=', decision_factors:null' ;;
+    *)    df_expr=", decision_factors:$df_arg" ;;
+  esac
+  jq -cn --arg iid "$iid" --arg did "$did" --arg key "$key" --arg scr "$scr" \
+    "{
+       ledger_schema_version:1, issue_id:\$iid, dispatch_id:\$did,
+       iteration:1, created_at:\"2026-06-13T00:00:00Z\",
+       finding_class_key:\$key, cold_severity:\"major\",
+       adjudicated_severity:\"major\", decision:\"carry\", rationale:\"r\",
+       blocks_ship:false, ship_classification_rationale:\$scr,
+       defer_reason:\"$defer_arg\" $df_expr
+     }" >> "$file"
+}
+
+# Build a fixture worktree (git init + a plan scoping the comma-separated
+# MODIFIED tokens). Mirrors eng194_fixture_worktree; prints the worktree path.
+_eng194_fixture_worktree() {
+  local root="$1" iid="$2" tokens="$3" plan_path iid_lc tok
+  iid_lc="$(printf '%s' "$iid" | tr '[:upper:]' '[:lower:]')"
+  mkdir -p "$root/docs/plans"
+  ( cd "$root"; git init -q; git config user.email t@example.com; git config user.name Test ) >/dev/null 2>&1
+  plan_path="$root/docs/plans/2026-06-16-${iid_lc}-fixture.md"
+  {
+    printf -- '---\nlinear: %s\n---\n## File Structure\n\nMODIFIED:\n' "$iid"
+    local IFS=','
+    for tok in $tokens; do printf -- '- `%s` — fixture\n' "$tok"; done
+  } > "$plan_path"
+  printf '%s\n' "$root"
+}
+
+# ─── P1 (AC #1/#2): scope-deferred major → bullet names the out-of-plan path ─
+reset_capture
+mkdir -p "$(issue_dir ENG-194P1)"
+_p1_lgr="$(issue_dir ENG-194P1)/review-findings-ledger.jsonl"
+rm -f "$_p1_lgr"
+( unset PIPELINE_DRY_RUN; _ensure_review_ledger ENG-194P1 >/dev/null 2>&1 )
+_eng194_write_row "$_p1_lgr" ENG-194P1 ENG-194P1-d0001 "maintainability:docs/install.md:stale" \
+  "out-of-plan-scope: docs/install.md not in plan's File Structure" null out-of-plan-scope
+export PIPELINE_DISPATCH_ID=ENG-194P1-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_post_deferred_majors_comment_if_eligible ENG-194P1
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_p1_sig="$(captured_sig)"
+_p1_body="$(captured_body)"
+if [[ "$_p1_sig" == "deferred-majors/ENG-194P1" ]] \
+   && [[ "$_p1_body" == *"docs/install.md"* ]] \
+   && [[ "$_p1_body" == *"1 major finding(s) deferred"* ]]; then
+  pass_at "ENG-194 P1 (AC #1/#2): scope-deferred major appears as a bullet naming docs/install.md (not dropped)"
+else
+  fail_at "ENG-194 P1 (AC #1): scope-deferred bullet" \
+    "sig='$_p1_sig' body-head='${_p1_body:0:200}...'"
+fi
+
+# ─── P3 (AC #3): in-plan rubric-deferred row still renders all five factors ─
+reset_capture
+mkdir -p "$(issue_dir ENG-194P3)"
+_p3_lgr="$(issue_dir ENG-194P3)/review-findings-ledger.jsonl"
+rm -f "$_p3_lgr"
+( unset PIPELINE_DRY_RUN; _ensure_review_ledger ENG-194P3 >/dev/null 2>&1 )
+_eng194_write_row "$_p3_lgr" ENG-194P3 ENG-194P3-d0001 "ui:button:label" \
+  "defers: minor polish" \
+  '{in_changed_code:true,is_regression:false,user_visible:true,reversible_post_ship:true,has_workaround:true}' \
+  rubric
+export PIPELINE_DISPATCH_ID=ENG-194P3-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_post_deferred_majors_comment_if_eligible ENG-194P3
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_p3_body="$(captured_body)"
+if [[ "$_p3_body" == *"in_changed_code: yes"* ]] \
+   && [[ "$_p3_body" == *"is_regression: no"* ]] \
+   && [[ "$_p3_body" == *"user_visible: yes"* ]] \
+   && [[ "$_p3_body" == *"reversible_post_ship: yes"* ]] \
+   && [[ "$_p3_body" == *"has_workaround: yes"* ]]; then
+  pass_at "ENG-194 P3 (AC #3): in-plan rubric-deferred row renders all five decision factors (ENG-191 behaviour preserved)"
+else
+  fail_at "ENG-194 P3 (AC #3): five-factor render" \
+    "body-head='${_p3_body:0:300}...'"
+fi
+
+# ─── P5 (AC #5): ENG-27-class end-to-end — validator accepts + bullet posts ─
+# Plan scopes ONLY bin/setup.sh; the finding's fix-target docs/install.md is
+# genuinely out-of-plan → validator rule-6 cross-check passes (rc=0) → the
+# deferred-majors renderer names docs/install.md. Validator discovers the plan
+# via cwd (the fixture worktree); the renderer reads the issue_dir ledger.
+reset_capture
+_p5_wt="$(_eng194_fixture_worktree "$STUB_DIR/eng194-p5-wt" ENG-27 'bin/setup.sh')"
+mkdir -p "$(issue_dir ENG-27)"
+_p5_lgr="$(issue_dir ENG-27)/review-findings-ledger.jsonl"
+rm -f "$_p5_lgr"
+( unset PIPELINE_DRY_RUN; _ensure_review_ledger ENG-27 >/dev/null 2>&1 )
+_eng194_write_row "$_p5_lgr" ENG-27 ENG-27-d0001 "maintainability:docs/install.md:stale" \
+  "out-of-plan-scope: docs/install.md not in plan's File Structure" null out-of-plan-scope
+_p5_rc=0
+_p5_out="$(cd "$_p5_wt" && bash "$HARNESS_DIR/review-ledger-schema.sh" validate "$_p5_lgr" --ident ENG-27 --dispatch-id ENG-27-d0001 2>&1)" || _p5_rc=$?
+export PIPELINE_DISPATCH_ID=ENG-27-d0001
+find_fresh_verdict() { _eng191_marker_json reviewing ship-with-deferred-majors; }
+_post_deferred_majors_comment_if_eligible ENG-27
+unset -f find_fresh_verdict
+unset PIPELINE_DISPATCH_ID
+_p5_sig="$(captured_sig)"
+_p5_body="$(captured_body)"
+if (( _p5_rc == 0 )) \
+   && [[ "$_p5_sig" == "deferred-majors/ENG-27" ]] \
+   && [[ "$_p5_body" == *"docs/install.md"* ]]; then
+  pass_at "ENG-194 P5 (AC #5): ENG-27 in-plan setup.sh + out-of-plan install.md → validator rc=0 + scope-deferred bullet posts"
+else
+  fail_at "ENG-194 P5 (AC #5): e2e validator+render" \
+    "validate_rc=$_p5_rc sig='$_p5_sig' out='${_p5_out:0:160}' body-head='${_p5_body:0:160}...'"
+fi
+
 # ─── ENG-118: threshold-gate detectives (TH1-TH15) ────────────────────
 # Fifteen fixtures exercise the post-dispatch dimensional-threshold gate.
 # Each TH-case:
