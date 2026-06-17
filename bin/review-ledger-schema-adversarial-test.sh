@@ -559,5 +559,85 @@ else
   fail_at "AC-AD-18 (ENG-194): plan-absent soft-fail" "rc=$rc out=$out"
 fi
 
+# ─── ENG-194 QA adversarial: multi-row bleed + edge-vocabulary cases ───
+printf '\n--- review-ledger-schema-adversarial-test: ENG-194 QA AC-AD-19..22 ---\n'
+
+# AC-AD-19 (ENG-194 QA): multi-row dr_val bleed — row 1 scope-deferred (passes),
+# row 2 is a blocking major with no defer_reason and DF_FULL. Without the fix,
+# dr_val="out-of-plan-scope" bleeds into row 2's rule-6 check and triggers a
+# false-positive "out-of-plan-scope-rationale-malformed" on row 2's rubric-style
+# rationale. With the fix (local dr_val='' resets dr_val each row), rc=0.
+f="$FIXTURE_DIR/eng194-ad19.jsonl"
+write_seed_header "$f"
+# Row 1: scope-deferred major (passes); dr_val will be set to "out-of-plan-scope"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false \
+  "out-of-plan-scope: docs/install.md not in plan's File Structure" \
+  null out-of-plan-scope
+# Row 2: blocking major (blocks_ship=true), no defer_reason, full decision_factors,
+# rubric-style rationale — valid per ENG-191; should NOT trigger rule 6.
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major block true \
+  "blocking: migration path causes data loss if applied to existing records" \
+  "$DF_FULL" omit
+wt="$(eng194_fixture_worktree "$FIXTURE_DIR/eng194-ad19-wt" 'bin/setup.sh')"
+rc=0; out="$(cd "$wt" && bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 0 )); then
+  pass_at "AC-AD-19 (ENG-194 QA): 2-row ledger scope-deferred+blocking-major → rc=0 (no dr_val bleed)"
+else
+  fail_at "AC-AD-19 (ENG-194 QA): dr_val multi-row bleed" \
+    "expected rc=0 but got rc=$rc; out=$out (bleed from row-1 dr_val triggers false-positive rule-6 on row 2)"
+fi
+
+# AC-AD-20 (ENG-194 QA): defer_reason="" (empty string) — not in closed vocabulary;
+# rule 1 should fire with "defer_reason must be 'out-of-plan-scope' or 'rubric'".
+f="$FIXTURE_DIR/eng194-ad20.jsonl"
+write_seed_header "$f"
+# Build row manually so we can pass an empty string for defer_reason.
+jq -cn \
+  --arg did ENG-194-d0001 \
+  '{
+    ledger_schema_version:1, issue_id:"ENG-194", dispatch_id:$did,
+    iteration:1, created_at:"2026-06-13T00:00:00Z", finding_class_key:"fck",
+    cold_severity:"major", adjudicated_severity:"major", decision:"carry",
+    rationale:"r", blocks_ship:false,
+    ship_classification_rationale:"rubric: minor aesthetic issue",
+    defer_reason:""
+  }' >> "$f"
+rc=0; out="$(bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"defer_reason must be 'out-of-plan-scope' or 'rubric'"* ]]; then
+  pass_at "AC-AD-20 (ENG-194 QA): defer_reason='' → rc=49 closed-vocabulary diag"
+else
+  fail_at "AC-AD-20 (ENG-194 QA): empty-string defer_reason" "rc=$rc out=$out"
+fi
+
+# AC-AD-21 (ENG-194 QA): defer_reason="Out-Of-Plan-Scope" (wrong case) — closed
+# vocabulary is case-sensitive; rule 1 must reject this.
+f="$FIXTURE_DIR/eng194-ad21.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false "rationale" \
+  null Out-Of-Plan-Scope
+rc=0; out="$(bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0001 2>&1)" || rc=$?
+if (( rc == 49 )) && [[ "$out" == *"defer_reason must be 'out-of-plan-scope' or 'rubric'"* ]]; then
+  pass_at "AC-AD-21 (ENG-194 QA): defer_reason='Out-Of-Plan-Scope' (wrong case) → rc=49"
+else
+  fail_at "AC-AD-21 (ENG-194 QA): case-sensitive closed-vocabulary" "rc=$rc out=$out"
+fi
+
+# AC-AD-22 (ENG-194 QA): prior-dispatch major+blocks_ship=false+no defer_reason →
+# schema-grace (entire ENG-191/ENG-194 block gated on did_val==dispatch_id_flag)
+# → rc=0. Exercises that rule 2 (defer_reason required on deferred major) is
+# correctly NOT fired for prior-dispatch rows even when blocks_ship=false.
+f="$FIXTURE_DIR/eng194-ad22.jsonl"
+write_seed_header "$f"
+eng194_write_row "$f" ENG-194 ENG-194-d0001 major major carry false \
+  "prior rationale no defer_reason" \
+  omit omit
+# Flag a DIFFERENT dispatch-id; row's d0001 != flag's d0002 → schema-grace.
+rc=0; bash "$VALIDATOR" validate "$f" --ident ENG-194 --dispatch-id ENG-194-d0002 >/dev/null 2>&1 || rc=$?
+if (( rc == 0 )); then
+  pass_at "AC-AD-22 (ENG-194 QA): prior-dispatch major+bs=false+no defer_reason → rc=0 schema-grace"
+else
+  fail_at "AC-AD-22 (ENG-194 QA): schema-grace for rule-2" "rc=$rc"
+fi
+
 printf '\nreview-ledger-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

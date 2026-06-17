@@ -368,7 +368,12 @@ cmd_validate() {
       # When .defer_reason is present (non-null, non-missing), value MUST
       # be "out-of-plan-scope" or "rubric". dr_val is reused by rule 6
       # (matcher cross-check) and rule 3 (decision_factors relaxation).
+      # dr_val='' explicit reset prevents bleed from a prior row: in bash,
+      # `local x` in a loop is idempotent after the first declaration and
+      # does NOT reset x's value; `dr_val=''` here ensures the inner
+      # conditional assignment at rule 1 is the sole source of truth each row.
       local dr_type dr_val
+      dr_val=''
       dr_type="$(jq -r '.defer_reason | type' <<<"$line" 2>/dev/null || printf 'missing')"
       if [[ "$dr_type" != "null" && "$dr_type" != "missing" ]]; then
         dr_val="$(jq -r '.defer_reason' <<<"$line" 2>/dev/null || printf '')"
