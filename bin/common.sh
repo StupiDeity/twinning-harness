@@ -733,7 +733,7 @@ merge_artifact_envelope() {
   [[ -n "$overlap_csv" ]] && overlap_n="$(awk -F, '{print NF}' <<<"$overlap_csv")"
   mv "$tmp" "$canonical" \
     || { rm -f "$tmp"; printf 'merge: atomic mv failed\n' >&2; return 50; }
-  if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]] && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]; then
+  if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]]; then
     bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite" \
       "${PIPELINE_ISSUE_ID}" "${PIPELINE_STAGE:-unknown}" "merged" "0" \
       "count=$overlap_n keys=$overlap_csv body=$body" >/dev/null 2>&1 || true
