@@ -141,15 +141,15 @@
     "stage-completion-claim": {
       "linear_comment": {
         "_comment": "ENG-152: informational agent self-claim. NEVER authoritative — verdict-handler ignores it. The orchestrator republishes it as an author=orchestrator verdict.",
-        "body_shape": "<!-- pipeline: stage-completion-claim result=<result> stage=<stage>[ target=<target>][ reason=<reason>] -->",
+        "body_shape": "<!-- pipeline: stage-completion-claim result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->",
         "writer_lane": "agent",
-        "required": ["result", "stage"],
+        "required": ["result"],
         "required_by_arm": {
-          "pass":  [],
+          "pass":  ["stage"],
           "fail":  ["target"],
           "halt":  ["reason"],
           "wait":  ["reason"],
-          "pivot": ["target"]
+          "pivot": ["target", "stage", "reason"]
         },
         "field_registry": {
           "result": "verdict_results",

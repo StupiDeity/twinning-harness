@@ -78,15 +78,15 @@ validates every emitted body against the schema below.
 
 ### `stage-completion-claim`
 
-- **Body shape:** `<!-- pipeline: stage-completion-claim result=<result> stage=<stage>[ target=<target>][ reason=<reason>] -->`
+- **Body shape:** `<!-- pipeline: stage-completion-claim result=<result>[ stage=<stage>][ target=<target>][ reason=<reason>] -->`
 - **Writer lane:** `agent`
-- **Required fields:** `result, stage`
+- **Required fields:** `result`
 - **Required by arm:**
-  - `pass`: (none)
+  - `pass`: `stage`
   - `fail`: `target`
   - `halt`: `reason`
   - `wait`: `reason`
-  - `pivot`: `target`
+  - `pivot`: `target`, `stage`, `reason`
 - **Dedup sig by arm:**
   - `pass`: _(append-only)_
   - `fail`: _(append-only)_

@@ -709,7 +709,7 @@ fi
 
 # §4 pass-through clause is preserved verbatim (regression — must not tighten).
 # Updated in ENG-60-T2.11: old-shape marker replaced with pipeline.sh event invocation.
-if printf '%s\n' "$s4" | grep -qF "this stage is a pass-through: skip implementation, write a stage summary noting the no-op, run \`bash bin/pipeline.sh event {issue_id} verdict pass --stage ui\`, and exit"; then
+if printf '%s\n' "$s4" | grep -qF "this stage is a pass-through: skip implementation, write a stage summary noting the no-op, run \`bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage ui\`, and exit"; then
   ok "§4 pass-through clause preserved (new-shape verdict)"
 else
   nope "§4 pass-through clause preserved (new-shape verdict)" "phrase missing or altered"
@@ -1154,11 +1154,11 @@ else
 fi
 
 # ENG-191-pin-path-d-verdict-command: literal pipeline.sh event command.
-if printf '%s\n' "$s5" | grep -qF 'bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors'; then
-  ok "§5 ENG-191: path-D verdict-marker command pinned (ENG-191-pin-path-d-verdict-command)"
+if printf '%s\n' "$s5" | grep -qF 'bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage reviewing --reason ship-with-deferred-majors'; then
+  ok "§5 ENG-191: path-D claim command pinned (ENG-191-pin-path-d-verdict-command)"
 else
-  nope "§5 ENG-191: path-D verdict command" \
-    "expected literal 'bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors'"
+  nope "§5 ENG-191: path-D claim command" \
+    "expected literal 'bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage reviewing --reason ship-with-deferred-majors'"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1370,13 +1370,13 @@ for stage_section in \
     nope "$short contains 'do not probe' rule" "phrase missing"
   fi
 
-  # ENG-60 T2.11: exit ramp is now `verdict halt --reason agent-blocked`
-  # via bin/pipeline.sh; the old hand-crafted marker form was replaced
-  # to match the per-stage Verdict marker block guidance.
-  if printf '%s\n' "$body" | grep -qF 'verdict halt --reason agent-blocked'; then
-    ok "$short contains 'verdict halt --reason agent-blocked' exit ramp"
+  # ENG-152: exit ramp is now `stage-completion-claim halt --reason agent-blocked`
+  # via bin/pipeline.sh (agents emit informational claims, never authoritative
+  # verdicts; the orchestrator republishes).
+  if printf '%s\n' "$body" | grep -qF 'stage-completion-claim halt --reason agent-blocked'; then
+    ok "$short contains 'stage-completion-claim halt --reason agent-blocked' exit ramp"
   else
-    nope "$short contains 'verdict halt --reason agent-blocked' exit ramp" "instruction missing"
+    nope "$short contains 'stage-completion-claim halt --reason agent-blocked' exit ramp" "instruction missing"
   fi
 done
 
@@ -2129,7 +2129,7 @@ for stage_key in '## 1. Brainstorm Agent' '## 2. Plan Agent'; do
     nope "rendered stage body ($short): cites 'Sub-agent debris (ENG-100)'" \
       "phrase missing from rendered §0 + §N — sub-agents not warned about debris generation"
   fi
-  if printf '%s' "$rsb" | grep -qF 'verdict halt --reason agent-blocked'; then
+  if printf '%s' "$rsb" | grep -qF 'stage-completion-claim halt --reason agent-blocked'; then
     ok "rendered stage body ($short): names the agent-blocked exit ramp"
   else
     nope "rendered stage body ($short): names the agent-blocked exit ramp" \
@@ -2791,6 +2791,33 @@ _browser_assert '§6' "$s6_eng27" '{artifacts_dir}'
 
 unset -f _browser_assert
 unset s4_eng27 s6_eng27
+
+# ─── ENG-152: agents emit stage-completion-claim, never authoritative verdict ─
+# AC3: every agent verdict-emit command flips to stage-completion-claim; no
+# `event {issue_id} verdict` survives. The §0 protocol documents the split.
+if grep -qE 'event \{issue_id\} verdict ' AGENT_PROMPTS.md; then
+  nope "ENG-152: agent prompt still emits authoritative verdict" \
+    "$(grep -nE 'event \{issue_id\} verdict ' AGENT_PROMPTS.md | head -3)"
+else
+  ok "ENG-152: no agent verdict-emit commands remain (all flipped to stage-completion-claim)"
+fi
+if grep -qF 'event {issue_id} stage-completion-claim pass --stage brainstorming' AGENT_PROMPTS.md; then
+  ok "ENG-152: brainstorm emits stage-completion-claim"
+else
+  nope "ENG-152: brainstorm stage-completion-claim" "missing flipped brainstorm emit"
+fi
+if grep -qF 'event {issue_id} stage-completion-claim pass --stage reviewing --reason ship-with-deferred-majors' AGENT_PROMPTS.md; then
+  ok "ENG-152: review Path-D claim carries pass_reasons arm (ship-with-deferred-majors)"
+else
+  nope "ENG-152: review Path-D claim" "missing flipped Path-D emit"
+fi
+if grep -qE '## Verdict-marker protocol' AGENT_PROMPTS.md \
+   && grep -qF 'author=orchestrator' AGENT_PROMPTS.md \
+   && grep -qF 'stage-completion-claim' AGENT_PROMPTS.md; then
+  ok "ENG-152: §0 protocol documents the agent-claim / orchestrator-verdict split (AC3/AC5)"
+else
+  nope "ENG-152: §0 protocol split documentation" "preamble missing claim/author=orchestrator language"
+fi
 
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1

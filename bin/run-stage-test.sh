@@ -2337,16 +2337,15 @@ if [[ ! -f "$ENG_45_PROMPTS_PATH" ]]; then
 else
   # Two grep checks — one per wait reason. Each must mention `tick_at` in
   # the wait body section. Failing either is a P0 prompt-prose drift.
-  # ENG-60 T2.11: anchor strings switched from old-shape
-  # `pipeline-wait: awaiting-approval/ci` to new-shape
-  # `verdict wait --reason awaiting-approval/ci`. Match the new shape.
-  if grep -A8 'verdict wait --reason awaiting-approval' "$ENG_45_PROMPTS_PATH" \
+  # ENG-152: anchor strings switched from `verdict wait --reason …` to the
+  # agent self-claim shape `stage-completion-claim wait --reason …`.
+  if grep -A8 'stage-completion-claim wait --reason awaiting-approval' "$ENG_45_PROMPTS_PATH" \
        | grep -q 'tick_at'; then
     p2_ok=1
   else
     p2_ok=0
   fi
-  if grep -A8 'verdict wait --reason awaiting-ci' "$ENG_45_PROMPTS_PATH" \
+  if grep -A8 'stage-completion-claim wait --reason awaiting-ci' "$ENG_45_PROMPTS_PATH" \
        | grep -q 'tick_at'; then
     p5_ok=1
   else

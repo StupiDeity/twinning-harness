@@ -937,9 +937,10 @@ fi
 # pass arm accepts pass_reasons (ENG-191 ship-with-deferred-majors gap closed).
 scc="$(jq -c '.events["stage-completion-claim"].linear_comment' "$HARNESS_REG")"
 if [[ "$(jq -r '.writer_lane' <<<"$scc")" == "agent" ]] \
-   && [[ "$(jq -rc '.required' <<<"$scc")" == '["result","stage"]' ]] \
+   && [[ "$(jq -rc '.required' <<<"$scc")" == '["result"]' ]] \
+   && [[ "$(jq -rc '.required_by_arm.pass' <<<"$scc")" == '["stage"]' ]] \
    && [[ "$(jq -r '.field_registry_by_arm.pass.reason' <<<"$scc")" == "pass_reasons" ]]; then
-  pass_at "PE-152-3: stage-completion-claim event schema"
+  pass_at "PE-152-3: stage-completion-claim event schema mirrors verdict arms"
 else
   fail_at "PE-152-3: stage-completion-claim event schema" "got: $scc"
 fi

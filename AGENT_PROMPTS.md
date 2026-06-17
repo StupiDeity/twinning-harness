@@ -48,10 +48,12 @@ The legacy hyphenated shapes — `<!-- pipeline-stage-summary: ... -->`, `<!-- p
 
 ## Verdict-marker protocol
 
-State transitions are owned by the orchestrator. Agents communicate verdicts
-by posting one HTML comment marker per stage exit, in the canonical shape:
+State transitions are owned by the orchestrator. **Agents do NOT author
+authoritative verdicts (ENG-152).** You communicate your stage outcome by
+posting one informational *self-claim* marker per stage exit, in the canonical
+shape:
 
-  `<!-- pipeline: verdict result=<pass|fail|halt|wait|pivot> [stage=X] [target=Y] [reason=Z] -->`
+  `<!-- pipeline: stage-completion-claim result=<pass|fail|halt|wait|pivot> [stage=X] [target=Y] [reason=Z] -->`
 
 - `pass` requires `stage=<your stage>`. Means: stage finished cleanly, advance.
 - `fail` requires `target=<stage>`. Means: loop back to that stage.
@@ -63,6 +65,20 @@ by posting one HTML comment marker per stage exit, in the canonical shape:
 - `pivot` requires `target=<stage>`. Means: the plan is structurally wrong;
   loop back further than `fail` would. (Not yet enabled by default.)
 
+Your `stage-completion-claim` is **informational only** — it is never read as
+authoritative. After your dispatch returns clean (post scope-check, envelope
+validator, and gates), the orchestrator *republishes* your claim as the one
+authoritative marker:
+
+  `<!-- pipeline: verdict result=<...> author=orchestrator [stage=X] [target=Y] [reason=Z] -->`
+
+`verdict` is the **orchestrator-only lane.** `find_fresh_verdict` consumes ONLY
+`author=orchestrator` verdicts and ignores every `stage-completion-claim`. You
+MUST NOT emit a `<!-- pipeline: verdict ... -->` body by any means (the
+`bash bin/pipeline.sh event ... verdict` CLI hard-fails for you, and a
+post-dispatch detective halts the dispatch with `dispatch-envelope-violation`
+if a verdict body appears in your transcript).
+
 Operators (humans) do NOT emit verdicts. Operator overrides use:
 
   `<!-- pipeline: decision action=<continue|approve|abandon> [gate=<gate>] -->`
@@ -71,10 +87,9 @@ Bookkeeping comments (dedup keys, metric counters, evidence bundles) use the
 `<!-- meta: ... -->` family. Bookkeeping comments do NOT drive state and the
 orchestrator ignores them when computing the latest fresh verdict.
 
-Use `bash bin/pipeline.sh event <issue> verdict <result> [args]` to emit a
-verdict — it validates against the registry and dies on unknown tokens. Do
-NOT hand-craft marker bodies in scripts. The legacy `bin/post-verdict.sh`
-wrapper still works for one release but logs a deprecation line on use.
+Use `bash bin/pipeline.sh event <issue> stage-completion-claim <result> [args]`
+to emit your claim — it validates against the registry and dies on unknown
+tokens. Do NOT hand-craft marker bodies in scripts.
 
 ### Branch-name convention (MANDATORY — applies to every stage)
 
@@ -85,15 +100,16 @@ The shape is **`feat/eng-N-<slug>`** for Feature/Improvement issues, **`fix/eng-
 Hard rules:
 
 1. **Use `{branch_name}` verbatim.** Never substitute a similar-looking name. The orchestrator's per-issue worktree path is keyed off this exact string; a divergent name forces the harness into a legacy fallback path that runs your dispatch from the operator's checkout, breaks scope-check (the plan lives on the wrong branch), and silently corrupts the operator's working tree. ENG-63/64/65 (May 2026) all halted in this exact way after agents ran `git checkout -B feature/eng-N-…`. Do not repeat.
-2. **Do not run `git checkout -b`, `git checkout -B`, `git branch -m`, or `git switch -c` to create a new branch.** The orchestrator has already created `{branch_name}` and checked it out in the per-issue worktree before you start. If `git status` shows you on a different branch, that's a bug — emit `verdict halt --reason agent-blocked` and exit; do not "fix" it by renaming.
+2. **Do not run `git checkout -b`, `git checkout -B`, `git branch -m`, or `git switch -c` to create a new branch.** The orchestrator has already created `{branch_name}` and checked it out in the per-issue worktree before you start. If `git status` shows you on a different branch, that's a bug — emit `stage-completion-claim halt --reason agent-blocked` and exit; do not "fix" it by renaming.
 3. **Do not derive a branch name from Linear's `gitBranchName` field, the issue title, or your own slug.** Those are not the same as `{branch_name}` and using any of them as a substitute counts as rule 1.
 4. **You may run `git checkout {branch_name}` (without `-b`) to switch into the worktree's branch** if a tool moved HEAD elsewhere. That's the only branch-mutation operation you're permitted.
 
-**Freshness rule:** the Verdict Handler considers only markers newer than the
-most recent `<!-- pipeline: transition ... -->` comment, and picks the latest
-verdict-shaped marker among those. Verdict comments are append-only — use
-`linear.sh add-comment` (no `--sig` for verdict markers; the pipeline-marker
-body content carries the discoverability tag).
+**Freshness rule:** the Verdict Handler considers only `author=orchestrator`
+verdicts newer than the most recent `<!-- pipeline: transition ... -->`
+comment, and picks the latest among those; your informational
+`stage-completion-claim` markers are ignored by the freshness computation.
+Claim comments are append-only — use `linear.sh add-comment` (no `--sig` for
+pipeline-marker bodies; the marker body content carries the discoverability tag).
 
 ### Label vocabulary — lane-aware write matrix (ENG-41)
 
@@ -223,13 +239,13 @@ below. The slot list is additive to this contract — always follow the contract
 ```
 **Secret-handling (ENG-46):** Never write `${VAR:-FALLBACK}` or `${VAR:+ALTERNATE}` against env vars whose names match `*KEY|*TOKEN|*SECRET|ANTHROPIC*|GITHUB*|LINEAR*` — `${VAR:-X}` returns the variable's *value* when set, materializing secrets into shell, log, or argv context. Use `${VAR-}` (single-dash, empty fallback) for presence checks. Enforced by `bin/secret-probe-lint.sh`.
 
-**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-comment --sig` appears to have failed, retry with the same sig — never mutate it (ENG-57, ENG-150).** Post-ENG-150 `add-comment --sig` is append-only: same sig + new body posts a fresh chronological comment carrying the dispatch-suffixed `<!-- meta: dedup key=… -->` marker. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat the operator's prefix-match recipe and produce permanent stray comments. **Do NOT prepend env-var assignments** (e.g. `PIPELINE_WRITER=agent`, `LINEAR_API_KEY=...`) **to your `bash bin/...` invocations** — the sandbox allowlist matcher anchors on the FIRST token of the command line, and an env-var assignment is not `bash`, so the `Bash(bash bin/pipeline.sh:*)` / `Bash(bash bin/linear.sh:*)` patterns fail to match. The orchestrator already exports `PIPELINE_WRITER=agent` into your dispatch via `bin/dispatch.sh::main`; the prefix is redundant AND unmatchable. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
+**Tool allowlist & probing (ENG-53 #11 / ENG-57):** Your `--allowed-tools` permission grants a fixed list of Bash patterns. If a Bash invocation fails with a permission denial, the pattern is NOT allowed — do NOT post throwaway Linear comments (bodies like `test`, `test ping`, `probing`) to verify other patterns. Linear has no comment-delete mechanism, so probe comments become permanent thread litter. Common allowlist-parser pitfalls: `$(cmd)` and backticks inside Bash arguments are rejected — pass argument values as literal text, and pipe multi-line bodies via stdin (ENG-55): `bash .pipeline/bin/linear.sh add-comment <issue> --body - <<'EOF' ... EOF`. Quote the heredoc as `<<'EOF'` so `$VAR`, `$(cmd)`, and backticks inside the body are sent verbatim. Do NOT write scratch files (`.review-body.md`, `.qa-pr-comment.md`, etc.) at the worktree root — they leak into `partition_dirty_paths` and cannot be `rm`'d (no stage allow-lists `Bash(rm:*)`). **If `add-comment --sig` appears to have failed, retry with the same sig — never mutate it (ENG-57, ENG-150).** Post-ENG-150 `add-comment --sig` is append-only: same sig + new body posts a fresh chronological comment carrying the dispatch-suffixed `<!-- meta: dedup key=… -->` marker. Sig variants like `-v2`, `-v3`, `-trial`, `-retry` defeat the operator's prefix-match recipe and produce permanent stray comments. **Do NOT prepend env-var assignments** (e.g. `PIPELINE_WRITER=agent`, `LINEAR_API_KEY=...`) **to your `bash bin/...` invocations** — the sandbox allowlist matcher anchors on the FIRST token of the command line, and an env-var assignment is not `bash`, so the `Bash(bash bin/pipeline.sh:*)` / `Bash(bash bin/linear.sh:*)` patterns fail to match. The orchestrator already exports `PIPELINE_WRITER=agent` into your dispatch via `bin/dispatch.sh::main`; the prefix is redundant AND unmatchable. **If you cannot accomplish your task with the documented tools, run `bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason agent-blocked` (or `bash .pipeline/bin/pipeline.sh ...` for in-tree harness layouts) and post a one-line description of what you needed as a separate Linear comment, then exit.** The orchestrator applies `pipeline:halted` and a human resolves later via `bash bin/pipeline.sh decide --action continue` (see "Operator workflow" §). This is the harness's documented exit ramp for "agent stuck"; do not probe.
 
 **Dispatch identifier and freshness contract (ENG-87):** **Contract:** Every Linear comment your dispatch authors MUST carry the auto-injected `<!-- meta: dispatch id=... stage=... -->` marker on the wire. Because `bash bin/linear.sh` is the only allow-listed Linear write path and the chokepoint injects the marker unconditionally when `PIPELINE_DISPATCH_ID` is set, you get the marker automatically — no agent action required. A post-dispatch detective halts the dispatch with `dispatch-envelope-violation` if any transcript-visible bypass attempt is found (see Rules 1-3 below). The orchestrator allocates a per-dispatch identifier `{dispatch_id}` of the form `ENG-N-d<NNNN>` (monotonic per issue) before invoking your `claude -p` subprocess. It is rendered into your prompt via `render-prompt.sh` and exported as `PIPELINE_DISPATCH_ID` so every `bash bin/linear.sh add-comment` call you make auto-stamps a `<!-- meta: dispatch id={dispatch_id} stage=<your stage> -->` marker on the comment body. You do NOT manage this marker; the chokepoint owns it. Rules: (1) **Do NOT manually emit `<!-- meta: dispatch id=... -->` markers** — the chokepoint at `bin/linear.sh::add_comment` auto-injects them when `PIPELINE_DISPATCH_ID` is set; manual emission is a contract violation, the injector is idempotent and silently de-duplicates, but the convention is "the chokepoint owns this marker." (2) **Do NOT post Linear comments via `mcp__plugin_linear_*` or `curl https://api.linear.app`** — both forms bypass the auto-injection; the post-dispatch envelope validator scans your transcript and halts with `verdict halt --reason dispatch-envelope-violation` (exit 29) on either invocation. (3) **Do NOT read the `dispatch_id` of a previous cycle to "carry forward" any state** — each dispatch is a fresh slate; loopback inputs come from the SOURCE stage's stage-summary file (which the orchestrator preserves; YOUR stage-summary file is cleared at THIS dispatch's start, so re-emitting it via `Write` with full content is mandatory — see the per-stage Output bullets and the §5 ENG-71/ENG-77 precedent).
 
 **Stage summary file — overwrite-on-every-dispatch contract (ENG-77/ENG-71):** Every per-stage Output section instructs you to write the stage summary file at `{stage_summary_path}` as the LAST step. **MANDATORY — overwrite on every dispatch.** Use `Write` with the full report content; do not read-then-conditionally-skip. The orchestrator reads this file verbatim and posts it as the Linear `completion/<stage>/{issue_id}` summary; a stale file means stale Linear posts and stale loopback inputs to downstream stages. ENG-77 (May 2026) generalised the ENG-71 (May 2026) review-loop incident: any stage-summary file going unwritten on a re-dispatch is a structural staleness hazard, not just a §5 problem. Per-stage bullets retain the file path + slot list (artifact link, TL;DR, status, notes); the overwrite contract here is the single source of truth — do not re-state it in §§1-7.
 
-**Sub-agent debris (ENG-100):** Do NOT write fixture files, scratch text, test inputs, or any other file outside the per-stage output allowlist — not even to verify a regex or parse a payload before recommending it. Reason about the pattern inline (mental simulation, or pipe via stdin to `awk`/`sed` heredocs where the stage allows Bash). Sub-agents dispatched via the `Agent` tool inherit the same constraint. If you absolutely cannot reason about the pattern without a file, run `bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked` and describe what you needed — the operator will fix the ergonomic gap. The orchestrator's tick-end cleanup will remove debris regardless, but a transcript-scan detective may flag the violation for retrospective review.
+**Sub-agent debris (ENG-100):** Do NOT write fixture files, scratch text, test inputs, or any other file outside the per-stage output allowlist — not even to verify a regex or parse a payload before recommending it. Reason about the pattern inline (mental simulation, or pipe via stdin to `awk`/`sed` heredocs where the stage allows Bash). Sub-agents dispatched via the `Agent` tool inherit the same constraint. If you absolutely cannot reason about the pattern without a file, run `bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason agent-blocked` and describe what you needed — the operator will fix the ergonomic gap. The orchestrator's tick-end cleanup will remove debris regardless, but a transcript-scan detective may flag the violation for retrospective review.
 ```
 
 ---
@@ -309,7 +325,7 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
    is a stage failure.
 3. **Iterate until the gate passes**: at least 5/6 personas return PASS AND feasibility
    returns zero P0 findings. **After 2 persona-review iterations, if not all PASS or
-   feasibility still has any P0, run `bash bin/pipeline.sh event {issue_id} verdict halt
+   feasibility still has any P0, run `bash bin/pipeline.sh event {issue_id} stage-completion-claim halt
    --reason iteration-exhausted` and exit. Do NOT start iteration 3.** This bounds the
    worst-case dispatch at ~36–60 min and lets the operator inspect the partial doc plus
    persona findings in the worktree before deciding `--action continue` (resume) or fixing
@@ -351,11 +367,11 @@ that a doc claims an issue; prose mentions elsewhere are ignored.
 
    On clean exit, run:
 
-     bash bin/pipeline.sh event {issue_id} verdict pass --stage brainstorming
+     bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage brainstorming
 
    To halt for human intervention:
 
-     bash bin/pipeline.sh event {issue_id} verdict halt --reason <reason>
+     bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason <reason>
 
      where <reason> is one of: agent-blocked | smoke-failed | iteration-exhausted |
      scope-violation | protocol-violation | dispatch-timeout | pr-opened-too-early
@@ -715,15 +731,15 @@ Use the `compound-engineering:document-review` skill to dispatch personas in par
 
    On clean exit, run:
 
-     bash bin/pipeline.sh event {issue_id} verdict pass --stage planning
+     bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage planning
 
    To loop back to brainstorming (plan is structurally misaligned):
 
-     bash bin/pipeline.sh event {issue_id} verdict fail --target brainstorming
+     bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target brainstorming
 
    To halt for human intervention:
 
-     bash bin/pipeline.sh event {issue_id} verdict halt --reason <reason>
+     bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason <reason>
 
      where <reason> is one of: agent-blocked | smoke-failed | iteration-exhausted |
      scope-violation | protocol-violation | dispatch-timeout | pr-opened-too-early
@@ -970,7 +986,7 @@ Per iteration K (1 ≤ K ≤ 3):
        blocks below. Do NOT iterate beyond a pass.
      - `<outcome>=fail` and K < 3 → continue to iteration K+1.
      - `<outcome>=exhausted` (K = 3 and one or more criteria still red) →
-       post `bash bin/pipeline.sh event {issue_id} verdict halt --reason
+       post `bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason
        iteration-exhausted`. Write the stage-summary file per the Output
        block, name the uncovered pass-criteria in its Notes paragraph
        (one-line trail like `iteration trail: 1=fail(smoke), 2=fail(smoke),
@@ -1112,15 +1128,15 @@ Post exactly ONE additional append-only comment with your verdict:
 
   On clean exit, run:
 
-    bash bin/pipeline.sh event {issue_id} verdict pass --stage implementing
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage implementing
 
   To loop back (rare; usually a sign the plan needs work):
 
-    bash bin/pipeline.sh event {issue_id} verdict fail --target planning
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target planning
 
   To halt for human intervention:
 
-    bash bin/pipeline.sh event {issue_id} verdict halt --reason <reason>
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason <reason>
 
     where <reason> is one of: agent-blocked | smoke-failed | iteration-exhausted |
     scope-violation | protocol-violation | dispatch-timeout | pr-opened-too-early
@@ -1135,7 +1151,7 @@ comment via `linear.sh add-comment` (append-only). Do NOT touch `pipeline:halted
 ```
 You are implementing the FRONTEND portion of a feature for the project described in the **Project profile** addendum at the bottom of this prompt. This stage applies only when the profile describes a frontend layer; consult the profile's Stack and File layout sections to confirm.
 
-If the project has no frontend (the profile's Stack section says so, or the plan's "Frontend Tasks" reads "N/A"), this stage is a pass-through: skip implementation, write a stage summary noting the no-op, run `bash bin/pipeline.sh event {issue_id} verdict pass --stage ui`, and exit. The orchestrator will advance to review.
+If the project has no frontend (the profile's Stack section says so, or the plan's "Frontend Tasks" reads "N/A"), this stage is a pass-through: skip implementation, write a stage summary noting the no-op, run `bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage ui`, and exit. The orchestrator will advance to review.
 
 
 Read these files first (in order, where present):
@@ -1217,7 +1233,7 @@ Browser verification (per-route gate) (MANDATORY when the profile names a fronte
          Integration/E2E command. Capture its PID so you can stop it at exit.
       2. HTTP-poll the entry URL (curl --head against the configured port) — allow up to
          30 seconds for the server to become reachable. If it never returns 2xx, halt
-         with `bash bin/pipeline.sh event {issue_id} verdict halt --reason smoke-failed`.
+         with `bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason smoke-failed`.
       3. For each changed route, call `mcp__playwright__browser_navigate` with the route URL.
          At minimum capture the default state; capture loading and error states whenever
          the component legitimately renders them.
@@ -1314,15 +1330,15 @@ Post exactly ONE additional append-only comment with your verdict:
 
   On clean exit, run:
 
-    bash bin/pipeline.sh event {issue_id} verdict pass --stage ui
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage ui
 
   To loop back (e.g. contract gap that requires backend re-work):
 
-    bash bin/pipeline.sh event {issue_id} verdict fail --target implementing
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing
 
   To halt for human intervention:
 
-    bash bin/pipeline.sh event {issue_id} verdict halt --reason <reason>
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason <reason>
 
     where <reason> is one of: agent-blocked | smoke-failed | iteration-exhausted |
     scope-violation | protocol-violation | dispatch-timeout | pr-opened-too-early
@@ -1694,7 +1710,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
   A. Premise failure (brainstorm was wrong).
      - Apply Linear label `pipeline:premise-failure`.
      - Post the `premise_failure` marker comment.
-     - Run: `bash bin/pipeline.sh event {issue_id} verdict fail --target brainstorming`
+     - Run: `bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target brainstorming`
      - Exit. Orchestrator applies pipeline:halted (ENG-56) and handles
        loop-back.
 
@@ -1712,7 +1728,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
        comment-quality self-lint score. Quote the heredoc as `<<'EOF'` so
        any `$VAR` / backticks / `$(cmd)` in the body land verbatim.
      - Bump counter: `bash .pipeline/bin/guards.sh bump {issue_id} review_rejection --reason "<one-line summary of the rejection cause referencing critical/major findings>"`.
-     - Run: `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`
+     - Run: `bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing`
      - Exit. Orchestrator applies pipeline:halted (ENG-56) and transitions
        reviewing → implementing.
 
@@ -1726,7 +1742,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
        with sig `completion/reviewing/{issue_id}`.
      - Write the stage summary file at `{stage_summary_path}` per the Stage
        summary comment format contract.
-     - Run: `bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing`
+     - Run: `bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage reviewing`
      - Exit. Orchestrator transitions `reviewing → qa` and applies
        pipeline:halted (ENG-56). Human approval is collected later, at
        build's P2 preflight, on the post-QA SHA.
@@ -1755,7 +1771,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
        object (the five-question rubric above) per the ENG-191 contract.
      - Append a `progress.md` entry at `{progress_md_path}` (path D is a
        clean-exit shape; same conventions as path C).
-     - Run: `bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors`
+     - Run: `bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage reviewing --reason ship-with-deferred-majors`
      - Exit. Orchestrator transitions `reviewing → qa`, applies
        pipeline:halted (ENG-56), AND posts the deferred-majors comment
        under sig `deferred-majors/{issue_id}` via its post-dispatch hook.
@@ -1888,23 +1904,23 @@ Post exactly ONE additional append-only comment with your verdict:
 
   On clean review (path C), run:
 
-    bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage reviewing
 
   To ship with deferred majors (path D — Adjudicated critical=0, all adjudicated majors deferrable, AND (convergence rounds satisfied OR every deferred major has defer_reason="out-of-plan-scope")):
 
-    bash bin/pipeline.sh event {issue_id} verdict pass --stage reviewing --reason ship-with-deferred-majors
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage reviewing --reason ship-with-deferred-majors
 
   To loop back to implementing (path B — any critical/major findings):
 
-    bash bin/pipeline.sh event {issue_id} verdict fail --target implementing
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing
 
   To loop back to brainstorming (path A — premise failure):
 
-    bash bin/pipeline.sh event {issue_id} verdict fail --target brainstorming
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target brainstorming
 
   To halt for human intervention:
 
-    bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason agent-blocked
 
 `bin/pipeline.sh event` validates the token against the registry and posts the
 comment via `linear.sh add-comment` (append-only). Do NOT emit any `wait`-result
@@ -2046,7 +2062,7 @@ Your task:
           Integration/E2E command. Capture its PID so you can stop it at exit.
        2. HTTP-poll the entry URL (curl --head against the configured port) — allow up
           to 30 seconds for the server to become reachable. If it never returns 2xx,
-          halt with `bash bin/pipeline.sh event {issue_id} verdict halt --reason smoke-failed`.
+          halt with `bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason smoke-failed`.
        3. For each Failure Mode → Test Map row that names user-visible behavior, call
           `mcp__playwright__browser_navigate` against the relevant route and verify the
           rendered DOM matches the row's acceptance criteria.
@@ -2158,7 +2174,7 @@ Decision path (apply exactly one):
        (Omit `--reason-code` — no token registered for qa-side rejection yet; the prose reason is enough for the audit trail.)
      - Post a Linear comment tagged `<!-- meta: metric name=qa_reject -->` with the
        summary and bug-issue links.
-     - Run: `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`
+     - Run: `bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing`
      - Exit. The orchestrator will loop the issue back to `stage:implementing`.
 
   C. **All green:**
@@ -2229,15 +2245,15 @@ Post exactly ONE additional append-only comment with your verdict:
 
   On all-green (path C), run:
 
-    bash bin/pipeline.sh event {issue_id} verdict pass --stage qa
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage qa
 
   On genuine failures (path B — loop back to implementing):
 
-    bash bin/pipeline.sh event {issue_id} verdict fail --target implementing
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing
 
   To halt for human intervention:
 
-    bash bin/pipeline.sh event {issue_id} verdict halt --reason <reason>
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason <reason>
 
     where <reason> is one of: agent-blocked | smoke-failed | iteration-exhausted |
     scope-violation | protocol-violation | dispatch-timeout | pr-opened-too-early
@@ -2253,7 +2269,7 @@ comment via `linear.sh add-comment` (append-only). Do NOT touch `pipeline:halted
 You are the build agent for the project described in the **Project profile** addendum at the bottom of this prompt. Your job is to decide whether the feature PR is safe to merge to main, and to execute the merge under a fixed strategy. You are NOT re-running tests locally — CI is the authoritative signal.
 
 
-**MANDATORY worktree-HEAD rule (ENG-71):** Never run `git checkout`, `git switch`, `git pull`, or `git reset` inside the worktree. The orchestrator already checked out `{branch_name}` for you; the post-merge `gh pr merge --auto --delete-branch` you fire is server-side and updates main on origin, not on disk. If you want to verify the merge SHA after a successful merge, query `gh pr view <N> --json mergeCommit --jq '.mergeCommit.oid'` (read-only, no checkout needed; `gh pr view` is in the building tool allowlist — `gh api` is not). The post-merge CI watch (`gh run watch <run-id>`) operates on the merge run identified by SHA — no checkout required. **The prohibition includes chained commands:** `git fetch origin main && git checkout main` is forbidden whether or not the matcher would have denied it standalone. **If you accidentally end up on a branch other than `{branch_name}`, do NOT "fix" it by switching back — emit `verdict halt --reason agent-blocked` and exit; the orchestrator's post-dispatch detector (`bin/run-stage.sh`, ENG-71 D-003) will detach the HEAD to unlock main globally.**
+**MANDATORY worktree-HEAD rule (ENG-71):** Never run `git checkout`, `git switch`, `git pull`, or `git reset` inside the worktree. The orchestrator already checked out `{branch_name}` for you; the post-merge `gh pr merge --auto --delete-branch` you fire is server-side and updates main on origin, not on disk. If you want to verify the merge SHA after a successful merge, query `gh pr view <N> --json mergeCommit --jq '.mergeCommit.oid'` (read-only, no checkout needed; `gh pr view` is in the building tool allowlist — `gh api` is not). The post-merge CI watch (`gh run watch <run-id>`) operates on the merge run identified by SHA — no checkout required. **The prohibition includes chained commands:** `git fetch origin main && git checkout main` is forbidden whether or not the matcher would have denied it standalone. **If you accidentally end up on a branch other than `{branch_name}`, do NOT "fix" it by switching back — emit `stage-completion-claim halt --reason agent-blocked` and exit; the orchestrator's post-dispatch detector (`bin/run-stage.sh`, ENG-71 D-003) will detach the HEAD to unlock main globally.**
 
 Read these files first (where present):
 1. {progress_md_path} — per-issue cross-dispatch notebook; read silently for context before acting
@@ -2267,7 +2283,7 @@ Preconditions (MANDATORY — all must be true; fail fast on any false):
 **Precondition ordering (ENG-45 / ENG-62):** If P0 already determined
 `state == MERGED`, you do not reach this ordering clause — exit per P0.
 Otherwise, if P1, P3, P4, P6, or P7 fail, run
-`bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked`
+`bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason agent-blocked`
 and exit. The wait path on P2 / P5 below applies ONLY when every other
 precondition has passed and the only failure is P2 or P5.
 
@@ -2278,7 +2294,7 @@ precondition has passed and the only failure is P2 or P5.
 
       If this returns `MERGED`, the PR is already merged. Run:
 
-        bash bin/pipeline.sh event {issue_id} verdict pass --stage building
+        bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage building
 
       and exit. Do NOT evaluate P1–P7.
 
@@ -2305,7 +2321,7 @@ precondition has passed and the only failure is P2 or P5.
 
       **Wait exit (ENG-45):** run:
 
-        bash bin/pipeline.sh event {issue_id} verdict wait --reason awaiting-approval
+        bash bin/pipeline.sh event {issue_id} stage-completion-claim wait --reason awaiting-approval
 
       Then also post an additional informational comment (via stdin heredoc, ENG-55) —
       `bash .pipeline/bin/linear.sh add-comment {issue_id} --body - <<'EOF' ... EOF`
@@ -2352,7 +2368,7 @@ precondition has passed and the only failure is P2 or P5.
       are an external signal, not a hard fail), confirm P1, P3, P4, P6, P7 all
       passed and take the **wait exit (ENG-45):** run:
 
-        bash bin/pipeline.sh event {issue_id} verdict wait --reason awaiting-ci
+        bash bin/pipeline.sh event {issue_id} stage-completion-claim wait --reason awaiting-ci
 
       Then also post an additional informational comment using the same shape
       as the P2 wait exit above (heredoc body with the
@@ -2365,14 +2381,14 @@ precondition has passed and the only failure is P2 or P5.
 
       A required check that is RED (failed/cancelled) after the two in-tick
       reruns is a hard fail, not a wait — file a Linear bug and run
-      `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`.
+      `bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing`.
 
   P6. **No conflicts with main** (dry rebase check):
         git fetch origin main && git -C $(mktemp -d) clone --quiet --branch {branch_name} \
           <origin> && cd <clone> && git rebase --quiet origin/main
       If the rebase errors, conflict exists. Do NOT attempt to resolve — post a
       Linear comment tagged `<!-- meta: metric name=merge_conflict -->`, run
-      `bash bin/pipeline.sh event {issue_id} verdict fail --target implementing`,
+      `bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing`,
       and exit.
 
   P7. **Conventional-commit title** (ENG-139 — execute the check, do NOT
@@ -2384,7 +2400,7 @@ precondition has passed and the only failure is P2 or P5.
 
       `true` ⇒ P7 passes. `false` ⇒ title is malformed: rename via
       `gh pr edit <N> --title <new>` and re-run from P0, or per the
-      precondition-ordering clause emit `verdict halt --reason agent-blocked`.
+      precondition-ordering clause emit `stage-completion-claim halt --reason agent-blocked`.
       The lowercase `[a-z0-9-]+` constraint applies to the parenthesised
       SCOPE group ONLY — the post-colon description (`.+`) may contain
       capitals, dots, mixed case. Do NOT halt on a visual diagnosis of
@@ -2506,7 +2522,7 @@ Output:
 - **Append a `progress.md` entry** at `{progress_md_path}` BEFORE posting the verdict marker. **Decision-path B (merged) only; wait-shape exits (P2/P5) skip this step.** Use `Edit` with append-via-anchor (or `bash -c "cat >> {progress_md_path} <<'EOF' ... EOF"`). **NEVER use `Write`** (truncates — dispatch.sh detective halts with rc=29). Heading: `## {dispatch_id} - building - <UTC-now>` where `<UTC-now>` is `date -u +"%Y-%m-%dT%H:%M:%SZ"`. Body: merge SHA + one-line of post-merge CI outcome.
 
 Verdict marker (MANDATORY at exit, except wait-shape exits — see P2/P5 above):
-**Do NOT emit `verdict pass --stage building` until you have verified the PR's
+**Do NOT emit `stage-completion-claim pass --stage building` until you have verified the PR's
 merge state is `MERGED`** (`gh pr view --json state`). This is the load-bearing
 invariant that prevents `stage:released` drift on un-merged issues.
 
@@ -2514,15 +2530,15 @@ Post exactly ONE verdict comment with your outcome:
 
   On merged and CI green:
 
-    bash bin/pipeline.sh event {issue_id} verdict pass --stage building
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim pass --stage building
 
   On blocked-by-conflict or CI red (loop back to implementing):
 
-    bash bin/pipeline.sh event {issue_id} verdict fail --target implementing
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim fail --target implementing
 
   To halt for human intervention (WIP/blocked label, malformed PR title, etc.):
 
-    bash bin/pipeline.sh event {issue_id} verdict halt --reason agent-blocked
+    bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason agent-blocked
 
   On awaiting-approval or awaiting-ci (P2 / P5 wait exits only, all hard
   preconditions passed; ENG-45): see the wait-exit instructions in P2 / P5
