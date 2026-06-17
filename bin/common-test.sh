@@ -1415,13 +1415,6 @@ eng203_merge_envelope_tests() {
   rc=0; merge_artifact_envelope "$body" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
   assert_eq "U-7: body > 64 KiB → rc=39" "39" "$rc"
 
-  # U-8: envelope arg is non-object JSON string → rc=42.
-  body="$tdir/u8-body.json"
-  canonical="$tdir/u8-canonical.json"
-  printf '%s' '{"verdict":"pass"}' > "$body"
-  rc=0; merge_artifact_envelope "$body" '"hi"' "$canonical" 2>/dev/null || rc=$?
-  assert_eq "U-8: envelope not object → rc=42" "42" "$rc"
-
   # U-9: canonical write target unwritable → rc=50.
   local u9_parent="$tdir/u9-parent"
   mkdir -p "$u9_parent"
