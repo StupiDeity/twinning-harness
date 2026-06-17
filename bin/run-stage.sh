@@ -3028,8 +3028,8 @@ main() {
   # only), splices the orchestrator-constructed envelope keys
   # ({qa_payload_schema_version, issue_id, dispatch_id}) onto a fresh
   # canonical verdict-qa.json, halts with qa-payload-invalid on merge
-  # failure (body missing → rc=41, body malformed → rc=39, body
-  # symlink → rc=42, write failure → rc=50). The downstream
+  # failure (body missing → rc=41, body malformed → rc=39,
+  # body symlink → rc=42, write failure → rc=50). The downstream
   # _validate_qa_payload below runs on the merged canonical.
   if (( ! skip_dispatch )); then
     case "$stage" in
