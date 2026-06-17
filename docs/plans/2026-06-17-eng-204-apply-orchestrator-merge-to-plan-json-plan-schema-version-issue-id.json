@@ -1,0 +1,43 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-204",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Plan agent emits content-only plan.body.json; `bash bin/plan-schema.sh prepare` merges the envelope (plan_schema_version, issue_id) onto the body via merge_artifact_envelope and writes the canonical docs/plans/<date>-<eng>-<slug>.json that the agent commits and _validate_plan_contract gates.",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/plan-schema.sh" },
+        { "kind": "file_exists", "path": "bin/common.sh" },
+        { "kind": "file_exists", "path": "bin/render-prompt.sh" },
+        { "kind": "file_exists", "path": "bin/dispatch.sh" },
+        { "kind": "file_exists", "path": "bin/run-stage.sh" },
+        { "kind": "file_exists", "path": "AGENT_PROMPTS.md" },
+        { "kind": "file_exists", "path": "bin/plan-schema-test.sh" },
+        { "kind": "file_exists", "path": "bin/plan-schema-adversarial-test.sh" },
+        { "kind": "file_exists", "path": "bin/agent-prompts-content-test.sh" },
+        { "kind": "file_exists", "path": "bin/run-stage-test.sh" },
+        { "kind": "file_exists", "path": "bin/render-prompt-test.sh" },
+        { "kind": "grep", "path": "bin/plan-schema.sh", "pattern": "cmd_prepare", "expect_match": true },
+        { "kind": "grep", "path": "bin/plan-schema.sh", "pattern": "prepare\\)[[:space:]]+cmd_prepare", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "^plan_body_path\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "plan\\.body\\.json", "expect_match": true },
+        { "kind": "grep", "path": "bin/common.sh", "pattern": "export -f .*plan_body_path", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "plan_body_path=_resolve_plan_body_path", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "_resolve_plan_body_path\\(\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt.sh", "pattern": "_RENDER_PLAN_BODY_PATH", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "Bash\\(bash bin/plan-schema\\.sh:\\*\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/dispatch.sh", "pattern": "Bash\\(bash \\.pipeline/bin/plan-schema\\.sh:\\*\\)", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "\\$stage\" == \"planning\"", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage.sh", "pattern": "plan\\.body\\.json", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "\\{plan_body_path\\}", "expect_match": true },
+        { "kind": "grep", "path": "AGENT_PROMPTS.md", "pattern": "bash bin/plan-schema\\.sh prepare", "expect_match": true },
+        { "kind": "grep", "path": "bin/agent-prompts-content-test.sh", "pattern": "plan_body_path", "expect_match": true },
+        { "kind": "grep", "path": "bin/run-stage-test.sh", "pattern": "plan\\.body\\.json", "expect_match": true },
+        { "kind": "grep", "path": "bin/render-prompt-test.sh", "pattern": "plan_body_path", "expect_match": true },
+        { "kind": "smoke", "command": "bash bin/plan-schema.sh validate docs/plans/2026-06-17-eng-204-apply-orchestrator-merge-to-plan-json-plan-schema-version-issue-id.json --ident ENG-204", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash bin/plan-schema.sh validate-md docs/plans/2026-06-17-eng-204-apply-orchestrator-merge-to-plan-json-plan-schema-version-issue-id.md", "expect_exit": 0, "expect_stdout_match": null },
+        { "kind": "smoke", "command": "bash .githooks/pre-commit", "expect_exit": 0, "expect_stdout_match": null }
+      ]
+    }
+  ]
+}
