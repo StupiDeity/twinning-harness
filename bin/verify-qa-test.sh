@@ -1335,6 +1335,34 @@ else
 fi
 rm -f "$VQ6_BODY" "$VQ6_FILE"
 
+# VQ-7 (ENG-216): --body valid body WITHOUT --ident → rc=43 (qa-predicate-incomplete).
+# The body-merge phase requires --ident to compute the canonical path via
+# qa_predicate_path(); omitting it is a caller error that must surface a clear
+# diagnostic (not a cryptic jq or path failure). This was the fmtm coverage gap
+# in ENG-203: the branch at verify-qa.sh:662-664 existed but had no test.
+VQ7_BODY="$(write_body_sidecar 'qa-predicate-ENG-1.body.json')"
+rc=0
+out="$(bash "$VERIFIER" validate --body "$VQ7_BODY" 2>&1)" || rc=$?
+if (( rc == 43 )) && [[ "$out" == *"--body requires --ident"* ]]; then
+  pass_at "VQ-7 (ENG-216): --body without --ident → rc=43 (qa-predicate-incomplete + diagnostic)"
+else
+  fail_at "VQ-7: --body without --ident" "expected rc=43 + '--body requires --ident'; got rc=$rc, out=$out"
+fi
+rm -f "$VQ7_BODY"
+
+# VQ-8 (ENG-216): --body value is a flag (--body --ident) → rc=42.
+# _parse_validate_argv guards against $2 == --* for --body; a regression that
+# removed that guard would silently set ARG_BODY="--ident" and ARG_IDENT="".
+VQ8_BODY="$(write_body_sidecar 'qa-predicate-ENG-1.body.json')"
+rc=0
+out="$(bash "$VERIFIER" validate --body --ident --ident ENG-1 2>&1)" || rc=$?
+if (( rc == 42 )) && [[ "$out" == *"non-flag value"* ]]; then
+  pass_at "VQ-8 (ENG-216): --body <flag> → rc=42 + non-flag-value diagnostic"
+else
+  fail_at "VQ-8: --body flag-as-value" "expected rc=42 + 'non-flag value'; got rc=$rc, out=$out"
+fi
+rm -f "$VQ8_BODY"
+
 printf '\n━━━ Summary ━━━\nPASS: %d / FAIL: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
