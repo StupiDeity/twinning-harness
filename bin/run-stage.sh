@@ -2098,7 +2098,7 @@ _merge_qa_payload_envelope() {
   raw="$(PIPELINE_ISSUE_ID="$ident" PIPELINE_STAGE=qa \
     merge_artifact_envelope "$body" "$env_json" "$canonical" 2>&1)" || rc=$?
   if (( rc != 0 )); then
-    local defect
+    local defect=""
     case "$rc" in
       41) defect="qa-payload-missing" ;;
       39|42|50) defect="qa-payload-malformed" ;;
