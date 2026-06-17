@@ -1,0 +1,96 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-212",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Drop the env_json object-type recheck inside merge_artifact_envelope and retire U-8, with no change to production qa-payload or qa-predicate merge behavior.",
+      "pass_criteria": [
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "envelope is not a JSON object",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "'type == \"object\"' <<<\"\\$env_json\"",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^#   42 body is symlink$",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common.sh",
+          "pattern": "^merge_artifact_envelope\\(\\)",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common-test.sh",
+          "pattern": "U-8: envelope not object",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common-test.sh",
+          "pattern": "envelope arg is non-object JSON string",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common-test.sh",
+          "pattern": "U-10: envelope content key wins",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/common-test.sh",
+          "pattern": "U-11: empty dispatch_id",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "envelope-not-object",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "body symlink → rc=42",
+          "expect_match": true
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/common.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/common-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/run-stage.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/common-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        }
+      ]
+    }
+  ]
+}
