@@ -1,0 +1,50 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-215",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "bin/probe-test.sh is deleted from the harness via one git rm + one conventional commit; the post-rm pre-commit suite passes; no other file is modified.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash .githooks/pre-commit",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "test ! -f bin/probe-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "git log --oneline -1 --pretty=%s",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-215"
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/plans/2026-06-17-eng-215-deferred-from-eng-203-defers-known-dead-file-reversible-one-git-rm-no-re.md"
+        },
+        {
+          "kind": "file_exists",
+          "path": "docs/brainstorms/2026-06-17-eng-215-deferred-from-eng-203-defers-known-dead-file-reversible-one-git-rm-no-re-design.md"
+        },
+        {
+          "kind": "grep",
+          "path": ".githooks/pre-commit",
+          "pattern": "for t in bin/\\*-test\\.sh",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/dispatch.sh",
+          "pattern": "_dispatch_tools_autotests",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
