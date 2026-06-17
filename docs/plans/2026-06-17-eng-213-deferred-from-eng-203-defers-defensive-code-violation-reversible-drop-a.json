@@ -1,0 +1,56 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-213",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "Drop the unreachable `*)` arm from `_merge_qa_payload_envelope`'s rc → defect case in `bin/run-stage.sh`, and pin its absence via OS-9 structural assertion in `bin/run-stage-test.sh`.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-213 OS-9"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash bin/common-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/run-stage.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/run-stage-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "^      \\*\\)  defect=\"qa-payload-malformed\" ;;$",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "39\\|42\\|50\\) defect=\"qa-payload-malformed\" ;;",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "41\\) defect=\"qa-payload-missing\" ;;",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-213 OS-9",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}
