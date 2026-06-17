@@ -1018,6 +1018,15 @@ _clear_current_stage_slots() {
     rm -f "$d/qa-predicate-${ident}.json"           2>/dev/null || true
     rm -f "$d/qa-predicate-${ident}.body.json"      2>/dev/null || true
   fi
+  # ENG-204: clear plan body sidecar on planning-stage dispatch start.
+  # Per-medium primitive (CLAUDE.md ENG-87) for the new agent-owned body
+  # file. Stage-gated to planning so loopback (planning → brainstorming →
+  # planning) preserves brainstorming's slots on the brainstorm dispatch
+  # and only clears the body when planning runs again — mirrors the
+  # reviewing- and qa-gated branches above (INV-5).
+  if [[ "$stage" == "planning" ]]; then
+    rm -f "$d/plan.body.json" 2>/dev/null || true
+  fi
   return 0
 }
 
