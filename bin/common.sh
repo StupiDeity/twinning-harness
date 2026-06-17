@@ -704,7 +704,7 @@ validate_init_sh() {
 #   0  success
 #   39 body malformed (not an object / parse error / oversize)
 #   41 body missing
-#   42 body is symlink OR envelope arg is not a JSON object
+#   42 body is symlink
 #   50 mktemp / jq / mv write failure
 # Caller (NOT the helper) owns envelope-keyset discipline — see U-10 in
 # common-test.sh. Right-biased: envelope keys overwrite body keys on
@@ -720,8 +720,6 @@ merge_artifact_envelope() {
   fi
   jq -e 'type == "object"' "$body" >/dev/null 2>&1 \
     || { printf 'merge: body is not a JSON object: %s\n' "$body" >&2; return 39; }
-  jq -e 'type == "object"' <<<"$env_json" >/dev/null 2>&1 \
-    || { printf 'merge: envelope is not a JSON object\n' >&2; return 42; }
   local tmp
   tmp="$(mktemp "${canonical}.tmp.XXXXXX" 2>/dev/null)" \
     || { printf 'merge: mktemp failed for %s\n' "$canonical" >&2; return 50; }

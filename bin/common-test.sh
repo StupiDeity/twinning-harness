@@ -1415,13 +1415,6 @@ eng203_merge_envelope_tests() {
   rc=0; merge_artifact_envelope "$body" '{"a":1}' "$canonical" 2>/dev/null || rc=$?
   assert_eq "U-7: body > 64 KiB → rc=39" "39" "$rc"
 
-  # U-8: envelope arg is non-object JSON string → rc=42.
-  body="$tdir/u8-body.json"
-  canonical="$tdir/u8-canonical.json"
-  printf '%s' '{"verdict":"pass"}' > "$body"
-  rc=0; merge_artifact_envelope "$body" '"hi"' "$canonical" 2>/dev/null || rc=$?
-  assert_eq "U-8: envelope not object → rc=42" "42" "$rc"
-
   # U-9: canonical write target unwritable → rc=50.
   local u9_parent="$tdir/u9-parent"
   mkdir -p "$u9_parent"
@@ -1482,6 +1475,22 @@ eng203_body_path_helpers() {
   assert_eq "eng203_qa_predicate_body_path" "$(issue_dir ENG-1)/qa-predicate-ENG-1.body.json" "$got_pred"
 }
 eng203_body_path_helpers
+
+# ENG-212 adversarial: structural guard — the env_json type recheck removed
+# by ENG-212 must not be reintroduced. Any re-addition would violate §3
+# Self-review "Defensive-code restraint" (ENG-203 rationale: env_json is
+# caller-constructed via `jq -nc '{...}'` — an internal invariant, not a
+# system-boundary input).
+eng212_adversarial_no_env_type_recheck() {
+  local src; src="$(dirname "${BASH_SOURCE[0]}")/common.sh"
+  if grep -q 'jq.*type.*==.*object.*env_json\|env_json.*type.*==.*object' "$src" 2>/dev/null; then
+    fail_at "ENG-212 adversarial: env_json type recheck was reintroduced in common.sh" \
+      "found the removed guard — see ENG-212 for rationale"
+  else
+    : "$(( PASS++ ))"
+  fi
+}
+eng212_adversarial_no_env_type_recheck
 
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
