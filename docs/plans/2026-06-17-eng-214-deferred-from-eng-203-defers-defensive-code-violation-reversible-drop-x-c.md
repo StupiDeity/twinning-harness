@@ -1,181 +1,132 @@
 ---
 linear: ENG-214
 date: 2026-06-17
-topic: Drop paranoid `[[ -x metrics.sh ]]` guard from `merge_artifact_envelope`'s forensic emission + ENG-214 OS-1 shape pin
+topic: Drop the paranoid `-x metrics.sh` guard from merge_artifact_envelope's emission predicate
 ---
 
-# Plan — Drop the paranoid `[[ -x metrics.sh ]]` guard from `merge_artifact_envelope`
+# Plan — Drop the paranoid `-x metrics.sh` guard from `merge_artifact_envelope`
 
 ## Goal
 
-Delete the `&& [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` clause at `bin/common.sh:736` (the third conjunct guarding the forensic `envelope-overwrite` metric emission inside `merge_artifact_envelope`), and append one regression-pin test block (ENG-214 OS-1) to `bin/common-test.sh` that asserts the post-fix guard shape, so that every documented call path is unchanged AND a future re-introduction of the executable-bit check fails the pre-commit gate.
+Delete the trailing `&& [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` conjunct from the `envelope-overwrite` metric-emission predicate inside `merge_artifact_envelope` (`bin/common.sh`, currently the third conjunct on the `if` line), keeping the two load-bearing guards (`(( overlap_n > 0 ))` and `[[ -n "${PIPELINE_ISSUE_ID:-}" ]]`) and the trailing `|| true` on the `bash bin/metrics.sh …` invocation untouched, so that every documented merge contract (rc=0/39/41/42/50) and every existing test in `bin/common-test.sh::eng203_merge_envelope_tests` continues to pass unchanged.
 
 ## Anti-anchoring check
 
-* **Problem restatement (user view).** "`merge_artifact_envelope`'s forensic-emission branch guards a `bash <path>` invocation with `[[ -x <path> ]]` — a check on a property that `bash <path>` does not consult (verified at `bin/render-prompt-test.sh:671`, the project's own comment documenting that `bash "$SCRIPT_DIR/metrics.sh"` ignores the exec bit). The check is defensive code for a scenario that can't happen (`metrics.sh` is co-located in `bin/`, ships executable, and the only thing the check protects against is a non-executable but readable metrics.sh, which `bash` would run anyway)."
-* **Solution proportionality.** The Linear issue body explicitly bounds the change as `reversible_post_ship: yes, has_workaround: yes (guard is no-op), user_visible: no`. A one-clause deletion (preserving the `(( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]]` conjuncts that ARE load-bearing) plus a ~15-line grep-anchored sibling test mirrors the ENG-213 PR shape one ticket prior. No new crate, no taxonomy edit, no docs change, no companion edits in `bin/run-stage.sh` / `bin/verify-qa.sh` / `bin/metrics.sh` / `AGENT_PROMPTS.md`. Proportional.
+* **Problem restatement (user view).** "There's a paranoid `[[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` check on a tracked, checked-in sibling file that's always present, gating the best-effort forensic `envelope-overwrite` metric. The check guards a state that can't occur in production and is belt-and-braces redundant with the trailing `|| true` on the same invocation — a textbook defensive-code-restraint violation the ENG-191 reviewer flagged and deferred." The brainstorm's solution (drop the conjunct) addresses this directly — no reframing.
+* **Solution proportionality.** A one-line conjunct deletion is the smallest possible intervention for a deferred maintainability finding marked `reversible_post_ship: yes, user_visible: no, is_regression: no, has_workaround: yes (guard is a no-op), in_changed_code: yes`. No new file, no new test (D-002), no taxonomy edit, no companion edit, no rule update, no docs change. Proportional.
 * **Escalation.** Not needed — both checks pass.
 
 ## Assumption Inventory
 
-Every code-level claim below has been verified against the current worktree at `feat/eng-214-deferred-from-eng-203-defers-defensive-code-violation-reversible-drop-x-c` at plan-time `HEAD = bf59b25`.
+Every code-level claim below has been verified against the worktree at `feat/eng-214-…` at plan-time `HEAD = bcc6485`.
 
-**Branch-base freshness:** `HEAD..origin/main` empty at plan time (origin/main = bf59b25). No Task 0 rebase needed; this branch was cut from `origin/main` post-ENG-213 merge with zero divergence to absorb.
+**Branch-base freshness:** `HEAD..origin/main` NON-EMPTY at plan time. Sibling tickets ENG-212 and ENG-213 landed on `origin/main` after this branch was cut. ENG-212 (commit `45e3eee`) modified the same function (`merge_artifact_envelope` in `bin/common.sh`), dropping two lines (the `env_json` object-type recheck at the pre-rebase L723-724) and shifting the target conjunct from pre-rebase `:738` to post-rebase `:736`. The change is **orthogonal** to ENG-214's drop — different conjunct, different predicate, no merge conflict on the literal text — but the line numbers shift, so the implement agent MUST rebase before editing. ENG-213 (commit `bf59b25`) touched `bin/run-stage.sh` and `bin/run-stage-test.sh`, not `bin/common.sh` — no interaction. Both changes share the same defensive-code-restraint family; cumulatively they shrink (not expand) the guard surface of `merge_artifact_envelope`. A `Task 0: Rebase onto origin/main` entry is added at the top of Backend Tasks; all subsequent task content anchors are designed to survive the rebase (see "Content anchors" below).
 
 ### Files this plan modifies (verified `path:line`)
 
-* `bin/common.sh:699-712` — header comment for `merge_artifact_envelope`. Documents the closed rc set {0, 39, 41, 42, 50} and explicitly states *"Forensic `envelope-overwrite` metric is best-effort; failure to emit is non-fatal."* The "best-effort" framing is the design intent the `-x` guard violates by gating-out a legitimate emission whenever the exec-bit is missing.
-* `bin/common.sh:713-742` — `merge_artifact_envelope()` function body. Returns one of {0,39,41,42,50} per the enumerated return statements at L715, L716, L719, L722, L724, L727, L729, L735, L741.
-* `bin/common.sh:736` — the three-conjunct `if` guarding the forensic metric emission:
+Line numbers below are reported against the LOCAL worktree (`HEAD = bcc6485`, pre-rebase). The post-rebase shifts (after Task 0) are noted in parentheses where they differ.
+
+* `bin/common.sh:713-744` (post-rebase `:713-742`) — `merge_artifact_envelope()` function definition. Header comment at L699-712 documents the helper's contract: closed rc set `{0, 39, 41, 42, 50}`, right-biased merge semantic, "Forensic `envelope-overwrite` metric is best-effort; failure to emit is non-fatal" (L711-712). Unchanged by this plan.
+* `bin/common.sh:738` (post-rebase `:736`) — the predicate line being edited:
   ```bash
     if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]] && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]; then
   ```
-  Confirmed L736 is exactly this single-line `if` header (no continuation), and the third conjunct `&& [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` is the deletion target. The first two conjuncts (`(( overlap_n > 0 ))` for "is there actually an overlap to report" and `[[ -n "${PIPELINE_ISSUE_ID:-}" ]]` for "we have a valid issue identifier to label the metric with") are load-bearing and **MUST be preserved**.
-* `bin/common.sh:737-740` — the four-argument `bash bin/metrics.sh "envelope-overwrite" …` call the `if` guards. Invocation form is `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh"` — the script is read by `bash` as input; the executable bit on the script file is NOT consulted by this invocation form. Unchanged by this plan.
-* `bin/common-test.sh:1341-1463` — `eng203_merge_envelope_tests()` block (U-1..U-7, U-9, U-10, U-11; U-8 retired by ENG-212 per commit `4edaeb2 test(ENG-212): retire U-8 pinning test for env_json object-type recheck`). Closing `}` at L1463, immediate invocation at L1464.
-* `bin/common-test.sh:1466-1477` — `eng203_body_path_helpers()` block (path-helper shape pins added by ENG-203).
-* `bin/common-test.sh:1484-1493` — `eng212_adversarial_no_env_type_recheck()` block (the **structural-guard precedent** for the new ENG-214 OS-1: same file, same shape — defined function + immediate top-level invocation, function-body slice via `awk '/^<name>\(\) \{/,/^\}/'` on `"$(dirname "${BASH_SOURCE[0]}")/common.sh"`, regression-fail-on-substring). **Content anchor for the new ENG-214 OS-1 block's `AFTER` boundary: the literal invocation line `eng212_adversarial_no_env_type_recheck` at L1493; `BEFORE` boundary: the `printf '\ncommon-test summary: %d passed, %d failed\n'` summary line at L1495.** Approximate insertion line `~1494` (informational only).
+  Confirmed verbatim via `Read bin/common.sh L738` and `git show origin/main:bin/common.sh | sed -n '736p'` (post-rebase form identical except for line number). **Content anchor for the edit: the `if` line that opens the `envelope-overwrite` metric emission block AFTER the `mv "$tmp" "$canonical"` atomic-rename block AND BEFORE the `bash "$(dirname …)/metrics.sh" "envelope-overwrite"` invocation.** The full content fragment to remove is the substring ` && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` (leading space, ampersand-ampersand, space, opening `[[`, the `-x` test, closing `]]`).
+* `bin/common.sh:739-741` (post-rebase `:737-739`) — the `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite" …` invocation. The trailing ` >/dev/null 2>&1 || true` on L741 (post-rebase L739) is the load-bearing best-effort guarantee. Unchanged by this plan.
 
 ### Files this plan does NOT modify (verified)
 
-* `bin/metrics.sh` — the script being invoked. Unchanged; it ships executable (verified `ls -la bin/metrics.sh` → `-rwxr-xr-x`) and the invocation form `bash bin/metrics.sh` never consults the exec bit anyway.
-* `bin/render-prompt-test.sh:671` — comment explicitly documenting that `bash "$SCRIPT_DIR/metrics.sh"` does not consult the exec bit (the canonical project precedent the deletion is justified against). Unchanged.
-* `bin/run-stage.sh` — the only caller-path that flows through `merge_artifact_envelope` for qa-stage is `_merge_qa_payload_envelope` at L2089-2112 (just edited in ENG-213). The forensic-emission branch is fully internal to `merge_artifact_envelope` — no caller observes it; no test asserts its emission. Unchanged.
-* `bin/verify-qa.sh` — calls `merge_artifact_envelope` for the qa predicate via `--body` (ENG-203 brainstorm §3.1). Unchanged.
-* `bin/run-local-helpers.sh:875` — separate `-x` check on `linear.sh`, NOT in scope for ENG-214 (the deferred finding's `finding_class_key` is `maintainability:common.sh:metrics-sh-x-guard-paranoid` — scoped to common.sh, scoped to metrics.sh). If that one is genuinely paranoid too, it ships as a sibling deferred-majors ticket; this plan does not preempt it.
-* `bin/run-stage-test.sh:3606` — stub setup conditional (`if [[ ! -x "$STUB_DIR/metrics.sh" ]]; then chmod +x …`). This is test-stub fixture wiring (creates a stub metrics.sh in a tempdir), NOT a production-guard pin. Verified by reading the surrounding block: the `STUB_DIR` is a per-test fixture, not the real `bin/metrics.sh`. Unchanged.
-* `AGENT_PROMPTS.md` — no agent ever sees `merge_artifact_envelope`'s implementation; the orchestrator owns the envelope-merge surface. The agent owns the `verdict-qa.body.json` body sidecar. Unchanged.
-* `docs/runbooks/recovery.md` — references `envelope-overwrite` metric generically at L1237-1242. No documentation prose ties the metric's emission to an exec-bit check. Unchanged.
-* `CLAUDE.md` — references the `envelope-overwrite` metric in the failure-mode quick reference for the qa-payload-invalid halt class (the "forensic signal" row). No row references the `-x` guard specifically. Unchanged.
-* `learned-rules/harness/project-profile.md` — no new test file is created; the new ENG-214 OS-1 pin lands inside the existing `bin/common-test.sh`, which is already in `.githooks/pre-commit`'s `bin/*-test.sh` glob (per the project-profile addendum's "Build & test gates" Test command). Add-side test-gate closure sweep confirms no `## Build & test gates` edit needed.
+* `bin/metrics.sh` — the sibling script being stat'd by the removed conjunct. Tracked, checked in, mode `0755` (verified `stat -f "%Sp"` → `-rwxr-xr-x`). The helper invocation already points at this file and is unchanged.
+* `bin/common-test.sh:1341-1471` — `eng203_merge_envelope_tests()` (U-1, U-2, U-3, U-4, U-5, U-6, U-7, U-9, U-10, U-11; U-8 was retired by ENG-212). Verified via `Grep "U-[0-9]+"`: none of the tests export `PIPELINE_ISSUE_ID` (verified `Grep PIPELINE_ISSUE_ID bin/common-test.sh` → no matches), so the metric-emission predicate short-circuits on the second conjunct (`[[ -n "${PIPELINE_ISSUE_ID:-}" ]]`) before reaching the dropped `-x` clause. The dropped clause is unreachable from the existing test suite; the suite's pass/fail outcome is unchanged.
+* `bin/run-stage-test.sh:3606` — the only other `-x .*metrics\.sh` occurrence in `bin/` is `if [[ ! -x "$STUB_DIR/metrics.sh" ]]; then` (and sibling `chmod +x "$STUB_DIR/metrics.sh"` calls at L428, L747, L822, L1075, L1906). All operate on a per-test stub at `$STUB_DIR/metrics.sh`, NOT on the real `bin/metrics.sh` path. Unrelated to this plan's edit; no test pins the dropped conjunct.
+* `bin/poll-slot-test.sh:366`, `bin/poll-slot-test.sh:383`, `bin/stuck-tick-alarm-test.sh:76` — additional `chmod +x "$STUB_DIR/metrics.sh"` stub-creation lines. Same category as above — stub helpers, not the real bin/metrics.sh. Unrelated.
+* `bin/run-stage.sh` — orchestrator-side caller of `merge_artifact_envelope` (via `_merge_qa_payload_envelope`). The helper's observable contract (rc set, atomic write, right-biased merge) is unchanged; caller stays the same.
+* `bin/qa-payload-schema.sh`, `bin/verify-qa.sh` — qa-payload validator + predicate validator. Unrelated.
+* `AGENT_PROMPTS.md` — no agent-facing surface changes.
+* `learned-rules/harness/project-profile.md` — no new test file is added (D-002 in brainstorm), so the add-side test-gate closure sweep is moot. No `## Build & test gates` edit needed.
+* `learned-rules/harness/plan.md`, `learned-rules/harness/build.md`, learned rules generally — retrospective-owned; not edited by one-shot tickets (see CLAUDE.md "AGENT_PROMPTS.md is load-bearing" §).
+* `docs/runbooks/recovery.md`, `CLAUDE.md` — the helper's halt classes (`qa-payload-invalid`) and the rc taxonomy are unchanged, so no doc row needs updating.
+* `bin/metrics.sh` — the script being invoked. Its argv interface is unchanged (`bash bin/metrics.sh envelope-overwrite … || true`).
 
 ### Codebase precedent verified
 
-* `bin/render-prompt-test.sh:671` — *the canonical project precedent* for the deletion. Literal comment text: `# chmod +x omitted: resolver invokes via 'bash "$SCRIPT_DIR/metrics.sh"' so exec-bit is not consulted`. The project's own test code documents that the exec-bit check at `bin/common.sh:736` is testing a property the invocation form does not consult.
-* `bin/run-stage-test.sh:9905-9913` — OS-6b's AST-style grep precedent on a function body using `awk '/^<name>\(\) \{/,/^\}/'`. ENG-213 OS-1 (just committed at `8c215fb test(ENG-213): pin _merge_qa_payload_envelope case shape (OS-1)`) reused this exact `awk` shape. ENG-214 OS-1 will mirror it once more, targeting `^merge_artifact_envelope\(\) \{` instead of `^_merge_qa_payload_envelope\(\) \{`.
-* Test-gate closure (remove-side sweep): `Grep` for `-x.*metrics\.sh|metrics\.sh.*-x` across `bin/` returns:
-  - `bin/common.sh:736` — the line whose third conjunct is being deleted (the only production occurrence; the surrounding `if` line stays).
-  - `bin/run-stage-test.sh:3606` — stub-setup conditional (`if [[ ! -x "$STUB_DIR/metrics.sh" ]]`). NOT a production-guard pin; the conditional asks "is the fixture stub already executable" so the stub-setup doesn't redundantly `chmod`. Unchanged by this plan.
-  - 11 `chmod +x "$STUB_DIR/metrics.sh"` test-stub setups across `bin/*-test.sh` files (also fixture wiring, not production-guard pins). Unchanged.
-  No sibling test asserts that the `[[ -x … ]]` clause fires or gates emission. The deletion does not require an inverting assertion in any other test file.
-* Test-gate closure (add-side sweep): the new ENG-214 OS-1 pin sits inside `bin/common-test.sh`, already in the `bin/*-test.sh` glob the pre-commit hook iterates (per project-profile addendum's "Build & test gates" Test command). No new test file is created, so `learned-rules/harness/project-profile.md::"## Build & test gates"` does NOT need a companion edit.
-* Sibling-ticket precedent: ENG-213's plan (`docs/plans/2026-06-17-eng-213-…-drop-a.md`) and PR (`bf59b25 feat(eng-213): … drop *)`) shipped this same shape one ticket prior — one-line edit + ~15-line shape-pin test in the same suite. ENG-212 (`2725796 feat(eng-212): … drop check`) shipped a similar shape three days prior, retiring U-8 from the same `eng203_merge_envelope_tests` block this plan extends. ENG-214 OS-1 sits alongside U-N in the same function.
-
-### Closed-call-set invariant (existing tests)
-
-* `bin/common-test.sh:1341-1463` — `eng203_merge_envelope_tests()` (U-1..U-7, U-9, U-10, U-11) exercises `merge_artifact_envelope` across:
-  - U-1 (clean body + envelope → rc=0, no overlap → forensic branch NOT entered),
-  - U-2 (collision → envelope wins; `PIPELINE_ISSUE_ID` unset in the test → forensic branch short-circuited by the second conjunct),
-  - U-3 (rc=41), U-4/U-5/U-7 (rc=39), U-6 (rc=42), U-9 (rc=50),
-  - U-10 (collision content-key → envelope wins; same second-conjunct short-circuit),
-  - U-11 (empty-string dispatch_id; same short-circuit).
-  None of U-1..U-11 export `PIPELINE_ISSUE_ID`, so none of them exercise the third `[[ -x … ]]` conjunct — the deletion is **strictly additive to test coverage**: the existing tests stay green unchanged (no rc behaviour changes; the forensic branch's reachability under existing test fixtures is identical, gated by the second conjunct).
+* **Defensive-code-restraint precedent.** ENG-212 (commit `45e3eee` on `origin/main`) dropped a sibling internal-invariant guard (`jq -e 'type == "object"' <<<"$env_json"` at the pre-rebase L723-724) from the same function. ENG-213 (commit `bf59b25`) dropped a sibling defensive `*)` arm from `_merge_qa_payload_envelope`'s rc→defect case. Both rest on the same five-factor rubric and the same engineering directive ("Don't add error handling, fallbacks, or validation for scenarios that can't happen"). ENG-214 is the third in this family and uses identical mechanics (one-line conjunct deletion, no test edit, no taxonomy change).
+* **Test-gate closure (remove-side).** The dropped fragment is ` && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]`. Greppable tokens specific to the dropped clause: literal `-x.*metrics\.sh` matches `bin/common.sh:738` (the line being edited) and `bin/run-stage-test.sh:3606` (a `$STUB_DIR/metrics.sh` stub check — unrelated). NO sibling test file asserts the `-x metrics.sh` token on the real path. The deletion does not require an inverting assertion in any other test file. Verified via `grep -rn -E '\-x.*metrics\.sh' bin/`.
+* **Test-gate closure (add-side).** This plan adds no new test file (D-002). No `learned-rules/harness/project-profile.md::"## Build & test gates"` edit is required. Verified by inspecting the plan's File Structure — no new files.
+* **Closed-rc-set invariant.** `bin/common-test.sh::eng203_merge_envelope_tests` (U-1, U-2, U-3, U-4, U-5, U-6, U-7, U-9, U-10, U-11) exercises `merge_artifact_envelope` across the closed rc set `{0, 39, 41, 42, 50}`. The dropped conjunct does not change which rc the helper returns (it gates only the side-effect metric emission, and the helper returns 0 regardless of whether the emission fires). The U-N suite remains green without edits.
 
 ### Assumed (validated at implementation time, not pre-flight)
 
-* The implementing-stage scope-allowlist permits writes to both `bin/common.sh` and `bin/common-test.sh`. From project-profile's `## File layout`: `bin/` is listed as the canonical script directory. Verify during implementation that `partition_dirty_paths` classifies the two-file diff as in-scope (not leaked-in-scope).
-* `bash .githooks/pre-commit` runs cleanly on the post-edit branch — the new ENG-214 OS-1 block's `awk`-extracted body matches the expected substrings (first conjunct `(( overlap_n > 0 ))`, second conjunct `[[ -n "${PIPELINE_ISSUE_ID:-}" ]]`, the `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite"` invocation), and does NOT match the deleted `[[ -x` substring inside the `merge_artifact_envelope` function body.
-* No KNOWN_BROKEN allowlist edit is needed in `.githooks/pre-commit` — `common` is not in the current allowlist (verified from CLAUDE.md "Pre-commit hook" section + project-profile addendum listing the allowlist as `eng-81-reproducer, mutex, render-pr-body, render-prompt-slug`).
-* The `_validate_qa_payload` halt-flow callsite for `_merge_qa_payload_envelope` is unchanged from ENG-213's post-merge state. (ENG-213 ran first in the deferred-majors sequence; its OS-1 pin in `bin/run-stage-test.sh` remains green throughout this plan.)
+* The implementing-stage scope-allowlist permits writes to `bin/common.sh`. From `learned-rules/harness/project-profile.md::"## File layout"`: `bin/` is the canonical script directory. Verify during implementation that `partition_dirty_paths` classifies the single-file diff as in-scope.
+* `bash .githooks/pre-commit` runs cleanly on the post-edit branch — the modified `bin/common.sh` parses (`bash -n`) and every `bin/*-test.sh` outside the KNOWN_BROKEN allowlist passes (no test pins the dropped conjunct).
+* `bash bin/common-test.sh` passes standalone — `eng203_merge_envelope_tests` runs and all U-N assertions hold.
+* No KNOWN_BROKEN allowlist edit is needed in `.githooks/pre-commit` — `common-test` is not in the current allowlist (verified from CLAUDE.md "Pre-commit hook" + project-profile addendum: current entries are `eng-81-reproducer, mutex, render-pr-body, render-prompt-slug`).
 
 ## System invariants
 
-- After the edit, `merge_artifact_envelope`'s forensic-emit `if` line contains exactly two conjuncts — `(( overlap_n > 0 ))` and `[[ -n "${PIPELINE_ISSUE_ID:-}" ]]` — and contains NEITHER `[[ -x` NOR a reference to `metrics.sh` in the guard itself (the guarded body keeps its `bash …/metrics.sh "envelope-overwrite" …` invocation). verified_by: task:T2
-- `merge_artifact_envelope` (`bin/common.sh:713-742`) continues to return rc in the closed set {0, 39, 41, 42, 50} — every `return` statement in its body resolves to one of these five values. The deletion is inside the rc=0 success path, AFTER the `mv "$tmp" "$canonical"` atomic write succeeded; it does not alter any return path. verified_by: bin/common-test.sh:eng203_merge_envelope_tests
-- `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh"` is the canonical invocation form across the project; `bash <script>` does not consult the script's exec bit — the deletion does not change the production-runtime behaviour of the forensic emission for the common case (`metrics.sh` ships executable) and unlocks emission in the pathological case (`metrics.sh` somehow becomes non-executable but stays readable). verified_by: bin/render-prompt-test.sh:671 (canonical project comment)
-- The `|| true` at the end of the `bash …/metrics.sh …` invocation (`bin/common.sh:739` — the `>/dev/null 2>&1 || true` tail) preserves the "best-effort, non-fatal" contract documented in the function's header comment. The `-x` guard's deletion does NOT change this contract: a `bash` invocation against a missing or unreadable script returns non-zero, which the `|| true` already swallows. verified_by: bin/common.sh:699-712 (header comment) + bin/common.sh:739 (the `|| true` tail)
+- After the edit, the predicate line in `merge_artifact_envelope` contains `(( overlap_n > 0 ))` AND `[[ -n "${PIPELINE_ISSUE_ID:-}" ]]`, and does NOT contain `[[ -x` anywhere in its body. verified_by: task:T2
+- `merge_artifact_envelope` returns rc in the closed set `{0, 39, 41, 42, 50}` and `merge_artifact_envelope` ALWAYS returns 0 on the success path regardless of whether the `envelope-overwrite` metric emission fires (the emission is best-effort; the trailing `|| true` swallows non-zero exits). verified_by: bin/common-test.sh:eng203_merge_envelope_tests
+- The `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite" …` invocation is followed by ` >/dev/null 2>&1 || true` on the same logical line, providing the best-effort guarantee independently of any pre-call guard. verified_by: task:T2
+- `bin/metrics.sh` is a tracked, checked-in sibling of `bin/common.sh` with mode `0755`. Its presence and executability are repo-level invariants enforced by git, not runtime invariants enforced by helper code. verified_by: task:T2
 
 ## File Structure
 
 Modified (existing files, no new files):
 
-* `bin/common.sh` — delete one expression (the third conjunct `&& [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` plus the leading ` && ` separator at the end of `bin/common.sh:736`) inside `merge_artifact_envelope`'s forensic-emission guard. The line goes from a three-conjunct `if` to a two-conjunct `if`.
-* `bin/common-test.sh` — append one new regression-pin block (`ENG-214 OS-1: merge_artifact_envelope forensic-emit guard has no -x check`) between the closing `eng203_merge_envelope_tests` invocation (~L1472) and the next test function (or the test file's final summary line). Mirrors OS-6b's `awk` extraction shape.
+* `bin/common.sh` — delete one fragment (` && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]`) from the predicate line that opens the `envelope-overwrite` metric emission block inside `merge_artifact_envelope` (currently L738 pre-rebase; L736 post-rebase). No other line in the file changes.
 
-No new files. No deletes. No path or filename collisions. No directory changes.
+No new files. No deletes. No companion test edit. No path or filename collisions. No directory changes. No `learned-rules/harness/project-profile.md` edit (no new test file added).
 
 ## API Contract
 
-No new API surface. The harness has no FE↔BE wire format, no HTTP routes, no protobuf — this is an orchestrator-internal conditional-expression edit plus its sibling test pin. The agent-facing `verdict-qa.body.json` content schema and the orchestrator-facing `verdict-qa.json` envelope schema are both unchanged. The `envelope-overwrite` metric event schema (`bin/pipeline-events.json`) is unchanged.
+No new API surface. The harness has no FE↔BE wire format, no HTTP routes, no protobuf — this is a single-conjunct deletion inside an orchestrator-internal helper's emission predicate. The helper's contract (rc taxonomy 0/39/41/42/50, right-biased merge, atomic write, best-effort emission) is unchanged. The agent-facing `verdict-qa.body.json` content schema and the orchestrator-facing `verdict-qa.json` envelope schema are both unchanged.
 
 ## Backend Tasks
 
-### Task 1: Delete the `[[ -x metrics.sh ]]` conjunct at `bin/common.sh:736`
+### Task 0: Rebase onto `origin/main`
 
 - `depends_on: []`
-- `touches: bin/common.sh` (specifically `merge_artifact_envelope()` at L713-742)
+- `touches: (git operations only — no file edits)`
 
-- [ ] In `bin/common.sh`, locate the forensic-emission `if` inside `merge_artifact_envelope()`. **Content anchor for the edit: the `if` line immediately AFTER the `mv "$tmp" "$canonical"` atomic-mv block (L734-735) AND immediately BEFORE the `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite" \` invocation line.** Approximate line number `~736` (informational only; the content anchor is load-bearing).
-- [ ] Replace the entire `if` line:
-  ```bash
-    if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]] && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]; then
-  ```
-  with the two-conjunct form:
+- [ ] From the worktree root, run `git fetch origin main` to refresh `origin/main`.
+- [ ] Run `git log --oneline HEAD..origin/main` to confirm the drift (expected: ENG-212 and ENG-213 sibling commits, plus their planning/brainstorm chore commits — totalling 13 commits at plan time).
+- [ ] Run `git rebase origin/main`. Expected: clean rebase. ENG-212's diff (`45e3eee`) modifies `bin/common.sh` lines pre-rebase L707, L723-724 (the env_json recheck deletion + docstring narrowing); ENG-214's local-branch change up to plan-time `HEAD` is only the brainstorm doc + this plan doc, neither of which touches `bin/common.sh`, so no textual conflict is possible.
+- [ ] After rebase, re-verify the target conjunct is present and at its new line number by running `grep -n 'metrics.sh \]\]' bin/common.sh`. Expected: one hit at post-rebase ~L736 (down from pre-rebase L738), matching `if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]] && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]; then`.
+- [ ] Re-verify the helper's contract docstring at L707 reads `#   42 body is symlink` (ENG-212's narrowed form) and NOT the pre-ENG-212 `#   42 body is symlink OR envelope arg is not a JSON object`. If the pre-ENG-212 form survives, the rebase silently failed — STOP and inspect.
+- [ ] If `git log --oneline HEAD..origin/main` returns NON-EMPTY after rebase (or if the conjunct text is missing from `bin/common.sh`), halt with `bash bin/pipeline.sh event ENG-214 verdict halt --reason agent-blocked` and post a one-line description.
+- [ ] Do NOT `git push --force` from the implement stage — the post-rebase branch is consumed in-place by the implement agent; the orchestrator owns the eventual push.
+
+### Task 1: Delete the `-x metrics.sh` conjunct from `merge_artifact_envelope`
+
+- `depends_on: [0]`
+- `touches: bin/common.sh` (specifically `merge_artifact_envelope()`'s emission predicate inside the function body at L713-744 pre-edit / L713-742 post-edit)
+
+- [ ] In `bin/common.sh`, locate the predicate line that opens the `envelope-overwrite` metric emission block. **Content anchor for the edit: the line begins `  if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]]` AND ends with the literal substring `[[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]; then`. It is the SOLE line in `bin/common.sh` containing the substring `[[ -x "$(dirname` (verified by Grep).** Approximate post-rebase line number `~736` (informational only; the content anchor is load-bearing).
+- [ ] Delete exactly the substring ` && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` (leading single space, ampersand-ampersand, space, the `[[ -x` test, closing `]]`). Leave the rest of the line — the leading whitespace, the `if`, the first two conjuncts, the trailing `; then` — untouched.
+- [ ] Confirm the resulting line reads exactly:
   ```bash
     if (( overlap_n > 0 )) && [[ -n "${PIPELINE_ISSUE_ID:-}" ]]; then
   ```
-  The change drops the trailing ` && [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` clause and its preceding ` && ` separator. Whitespace and the leading two-space indent before `if` are preserved.
-- [ ] Do NOT alter the body of the guarded block (`bin/common.sh:737-740`). The `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite" …` invocation, its arguments, the `>/dev/null 2>&1 || true` tail, and the closing `fi` are all unchanged.
-- [ ] Do NOT alter the function's header comment (`bin/common.sh:699-712`). The "Forensic `envelope-overwrite` metric is best-effort; failure to emit is non-fatal." sentence already documents the post-fix contract correctly — the `|| true` tail in the invocation is the load-bearing best-effort mechanism, not the deleted `-x` guard.
+  (Two leading spaces, `if`, the two surviving conjuncts joined by `&&`, semicolon, `then`.)
+- [ ] Do NOT edit the helper's header comment (L699-712 in the post-rebase tree). The "Forensic `envelope-overwrite` metric is best-effort; failure to emit is non-fatal" line at L711-712 is the contract claim this edit is making good on; do not weaken or strengthen it.
+- [ ] Do NOT edit the `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" "envelope-overwrite"` invocation on the next line (post-rebase L737-739) — the `bash …/metrics.sh` path stays as is; only the predicate guarding the invocation changes.
+- [ ] Do NOT edit the trailing `>/dev/null 2>&1 || true` on the invocation's final line — that's the load-bearing best-effort mechanism and the entire safety story for this edit.
 - [ ] Run `bash -n bin/common.sh` to confirm the file still parses.
-- [ ] Do NOT touch `bin/run-local-helpers.sh:875` (the separate `-x` check on `linear.sh` — out of scope; different finding class).
-- [ ] Do NOT touch any test-stub `chmod +x` or `[[ ! -x "$STUB_DIR/metrics.sh" ]]` callsite — those are fixture wiring for stub directories, not production guards. Verified: only `bin/common.sh:736` is the production guard.
 
-### Task 2: Append ENG-214 OS-1 regression-pin test to `bin/common-test.sh`
+### Task 2: Verify post-edit invariants via the existing test suite
 
 - `depends_on: [1]`
-- `touches: bin/common-test.sh` (append ~25 lines after the `eng203_merge_envelope_tests` invocation)
-
-- [ ] Locate the end of the ENG-212 adversarial block in `bin/common-test.sh`. **Content anchor for the insertion: AFTER the literal invocation line `eng212_adversarial_no_env_type_recheck` (immediately following its closing `}` ~L1493) AND BEFORE the `printf '\ncommon-test summary…'` summary line at L1495.** Approximate line number `~1494` (informational only). Sitting after ENG-212's adversarial block keeps the deferred-from-ENG-203 polish tests in source order alongside their sibling.
-- [ ] Append a new function `eng214_adversarial_no_metrics_x_guard` plus its immediate invocation, mirroring the ENG-212 adversarial-block shape verbatim (function definition + immediate call at top-level, file path resolved via `"$(dirname "${BASH_SOURCE[0]}")/common.sh"` — the same idiom ENG-212 uses at `bin/common-test.sh:1485`). Use a Bash `=~` regex AND a substring check on the function-body slice; both must agree:
-
-  ```bash
-  # ─── ENG-214: drop paranoid -x metrics.sh guard shape pin ───
-  # Regression-pin against re-introduction of the `[[ -x .../metrics.sh ]]`
-  # conjunct in `merge_artifact_envelope`'s forensic-emission guard. The
-  # invocation form `bash "$(dirname "${BASH_SOURCE[0]}")/metrics.sh"` does
-  # not consult the script's exec bit (see bin/render-prompt-test.sh:671 —
-  # the canonical project precedent: "chmod +x omitted: resolver invokes
-  # via `bash \"\$SCRIPT_DIR/metrics.sh\"` so exec-bit is not consulted").
-  # The `|| true` tail at bin/common.sh:739 already preserves the best-
-  # effort contract documented in the function header. ENG-101's
-  # defensive-code restraint directive forbids the implement agent from
-  # adding such guards; ENG-214 removes a pre-existing instance and pins
-  # the guard shape against re-introduction. Mirrors ENG-212's adversarial
-  # structural-guard shape (bin/common-test.sh:1484-1492).
-  eng214_adversarial_no_metrics_x_guard() {
-    local src body
-    src="$(dirname "${BASH_SOURCE[0]}")/common.sh"
-    body="$(awk '/^merge_artifact_envelope\(\) \{/,/^\}/' "$src" 2>/dev/null || true)"
-    if [[ "$body" == *'(( overlap_n > 0 ))'* ]] \
-      && [[ "$body" == *'[[ -n "${PIPELINE_ISSUE_ID:-}" ]]'* ]] \
-      && [[ "$body" == *'metrics.sh" "envelope-overwrite"'* ]] \
-      && [[ "$body" != *'[[ -x'* ]]; then
-      pass_at "ENG-214 OS-1: merge_artifact_envelope forensic-emit guard has no -x check"
-    else
-      fail_at "ENG-214 OS-1: guard shape" \
-        "expected (( overlap_n > 0 )) && [[ -n PIPELINE_ISSUE_ID ]] only; got: ${body}"
-    fi
-  }
-  eng214_adversarial_no_metrics_x_guard
-  ```
-
-- [ ] Confirm the path is resolved via `"$(dirname "${BASH_SOURCE[0]}")/common.sh"` — the exact idiom ENG-212's adversarial block uses at `bin/common-test.sh:1485`. Do NOT use `$SCRIPT_DIR` even though it is in scope; the local `src=` variable mirrors ENG-212's `local src` exactly and keeps the two adversarial blocks textually parallel for future readers.
-- [ ] Confirm the block's pass-name string starts with the literal prefix `ENG-214 OS-1:` so the operator's grep recipe (per CLAUDE.md operator-mental-model.md §3) distinguishes it from ENG-213 OS-1 and ENG-203 OS-1 in the same suite.
-- [ ] Confirm there is NO column-0 ` ``` ` fence inside the test block.
-- [ ] Run `bash -n bin/common-test.sh` to confirm the file still parses.
-
-### Task 3: Run the full test suite and confirm clean
-
-- `depends_on: [1, 2]`
 - `touches: (none — verification only)`
 
 - [ ] Run `bash bin/common-test.sh` standalone. Confirm:
-  - All U-1..U-7, U-9, U-10, U-11 in `eng203_merge_envelope_tests` still pass (no behaviour change for any documented rc; the forensic-emit branch is unreachable under those fixtures because none export `PIPELINE_ISSUE_ID`, identical pre- and post-fix).
-  - The new ENG-214 OS-1 test passes (forensic-emit guard has no `-x` conjunct).
-- [ ] Run `bash bin/run-stage-test.sh` to confirm ENG-213 OS-1 (sibling shape pin on `_merge_qa_payload_envelope`, just shipped one ticket prior) still passes — unchanged by this edit.
-- [ ] Run `bash .githooks/pre-commit` from the worktree root. Confirm green gate (or the only failures are pre-existing KNOWN_BROKEN entries: `eng-81-reproducer, mutex, render-pr-body, render-prompt-slug`).
-- [ ] Run `bash bin/secret-probe-lint.sh`. Confirm clean (no secret-handling concerns — the edit is a pure no-op deletion of an executable-bit test conjunct).
+  - `eng203_merge_envelope_tests` (U-1 through U-11 except U-8 which ENG-212 retired) all pass.
+  - U-1 (rc=0 success path) still passes — the dropped clause was inside the rc=0 path, but the test does not export `PIPELINE_ISSUE_ID`, so the predicate short-circuits before reaching the dropped clause; outcome is unchanged.
+  - U-3 (rc=41), U-4/U-5/U-7 (rc=39), U-6 (rc=42), U-9 (rc=50) all pass — these exercise paths that `return` before the metric-emission block; the dropped clause is unreachable from them.
+- [ ] Run `bash -n bin/common.sh` again from the worktree root. Expected exit 0.
+- [ ] Run `grep -c '\[\[ -x' bin/common.sh` from the worktree root. Expected: **zero** (the file should contain no `[[ -x` test anywhere — the dropped conjunct was the only one). If non-zero, the deletion targeted the wrong line; revert and re-do.
+- [ ] Run `grep -n 'envelope-overwrite' bin/common.sh`. Expected: one hit on the `bash …/metrics.sh "envelope-overwrite"` invocation line (post-rebase L737). The invocation itself is unchanged.
+- [ ] Run `bash .githooks/pre-commit` from the worktree root. Expected: green gate (or the only failures are pre-existing KNOWN_BROKEN entries: `eng-81-reproducer, mutex, render-pr-body, render-prompt-slug`).
+- [ ] Run `bash bin/secret-probe-lint.sh`. Expected: clean. The edit removes a `-x` file-existence check; it does not introduce any env-var dereference, so secret-probe is structurally unaffected — confirm by inspection.
 
 ## Frontend Tasks
 
@@ -185,33 +136,32 @@ No frontend exists for this project (harness is bash orchestration only — no U
 
 | Failure mode | Trigger | Expected behavior | Test layer | Test name |
 |---|---|---|---|---|
-| Paranoid `[[ -x ]]` guard re-introduced post-fix | Future PR (human or agent) re-adds the `&& [[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` conjunct to `merge_artifact_envelope`'s forensic-emit `if` | Pre-commit gate fails on the new ENG-214 OS-1 pin; diff cannot land | unit | `bin/common-test.sh::ENG-214 OS-1: merge_artifact_envelope forensic-emit guard has no -x check` |
-| rc=0 success path regresses (clean body + envelope) | Clean body + envelope → `merge_artifact_envelope` returns 0; canonical merged file has all five keys | Pre- and post-fix identical: rc=0, all keys present | unit | `bin/common-test.sh::eng203_merge_envelope_tests::U-1` |
-| rc=41 documented path regresses | `verdict-qa.body.json` missing → `merge_artifact_envelope` returns 41 (before reaching the forensic-emit branch) | Pre- and post-fix identical: rc=41 | unit | `bin/common-test.sh::eng203_merge_envelope_tests::U-3` |
-| Right-bias on collision regresses (U-2/U-10/U-11) | Envelope key shadows body key | Envelope wins (jq `+` right-bias); rc=0; forensic-emit branch short-circuits via the second conjunct (`PIPELINE_ISSUE_ID` unset in these fixtures) | unit | `bin/common-test.sh::eng203_merge_envelope_tests::U-2, U-10, U-11` |
-| `metrics.sh` non-executable but readable at runtime (the only behavioural change) | Operator chmod -x bin/metrics.sh (pathological — not a real production scenario) | Pre-fix: forensic emission silently skipped (loss of forensic surface). Post-fix: forensic emission still attempted via `bash metrics.sh`; succeeds (bash doesn't consult exec bit). Best-effort `|| true` tail keeps the call non-fatal regardless. | (not pinned — pathological case; behavioural change is purely additive in coverage) | N/A — change is justified by `bin/render-prompt-test.sh:671` precedent; no new test asserts this pathological case |
-| `metrics.sh` missing at runtime (out-of-tree deployment) | metrics.sh deleted from `bin/` | Pre-fix: `[[ -x ]]` returns false → forensic emission silently skipped (loss of forensic surface; also no error visible). Post-fix: `bash metrics.sh` fails to find the script → exits non-zero → `\|\| true` swallows it; forensic emission silently skipped. Net behaviour: identical loss of forensic surface; identical lack of error. | (not pinned — pathological case; behavioural change is null in this case) | N/A |
-| Pre-commit gate fails because new test syntax-errors | Bash parser fails on the new test block | `bash -n bin/common-test.sh` (Task 2's checklist) catches it before commit; if not, pre-commit gate (Task 3) catches at commit time | smoke | `bash -n bin/common-test.sh` (manual; not a pinned test) |
+| `bin/metrics.sh` present + `PIPELINE_ISSUE_ID` set + overlap > 0 | qa-payload merge emits a collision-bearing envelope inside a real dispatch | `merge_artifact_envelope` returns 0; one `envelope-overwrite` row lands in `events.jsonl`. Pre- and post-fix identical. | unit | `bin/common-test.sh::eng203_merge_envelope_tests` (existing U-1 + U-10 cover the success path; U-10 specifically pins right-bias on a collision) |
+| `bin/metrics.sh` present + `PIPELINE_ISSUE_ID` UNSET (e.g. unit test context) + overlap > 0 | U-N tests invoke the helper outside a dispatch envelope | Second conjunct `[[ -n "${PIPELINE_ISSUE_ID:-}" ]]` short-circuits the predicate; no emission. Pre- and post-fix identical. | unit | `bin/common-test.sh::eng203_merge_envelope_tests` (existing — every U-N runs in this state) |
+| `bin/metrics.sh` present + `PIPELINE_ISSUE_ID` set + overlap == 0 | Clean disjoint-key merge inside a dispatch | First conjunct `(( overlap_n > 0 ))` short-circuits; no emission. Pre- and post-fix identical. | unit | `bin/common-test.sh::eng203_merge_envelope_tests::U-1` (clean body + envelope, no collision) |
+| `bin/metrics.sh` mode bit stripped (hypothetical `chmod -x` by an operator) + overlap > 0 + `PIPELINE_ISSUE_ID` set | Operator hand-mutated checkout | **Pre-fix:** silent skip (the `-x` returned false). **Post-fix:** `bash …/metrics.sh` still runs (bash reads scripts regardless of the `x` bit); the metric lands. Net improvement (louder forensic signal in a manually-broken state). Same rc=0 from the helper. | unit | Not pinned by a new test (defensive testing of a hypothetical operator-manufactured state — D-002 in brainstorm). The behaviour is observable post-fix only if an operator manufactures the state; unreachable from the existing test suite. |
+| `bin/metrics.sh` genuinely missing (partial checkout, hand `rm`) + overlap > 0 + `PIPELINE_ISSUE_ID` set | Filesystem-level corruption | **Pre-fix:** `-x` false, silent skip. **Post-fix:** `bash …/metrics.sh` exits non-zero on read failure; trailing `\|\| true` swallows. Helper still returns 0. Same observable outcome (no `events.jsonl` row, helper returns 0). | unit | Not pinned by a new test (defensive testing of an impossible-in-production state — D-002). The trailing `\|\| true` invariant is implicit in every U-N success-path assertion: if it weren't load-bearing, U-1 / U-10 would fail intermittently on a hypothetical broken sibling, which they don't. |
+| Closed-rc-set invariant breaks (callee `merge_artifact_envelope` starts emitting an undocumented rc) | Future contract drift inside the helper | Existing U-N suite still covers the documented set; no new pin needed. The helper's `return` statements are enumerated in System invariants. | unit | `bin/common-test.sh::eng203_merge_envelope_tests` (existing — no new pin in this plan) |
+| Future re-introduction of the `-x` conjunct (regression) | A future writer (human or agent) re-adds the dropped clause | **Not pinned by a new test.** Brainstorm D-002 explicitly rejected a regression pin (carrying cost outweighs the benefit for a no-op clause). Defence-in-depth: ENG-101's prompt-side defensive-code-restraint directive plus the next reviewer's adjudication catch the re-introduction. | (none — acknowledged tradeoff per brainstorm D-002) | (none) |
 
 ## Test Strategy
 
-* **Unit (new).** One regression-pin test (`ENG-214 OS-1`) in `bin/common-test.sh`, asserting the post-fix guard-conjunct shape via `awk` extraction of `merge_artifact_envelope`'s function body + glob match on the three required substrings (`(( overlap_n > 0 ))`, `[[ -n "${PIPELINE_ISSUE_ID:-}" ]]`, `metrics.sh" "envelope-overwrite"`) AND a negative-match for `[[ -x`. Catches re-introduction of the `-x` conjunct by any future writer (human or agent). Mirrors OS-6b's / ENG-213 OS-1's `awk` extraction shape verbatim.
-* **Unit (existing — confirmed unchanged).** `bin/common-test.sh::eng203_merge_envelope_tests::U-1..U-11` (minus U-8, retired by ENG-212) continue to pass without edits. None of them export `PIPELINE_ISSUE_ID`, so none of them exercise the third conjunct under either pre- or post-fix code. The deletion is strictly additive to coverage (no regression risk on the existing suite).
-* **Sibling-ticket coverage (confirmed unchanged).** `bin/run-stage-test.sh::ENG-213 OS-1` (shape-pin on `_merge_qa_payload_envelope`, shipped one ticket prior at commit `bf59b25`) continues to pass — different function, different file, no overlap with this edit.
-* **Integration.** No integration test needed — the conjunct is a function-internal control-flow primitive with no external surface. The end-to-end qa-stage envelope-merge flow is exercised by `bin/run-stage-test.sh::ENG-203 OS-1..OS-8` (rc=0 / rc=41 / rc=39 / hook wire-up) on every test run.
-* **Smoke.** `bash bin/common-test.sh` standalone (Task 3) is the per-stage smoke. `bash .githooks/pre-commit` (Task 3) is the suite-wide smoke.
-* **Adversarial coverage.** The shape-pin's adversarial intent is the regression class itself: a future defensive-coding re-introduction of the `[[ -x … ]]` conjunct. The pin asserts on the absence of any `[[ -x` substring inside the `merge_artifact_envelope` function body — both `[[ -x "$(dirname "${BASH_SOURCE[0]}")/metrics.sh" ]]` (the original) and any whitespace-edited variant (e.g. `[[ -x "${BASH_SOURCE[0]%/*}/metrics.sh" ]]`) trip it. A refactor to a positive-form check on a different property (e.g. `[[ -r `, `[[ -f `, or a `command -v`) would not trip the pin — acknowledged tradeoff. The pin's intent is regression-against-this-specific-pattern, not regression-against-all-defensive-checks; a generic detective is OQ-2 in ENG-213's brainstorm and remains deferred.
-* **No new test file.** The new pin sits inside `bin/common-test.sh`, which is already covered by `.githooks/pre-commit`'s `bin/*-test.sh` glob. No edit to `learned-rules/harness/project-profile.md::"## Build & test gates"` is required (add-side test-gate closure sweep clear).
-* **Test-gate closure (remove-side, completed).** `Grep` for `-x.*metrics\.sh|metrics\.sh.*-x` across `bin/` returns one production occurrence (`bin/common.sh:736`, the line being edited) and 13 test-stub fixture occurrences (`chmod +x "$STUB_DIR/metrics.sh"` and one `if [[ ! -x "$STUB_DIR/metrics.sh" ]]`). No test-stub occurrence pins the production guard's behaviour — they all wire up tempdir stubs unrelated to `bin/metrics.sh`. The deletion does not require an inverting assertion in any other test file.
+* **Unit (existing — confirmed unchanged).** `bin/common-test.sh::eng203_merge_envelope_tests` (U-1, U-2, U-3, U-4, U-5, U-6, U-7, U-9, U-10, U-11 — U-8 retired by ENG-212) continues to pin the closed rc set `{0, 39, 41, 42, 50}` and the right-bias merge semantic. None of the existing tests export `PIPELINE_ISSUE_ID`, so the metric-emission predicate short-circuits on the second conjunct in every test; the dropped third conjunct is unreachable from the suite. Outcome is unchanged.
+* **Unit (new).** **None.** Per brainstorm D-002: adding a U-12 pinning "silent no-op when emission fails" would require either (a) mutating `bin/metrics.sh`'s mode bit (tracked-file side effect leaking across parallel `bin/*-test.sh` runs) or (b) `PATH`-stubbing `bin/metrics.sh` (the helper resolves via `$(dirname "${BASH_SOURCE[0]}")`, so `PATH` stubbing is structurally ineffective). The trailing `|| true` is the implicit invariant pinned by every U-N success-path assertion (if it weren't load-bearing, U-1 / U-10 would be flaky). Defensive testing of defensive code is the trap; declining is the right call.
+* **Integration.** None needed — the helper is an orchestrator-internal control-flow primitive. The end-to-end qa-stage flow is exercised by `bin/run-stage-test.sh::ENG-203 OS-1 .. OS-8` on every run (these stub `metrics.sh` via `$STUB_DIR/metrics.sh` and never reach the real `bin/metrics.sh` path; unaffected by this edit).
+* **Smoke.** `bash bin/common-test.sh` standalone (Task 2) is the per-file smoke. `bash .githooks/pre-commit` (Task 2) is the suite-wide smoke. `bash -n bin/common.sh` (Task 1 + Task 2) is the parse smoke.
+* **Adversarial coverage.** The dropped conjunct's adversarial purpose was guarding a state that cannot occur (a sibling file present in the same tracked checkout going missing). The post-fix behaviour on every reachable adversarial input is **identical-or-better** than pre-fix (per §6 of the brainstorm: stripped mode bit, missing file, broken symlink, unset `BASH_SOURCE` all produce identical or louder forensic outcomes). No new adversarial pin is needed.
+* **No new test file.** No edit to `learned-rules/harness/project-profile.md::"## Build & test gates"` is required (add-side test-gate closure sweep clear).
+* **Test-gate closure (remove-side, completed).** `grep -rn -E '\-x.*metrics\.sh' bin/` returns two hits: `bin/common.sh:738` (the line being edited) and `bin/run-stage-test.sh:3606` (a `$STUB_DIR/metrics.sh` stub check, unrelated). No sibling test asserts the dropped conjunct token; the deletion does not require an inverting assertion.
 
 ## Self-review
 
-The brainstorming stage was not run for ENG-214 (no `docs/brainstorms/2026-06-17-eng-214-*.md` exists; the dispatch_history.jsonl shows planning as the first stage). The operator transitioned the issue directly from Backlog → planning because the Linear issue body — emitted by ENG-203's deferred-majors auto-creation flow under sig `deferred-majors/ENG-203` — IS the brainstorm in miniature: it carries the `finding_class_key`, the originating PR, the decision factors (`reversible_post_ship: yes, has_workaround: yes, user_visible: no`), and the disposition rationale (the five-question deferred-majors rubric per ENG-191). The ENG-213 brainstorm (sibling ticket, shipped one ticket prior, same shape — drop one conjunct from a co-located helper) provided the structural template for this plan's persona reasoning. The persona-level review below is plan-stage-only:
+Per the plan-stage prompt §3, the brainstorm's §12 six-persona review (6/6 PASS, zero P0) covers the substantive shape of the change. The plan-stage self-review below covers plan-specific concerns the brainstorm review did not address:
 
-* **Feasibility (codebase-fact verification + invariants resolution + test-gate closure).** PASS. Every `path:line` in Assumption Inventory was verified via `Read` against current code: `bin/common.sh:699-712, 713-742, 736, 737-740`; `bin/common-test.sh:1341-1463, 1466-1477, 1484-1493` (the three sibling blocks bracketing the insertion point); `bin/render-prompt-test.sh:671` (the canonical project precedent comment); `bin/run-local-helpers.sh:875` (the out-of-scope sibling `-x` on linear.sh, explicitly NOT touched). The closed-rc-set claim was verified by re-enumerating every `return` statement in `merge_artifact_envelope` and confirming each lands in {0, 39, 41, 42, 50}. The test-gate closure remove-side sweep (`Grep -x.*metrics\.sh|metrics\.sh.*-x`) confirmed one production hit (the line being edited) and zero sibling-test pins. The add-side sweep confirmed no new test file is created → no `project-profile.md` Build & test gates edit needed. **System invariants resolution sweep:** the plan's `## System invariants` section has four bullets; their `verified_by:` tokens resolve as follows — (1) `task:T2` resolves to the in-plan `### Task 2: Append ENG-214 OS-1 regression-pin test to bin/common-test.sh` whose `touches:` field names `bin/common-test.sh`, a file matching the gate-runnable glob `bin/*-test.sh`; (2) `bin/common-test.sh:eng203_merge_envelope_tests` resolves to the function defined at `bin/common-test.sh:1348` (literal `eng203_merge_envelope_tests() {` opener verified); (3) `bin/render-prompt-test.sh:671` resolves to the literal comment at that line (verified by Grep); (4) `bin/common.sh:699-712 + bin/common.sh:739` both verified by Read. All four bullets resolve cleanly. PASS.
-* **Scope.** PASS. Both tasks trace to the Linear issue's bounded change: drop the `-x` conjunct (Task 1) + add a shape pin (Task 2). Task 3 is verification, not a new artifact. The "Files this plan does NOT modify" list explicitly enumerates every file the implement agent might be tempted to also touch (the sibling `-x` on `linear.sh` at `bin/run-local-helpers.sh:875`, the test-stub setups, the runbook, AGENT_PROMPTS.md, the project profile). No task strays outside the declared File Structure (2 modified files, 0 new files). The deletion's surface is one conjunct on one line.
-* **Coherence.** PASS. Plan Goal matches the Linear issue's `Why this was deferred` rationale ("defensive-code violation — reversible (drop -x check), no regression, no user-visible surface, has workaround (guard is no-op)"). Task 1 + Task 2 jointly realise the bounded change. The Failure Mode → Test Map binds every realistic failure mode to a named existing or new test; the two pathological-case rows (non-executable / missing `metrics.sh`) are explicitly marked unpinned with rationale (additive coverage, not a regression). The plan's structure mirrors the just-shipped ENG-213 plan one-for-one (same sections, same density, same Failure Mode table layout).
-* **Design.** PASS. Plan respects module boundaries: orchestrator-side helper edited in `bin/common.sh`; orchestrator-side test pinned in `bin/common-test.sh`. No cross-module refactor; no layering violation; no circular dep introduced. The test reads the source via `awk` on a path string — no live import, no runtime coupling. Path is resolved via `"$(dirname "${BASH_SOURCE[0]}")/common.sh"` — the exact idiom ENG-212's sibling adversarial block uses at `bin/common-test.sh:1485`, keeping the two adversarial structural-guards textually parallel for future readers. The deletion preserves the documented "best-effort, non-fatal" forensic-emit contract (header comment at L711-712) via the existing `|| true` tail at L739.
-* **Product.** PASS. Plan delivers exactly what the Linear issue asked for in the issue's own language: "drop -x check". The issue's "How to triage" guidance ("Move to Todo to enter the harness queue. The finding text above is the canonical description") is honoured — the finding text drives the plan; no synthesised re-scoping. The plan matches the ENG-191/ENG-193 ship-with-known-debt loop: a small follow-up ticket that closes a deferred-majors bucket cleanly, validating the workflow as ENG-213 just did.
+* **Feasibility (codebase-fact verification).** Every `path:line` in Assumption Inventory was verified via `Read` and `Grep` against current worktree code AND against `git show origin/main:bin/common.sh` (the post-rebase tree). The closed-rc-set claim was verified by enumerating every `return` statement in `merge_artifact_envelope` (L715, L716, L719, L722, L726, L729, L737, L743 in the pre-rebase tree; L715, L716, L719, L722, L724, L727, L735, L741 in the post-rebase tree — all yield values in `{0, 39, 41, 42, 50}`). The test-gate closure remove-side sweep (`grep -rn -E '\-x.*metrics\.sh' bin/`) confirmed two hits, one of them the soon-deleted line and the other a `$STUB_DIR` stub check unrelated to the real path. The add-side sweep confirmed no new test file is created → no `project-profile.md` Build & test gates edit needed. **System invariants resolution sweep:** the four `verified_by:` tokens — `task:T2` (×3) and `bin/common-test.sh:eng203_merge_envelope_tests` (×1) — all resolve: T2 is `### Task 2: Verify post-edit invariants via the existing test suite` in Backend Tasks above and its `touches` field is "verification only" but its checklist runs `bash bin/common-test.sh` and `bash .githooks/pre-commit` (both gate-runnable per the profile's "Build & test gates" line); `bin/common-test.sh:eng203_merge_envelope_tests` exists at L1348 in the local tree and L1348 in origin/main (verified by `Grep "eng203_merge_envelope_tests"`). PASS.
+* **Scope.** Every Backend Task traces to a single brainstorm decision: Task 0 (rebase) is operational hygiene mandated by the branch-base freshness check (not a brainstorm decision but a plan-template MUST); Task 1 implements D-001 (drop the conjunct); Task 2 honours D-002 (no new test) by limiting verification to existing suites. No task strays outside the declared File Structure (`bin/common.sh` only). No gold-plating: no adjacent paranoid-guard cleanup in `merge_artifact_envelope` even though one could plausibly look for more (the function's other `[[ … ]]` guards are real adversarial-input checks at the caller→helper boundary, per brainstorm coherence persona). PASS.
+* **Coherence.** Plan Goal matches brainstorm §1 Overview ("Drop the paranoid `-x` guard on `metrics.sh` …"). Task 1 + Task 2 jointly realise the brainstorm's §2 D-001 (the one-line deletion) and §2 D-002 (no new test). Failure Mode → Test Map binds every brainstorm §6 Edge Cases row to a named existing test OR an explicit "not pinned (acknowledged tradeoff)" entry; no row is left dangling. PASS.
+* **Design.** Plan respects module boundaries: a single conjunct deletion inside a single function in a single file. No cross-module refactor; no layering violation; no new dependency. The helper's contract (rc taxonomy, atomic-write, right-bias) is unchanged — the edit is on a side-effect predicate, not a control-flow primitive. PASS.
+* **Product.** Plan delivers what the Linear issue asked for in the user's language: "drop the `-x` check (reversible, no regression, no user-visible surface)". The brainstorm rationale's user view (deferred-from-ENG-203 polish, identical observable behaviour, louder forensic signal in hypothetical manually-broken states) maps cleanly onto Task 1's single-line deletion. No reframing. PASS.
 
 Personas: 5/5 PASS · gate P0: 0 · proceeding to implementing.
