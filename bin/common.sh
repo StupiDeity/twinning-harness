@@ -107,6 +107,18 @@ qa_predicate_body_path() {
   printf '%s/qa-predicate-%s.body.json' "$(issue_dir "$issue")" "$issue"
 }
 
+# ENG-205: per-issue review-payload body-only sidecar path. The
+# review agent writes content-only JSON to this path; the
+# orchestrator (run-stage.sh::_merge_review_payload_envelope)
+# merges the schema envelope onto the body before validation, so
+# the agent never types review_schema_version / issue_id /
+# dispatch_id boilerplate. Mirrors qa_payload_body_path.
+review_payload_body_path() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "review_payload_body_path: missing issue id"
+  printf '%s/verdict-review.body.json' "$(issue_dir "$issue")"
+}
+
 # Shared per-pass_criterion validator (brainstorm D-007 — single source
 # of truth for plan.json and qa-predicate JSON validation). Callers:
 # plan-schema.sh::cmd_validate (plan.json) and verify-qa.sh::cmd_validate
@@ -958,7 +970,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied merge_artifact_envelope qa_payload_body_path qa_predicate_body_path
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied merge_artifact_envelope qa_payload_body_path qa_predicate_body_path review_payload_body_path
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-
