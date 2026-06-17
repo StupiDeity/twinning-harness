@@ -10122,6 +10122,26 @@ else
 fi
 unset _os8_hook _os8_fail
 
+# OS-9 (ENG-213): pin absence of the dropped `*)` defensive
+# fallthrough in _merge_qa_payload_envelope's rc → defect case.
+# ENG-203's review iter-2 found the *) arm mapped to the same
+# defect as the 39|42|50 arm and was unreachable given
+# merge_artifact_envelope's closed-contract rc ∈ {0,39,41,42,50}
+# (pinned by U-3..U-9 in bin/common-test.sh). Reversible: if a
+# future regression widens the contract, re-add the *) arm.
+_os9_body=""
+_os9_body="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+_os9_fail=""
+[[ "$_os9_body" == *'41) defect="qa-payload-missing"'* ]] || _os9_fail+="missing 41) arm; "
+[[ "$_os9_body" == *'39|42|50) defect="qa-payload-malformed"'* ]] || _os9_fail+="missing 39|42|50) arm; "
+[[ "$_os9_body" != *'*)  defect='* ]] || _os9_fail+="found *) defensive fallthrough (dropped by ENG-213); "
+if [[ -z "$_os9_fail" ]]; then
+  pass_at "ENG-213 OS-9: _merge_qa_payload_envelope case has no *) fallthrough"
+else
+  fail_at "ENG-213 OS-9: case-arm shape" "$_os9_fail"
+fi
+unset _os9_body _os9_fail
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
