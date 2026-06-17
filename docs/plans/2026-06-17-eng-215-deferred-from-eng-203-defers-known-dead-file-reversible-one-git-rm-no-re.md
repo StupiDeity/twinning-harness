@@ -1,146 +1,283 @@
 ---
 linear: ENG-215
 date: 2026-06-17
-topic: Delete the known-dead scratch file `bin/probe-test.sh` (reversible single git rm)
+topic: Delete the dead scratch file bin/probe-test.sh (one git rm)
 ---
 
-# Plan — Delete the known-dead `bin/probe-test.sh` scratch file
+# Plan — Delete the dead scratch file `bin/probe-test.sh`
 
 ## Goal
 
-Delete `bin/probe-test.sh` from the repository (one `git rm`), so the worktree no longer carries the ENG-203 review-loopback scratch file the dispatch sandbox left behind, the `bin/*-test.sh` glob the pre-commit hook iterates loses one always-passing no-op entry, and the per-stage autotest allowlist `_dispatch_tools_autotests` derives shrinks by exactly one matching grant — with zero behaviour change for any documented dispatch.
+`bin/probe-test.sh` is removed from the harness via one `git rm` + one
+conventional-commit message; the post-rm pre-commit suite passes; no
+other file is modified.
 
 ## Anti-anchoring check
 
-* **Problem restatement (user view).** "The harness carries an inert four-line scratch file `bin/probe-test.sh` that an ENG-203 review-loopback dispatch wrote during its run and could not delete (no `Bash(rm:*)` grant in the implementing stage's allowlist); the file's own header says `Should be deleted by next clean run; sandbox prevented rm during dispatch`. Nothing references it; it just sits in `bin/` and gets pointlessly executed (exit 0) by the pre-commit hook on every commit." The brainstorm-equivalent solution (one `git rm`) maps onto this exactly — no reframing.
-* **Solution proportionality.** A one-file deletion is the right tier for a finding the ENG-203 deferred-majors rubric explicitly tagged `reversible_post_ship: yes`, `has_workaround: yes (file is silently inert)`, `user_visible: no`. No new test, no taxonomy work, no profile edit, no docs change, no companion edits in `bin/dispatch.sh` / `.githooks/pre-commit` / `learned-rules/harness/project-profile.md`. Proportional. (Same shape pattern as sibling ENG-213 / ENG-212 deferred-majors closes — one-file polish PRs.)
-* **Escalation.** Not needed — both checks pass.
+- **Problem restatement (user view).** "The ENG-203 review-loopback
+  dispatch left a 4-line scratch executable at `bin/probe-test.sh`; the
+  reviewing agent deferred it under the ENG-191 selective-exit rubric.
+  Now that PR #175 is merged, land the deferred cleanup." The
+  brainstorm's solution — `git rm bin/probe-test.sh` — addresses
+  exactly that. No reframing.
+- **Solution proportionality.** A one-line removal of a self-described
+  dead scratch file is the smallest possible change. No new tests, no
+  allowlist edits, no helper refactor. Proportional.
+- **Escalation.** Not needed — both checks pass.
 
 ## Assumption Inventory
 
-Every code-level claim below was verified by `Read`/`Grep` against the current worktree at plan-time `HEAD = bf59b25` on branch `feat/eng-215-deferred-from-eng-203-defers-known-dead-file-reversible-one-git-rm-no-re`.
-
-**Branch-base freshness:** `HEAD..origin/main` empty at plan time (origin/main = `bf59b25`). The freshly-merged sibling deferred-from-ENG-203 tickets (ENG-212 at `2725796`, ENG-213 at `bf59b25`) landed first; this branch is current. No Task 0 rebase needed.
+Every fact below was verified against the current worktree at plan
+time. Branch-base freshness: `HEAD..origin/main` is **NON-EMPTY** at
+plan time (`d2a8968`); 13 commits ahead — the ENG-212 + ENG-213
+deferred-from-ENG-203 cleanups merged in the gap. The drift touches
+`bin/common.sh`, `bin/common-test.sh`, `bin/run-stage.sh`,
+`bin/run-stage-test.sh` only — **no overlap** with `bin/probe-test.sh`
+or with this plan's File Structure. `bin/probe-test.sh` is still
+present on `origin/main` (verified via `git show
+origin/main:bin/probe-test.sh` → identical 4-line content). Task 0
+below rebases the branch onto `origin/main` before the deletion lands.
 
 ### Files this plan modifies (verified `path:line`)
 
-* `bin/probe-test.sh:1-4` — the file slated for deletion. Verified by `Read`:
-  ```bash
+- `bin/probe-test.sh:1-4` — the entire file. Content (verified by
+  `Read`):
+
+  ```
   #!/usr/bin/env bash
   # probe-test.sh — accidental scratch file from ENG-203 review-loopback dispatch.
   # Should be deleted by next clean run; sandbox prevented rm during dispatch.
   exit 0
   ```
-  Four lines total. The file is a no-op: shebang + two comment lines + `exit 0`. The header comment is the authoritative provenance pointer (ENG-203 review-loopback dispatch, sandbox-rm-blocked).
 
-### Files this plan does NOT modify (verified)
+  This is the only file the plan modifies. No other source-file edits.
 
-* `.githooks/pre-commit:159-185` — the pre-commit hook's gate loop. Iterates `bin/*-test.sh` via `for t in bin/*-test.sh; do`; tests are RUN unconditionally and then either gated (FAIL) or skipped (KNOWN_BROKEN). `bin/probe-test.sh` is NOT on the `KNOWN_BROKEN` array (verified at `.githooks/pre-commit:88-107` — array contains `mutex-test.sh, render-pr-body-test.sh, render-prompt-slug-test.sh, eng-81-reproducer-test.sh` only). So today `bin/probe-test.sh` runs as a green gate entry (`exit 0` from L4) and contributes 1 to `total_pass`. Post-delete, `total_pass` decreases by 1; `total_fail`/`total_skip` are unaffected; the gate's pass/fail decision (which keys off `total_fail`) is unchanged. **No edit required.**
-* `bin/dispatch.sh::_dispatch_tools_autotests` — derives the per-stage allowlist by globbing `bin/*-test.sh` from the worktree at dispatch time (no hand-enumerated list). Verified by reading the ENG-196 block at `bin/dispatch-test.sh:2220-2295` — `auto_impl="$(_dispatch_tools_autotests implementing)"` is asserted to equal the disk enumeration `for f in bin/*-test.sh; do ... done`. Post-delete, both sides shrink by 1; the equality assertion holds; the test continues to pass. **No edit required.**
-* `learned-rules/harness/project-profile.md::"## Build & test gates"` — the gate command line is `bash .githooks/pre-commit` (already a glob-iterating script). No hand-enumerated list of test files lives here; the gate auto-discovers via glob. No add-side test-gate-closure edit required (no new file is created). **No edit required.**
-* `learned-rules/harness/project-profile.md::"## Tool allowlist"` — implementing/qa list `Bash(bash .githooks/pre-commit:*)` and `Bash(bash bin/secret-probe-lint.sh:*)` only; per-test entries are no longer enumerated here (ENG-196 retired them). **No edit required.**
-* `CLAUDE.md` — references the `KNOWN_BROKEN` list contents at one bullet (`eng-81-reproducer, mutex, render-pr-body, render-prompt-slug`). `probe-test.sh` is not in that list and is not referenced anywhere else in `CLAUDE.md`. **No edit required.**
-* `docs/runbooks/**` — `Grep probe-test docs/` returns zero hits. **No edit required.**
-* `AGENT_PROMPTS.md` — `Grep probe-test AGENT_PROMPTS.md` returns zero hits. **No edit required.**
+### Files this plan depends on (verified, NOT modified)
 
-### Codebase reference check
+- `.githooks/pre-commit:162` — `for t in bin/*-test.sh; do` (verified
+  via `Read`). The hook iterates the glob over the post-rm working
+  tree; `probe-test.sh`'s removal silently shrinks the iteration by
+  one element. The KNOWN_BROKEN array at `.githooks/pre-commit:88-107`
+  does NOT contain `probe-test.sh` (verified — entries are mutex,
+  render-pr-body, render-prompt-slug, eng-81-reproducer only). Hook
+  body, gate logic, and KNOWN_BROKEN list remain unchanged.
+- `bin/dispatch.sh:464-477` — `_dispatch_tools_autotests` globs
+  `bin/*-test.sh` from the worktree at dispatch time and emits one
+  `Bash(bash <file>:*)` per match for `implementing|qa`. Removing one
+  file silently shrinks the emitted argv by one token; no helper
+  change required.
+- `bin/dispatch.sh:651` — `implementing)` allowlist `base=` string
+  (verified via `Grep "Bash(git rm" bin/dispatch.sh` → line 651).
+  Includes literal `Bash(git rm:*)` AND `Bash(git commit:*)`. No
+  allowlist edit required.
+- `bin/dispatch-test.sh:2225-2294` — ENG-196 block asserts
+  `_dispatch_tools_autotests` grants every `bin/*-test.sh` on disk;
+  this remains true post-rm (one fewer file on disk, one fewer grant).
+  No new assertion needed; no existing assertion needs inverting.
+- `learned-rules/harness/project-profile.md:51` — `bin/` is the first
+  bullet of `## File layout`, so `partition_dirty_paths` buckets any
+  write/delete under `bin/` as in-scope for implementing. No profile
+  edit required.
+- `learned-rules/harness/project-profile.md:17` (Test command) and
+  `learned-rules/harness/project-profile.md:31-47` (Tool allowlist) —
+  the test command is `bash .githooks/pre-commit` which globs the
+  remaining `bin/*-test.sh` set; no enumerated entry to retire. No
+  profile edit required.
+- `docs/brainstorms/2026-06-17-eng-215-...-design.md` — frontmatter
+  `linear: ENG-215` already present; this plan is its downstream
+  artifact. No brainstorm edit.
 
-* Full-tree grep: `Grep "probe-test"` across the worktree returns exactly one file — `bin/probe-test.sh` itself (line 2 of the file is the only match: the header comment string `probe-test.sh — accidental scratch file from ENG-203 review-loopback dispatch.`). Verified by `Grep` for files_with_matches: `Found 1 file: bin/probe-test.sh`. Conclusion: no other file in the worktree imports, sources, references, or names `bin/probe-test.sh`. Deletion is safe.
-* Git history: `git log --all --oneline -- bin/probe-test.sh` returns one commit — `df32051 chore(pipeline): implementing for ENG-203`. The file was created during ENG-203's implementing dispatch and has been untouched since. (Verified by `git show df32051 --stat -- bin/probe-test.sh`.) This matches the file's own header-comment provenance claim exactly.
-* `bin/*-test.sh` count at plan-time: 80 (verified by `ls bin/*-test.sh | wc -l`). Post-delete: 79.
+### Codebase precedent verified
 
-### Assumed (validated at implementation time, not pre-flight)
+- `Grep "probe-test"` worktree-wide returns exactly two hits:
+  `bin/probe-test.sh` (the file itself) and the ENG-215 brainstorm.
+  Zero source-of-truth references in `AGENT_PROMPTS.md`,
+  `learned-rules/`, `docs/runbooks/`, or any sibling `bin/*.sh`.
+- `git log --all --oneline --diff-filter=A -- bin/probe-test.sh`
+  returns a single commit (verified in the brainstorm Assumption
+  Inventory). No revival history.
 
-* The implementing-stage scope-allowlist permits `git rm` of files under `bin/`. From project-profile's `## File layout`: `bin/` is the canonical script directory. `partition_dirty_paths` should classify the `D bin/probe-test.sh` diff as in-scope. Verify during implementation by running `bin/scope-check.sh` mentally / observing the orchestrator's tick-end sweep. (Note: agents do NOT have `Bash(rm:*)` or `Bash(git:rm:*)` allowed — the implement agent must use `git rm` via a workflow the orchestrator's scope-check already accepts for legitimate file deletions. This is the documented kind of edit that produces a `D` row in `git diff --cached`, which `partition_dirty_paths` does parse.)
-* `bash .githooks/pre-commit` runs cleanly on the post-edit branch — `total_pass` drops by 1 (79 instead of 80 gated passes), no new failures, KNOWN_BROKEN behaviour unchanged. The gate's exit-1 decision keys off `total_fail`, which is unaffected.
+### Assumed (validated at implement-time)
+
+- `git rm bin/probe-test.sh` succeeds (file tracked, no unstaged
+  working-tree edits at dispatch time). If it fails (file already
+  removed by a sibling merge, or operator-staged mod), the implement
+  agent halts with `agent-blocked` per §5.1 of the brainstorm.
+- `.githooks/pre-commit` is wired (`core.hooksPath=.githooks`) on this
+  clone — confirmed by the implement agent at commit time (commit
+  succeeds → hook ran → suite green).
 
 ## System invariants
 
-- `_dispatch_tools_autotests` (`bin/dispatch.sh`) derives its per-stage allowlist by globbing `bin/*-test.sh` from the worktree, NOT from a hand-enumerated list; removing `bin/probe-test.sh` shrinks both the on-disk `bin/*-test.sh` set and the function's grant output by exactly one matched entry, leaving the equality between disk enumeration and grant enumeration intact. verified_by: bin/dispatch-test.sh:ENG-196
+- The pre-commit hook iterates `bin/*-test.sh` via shell glob, so a
+  deleted test file shrinks the iteration set silently and no
+  hand-maintained list needs touching. verified_by: .githooks/pre-commit:bin/*-test.sh
+- `_dispatch_tools_autotests` globs `bin/*-test.sh` from the worktree
+  at dispatch time and emits one `Bash(bash <file>:*)` per match for
+  `implementing|qa`; removing `bin/probe-test.sh` silently shrinks
+  the emitted argv by one token. verified_by: bin/dispatch-test.sh:ENG-196
+- The implementing-stage base allowlist in `dispatch.sh` already
+  contains `Bash(git rm:*)` and `Bash(git commit:*)`; no allowlist
+  expansion is required for this plan. verified_by: bin/dispatch.sh:allowed_tools_for
+- `bin/probe-test.sh` is referenced by zero source files outside
+  itself (verified by worktree-wide grep at plan time); its deletion
+  cannot break any caller, import, or learned-rule reference. verified_by: task:T1
 
 ## File Structure
 
-Deleted (one file, no other edits):
+Modified (existing files):
 
-* `bin/probe-test.sh` — DELETED via `git rm`. Four-line inert scratch file (`exit 0`); unreferenced anywhere else in the worktree.
+- *(none — this plan modifies zero existing files; the only operation
+  is a tracked-file deletion via `git rm`)*
 
-No new files. No modified files. No directory changes. No path or filename collisions.
+Deleted:
+
+- `bin/probe-test.sh` — the entire 4-line scratch file (verified
+  dead per Assumption Inventory).
+
+No new files. No renames. No new tests. No allowlist edits. No
+learned-rules edits. No `AGENT_PROMPTS.md` edits. No project-profile
+edits.
 
 ## API Contract
 
-No new API surface. The harness has no FE↔BE wire format, no HTTP routes, no protobuf. This is a pure file deletion with zero behaviour change for any dispatch.
+No new API surface. The change is a single tracked-file deletion in a
+bash orchestration repo with no FE↔BE wire format, no IPC protocol,
+no HTTP route, no protobuf schema, no generated types.
 
 ## Backend Tasks
 
-### Task 1: Delete `bin/probe-test.sh` via `git rm`
+### Task 0: Rebase onto `origin/main`
 
 - `depends_on: []`
-- `touches: bin/probe-test.sh` (deletion)
+- `touches: (git working tree only — no source-file edits)`
 
-- [ ] From the worktree root, run `git rm bin/probe-test.sh`. **Content anchor for the deletion: the entire file at `bin/probe-test.sh` whose contents start with the literal `#!/usr/bin/env bash` shebang AND whose line 2 is the literal string `# probe-test.sh — accidental scratch file from ENG-203 review-loopback dispatch.`.** No line-number-only boundaries are used; the file is identified by its path AND by the verified content excerpt above.
-- [ ] Confirm the staged diff shows exactly one row: `D bin/probe-test.sh` (a single file deletion, no modifications, no renames). Run `git diff --cached --name-status` to confirm.
-- [ ] Do NOT touch `.githooks/pre-commit` (the `bin/*-test.sh` glob auto-picks up the new on-disk set).
-- [ ] Do NOT touch `bin/dispatch.sh` (the `_dispatch_tools_autotests` glob auto-picks up the new on-disk set).
-- [ ] Do NOT touch `learned-rules/harness/project-profile.md` (the gate command is glob-based; no hand-list to update).
-- [ ] Do NOT add a new file (no regression-pin test, no docs note — the file's own header comment is its tombstone, removed with it; the ENG-196 invariant test in `bin/dispatch-test.sh` continues to pin the glob-discovery behaviour).
-- [ ] Do NOT touch any other `bin/*-test.sh` file (the deletion is one row).
+`HEAD..origin/main` is NON-EMPTY at plan time (13 commits ahead — see
+Assumption Inventory). The drift is structurally clean: `origin/main`
+touches `bin/common.sh`, `bin/common-test.sh`, `bin/run-stage.sh`,
+`bin/run-stage-test.sh` only (verified via `git diff --stat
+HEAD..origin/main -- bin/`). None of those files appear in this plan's
+File Structure; the dropped file `bin/probe-test.sh` is untouched on
+`origin/main`. Rebasing now keeps the implement agent aligned with the
+ENG-212/ENG-213 cleanups that landed in the gap.
 
-### Task 2: Verify the pre-commit gate runs clean post-deletion
+Steps:
 
-- `depends_on: [1]`
-- `touches: (none — verification only)`
+- [ ] Run `git fetch origin main` then `git rebase origin/main`.
+  Expect zero conflicts (no overlapping file edits per the drift
+  analysis above).
+- [ ] After the rebase, re-verify `bin/probe-test.sh` is still present
+  by running `git ls-files bin/probe-test.sh` (expect one line of
+  output) AND `cat bin/probe-test.sh | head -4` (expect the four
+  lines quoted in Assumption Inventory). If the file is absent after
+  rebase, a sibling ticket already landed the cleanup — halt the
+  dispatch via `bash bin/pipeline.sh event ENG-215 verdict halt
+  --reason agent-blocked` and post a one-line comment naming the
+  upstream SHA that removed it; the operator can then `decide
+  --action abandon` since the work is done.
+- [ ] Re-verify `.githooks/pre-commit:162` still contains the literal
+  `for t in bin/*-test.sh; do` via `grep -n 'for t in bin/\*-test.sh'
+  .githooks/pre-commit` (expect a single match). If the line moved or
+  the iteration shape changed, re-derive the System invariants
+  resolution before proceeding to Task 1.
 
-- [ ] Run `bash .githooks/pre-commit` from the worktree root. Confirm:
-  - The header line prints `running bin/*-test.sh (79 tests)` (down from 80).
-  - `total_pass` decreases by exactly 1 from the pre-delete baseline (the previously-passing `bin/probe-test.sh` is gone).
-  - `total_fail = 0` (gate decision is green).
-  - `total_skip` matches the KNOWN_BROKEN array size (4: `mutex, render-pr-body, render-prompt-slug, eng-81-reproducer`), unchanged from pre-delete.
-  - Final exit code is 0.
-- [ ] Run `bash bin/dispatch-test.sh` standalone. Confirm:
-  - The ENG-196 block at L2233-2295 still passes. In particular, `ENG-196: _dispatch_tools_autotests grants all 79 bin/*-test.sh on disk` (count down from 80, equality with on-disk set intact).
-  - No other test in the file regresses.
-- [ ] Run `bash bin/secret-probe-lint.sh`. Confirm clean — this edit has no secret-handling concerns (pure file removal, no env-var changes).
+### Task 1: Delete `bin/probe-test.sh` and commit
+
+- `depends_on: [0]`
+- `touches: bin/probe-test.sh (delete)`
+
+Steps:
+
+- [ ] Confirm `bin/probe-test.sh` is the four-line scratch file
+  quoted in Assumption Inventory. **Edit-boundary key (content
+  anchor):** the file's body must contain BOTH the literal comment
+  `accidental scratch file from ENG-203 review-loopback dispatch` AND
+  the literal `exit 0` body. If either anchor is absent (file
+  rewritten by an interleaving change), HALT — do NOT delete a file
+  whose content no longer matches the brainstorm's description.
+- [ ] Run `git rm bin/probe-test.sh`. Expect rc=0 and the file to be
+  staged for deletion. Confirm via `git status` — exactly one entry
+  reading `deleted: bin/probe-test.sh` (no other staged changes).
+- [ ] Run `git diff --cached --stat`. Expect exactly one line:
+  `bin/probe-test.sh | 4 ----`. If any other file appears in the
+  staged diff, HALT — the rebase in Task 0 must have left local
+  changes; investigate before committing.
+- [ ] Run `git commit -m "fix(ENG-215): drop accidental scratch
+  bin/probe-test.sh from ENG-203"`. The pre-commit hook fires
+  automatically (per `core.hooksPath=.githooks`); the suite must
+  report all tests pass / SKIP only on KNOWN_BROKEN. If the hook
+  fails on a sibling test that is NOT `probe-test.sh`-related, that
+  failure is pre-existing; halt with `agent-blocked` rather than
+  modifying KNOWN_BROKEN or any other file (this is the ENG-203
+  implement-timeout-on-oversized-foundation-tickets memory class —
+  agents that band-aid pre-commit reds compound the problem).
+- [ ] Run `git log --oneline -1`. Expect a single new commit with the
+  ENG-215 message. Run `git show --stat HEAD`. Expect exactly one
+  changed file: `bin/probe-test.sh | 4 ----` (deletion).
 
 ## Frontend Tasks
 
-No frontend exists for this project (harness is bash orchestration only — no UI). All work is in Backend Tasks above.
+*(none — the harness has no UI surface; this is a bash orchestration
+repo per the project profile §Stack)*
 
 ## Failure Mode → Test Map
 
 | Failure mode | Trigger | Expected behavior | Test layer | Test name |
 |---|---|---|---|---|
-| `_dispatch_tools_autotests` and on-disk glob diverge after deletion (one side drops, the other doesn't) | Future refactor of `_dispatch_tools_autotests` to a hand-enumerated source | The existing ENG-196 AC1 assertion `ENG-196: _dispatch_tools_autotests grants all N bin/*-test.sh on disk` fails the gate | unit | `bin/dispatch-test.sh::ENG-196: _dispatch_tools_autotests grants all ${disk_count} bin/*-test.sh on disk` |
-| Pre-commit hook fails because remaining test file references the deleted scratch file | Some other `bin/*-test.sh` (or other gate-runnable script) named `probe-test.sh` as input | Pre-commit gate fails at commit time; root cause grep'able to the dangling reference | smoke | `bash .githooks/pre-commit` (Task 2) — no specific test name; the gate IS the smoke |
-| `git rm` failure (file not tracked, worktree dirty, etc.) | `git rm` rc != 0 | Implement agent's pre-commit sweep refuses to commit; orchestrator scope-check halts cleanly with the agent's surfaced error | smoke | (Task 1's `git diff --cached --name-status` check; no specific test name) |
-| Deleted file regenerated by another sandbox-rm-blocked dispatch in the future (CLASS-LEVEL hazard, not regression of THIS deletion) | A future agent dispatch writes a scratch file under `bin/` and is killed mid-run with no rm grant | Out of scope for this ticket. Sibling work in `bin/run-local-helpers.sh::clean_self_leak_residue` (ENG-100) and `clean_scratch_residue` (CLAUDE.md "Sweep + scope partition") already cover the class-level cleanup for `implementing | ui | qa` and `.scratch/` respectively; a leaked top-level `bin/*-test.sh` from a docs-only stage is the residual hazard, addressed (for non-`implementing|ui|qa` stages) by `stage_auto_cleans_self_leak` (`bin/run-local-helpers.sh`) per CLAUDE.md "Sweep + scope partition". | n/a | (out of scope) |
+| `git rm` fails because file already removed by sibling | Concurrent merge or operator hand-edit removed `bin/probe-test.sh` before Task 1 ran | `git rm` returns rc=128 with `did not match any files`; implement agent halts with `verdict halt --reason agent-blocked` per §5.1 of brainstorm; no partial-commit residue | smoke | manual operator inspection — no programmatic test (one-shot deletion, not a regression-prone surface) |
+| Pre-commit hook fails on an unrelated sibling test | A pre-existing test on `main` is red (e.g., session-limit-induced KNOWN_BROKEN drift) at dispatch time | `git commit` aborts with hook-failure output; implement agent halts with `agent-blocked` rather than editing KNOWN_BROKEN or unrelated files | smoke | `.githooks/pre-commit` itself is the gate (no separate test); operator inspects hook output |
+| `_dispatch_tools_autotests` returns empty after rm | Post-rm worktree has zero `bin/*-test.sh` files | The helper returns empty string (soft, no `bin/*-test.sh` literal leak) | unit | `bin/dispatch-test.sh:2282-2287` — already pins the empty-worktree case |
+| Sibling test grant set drifts because rm leaks into the wrong glob | A new test file with name collision is added in parallel | `_dispatch_tools_autotests` continues to glob `bin/*-test.sh` and emit one entry per match | unit | `bin/dispatch-test.sh:2237-2250` — AC1 disk-coverage assertion |
+| Hook iterates a non-`*-test.sh` file because rm corrupted the glob | Filesystem inode reuse on macOS (theoretical) | The hook's glob picks up only post-rm `bin/*-test.sh` files; the iteration order is lexical and deterministic | smoke | post-rm `.githooks/pre-commit` run during Task 1 commit; operator inspects the printed test count |
+| Plan-contract validator halts because the JSON sibling is malformed | This plan's `.json` sibling is missing or non-conforming | `bin/run-stage.sh::_validate_plan_contract` halts the planning dispatch with `plan-contract-invalid` | unit | `bin/plan-schema-test.sh` — exercises the validator on every commit via the pre-commit hook |
 
 ## Test Strategy
 
-* **Unit (new).** None. The change is a single-file deletion with zero behaviour change for any documented dispatch; no new positive assertion is needed and no symmetric regression class exists for this specific scratch file. The existing ENG-196 invariant in `bin/dispatch-test.sh` (L2233-2295) keeps the on-disk-vs-grant equality intact across the deletion — that test passed at 80 tests today and will continue to pass at 79 tests post-delete.
-* **Unit (existing — confirmed unchanged).** `bin/dispatch-test.sh::ENG-196 AC1` (disk-vs-grant equality, AC3 newly-added file auto-grant, stage-gating, empty-worktree soft behaviour) — all four sub-assertions continue to pass without edits. Every other `bin/*-test.sh` in the suite continues to pass without edits (no test names or imports `probe-test`).
-* **Integration.** No integration test needed — the file is a static no-op with no callers, no sourcers, no `read`ers. End-to-end dispatch flow on `implementing`/`qa` exercises `_dispatch_tools_autotests` indirectly through `allowed_tools_for` on every dispatch.
-* **Smoke.** `bash .githooks/pre-commit` (Task 2) is the suite-wide smoke. `bash bin/dispatch-test.sh` standalone (Task 2) re-runs the ENG-196 block as a focused smoke on the glob-discovery invariant.
-* **Adversarial coverage.** The only adversarial vector is "scratch file silently regenerates because a future dispatch leaks one." This is a class-level hazard that ENG-215's narrow scope does NOT defend against (and the brainstorm's deferred-majors rubric `reversible_post_ship: yes` accepts the residual risk). Class-level defences live in `clean_self_leak_residue` and `clean_scratch_residue` (CLAUDE.md "Sweep + scope partition") and are out of scope. If a sibling scratch file ever appears under `bin/*-test.sh` again, it would surface as a +1 line in `git status` AND as a +1 entry in `_dispatch_tools_autotests`'s output AND in the ENG-196 `auto_impl` size, with PR review catching the new file via diff.
-* **No new test file.** Skipping the regression-pin is the load-bearing proportionality call. The brainstorm-equivalent description framed the work as "one git rm, no regression" — adding a pin to assert "`bin/probe-test.sh` does not exist" would defend against an extremely narrow re-introduction class (the exact same scratch file's name and content from the same ENG-203 dispatch), without defending against the broader class (any other leaked scratch). YAGNI per CLAUDE.md "Don't add features beyond what the task requires."
-* **Test-gate closure (remove-side, completed).** The only token being removed is the file `bin/probe-test.sh` itself. `Grep` across the worktree for `probe-test` returns exactly one hit (the file's own header comment at L2). No sibling test in the project pins this token; no inverting assertion is required in any other test file.
-* **Test-gate closure (add-side, completed).** No new file is created. No new file under a gate-runnable glob means no edit to `learned-rules/harness/project-profile.md::"## Build & test gates"` is required (and the harness's gate is glob-based regardless, per ENG-196 — even a hypothetical new test file wouldn't require a profile edit).
+**Unit.** No new unit tests are required. The two pinning surfaces
+(`bin/dispatch-test.sh:ENG-196` for `_dispatch_tools_autotests`, and
+the project's pre-commit hook for `.githooks/pre-commit`) already
+pin the glob-based iteration contracts the plan depends on; both
+continue to pass post-rm because:
 
-## Self-review
+- The ENG-196 AC1 assertion globs `bin/*-test.sh` at runtime and
+  checks every member is granted. Removing one element shrinks both
+  the disk set and the autotests output simultaneously; the
+  cardinality-match check stays green.
+- The pre-commit hook's `for t in bin/*-test.sh; do` likewise
+  iterates the post-rm set with one fewer element; no per-element
+  assertion exists.
 
-Per the plan-stage prompt, the self-review section folds in the five-persona review (feasibility, scope, coherence, design, product). For ENG-215, no formal brainstorm exists (the ticket was auto-created by ENG-191's deferred-majors loop and filed directly to `Backlog`); this self-review carries the persona work in full.
+**Integration.** None. There is no FE↔BE surface, no IPC layer, no
+HTTP route — nothing to integration-test.
 
-* **Feasibility (codebase-fact verification).** Every `path:line` in Assumption Inventory was verified via `Read`/`Grep` against current code:
-  - `bin/probe-test.sh:1-4` — file contents read in full.
-  - `.githooks/pre-commit:88-107` — `KNOWN_BROKEN` array read; `probe-test.sh` confirmed absent.
-  - `.githooks/pre-commit:159-185` — gate loop read; `for t in bin/*-test.sh; do` confirmed as the iteration shape.
-  - `bin/dispatch-test.sh:2220-2295` — ENG-196 block read; disk-vs-grant equality assertion confirmed.
-  - `Grep probe-test` worktree-wide returned exactly one file (the file itself). `git log --all --oneline -- bin/probe-test.sh` returned exactly one commit. PASS.
-- **Test-gate closure remove-side sweep (feasibility):** the deleted file `bin/probe-test.sh` is the only thing being removed. The only sibling token is its own header comment, removed with it. No sibling test asserts this token. PASS — zero defects.
-- **Test-gate closure add-side sweep (feasibility):** no new files created. PASS — vacuously clean.
-- **System invariants resolution sweep (feasibility):** one bullet. Token `bin/dispatch-test.sh:ENG-196` resolves to the ENG-196 block at `bin/dispatch-test.sh:2233` (header line `printf '\n--- ENG-196: auto-derived test-runner allowlist ---\n'`) which contains the named `ENG-196: _dispatch_tools_autotests grants all ${disk_count} bin/*-test.sh on disk` pass label at L2246 of that file. PASS — token resolves.
-* **Scope.** Both task entries trace to a single goal (the one-file deletion + the gate-verification follow-up). Task 1 deletes the file; Task 2 verifies the gate. No task strays outside the declared File Structure (one deletion, no modifications). The "Files this plan does NOT modify" list explicitly enumerates the four candidate files (`.githooks/pre-commit`, `bin/dispatch.sh`, `learned-rules/harness/project-profile.md`, `CLAUDE.md`) and justifies the no-touch per surface. PASS.
-* **Coherence.** Plan Goal matches the ticket's "one git rm, no regression" framing. Backend Tasks 1+2 jointly realise the goal: delete the file, verify the suite still passes. The Failure Mode → Test Map binds the one realistic failure mode (autotest-grant divergence from disk) to the existing ENG-196 test, and the class-level "scratch file regenerated" hazard is explicitly marked out of scope with a forward pointer to the sibling sweep mechanisms. PASS.
-* **Design.** No module boundaries are crossed (one file under `bin/`). No layering violation. No circular dep introduced. No new abstractions. The change respects the harness's "no application code; just orchestration scripts" architecture by removing an inert scratch file that doesn't belong in either category. PASS.
-* **Product.** Plan delivers exactly what the Linear ticket asked for: a one-line `git rm`. No expansion to taxonomy work, regression pins, or class-level defences (all of which would be disproportionate per the deferred-majors rubric tags `reversible_post_ship: yes` and `has_workaround: yes (file is silently inert)`). The ticket framed the work as a polish PR; the plan is a polish PR. PASS.
+**Smoke.** The implement agent runs `git status` + `git diff --cached
+--stat` + `git log --oneline -1` + `git show --stat HEAD` during
+Task 1 (per the step list) as cheap structural smokes. The
+pre-commit hook is itself a per-commit smoke that runs the entire
+`bin/*-test.sh` suite — this is the broadest gate the deletion
+crosses. Plan-side smokes encoded in the sibling `.json` per-feature
+pass_criteria: `file_exists` on the deletion target (asserting it
+was previously present), a `grep`-style anti-pin asserting no
+worktree file outside `bin/probe-test.sh` and the brainstorm
+references the literal `probe-test` token, and a `smoke` rc=0 run of
+`.githooks/pre-commit` end-to-end.
 
-5/5 PASS, zero P0 findings. Proceeding to implementing.
+**Adversarial coverage.** The brainstorm's §5 (Error handling) and §6
+(Edge cases) enumerate six pre-considered adversarial paths:
+race-with-sibling-deletion, operator-local-edit, ENG-87
+envelope-validator interaction, ENG-194 reviewer-scope-awareness,
+post-rm autotests empty edge, and learned-rules/AGENT_PROMPTS
+reference. All six are addressed by the §Test Strategy entries above
+(unit + smoke combo) or by the Failure Mode → Test Map (`git rm`
+failure path + pre-commit hook failure path). The QA stage will
+exercise the deletion end-to-end via the post-implement pre-commit
+gate; no new adversarial test is warranted at N=1 cleanup (per the
+brainstorm's D-001 rejected alternative D — "generic dead-test
+detector" was explicitly rejected as gold-plating).
+
+**Test-gate closure sweep result.** No production token is removed
+from any non-deleted file (the deletion removes the entire file, not
+a token within it). The add-side closure does not apply (no new
+`bin/*-test.sh` file). The project-profile file therefore needs no
+edit. Verified via `Grep "probe-test"` returning only
+`bin/probe-test.sh` and the ENG-215 brainstorm.
