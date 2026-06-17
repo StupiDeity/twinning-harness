@@ -1,0 +1,68 @@
+{
+  "plan_schema_version": 1,
+  "issue_id": "ENG-213",
+  "features": [
+    {
+      "id": "F-1",
+      "summary": "_merge_qa_payload_envelope's rc->defect case at bin/run-stage.sh has the defensive *) arm removed (two arms only: 41) and 39|42|50)), and bin/run-stage-test.sh carries the ENG-213 OS-1 regression-pin asserting the post-fix case shape.",
+      "pass_criteria": [
+        {
+          "kind": "smoke",
+          "command": "bash bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": "ENG-213 OS-1: _merge_qa_payload_envelope case has no defensive \\*\\) arm"
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/run-stage.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "smoke",
+          "command": "bash -n bin/run-stage-test.sh",
+          "expect_exit": 0,
+          "expect_stdout_match": null
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/run-stage.sh"
+        },
+        {
+          "kind": "file_exists",
+          "path": "bin/run-stage-test.sh"
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "41\\) defect=\"qa-payload-missing\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "39\\|42\\|50\\) defect=\"qa-payload-malformed\"",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage.sh",
+          "pattern": "\\*\\)  defect=\"qa-payload-malformed\"",
+          "expect_match": false
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "ENG-213 OS-1: _merge_qa_payload_envelope case has no defensive \\*\\) arm",
+          "expect_match": true
+        },
+        {
+          "kind": "grep",
+          "path": "bin/run-stage-test.sh",
+          "pattern": "_eng213_body=\"\\$\\(awk '/\\^_merge_qa_payload_envelope",
+          "expect_match": true
+        }
+      ]
+    }
+  ]
+}

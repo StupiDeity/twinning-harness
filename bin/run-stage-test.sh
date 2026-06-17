@@ -10122,6 +10122,89 @@ else
 fi
 unset _os8_hook _os8_fail
 
+# ─── ENG-213: drop defensive *) arm shape pin ───
+# Regression-pin against re-introduction of the defensive `*)` arm in
+# `_merge_qa_payload_envelope`'s rc→defect case. The arm assigned the
+# same value as the `39|42|50)` arm — a literal no-op for the closed
+# rc set {0, 39, 41, 42, 50} promised by `merge_artifact_envelope`
+# (pinned in bin/common-test.sh U-1..U-9). Removing it tightens the
+# diagnostic surface for any future contract drift: an undocumented
+# rc now lands an empty Defect: line + the raw stderr `(rc=N)`,
+# which is louder than a silent relabel. ENG-101's defensive-code
+# restraint directive forbids the implement agent from adding such
+# arms; ENG-213 removes a pre-existing instance and pins the
+# case-statement shape against re-introduction.
+_eng213_body="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' \
+  "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+if [[ "$_eng213_body" == *'41) defect="qa-payload-missing"'* ]] \
+  && [[ "$_eng213_body" == *'39|42|50) defect="qa-payload-malformed"'* ]] \
+  && [[ "$_eng213_body" != *'*)  defect='* ]] \
+  && [[ "$_eng213_body" != *'*) defect='* ]]; then
+  pass_at "ENG-213 OS-1: _merge_qa_payload_envelope case has no defensive *) arm"
+else
+  fail_at "ENG-213 OS-1: case shape" \
+    "expected 41)+39|42|50) only; got: ${_eng213_body}"
+fi
+unset _eng213_body
+
+# ─── ENG-213 QA adversarial tests ───
+# QA-1: awk extraction must produce a non-empty body; a missing/renamed
+# function would yield "" and cause OS-1's positive arms to silently fail
+# (false FAIL rather than false PASS), but the error message would be opaque.
+# This guard makes the extraction failure explicit.
+_eng213_body_qa1="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' \
+  "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+if [[ -n "$_eng213_body_qa1" ]]; then
+  pass_at "ENG-213 QA-1: awk extraction of _merge_qa_payload_envelope is non-empty"
+else
+  fail_at "ENG-213 QA-1: awk extraction empty" \
+    "HARNESS_DIR=$HARNESS_DIR run-stage.sh=$(test -f "$HARNESS_DIR/run-stage.sh" && echo present || echo absent)"
+fi
+unset _eng213_body_qa1
+
+# QA-2: wildcard *) arm absent in ALL whitespace forms (catches tab-indented
+# variant that OS-1's space-anchored glob checks do not cover). Uses awk line
+# regex /^\s*\*)/ which matches any leading whitespace (spaces or tabs).
+_eng213_body_qa2="$(awk '/^_merge_qa_payload_envelope\(\) \{/,/^\}/' \
+  "$HARNESS_DIR/run-stage.sh" 2>/dev/null || true)"
+_eng213_wildcard_count="$(printf '%s\n' "$_eng213_body_qa2" \
+  | awk '/^[[:space:]]*\*\)/{count++} END{print count+0}')"
+if [[ "$_eng213_wildcard_count" == "0" ]]; then
+  pass_at "ENG-213 QA-2: no wildcard *) arm (any whitespace) in _merge_qa_payload_envelope"
+else
+  fail_at "ENG-213 QA-2: wildcard *) arm found (count=$_eng213_wildcard_count)" \
+    "body: ${_eng213_body_qa2:0:200}"
+fi
+unset _eng213_body_qa2 _eng213_wildcard_count
+
+# QA-3: behavioral test — undocumented rc from merge_artifact_envelope produces
+# empty defect + raw rc in halt message (the "louder forensic signal" promised
+# in brainstorm D-001). Stubs merge_artifact_envelope inside a subshell so
+# the override is invisible to sibling tests; writes to $CAPTURE_FILE so
+# captured_body() can assert the halt-comment shape.
+mkdir -p "$(issue_dir ENG-213QA3)"
+rm -f "$(issue_dir ENG-213QA3)/verdict-qa.body.json" \
+      "$(issue_dir ENG-213QA3)/verdict-qa.json"
+touch "$(issue_dir ENG-213QA3)/verdict-qa.body.json"
+reset_capture
+export PIPELINE_DISPATCH_ID=ENG-213QA3-d0001
+_qa3_rc=0
+(
+  merge_artifact_envelope() { printf 'stub: undocumented-rc\n' >&2; return 99; }
+  _merge_qa_payload_envelope ENG-213QA3 2>/dev/null
+) || _qa3_rc=$?
+_qa3_body="$(captured_body)"
+if (( _qa3_rc == 99 )) \
+  && [[ "$_qa3_body" == *'verdict result=halt reason=qa-payload-invalid'* ]] \
+  && [[ "$_qa3_body" == *'rc=99'* ]] \
+  && [[ "$_qa3_body" != *'Defect: qa-payload-'* ]]; then
+  pass_at "ENG-213 QA-3: undocumented rc=99 → empty defect + rc=99 in raw halt message"
+else
+  fail_at "ENG-213 QA-3: undocumented rc=99 behavior" \
+    "rc=$_qa3_rc body-head=${_qa3_body:0:240}"
+fi
+unset PIPELINE_DISPATCH_ID _qa3_rc _qa3_body
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
