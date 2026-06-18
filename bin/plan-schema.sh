@@ -382,37 +382,26 @@ cmd_validate_md() {
   return 0
 }
 
-# cmd_prepare --body <body> --md <md> --ident <ENG-N>
-#
-# ENG-204 in-dispatch merge: the planning agent writes a content-only
-# `plan.body.json` under $PROJECT_STATE_DIR; this subcommand merges the
-# schema envelope ({plan_schema_version: 1, issue_id: $ARG_IDENT}) onto
-# the body via merge_artifact_envelope (common.sh) and writes the merged
-# canonical at ${md_real%.md}.json (sibling of the agent's --md path).
-# The agent then `git add`s + `git commit`s both .md and .json exactly
-# as today; `bin/run-stage.sh::_validate_plan_contract` (unchanged)
-# gates the HEAD-committed merged canonical post-dispatch.
-#
-# Mirrors `bin/verify-qa.sh::cmd_validate`'s --body branch (the canonical
-# ENG-203 template) with rc remap into plan-schema's {33, 34, 35}
-# taxonomy: helper 39 → 33, 41 → 35, 42 → 33, 50 → 33.
+# ENG-204 in-dispatch envelope merge for plan.json. Sibling of
+# verify-qa.sh::cmd_validate's --body branch; rc remap into plan-schema's
+# {33, 34, 35} taxonomy (helper 39→33, 41→35, 42→33, 50→33).
 cmd_prepare() {
   local ARG_BODY="" ARG_MD="" ARG_IDENT=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --body)
-        if [[ $# -lt 2 ]]; then
-          printf 'plan-contract-incomplete: --body requires a value\n' >&2; return 34
+        if [[ $# -lt 2 || "$2" == --* ]]; then
+          printf 'plan-contract-incomplete: --body requires a non-flag value\n' >&2; return 34
         fi
         ARG_BODY="$2"; shift 2 ;;
       --md)
-        if [[ $# -lt 2 ]]; then
-          printf 'plan-contract-incomplete: --md requires a value\n' >&2; return 34
+        if [[ $# -lt 2 || "$2" == --* ]]; then
+          printf 'plan-contract-incomplete: --md requires a non-flag value\n' >&2; return 34
         fi
         ARG_MD="$2"; shift 2 ;;
       --ident)
-        if [[ $# -lt 2 ]]; then
-          printf 'plan-contract-incomplete: --ident requires a value\n' >&2; return 34
+        if [[ $# -lt 2 || "$2" == --* ]]; then
+          printf 'plan-contract-incomplete: --ident requires a non-flag value\n' >&2; return 34
         fi
         ARG_IDENT="$2"; shift 2 ;;
       *)
@@ -487,8 +476,7 @@ cmd_prepare() {
   local canonical env_json merge_rc=0
   canonical="${md_real%.md}.json"
   env_json="$(jq -nc --arg ii "$ARG_IDENT" \
-    '{plan_schema_version: 1, issue_id: $ii}')" \
-    || { printf 'plan-contract-malformed: cannot construct env_json (jq failed)\n' >&2; return 33; }
+    '{plan_schema_version: 1, issue_id: $ii}')"
   PIPELINE_ISSUE_ID="$ARG_IDENT" PIPELINE_STAGE=planning \
     merge_artifact_envelope "$ARG_BODY" "$env_json" "$canonical" \
     || merge_rc=$?
