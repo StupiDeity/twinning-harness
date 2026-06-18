@@ -10296,6 +10296,105 @@ else
 fi
 unset MOCK_COMMENTS_JSON
 
+# ─── ENG-204: _clear_current_stage_slots planning-stage branch (OS-1..OS-4) ───
+printf '\n--- ENG-204: _clear_current_stage_slots planning-branch (OS-1..OS-4) ---\n'
+
+# OS-1: planning-stage clear removes plan.body.json.
+_os204_1_d="$(_os_dir ENG-204OS1)"
+mkdir -p "$_os204_1_d"
+printf '{"features":[]}\n' > "$_os204_1_d/plan.body.json"
+[[ -f "$_os204_1_d/plan.body.json" ]] \
+  || fail_at "ENG-204 OS-1: pre-condition: plan.body.json seeded" "missing setup"
+_clear_current_stage_slots ENG-204OS1 planning
+if [[ ! -f "$_os204_1_d/plan.body.json" ]]; then
+  pass_at "ENG-204 OS-1: planning-stage clear removes plan.body.json"
+else
+  fail_at "ENG-204 OS-1: plan.body.json not removed on planning-stage clear" "still present"
+fi
+
+# OS-2: planning-stage clear does NOT touch qa/review state.
+_os204_2_d="$(_os_dir ENG-204OS2)"
+mkdir -p "$_os204_2_d"
+printf '{"v":1}\n' > "$_os204_2_d/verdict-qa.json"
+printf '{"v":1}\n' > "$_os204_2_d/verdict-qa.body.json"
+printf '{"v":1}\n' > "$_os204_2_d/qa-predicate-ENG-204OS2.json"
+printf '{"v":1}\n' > "$_os204_2_d/qa-predicate-ENG-204OS2.body.json"
+printf '{"v":1}\n' > "$_os204_2_d/verdict-review.json"
+_clear_current_stage_slots ENG-204OS2 planning
+if [[ -f "$_os204_2_d/verdict-qa.json" ]] \
+  && [[ -f "$_os204_2_d/verdict-qa.body.json" ]] \
+  && [[ -f "$_os204_2_d/qa-predicate-ENG-204OS2.json" ]] \
+  && [[ -f "$_os204_2_d/qa-predicate-ENG-204OS2.body.json" ]] \
+  && [[ -f "$_os204_2_d/verdict-review.json" ]]; then
+  pass_at "ENG-204 OS-2: planning-stage clear preserves all qa/review state files"
+else
+  fail_at "ENG-204 OS-2: planning-stage clear clobbered qa/review state" \
+    "vqa=$([[ -f "$_os204_2_d/verdict-qa.json" ]] && echo ok || echo MISSING) vqa.body=$([[ -f "$_os204_2_d/verdict-qa.body.json" ]] && echo ok || echo MISSING) pred=$([[ -f "$_os204_2_d/qa-predicate-ENG-204OS2.json" ]] && echo ok || echo MISSING) pred.body=$([[ -f "$_os204_2_d/qa-predicate-ENG-204OS2.body.json" ]] && echo ok || echo MISSING) review=$([[ -f "$_os204_2_d/verdict-review.json" ]] && echo ok || echo MISSING)"
+fi
+
+# OS-3: plan.body.json survives clear on non-planning stages (implementing, qa, reviewing, brainstorming).
+_os204_3_d="$(_os_dir ENG-204OS3)"
+mkdir -p "$_os204_3_d"
+for _os204_stage in implementing qa reviewing brainstorming; do
+  printf '{"features":[]}\n' > "$_os204_3_d/plan.body.json"
+  _clear_current_stage_slots ENG-204OS3 "$_os204_stage"
+  if [[ -f "$_os204_3_d/plan.body.json" ]]; then
+    pass_at "ENG-204 OS-3: plan.body.json survives _clear_current_stage_slots on stage=$_os204_stage"
+  else
+    fail_at "ENG-204 OS-3: plan.body.json wrongly removed on stage=$_os204_stage" "removed"
+  fi
+done
+
+# OS-4: end-to-end orchestration — body write + prepare + commit + _validate_plan_contract.
+# Mirrors ENG-122 INT1 but the canonical JSON is produced via plan-schema.sh prepare
+# rather than written directly by a fixture helper. Pins AC#2/AC#3.
+printf '\n--- ENG-204 OS-4: end-to-end body→prepare→validate_plan_contract ---\n'
+reset_capture
+ENG204OS4_WT="$(issue_dir ENG-9204004)/worktree"
+rm -rf "$ENG204OS4_WT"
+mkdir -p "$ENG204OS4_WT/docs/plans"
+( cd "$ENG204OS4_WT" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+_ENG204_TODAY="$(date +%Y-%m-%d)"
+_ENG204_MD_REL="docs/plans/${_ENG204_TODAY}-eng-9204004-test.md"
+cat > "$ENG204OS4_WT/$_ENG204_MD_REL" <<'MDEOF'
+stub plan
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
+# Write body-only file (plan_schema_version + issue_id absent — ENG-204 contract).
+printf '{"features":[{"id":"F-1","summary":"ENG-204 OS-4 feature","pass_criteria":[{"kind":"file_exists","path":"bin/plan-schema.sh"}]}]}\n' \
+  > "$(issue_dir ENG-9204004)/plan.body.json"
+# Run prepare to materialize the canonical .json.
+_os204_4_rc=0
+( cd "$ENG204OS4_WT" \
+  && export PROJECT_STATE_DIR \
+  && export TARGET_REPO \
+  && export PROJECT_SLUG \
+  && bash "$HARNESS_DIR/plan-schema.sh" prepare \
+       --body "$(issue_dir ENG-9204004)/plan.body.json" \
+       --md "$_ENG204_MD_REL" \
+       --ident ENG-9204004 ) >/dev/null 2>&1 || _os204_4_rc=$?
+if (( _os204_4_rc != 0 )); then
+  fail_at "ENG-204 OS-4: plan-schema.sh prepare returned rc=$_os204_4_rc" "pre-condition failed"
+else
+  pass_at "ENG-204 OS-4: plan-schema.sh prepare → rc=0"
+  # Commit the .md + canonical .json.
+  ( cd "$ENG204OS4_WT" \
+    && git add docs/plans \
+    && git commit --quiet -m "plan for ENG-9204004" ) >/dev/null 2>&1
+  _os204_4_v_rc=0
+  _validate_plan_contract ENG-9204004 2>/dev/null || _os204_4_v_rc=$?
+  (( _os204_4_v_rc == 0 )) \
+    && pass_at "ENG-204 OS-4: _validate_plan_contract → rc=0 on prepare-merged canonical" \
+    || fail_at "ENG-204 OS-4: _validate_plan_contract" "expected rc=0, got rc=$_os204_4_v_rc"
+fi
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

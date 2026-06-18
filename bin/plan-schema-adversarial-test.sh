@@ -496,5 +496,102 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR" 2>/dev/null || rc=$?
   && pass_at "T_qa_adv_directory_path: directory as file arg → rc=35 (correct exit; misleading message documented)" \
   || fail_at "T_qa_adv_directory_path" "expected rc=35 for directory path, got rc=$rc"
 
+# ─── ENG-204: cmd_prepare adversarial cases (PA-1..PA-3) ─────────────────────
+printf '\n--- ENG-204: cmd_prepare adversarial cases (PA-1..PA-3) ---\n'
+
+# Shared helper for PA-* tests: run prepare from a sandboxed cwd.
+_pa_run_prepare() {
+  local _psd="$1" _wt="$2"; shift 2
+  (
+    export PROJECT_STATE_DIR="$_psd"
+    export TARGET_REPO="$FIXTURE_DIR/target"
+    export PROJECT_SLUG=test-slug
+    cd "$_wt" 2>/dev/null || exit 99
+    bash "$VALIDATOR" prepare "$@" 2>/dev/null
+  )
+}
+
+# PA-1: body contains plan_schema_version="v1" (wrong type); envelope's
+# integer 1 wins (right-biased merge); merged canonical passes validate.
+pa1_tmp="$(mktemp -d -t psa-pa1.XXXXXX)"
+trap 'rm -rf "$pa1_tmp"' EXIT
+pa1_psd="$pa1_tmp/project_state/test-slug"
+pa1_wt="$pa1_tmp/worktree"
+mkdir -p "$pa1_psd/ENG-9221001" "$pa1_wt/docs/plans"
+printf '{"plan_schema_version":"v1","features":[{"id":"F-1","summary":"x","pass_criteria":[{"kind":"file_exists","path":"x"}]}]}\n' \
+  > "$pa1_psd/ENG-9221001/plan.body.json"
+touch "$pa1_wt/docs/plans/2026-06-01-eng-9221001-pa1.md"
+rc=0; _pa_run_prepare "$pa1_psd" "$pa1_wt" \
+  --body "$pa1_psd/ENG-9221001/plan.body.json" \
+  --md "docs/plans/2026-06-01-eng-9221001-pa1.md" \
+  --ident ENG-9221001 >/dev/null 2>&1 || rc=$?
+canonical_pa1="$pa1_wt/docs/plans/2026-06-01-eng-9221001-pa1.json"
+if (( rc == 0 )) && [[ -f "$canonical_pa1" ]]; then
+  got_psv="$(jq -r '.plan_schema_version' "$canonical_pa1" 2>/dev/null)"
+  if [[ "$got_psv" == "1" ]]; then
+    pass_at "PA-1: body plan_schema_version='v1' string → envelope integer 1 wins (right-biased merge)"
+  else
+    fail_at "PA-1: envelope-wins contract" "expected plan_schema_version=1 (integer), got '$got_psv'"
+  fi
+  rc_v=0; bash "$VALIDATOR" validate "$canonical_pa1" --ident ENG-9221001 >/dev/null 2>&1 || rc_v=$?
+  (( rc_v == 0 )) \
+    && pass_at "PA-1: validate on collision-overridden canonical → rc=0" \
+    || fail_at "PA-1: validate after collision" "expected rc=0, got rc=$rc_v"
+else
+  fail_at "PA-1: prepare failed or canonical absent" "rc=$rc canonical=$(ls "$canonical_pa1" 2>/dev/null || echo MISSING)"
+fi
+
+# PA-2: body contains unknown key linear_issue_id (typo); cmd_prepare rc=0;
+# cmd_validate on the merged canonical emits a warning but returns rc=0
+# (permissive-on-unknown contract, plan-schema.sh lines 219-227).
+pa2_tmp="$(mktemp -d -t psa-pa2.XXXXXX)"
+trap 'rm -rf "$pa2_tmp"' EXIT
+pa2_psd="$pa2_tmp/project_state/test-slug"
+pa2_wt="$pa2_tmp/worktree"
+mkdir -p "$pa2_psd/ENG-9221002" "$pa2_wt/docs/plans"
+printf '{"linear_issue_id":"ENG-9","features":[{"id":"F-1","summary":"x","pass_criteria":[{"kind":"file_exists","path":"x"}]}]}\n' \
+  > "$pa2_psd/ENG-9221002/plan.body.json"
+touch "$pa2_wt/docs/plans/2026-06-01-eng-9221002-pa2.md"
+rc=0; _pa_run_prepare "$pa2_psd" "$pa2_wt" \
+  --body "$pa2_psd/ENG-9221002/plan.body.json" \
+  --md "docs/plans/2026-06-01-eng-9221002-pa2.md" \
+  --ident ENG-9221002 >/dev/null 2>&1 || rc=$?
+canonical_pa2="$pa2_wt/docs/plans/2026-06-01-eng-9221002-pa2.json"
+if (( rc == 0 )) && [[ -f "$canonical_pa2" ]]; then
+  pass_at "PA-2: body with unknown key linear_issue_id → prepare rc=0 (permissive)"
+  rc_v=0; bash "$VALIDATOR" validate "$canonical_pa2" --ident ENG-9221002 2>/dev/null || rc_v=$?
+  (( rc_v == 0 )) \
+    && pass_at "PA-2: validate on canonical with unknown key → rc=0 (permissive)" \
+    || fail_at "PA-2: validate on unknown-key canonical" "expected rc=0, got rc=$rc_v"
+else
+  fail_at "PA-2: prepare failed or canonical absent" "rc=$rc canonical=$(ls "$canonical_pa2" 2>/dev/null || echo MISSING)"
+fi
+
+# PA-3: end-to-end chain — write body, run prepare, run validate, assert all rc=0
+# and canonical lives at ${md_real%.md}.json.
+pa3_tmp="$(mktemp -d -t psa-pa3.XXXXXX)"
+trap 'rm -rf "$pa3_tmp"' EXIT
+pa3_psd="$pa3_tmp/project_state/test-slug"
+pa3_wt="$pa3_tmp/worktree"
+mkdir -p "$pa3_psd/ENG-9221003" "$pa3_wt/docs/plans"
+printf '{"features":[{"id":"F-1","summary":"PA-3 feature","pass_criteria":[{"kind":"file_exists","path":"bin/plan-schema.sh"}]}]}\n' \
+  > "$pa3_psd/ENG-9221003/plan.body.json"
+touch "$pa3_wt/docs/plans/2026-06-01-eng-9221003-pa3.md"
+rc_p=0; out_p="$(_pa_run_prepare "$pa3_psd" "$pa3_wt" \
+  --body "$pa3_psd/ENG-9221003/plan.body.json" \
+  --md "docs/plans/2026-06-01-eng-9221003-pa3.md" \
+  --ident ENG-9221003 2>/dev/null)" || rc_p=$?
+canonical_pa3="$pa3_wt/docs/plans/2026-06-01-eng-9221003-pa3.json"
+if (( rc_p == 0 )) && [[ -f "$canonical_pa3" ]] && [[ "$out_p" == *"plan-contract-prepared:"* ]]; then
+  pass_at "PA-3: body→prepare chain rc=0, canonical written, stdout confirms path"
+  rc_v3=0; bash "$VALIDATOR" validate "$canonical_pa3" --ident ENG-9221003 >/dev/null 2>&1 || rc_v3=$?
+  (( rc_v3 == 0 )) \
+    && pass_at "PA-3: validate on end-to-end canonical → rc=0" \
+    || fail_at "PA-3: validate after end-to-end prepare" "expected rc=0, got rc=$rc_v3"
+else
+  fail_at "PA-3: end-to-end chain" \
+    "rc=$rc_p canonical=$(ls "$canonical_pa3" 2>/dev/null || echo MISSING) out=$out_p"
+fi
+
 printf '\nplan-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
