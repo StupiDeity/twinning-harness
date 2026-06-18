@@ -496,5 +496,111 @@ rc=0; bash "$VALIDATOR" validate-md "$FIXTURE_DIR" 2>/dev/null || rc=$?
   && pass_at "T_qa_adv_directory_path: directory as file arg → rc=35 (correct exit; misleading message documented)" \
   || fail_at "T_qa_adv_directory_path" "expected rc=35 for directory path, got rc=$rc"
 
+# ─── PA-1, PA-2, PA-3 (ENG-204): cmd_prepare adversarial cases ──────────────
+# PA-1 pins the right-bias silent-repair contract (envelope overrides body
+# on collision, but with a wrong-TYPE body envelope value).
+# PA-2 pins the permissive-on-unknown contract (unknown content key warns
+# but does not block prepare or validate).
+# PA-3 exercises the full prepare → validate chain end-to-end with the
+# canonical sitting at the expected ${md_real%.md}.json path.
+printf '\n--- PA-1, PA-2, PA-3 (ENG-204): cmd_prepare adversarial ---\n'
+
+pa_prepare_case() {
+  PA_TMPDIR="$FIXTURE_DIR/pa_${1}"
+  PA_STATE="$PA_TMPDIR/state"
+  PA_WT="$PA_TMPDIR/worktree"
+  PA_DOCS="$PA_WT/docs/plans"
+  mkdir -p "$PA_STATE" "$PA_DOCS"
+  PROJECT_STATE_DIR="$PA_STATE"; export PROJECT_STATE_DIR
+}
+
+# PA-1: body has `plan_schema_version: "v1"` (string, wrong type) — envelope
+# integer `1` MUST win on the merged canonical; downstream validate rc=0.
+pa_prepare_case 1
+pa_body="$PA_STATE/plan.body.json"; pa_md="$PA_DOCS/2026-06-17-eng-1-foo.md"
+cat > "$pa_body" <<'EOF'
+{
+  "plan_schema_version": "v1",
+  "features": [
+    { "id": "F-1", "summary": "x", "pass_criteria": [{ "kind": "file_exists", "path": "x" }] }
+  ]
+}
+EOF
+printf '# md\n' > "$pa_md"
+prep_rc=0
+( cd "$PA_WT" && bash "$VALIDATOR" prepare --body "$pa_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || prep_rc=$?
+pa_canon="$PA_DOCS/2026-06-17-eng-1-foo.json"
+pa_ver_type=""
+[[ -f "$pa_canon" ]] && pa_ver_type="$(jq -r '.plan_schema_version | type' "$pa_canon" 2>/dev/null || true)"
+pa_ver_val=""
+[[ -f "$pa_canon" ]] && pa_ver_val="$(jq -r '.plan_schema_version' "$pa_canon" 2>/dev/null || true)"
+val_rc=0
+[[ -f "$pa_canon" ]] && { bash "$VALIDATOR" validate "$pa_canon" --ident ENG-1 >/dev/null 2>&1 || val_rc=$?; }
+if (( prep_rc == 0 )) && [[ "$pa_ver_type" == "number" ]] && [[ "$pa_ver_val" == "1" ]] && (( val_rc == 0 )); then
+  pass_at "PA-1: body envelope-key wrong-type silently overridden by envelope (type=number, value=1); validate rc=0"
+else
+  fail_at "PA-1: envelope right-bias on wrong-type body key" \
+    "prep_rc=$prep_rc ver_type='$pa_ver_type' ver_val='$pa_ver_val' val_rc=$val_rc"
+fi
+
+# PA-2: body has an unknown content key (typo `linear_issue_id`). Prepare
+# rc=0; validate rc=0 (permissive — bin/plan-schema.sh:219-227 emits a
+# stderr warning but exit 0).
+pa_prepare_case 2
+pa_body="$PA_STATE/plan.body.json"; pa_md="$PA_DOCS/2026-06-17-eng-1-foo.md"
+cat > "$pa_body" <<'EOF'
+{
+  "linear_issue_id": "ENG-1",
+  "features": [
+    { "id": "F-1", "summary": "x", "pass_criteria": [{ "kind": "file_exists", "path": "x" }] }
+  ]
+}
+EOF
+printf '# md\n' > "$pa_md"
+prep_rc=0
+( cd "$PA_WT" && bash "$VALIDATOR" prepare --body "$pa_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || prep_rc=$?
+pa_canon="$PA_DOCS/2026-06-17-eng-1-foo.json"
+val_rc=0
+[[ -f "$pa_canon" ]] && { bash "$VALIDATOR" validate "$pa_canon" --ident ENG-1 >/dev/null 2>&1 || val_rc=$?; }
+if (( prep_rc == 0 )) && (( val_rc == 0 )); then
+  pass_at "PA-2: unknown content key permitted (prepare rc=0, validate rc=0; stderr warns)"
+else
+  fail_at "PA-2: unknown content key" \
+    "expected prep_rc=0 + val_rc=0, got prep_rc=$prep_rc val_rc=$val_rc"
+fi
+
+# PA-3: full prepare → validate chain end-to-end on a fresh fixture.
+# Asserts (a) prepare rc=0, (b) canonical file lives at ${md_real%.md}.json,
+# (c) validate rc=0 on the canonical.
+pa_prepare_case 3
+pa_body="$PA_STATE/plan.body.json"; pa_md="$PA_DOCS/2026-06-17-eng-1-foo.md"
+cat > "$pa_body" <<'EOF'
+{
+  "features": [
+    { "id": "F-1", "summary": "end-to-end", "pass_criteria": [
+      { "kind": "file_exists", "path": "bin/plan-schema.sh" },
+      { "kind": "grep", "path": "bin/plan-schema.sh", "pattern": "cmd_prepare", "expect_match": true }
+    ]}
+  ]
+}
+EOF
+printf '# md\n' > "$pa_md"
+prep_rc=0
+( cd "$PA_WT" && bash "$VALIDATOR" prepare --body "$pa_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || prep_rc=$?
+pa_canon="$PA_DOCS/2026-06-17-eng-1-foo.json"
+val_rc=1
+if (( prep_rc == 0 )) && [[ -f "$pa_canon" ]]; then
+  bash "$VALIDATOR" validate "$pa_canon" --ident ENG-1 >/dev/null 2>&1
+  val_rc=$?
+fi
+if (( prep_rc == 0 )) && [[ -f "$pa_canon" ]] && (( val_rc == 0 )); then
+  pass_at "PA-3: prepare → validate end-to-end chain rc=0 (canonical at \${md_real%.md}.json)"
+else
+  fail_at "PA-3: end-to-end chain" \
+    "prep_rc=$prep_rc canonical=$([[ -f $pa_canon ]] && echo present || echo absent) val_rc=$val_rc"
+fi
+
+unset PROJECT_STATE_DIR
+
 printf '\nplan-schema-adversarial-test: passed=%d failed=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

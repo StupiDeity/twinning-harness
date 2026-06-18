@@ -10296,6 +10296,151 @@ else
 fi
 unset MOCK_COMMENTS_JSON
 
+# ─── ENG-204: OS-1..OS-4 — _clear_current_stage_slots planning branch ──────
+# OS-1: planning-stage clear removes plan.body.json.
+# OS-2: planning-stage clear does NOT collateral-touch qa/review state files.
+# OS-3: NON-planning stages (implementing/qa/reviewing/brainstorming) do
+#       NOT clear plan.body.json — preserves the body across loopback
+#       (planning → brainstorming → planning) so brainstorm dispatch
+#       cannot leak its slot wipe into a planning body sidecar.
+# OS-4: end-to-end orchestration — fixture-build a HEAD-committed `.md`
+#       and merged canonical `.json` and pass `_validate_plan_contract`.
+#       (AC#2 / AC#3 regression pin.)
+printf '\n--- ENG-204: OS-1..OS-4 — planning stage-clear branch + merged-canonical contract ---\n'
+
+# OS-1: planning-stage clear removes plan.body.json.
+reset_capture
+mkdir -p "$(issue_dir ENG-204OS1)"
+printf '{"features": []}\n' > "$(issue_dir ENG-204OS1)/plan.body.json"
+[[ -f "$(issue_dir ENG-204OS1)/plan.body.json" ]] \
+  || fail_at "ENG-204 OS-1: precondition: body fixture present" "missing setup"
+_clear_current_stage_slots ENG-204OS1 planning
+if [[ ! -f "$(issue_dir ENG-204OS1)/plan.body.json" ]]; then
+  pass_at "ENG-204 OS-1: _clear_current_stage_slots removed plan.body.json on planning stage"
+else
+  fail_at "ENG-204 OS-1: plan.body.json not removed on planning stage" "still present"
+fi
+
+# OS-2: planning-stage clear does NOT collateral-touch qa/review siblings.
+# Seed all six qa/review-stage files, then run the planning-stage clear and
+# assert each file SURVIVES (catches a stage-gate regression that bleeds
+# planning's branch into other stages' file sets).
+# review-findings-ledger.jsonl is the cumulative per-issue append-only
+# ledger (ENG-190); it is explicitly NEVER cleared by
+# _clear_current_stage_slots (see run-stage.sh:986-988). Including it in
+# the survival set pins that contract against a future regression that
+# adds e.g. `rm -f "$d"/*.jsonl`.
+reset_capture
+_os2_dir="$(issue_dir ENG-204OS2)"
+mkdir -p "$_os2_dir"
+printf '{"v":"q"}\n'  > "$_os2_dir/verdict-qa.json"
+printf '{"v":"qb"}\n' > "$_os2_dir/verdict-qa.body.json"
+printf '{"v":"p"}\n'  > "$_os2_dir/qa-predicate-ENG-204OS2.json"
+printf '{"v":"pb"}\n' > "$_os2_dir/qa-predicate-ENG-204OS2.body.json"
+printf '{"v":"r"}\n'  > "$_os2_dir/verdict-review.json"
+printf '{"id":"x","critical":false}\n' > "$_os2_dir/review-findings-ledger.jsonl"
+_clear_current_stage_slots ENG-204OS2 planning
+_os2_survived=1
+for f in verdict-qa.json verdict-qa.body.json qa-predicate-ENG-204OS2.json qa-predicate-ENG-204OS2.body.json verdict-review.json review-findings-ledger.jsonl; do
+  if [[ ! -f "$_os2_dir/$f" ]]; then
+    _os2_survived=0
+    _os2_wiped="$f"
+    break
+  fi
+done
+if (( _os2_survived == 1 )); then
+  pass_at "ENG-204 OS-2: planning-stage clear preserves all qa/review siblings + ledger (no collateral wipe)"
+else
+  fail_at "ENG-204 OS-2: planning-stage clear wiped qa/review sibling '$_os2_wiped'" "stage-gate regression"
+fi
+
+# OS-3: NON-planning stages do NOT clear plan.body.json. Seed the body
+# fixture once per stage, run the clear with the wrong stage, assert the
+# body file SURVIVES (preserves the body across loopback). Tests all six
+# non-planning stages: brainstorming, implementing, ui, reviewing, qa,
+# building, released.
+reset_capture
+_os3_dir="$(issue_dir ENG-204OS3)"
+mkdir -p "$_os3_dir"
+_os3_all_ok=1
+for stg in brainstorming implementing ui reviewing qa building released; do
+  printf '{"features": []}\n' > "$_os3_dir/plan.body.json"
+  _clear_current_stage_slots ENG-204OS3 "$stg"
+  if [[ ! -f "$_os3_dir/plan.body.json" ]]; then
+    _os3_all_ok=0
+    _os3_wiped_stage="$stg"
+    break
+  fi
+done
+if (( _os3_all_ok == 1 )); then
+  pass_at "ENG-204 OS-3: plan.body.json survives clear on every non-planning stage (loopback preservation)"
+else
+  fail_at "ENG-204 OS-3: plan.body.json wiped on '$_os3_wiped_stage' stage" "stage-gate regression"
+fi
+
+# OS-4: end-to-end contract — body sidecar → cmd_prepare → git commit →
+# _validate_plan_contract direct invocation. Pins AC#2/AC#3 by exercising
+# the SAME validator gate the orchestrator runs post-dispatch, which
+# requires both the .md AND the sibling .json to be present in HEAD (via
+# `git ls-tree --name-only -r HEAD -- docs/plans/` and a sibling ls-tree
+# on the .json). Pre-fix OS-4 only chained cmd_prepare→cmd_validate; it
+# skipped both HEAD-tree gates, so a regression that broke either
+# ls-tree lookup would have shipped silent.
+# Ident is purely numeric (^ENG-[0-9]+$) so cmd_prepare's --ident validator
+# accepts it; the issue_dir slug is the same string so paths line up.
+reset_capture
+_os4_ident="ENG-2044"
+_os4_wt="$(issue_dir "$_os4_ident")/worktree"
+rm -rf "$_os4_wt"
+mkdir -p "$_os4_wt/docs/plans"
+_os4_today="$(date +%Y-%m-%d)"
+_os4_md_rel="docs/plans/${_os4_today}-eng-2044-foo.md"
+_os4_body="$(issue_dir "$_os4_ident")/plan.body.json"
+cat > "$_os4_body" <<'EOF'
+{
+  "features": [
+    { "id": "F-1", "summary": "end-to-end OS-4",
+      "pass_criteria": [
+        { "kind": "file_exists", "path": "bin/plan-schema.sh" }
+      ]
+    }
+  ]
+}
+EOF
+# .md must satisfy cmd_validate_md's `## System invariants` + bullet+token
+# requirement on the JSON-clean branch (see _validate_plan_contract).
+cat > "$_os4_wt/$_os4_md_rel" <<'MDEOF'
+# OS-4 md
+
+## System invariants
+
+- I-1: stub invariant verified_by: bin/plan-schema.sh:cmd_validate_md
+MDEOF
+( cd "$_os4_wt" \
+  && git init --quiet -b main \
+  && git config user.email t@t \
+  && git config user.name t \
+  && git commit --quiet --allow-empty -m init ) >/dev/null 2>&1
+_os4_prep_rc=0
+( cd "$_os4_wt" && bash "$HARNESS_DIR/plan-schema.sh" prepare \
+    --body "$_os4_body" \
+    --md "$_os4_md_rel" \
+    --ident "$_os4_ident" ) >/dev/null 2>&1 || _os4_prep_rc=$?
+_os4_canon_rel="${_os4_md_rel%.md}.json"
+( cd "$_os4_wt" \
+  && git add "$_os4_md_rel" \
+  && git add "$_os4_canon_rel" \
+  && git commit --quiet -m "plan for $_os4_ident" ) >/dev/null 2>&1 || true
+_os4_val_rc=0
+_validate_plan_contract "$_os4_ident" 2>/dev/null || _os4_val_rc=$?
+if (( _os4_prep_rc == 0 )) && [[ -f "$_os4_wt/$_os4_canon_rel" ]] && (( _os4_val_rc == 0 )); then
+  pass_at "ENG-204 OS-4: prepare + commit + _validate_plan_contract rc=0 (AC#2/AC#3 regression pin)"
+else
+  fail_at "ENG-204 OS-4: end-to-end contract" \
+    "prep_rc=$_os4_prep_rc canonical=$([[ -f $_os4_wt/$_os4_canon_rel ]] && echo present || echo absent) val_rc=$_os4_val_rc"
+fi
+unset _os4_ident _os4_wt _os4_today _os4_md_rel _os4_body _os4_canon_rel _os4_prep_rc _os4_val_rc
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1

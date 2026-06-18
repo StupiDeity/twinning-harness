@@ -1521,6 +1521,22 @@ eng214_adversarial_no_metrics_x_guard() {
 }
 eng214_adversarial_no_metrics_x_guard
 
+# ENG-204: plan_body_path shape pin — sibling of eng203_body_path_helpers.
+# Boundary: valid ident returns correct path; empty ident must die.
+eng204_plan_body_path_helper() {
+  local got
+  got="$(plan_body_path ENG-204)"
+  assert_eq "eng204_plan_body_path" "$(issue_dir ENG-204)/plan.body.json" "$got"
+  local rc=0
+  ( plan_body_path "" ) 2>/dev/null || rc=$?
+  if (( rc != 0 )); then
+    pass_at "ENG-204 plan_body_path: empty ident → die (non-zero exit)"
+  else
+    fail_at "ENG-204 plan_body_path: empty ident should die" "got rc=0"
+  fi
+}
+eng204_plan_body_path_helper
+
 printf '\ncommon-test summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf 'failed cases:\n'

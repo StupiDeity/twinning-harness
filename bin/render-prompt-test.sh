@@ -1166,11 +1166,12 @@ fi
 # PROMPT_RESOLVERS entry without updating the writer fails loudly here.
 printf '\n--- ENG-156: _write_rendered_paths_sidecar ---\n'
 
-# Case 156-W1: all eight path-shaped resolver values bound → sidecar has
-# exactly eight TSV lines, one per path-shaped resolver. ENG-27 added
+# Case 156-W1: all nine path-shaped resolver values bound → sidecar has
+# exactly nine TSV lines, one per path-shaped resolver. ENG-27 added
 # artifacts_dir as the seventh; ENG-190 added review_ledger_path as the
-# eighth; this fixture binds both so a deletion of either printf line in
-# _write_rendered_paths_sidecar fails loudly.
+# eighth; ENG-204 added plan_body_path as the ninth; this fixture binds
+# all nine so a deletion of any printf line in _write_rendered_paths_sidecar
+# fails loudly.
 eng156_w1_sidecar="$sandbox/eng156-w1.tsv"
 # Pre-create the plan.json so the writer's [[ -f "$_pj_path" ]] guard
 # passes for the plan_json line.
@@ -1184,17 +1185,18 @@ run_resolver_body '
   _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W1/progress.md"
   _RENDER_ARTIFACTS_DIR="/tmp/state/ENG-156W1/artifacts/"
   _RENDER_REVIEW_LEDGER_PATH="/tmp/state/ENG-156W1/review-findings-ledger.jsonl"
+  _RENDER_PLAN_BODY_PATH="/tmp/state/ENG-156W1/plan.body.json"
   _write_rendered_paths_sidecar "'"$eng156_w1_sidecar"'"
 ' 2>/dev/null
 if [[ -s "$eng156_w1_sidecar" ]] \
-  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "8" ]]; then
-  pass_at "ENG-156 W1: sidecar has exactly eight TSV lines for the eight path-shaped resolvers"
+  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "9" ]]; then
+  pass_at "ENG-156 W1: sidecar has exactly nine TSV lines for the nine path-shaped resolvers"
 else
   fail_at "ENG-156 W1: sidecar line count" \
-    "expected 8 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
+    "expected 9 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
 fi
 _eng156_w1_ok=1
-for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json artifacts_dir review_ledger_path; do
+for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json artifacts_dir review_ledger_path plan_body_path; do
   if ! grep -qE "^${tok}"$'\t' "$eng156_w1_sidecar"; then
     _eng156_w1_ok=0
     break
@@ -1517,6 +1519,44 @@ else
     "stdout=$(tr '\n' '|' <<<"$eng194_softfail_stdout") stderr=$eng194_softfail_stderr_contents"
 fi
 unset eng194_fixture_root eng194_softfail_root eng194_softfail_stderr eng194_softfail_stdout eng194_softfail_stderr_contents
+
+# ─── ENG-204: R-1, R-2 — {plan_body_path} resolver + sidecar entry ─────────
+# R-1 pins the resolver function: bound _RENDER_PLAN_BODY_PATH must echo
+# verbatim through `_resolve_plan_body_path`.
+# R-2 pins the closed-allowlist sidecar contract surface (ENG-156 D-004) —
+# adding a new path-shaped resolver requires deliberately appending its
+# emit line to `_write_rendered_paths_sidecar`. R-2 fails if the new line
+# is missing or names the wrong token.
+printf '\n--- ENG-204: R-1, R-2 — plan_body_path resolver + sidecar ---\n'
+
+# R-1: bound _RENDER_PLAN_BODY_PATH → _resolve_plan_body_path returns it
+# verbatim.
+out_pbp="$(run_resolver_body '
+  _RENDER_PLAN_BODY_PATH="/tmp/test-state/ENG-204/plan.body.json"
+  resolve_block_tokens "{plan_body_path}"
+' 2>&1)"
+if [[ "$out_pbp" == "/tmp/test-state/ENG-204/plan.body.json" ]]; then
+  pass_at "ENG-204 R-1: {plan_body_path} resolves from _RENDER_PLAN_BODY_PATH"
+else
+  fail_at "ENG-204 R-1: {plan_body_path} resolver" \
+    "expected='/tmp/test-state/ENG-204/plan.body.json' got='$out_pbp'"
+fi
+
+# R-2: bound _RENDER_PLAN_BODY_PATH → _write_rendered_paths_sidecar emits
+# `plan_body_path\t<value>` line in the sidecar tsv.
+eng204_r2_sidecar="$sandbox/eng204-r2.tsv"
+run_resolver_body '
+  _RENDER_PLAN_BODY_PATH="/tmp/state/ENG-204R2/plan.body.json"
+  _write_rendered_paths_sidecar "'"$eng204_r2_sidecar"'"
+' 2>/dev/null
+if [[ -s "$eng204_r2_sidecar" ]] \
+  && grep -qE '^plan_body_path'$'\t''/tmp/state/ENG-204R2/plan.body.json$' "$eng204_r2_sidecar"; then
+  pass_at "ENG-204 R-2: _write_rendered_paths_sidecar emits plan_body_path TSV row"
+else
+  fail_at "ENG-204 R-2: sidecar plan_body_path row absent" \
+    "contents=$(cat "$eng204_r2_sidecar" 2>/dev/null)"
+fi
+unset out_pbp eng204_r2_sidecar
 
 echo
 echo "━━━ Summary ━━━"

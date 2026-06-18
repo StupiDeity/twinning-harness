@@ -106,6 +106,17 @@ qa_predicate_body_path() {
   [[ -n "$issue" ]] || die "qa_predicate_body_path: missing issue id"
   printf '%s/qa-predicate-%s.body.json' "$(issue_dir "$issue")" "$issue"
 }
+# ENG-204: per-issue plan body sidecar. The planning agent writes a
+# content-only JSON body to this path; `bin/plan-schema.sh prepare` merges
+# the schema envelope ({plan_schema_version, issue_id}) onto the body and
+# writes the canonical docs/plans/<date>-<eng>-<slug>.json in the worktree.
+# Lives under $PROJECT_STATE_DIR (outside the worktree), so the post-stage
+# sweep never sees it (INV-4).
+plan_body_path() {
+  local issue="$1"
+  [[ -n "$issue" ]] || die "plan_body_path: missing issue id"
+  printf '%s/plan.body.json' "$(issue_dir "$issue")"
+}
 
 # Shared per-pass_criterion validator (brainstorm D-007 — single source
 # of truth for plan.json and qa-predicate JSON validation). Callers:
@@ -958,7 +969,7 @@ set_orchestrator_paused() {
   mv "$tmp" "$STATE_FILE"
 }
 
-export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied merge_artifact_envelope qa_payload_body_path qa_predicate_body_path
+export -f issue_dir compute_pipeline_content_hash failure_outcome_for_exit parse_pipeline_marker is_orchestrator_paused set_orchestrator_paused allocate_dispatch_id current_dispatch_id strip_state_preserve_alloc assert_no_tool_invocation progress_md_path assert_no_write_to_path assert_no_tool_with_input_path validate_init_sh qa_predicate_path _validate_pass_criterion _url_host_class_denied merge_artifact_envelope qa_payload_body_path qa_predicate_body_path plan_body_path
 
 # ─── Lock helpers (mkdir-based; atomic on POSIX) ─────────────────────
 # Used by run-local.sh (per-project tick lock) and dispatch.sh (cross-

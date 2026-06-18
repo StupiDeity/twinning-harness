@@ -1242,3 +1242,87 @@ can grep for these:
 jq -c 'select(.event == "envelope-overwrite")' \
   "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl"
 ```
+
+## 16. plan-contract merge failure (ENG-204)
+
+ENG-204 applies the same orchestrator-merge pattern to the planning
+stage that ENG-203 applied to the qa stage. The planning agent now
+writes a content-only `plan.body.json` under `$(issue_dir "$ident")/`;
+the new `bash bin/plan-schema.sh prepare --body … --md … --ident …`
+subcommand merges the schema envelope (`{plan_schema_version: 1,
+issue_id: "<ident>"}`) onto the body and writes the canonical
+`docs/plans/<date>-<eng>-<slug>.json` in the worktree. The agent then
+`git add`s + `git commit`s both `.md` and `.json` exactly as today;
+`bin/run-stage.sh::_validate_plan_contract` (unchanged) gates the
+HEAD-committed merged canonical post-dispatch.
+
+**Halt paths.** Four shapes can land a halt:
+
+| Cause | Surface | rc |
+|---|---|---|
+| Body file missing (agent forgot to `Write` it) | in-dispatch `prepare` rc=35 OR post-dispatch validator `plan-contract-missing` rc=35 | 35 |
+| Body malformed (JSON parse error, top-level array, oversize >64 KiB, symlink, realpath escape outside `$PROJECT_STATE_DIR`) | in-dispatch `prepare` rc=33 (`plan-contract-malformed`) | 33 |
+| `--ident` malformed (regex miss) or any required flag missing | in-dispatch `prepare` rc=34 (`plan-contract-incomplete`) | 34 |
+| Canonical write failure (disk full, parent dir unwritable, jq fail, mktemp fail) | in-dispatch `prepare` rc=33 (helper rc=50 remapped) | 33 |
+
+**Diagnosing.** The `_post_plan_contract_halt` Linear comment body
+carries the post-dispatch validator's stderr — NOT the in-dispatch
+`prepare`'s stderr. To inspect `prepare`'s stderr, grep the per-stage
+transcript:
+
+```bash
+grep -E 'plan-schema.sh:|plan-contract-' \
+  "$PROJECT_STATE_DIR/<slug>/logs/<ENG-N>-planning-*.log"
+```
+
+To inspect the body sidecar before resume (cleared by `_clear_current_stage_slots`
+on the NEXT planning dispatch, so cat it now):
+
+```bash
+cat "$PROJECT_STATE_DIR/<slug>/<ENG-N>/plan.body.json"
+```
+
+For the rc=33 canonical-write-failure case, check disk space and the
+worktree directory's permissions:
+
+```bash
+df -h "$(issue_dir <ENG-N>)/worktree"
+ls -la "$(issue_dir <ENG-N>)/worktree/docs/plans/"
+```
+
+**Recovery.** Standard `--action continue` reset:
+
+```bash
+bash bin/pipeline.sh decide <ENG-N> --action continue
+```
+
+> ⚠️ `_clear_current_stage_slots` pre-cleans `plan.body.json` at the
+> next planning dispatch's start. A hand-edit on the body file BEFORE
+> resume is therefore erased. Operators wanting to repair the body
+> must instead author the merged canonical `.json` in the worktree
+> themselves, `git add` + `git commit` both `.md` and `.json`, and
+> emit the verdict marker:
+> `bash bin/pipeline.sh event <ENG-N> stage-completion-claim pass --stage planning`.
+> The orchestrator's `_validate_plan_contract` gate runs against the
+> HEAD-committed canonical regardless of who wrote it.
+
+**Deploy-cutover edge case.** An issue already in `stage:planning`
+when an operator rolls out ENG-204 will halt on its next post-dispatch
+with `plan-contract-missing` because the in-flight agent ran under the
+OLD §2 prompt and emitted the canonical `.json` directly (no body
+sidecar). Recovery is the same `--action continue`: the next planning
+dispatch runs the new prompt, writes the body, runs `prepare`, and
+the merge succeeds. The blast radius is bounded to one issue per
+project (whichever was in `stage:planning` at deploy time).
+
+**Forensic signal.** When the helper merges successfully but the
+agent's body collided with one or more envelope keys (e.g. the agent
+typed `plan_schema_version` despite the §2 instruction not to), the
+helper emits an `envelope-overwrite` metric to `events.jsonl` with
+`count=<n> keys=<csv> body=<path>`. Operators auditing prompt-drift
+can grep for these:
+
+```bash
+jq -c 'select(.event == "envelope-overwrite" and .stage == "planning")' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl"
+```
