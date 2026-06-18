@@ -2819,6 +2819,74 @@ else
   nope "ENG-152: §0 protocol split documentation" "preamble missing claim/author=orchestrator language"
 fi
 
+# ─── ENG-204: §2 Plan Agent prompt-content cases (PC-1..PC-7) ────────────────
+# Extract the plan-schema-v1 fenced block from §2 using the same awk pattern
+# as bin/plan-schema-test.sh::T_schema_doc_sync (consistent locator).
+printf '\n--- ENG-204: §2 plan-schema-v1 fenced block (PC-1..PC-7) ---\n'
+_eng204_schema_block="$(awk '
+  /```plan-schema-v1/ { in_block=1; next }
+  in_block && /```/ { in_block=0; exit }
+  in_block { print }
+' "$PROMPTS")"
+
+# PC-1: fenced block does NOT contain plan_schema_version.
+if ! printf '%s\n' "$_eng204_schema_block" | grep -qF 'plan_schema_version'; then
+  ok "PC-1: plan-schema-v1 fenced block does not contain 'plan_schema_version' (envelope key stripped — ENG-204)"
+else
+  nope "PC-1: plan-schema-v1 block must not contain 'plan_schema_version'" \
+    "found 'plan_schema_version' in fenced block — ENG-204 requires envelope keys removed from prompt"
+fi
+
+# PC-2: fenced block does NOT contain issue_id.
+if ! printf '%s\n' "$_eng204_schema_block" | grep -qF '"issue_id"'; then
+  ok "PC-2: plan-schema-v1 fenced block does not contain '\"issue_id\"' (envelope key stripped — ENG-204)"
+else
+  nope "PC-2: plan-schema-v1 block must not contain '\"issue_id\"'" \
+    "found '\"issue_id\"' in fenced block — ENG-204 requires envelope keys removed from prompt"
+fi
+
+# PC-3: fenced block contains 'features' (body key retained).
+if printf '%s\n' "$_eng204_schema_block" | grep -qF 'features'; then
+  ok "PC-3: plan-schema-v1 fenced block retains 'features' body key"
+else
+  nope "PC-3: plan-schema-v1 block must retain 'features'" \
+    "'features' key absent from fenced block"
+fi
+
+# PC-4: §2 body contains the {plan_body_path} token.
+if printf '%s\n' "$s2" | grep -qF '{plan_body_path}'; then
+  ok "PC-4: §2 contains '{plan_body_path}' token"
+else
+  nope "PC-4: §2 must contain '{plan_body_path}'" \
+    "token missing from §2 — ENG-204 adds plan_body_path resolver"
+fi
+
+# PC-5: §2 body contains the prepare invocation shape.
+if printf '%s\n' "$s2" | grep -qF 'bash bin/plan-schema.sh prepare --body {plan_body_path} --md docs/plans/{date}-{issue_id_lower}-{slug}.md --ident {issue_id}' \
+   || printf '%s\n' "$s2" | grep -qF 'bash .pipeline/bin/plan-schema.sh prepare --body {plan_body_path} --md docs/plans/{date}-{issue_id_lower}-{slug}.md --ident {issue_id}'; then
+  ok "PC-5: §2 contains prepare invocation shape (bash bin/plan-schema.sh prepare --body ... --md ... --ident ...)"
+else
+  nope "PC-5: §2 must contain prepare invocation" \
+    "invocation shape missing from §2"
+fi
+
+# PC-6: §2 body contains 'features[]' in the Required body keys paragraph.
+if printf '%s\n' "$s2" | grep -qF 'features[]'; then
+  ok "PC-6: §2 contains 'features[]' in Required body keys paragraph"
+else
+  nope "PC-6: §2 must contain 'features[]'" \
+    "'features[]' absent from §2"
+fi
+
+# PC-7: §2 body contains the rc-handling sentence beginning with the prepare command.
+if printf '%s\n' "$s2" | grep -qF 'bash bin/plan-schema.sh prepare' \
+   || printf '%s\n' "$s2" | grep -qF 'bash .pipeline/bin/plan-schema.sh prepare'; then
+  ok "PC-7: §2 contains rc-handling sentence referencing 'bash bin/plan-schema.sh prepare'"
+else
+  nope "PC-7: §2 must contain rc-handling sentence for prepare" \
+    "rc-handling sentence absent from §2"
+fi
+
 printf '\nRESULTS: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]] || exit 1
 exit 0
