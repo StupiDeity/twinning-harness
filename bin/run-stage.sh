@@ -1000,7 +1000,8 @@ _clear_current_stage_slots() {
   # specific; clearing on implementing/qa would erase prior-iteration
   # payloads that ENG-118 / the retrospective may read during loopback.
   if [[ "$stage" == "reviewing" ]]; then
-    rm -f "$d/verdict-review.json" 2>/dev/null || true
+    rm -f "$d/verdict-review.json"      2>/dev/null || true
+    rm -f "$d/verdict-review.body.json" 2>/dev/null || true
   fi
   # ENG-117 + ENG-203: pre-clean all four qa-stage payload + predicate
   # files (canonical + body sidecar) on qa-stage dispatch start.
@@ -1445,6 +1446,52 @@ _post_plan_contract_halt() {
   body="$(printf '<!-- pipeline: verdict result=halt author=orchestrator reason=plan-contract-invalid -->\n\nPlan-contract validation failed on dispatch_id=%s stage=planning:\n\n- Defect: %s\n\n~~~\n%s\n~~~\n\nSchema source-of-truth: see header comment in `bin/plan-schema.sh`.\n\n**Resume:** fix the JSON (or the plan prompt'\''s emission step), commit on the feature branch, then run `bash bin/pipeline.sh decide %s --action continue`.' \
     "${PIPELINE_DISPATCH_ID:-unknown}" "$defect" "$safe" "$ident")"
   bash "$SCRIPT_DIR/linear.sh" add-comment "$ident" "$body" || true
+}
+
+# ENG-205: orchestrator-side review-payload envelope merge.
+# Splices the schema envelope {review_schema_version, issue_id,
+# dispatch_id} onto the agent-authored content-only body sidecar
+# ($issue_dir/verdict-review.body.json) and atomically writes the
+# merged canonical at $issue_dir/verdict-review.json. Runs BEFORE
+# _validate_review_payload in the reviewing-stage post-dispatch
+# sequence so the validator sees a fully-formed canonical with
+# envelope keys.
+#
+# Caller-side rc remap into the review-payload code domain
+# (failure_outcome_for_exit: 36 review-payload-malformed,
+# 37 review-payload-incomplete, 38 review-payload-missing):
+#   helper rc=41 (body missing)              → return 38
+#   helper rc={39,42,50} (body malformed /
+#     symlink / write failure)               → return 36
+# The remap keeps the operator-visible
+# `review-payload-invalid: <reason>` string canonical
+# (cf. ENG-203's qa-side accepted the cosmetic mis-map; the
+# review-side remap is cheap and the review schema codes
+# 36/37/38 don't overlap with merge-helper codes 39/41/42/50).
+_merge_review_payload_envelope() {
+  local ident="$1"
+  local d; d="$(issue_dir "$ident")"
+  local body="$d/verdict-review.body.json"
+  local canonical="$d/verdict-review.json"
+  local env_json
+  env_json="$(jq -nc --arg ii "$ident" --arg di "${PIPELINE_DISPATCH_ID:-}" \
+    '{review_schema_version: 1, issue_id: $ii, dispatch_id: $di}')"
+  local rc=0 raw=""
+  raw="$(PIPELINE_ISSUE_ID="$ident" PIPELINE_STAGE=reviewing \
+    merge_artifact_envelope "$body" "$env_json" "$canonical" 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    local defect=""
+    local mapped_rc="$rc"
+    case "$rc" in
+      41) defect="review-payload-missing"; mapped_rc=38 ;;
+      39|42|50) defect="review-payload-malformed"; mapped_rc=36 ;;
+      *)  defect="review-payload-malformed"; mapped_rc=36 ;;
+    esac
+    _post_review_payload_halt "$ident" "$defect" \
+      "merge_artifact_envelope failed (rc=$rc) for body=$body${raw:+ — $raw}"
+    return "$mapped_rc"
+  fi
+  return 0
 }
 
 # ENG-119: review-payload validator. Filesystem detective — checks that
@@ -3006,6 +3053,30 @@ main() {
           classify_failure "$ident" "$stage" "skip-until-human-acts" \
             "plan-contract-invalid: $(failure_outcome_for_exit "$_plan_rc")" "$_plan_rc"
           exit "$_plan_rc"
+        fi
+        ;;
+    esac
+  fi
+
+  # ENG-205: review-payload envelope merge. Post-dispatch;
+  # reviewing stage only. Reads $(issue_dir)/verdict-review.body.json
+  # (agent-authored, content only), splices the orchestrator-
+  # constructed envelope keys ({review_schema_version, issue_id,
+  # dispatch_id}) onto a fresh canonical verdict-review.json, halts
+  # with review-payload-invalid on merge failure (body missing
+  # → rc=38 remapped, body malformed / symlink / write failure
+  # → rc=36 remapped). The downstream _validate_review_payload
+  # below runs on the merged canonical.
+  if (( ! skip_dispatch )); then
+    case "$stage" in
+      reviewing)
+        local _rev_merge_rc=0
+        _merge_review_payload_envelope "$ident" || _rev_merge_rc=$?
+        if (( _rev_merge_rc != 0 )); then
+          classify_failure "$ident" "$stage" "skip-until-human-acts" \
+            "review-payload-invalid: $(failure_outcome_for_exit "$_rev_merge_rc")" \
+            "$_rev_merge_rc"
+          exit "$_rev_merge_rc"
         fi
         ;;
     esac
