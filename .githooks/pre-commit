@@ -42,6 +42,24 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_NAMESPACE \
       GIT_PREFIX GIT_INTERNAL_GETTEXT_TEST_FALLBACKS GIT_CEILING_DIRECTORIES \
       GIT_DISCOVERY_ACROSS_FILESYSTEM
 
+# ─── Dispatch-env hermeticity (2026-06-17 incident: ENG-204) ─────────
+# Same defense, different inbound vars. `bin/dispatch.sh` runs the agent
+# under `env PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=… PIPELINE_STAGE=…`,
+# and that env is inherited by the ENTIRE claude-p subprocess tree —
+# including when the agent runs `bash .githooks/pre-commit` to gate its
+# own commit. So the suite executed in a DIFFERENT environment for an
+# agent (PIPELINE_WRITER=agent) than for a human or launchd
+# (PIPELINE_WRITER unset → defaults to "orchestrator" via common.sh).
+# Any test exercising a PIPELINE_WRITER-gated code path without resetting
+# the var then passes for a human and FAILS for the agent — e.g. ENG-152
+# added a `cmd_event_verdict` guard that die()s under PIPELINE_WRITER=agent,
+# silently red-ing pipeline-test.sh::B-004 only inside agent dispatches and
+# blocking every agent commit on the host. Neutralising the dispatch-injected
+# lane/identity vars here makes the gate's verdict identical regardless of who
+# invoked it; tests that need a specific lane set it themselves per-invocation.
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE \
+      PIPELINE_DISPATCH_MODEL PIPELINE_ISSUE_ID PIPELINE_LOOPBACK_SOURCE
+
 # Invariant: the harness's main repo MUST NOT be bare. Bare-mode flips
 # `git status` semantics on the harness root and hides leaked-into-parent
 # state. If we detect bare=true, fix it loudly and continue — the hook

@@ -2,6 +2,17 @@
 # ENG-60 T2.8: bin/pipeline.sh end-to-end coverage.
 set -uo pipefail
 
+# Self-hermeticity (2026-06-17, ENG-204): bin/dispatch.sh runs the agent under
+# `env PIPELINE_WRITER=agent PIPELINE_DISPATCH_ID=… PIPELINE_STAGE=…`, inherited
+# by the whole subprocess tree. Plain (lane-defaulting) cases below assume the
+# orchestrator lane; an inherited PIPELINE_WRITER=agent flips that and trips
+# ENG-152's cmd_event_verdict guard, red-ing the suite ONLY inside agent
+# dispatches. Neutralise the inbound lane/identity vars here so the file's
+# verdict is identical for human, launchd, and agent; lane-specific cases set
+# `PIPELINE_WRITER=<lane>` per invocation. The pre-commit hook applies the same
+# reset suite-wide — this keeps a standalone `bash bin/pipeline-test.sh` honest.
+unset PIPELINE_WRITER PIPELINE_DISPATCH_ID PIPELINE_STAGE
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Throwaway TARGET_REPO + PROJECT_SLUG so common.sh sources cleanly.
