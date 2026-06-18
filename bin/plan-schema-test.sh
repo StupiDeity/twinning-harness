@@ -445,6 +445,19 @@ rc=0
   && pass_at "P-8: body >64 KiB → rc=33 (helper 39 remapped)" \
   || fail_at "P-8: body oversize rc" "expected rc=33, got rc=$rc"
 
+# P-8b: body 0 bytes → rc=33. merge_artifact_envelope's size guard is
+# `(( sz <= 0 || sz > 65536 ))` — the lower bound (sz<=0) is a SEPARATE
+# branch from P-8's upper bound and was uncovered without this case.
+p_prepare_case 8b
+p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+: > "$p_body"
+printf '# md\n' > "$p_md"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-8b: body 0 bytes → rc=33 (helper 39 sz<=0 remapped)" \
+  || fail_at "P-8b: body 0 bytes rc" "expected rc=33, got rc=$rc"
+
 # P-9: --ident missing → rc=34.
 p_prepare_case 9
 p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
