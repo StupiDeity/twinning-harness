@@ -10296,6 +10296,140 @@ else
 fi
 unset MOCK_COMMENTS_JSON
 
+# ─── ENG-205: review orchestrator-merge + clear-on-start (REV-OS-1..REV-OS-5) ───
+# Validates the reviewing-stage _merge_review_payload_envelope wire-up,
+# caller-side rc remap (41→38, {39,42,50}→36), _clear_current_stage_slots's
+# reviewing-stage extension (both verdict-review files), and caller-side
+# envelope-keyset discipline.
+printf '\n--- ENG-205: review orchestrator-merge + clear-on-start (REV-OS-1..REV-OS-5) ---\n'
+
+# REV-OS-1 (ENG-205 happy-path): body without envelope keys merges to a
+# canonical with all four keys AND _validate_review_payload returns 0
+# against the merged canonical. Use a synthetic `ENG-9205001` (regex-valid:
+# issue_id=^ENG-[0-9]+$, dispatch_id=^ENG-[0-9]+-d[0-9]+$) so the test
+# exercises the end-to-end merge → validator pipeline.
+mkdir -p "$(issue_dir ENG-9205001)"
+cat > "$(issue_dir ENG-9205001)/verdict-review.body.json" <<'EOF'
+{
+  "sha": "deadbeef",
+  "verdict": "approve",
+  "dimensions": {
+    "correctness":     { "score": "pass", "rationale": "r", "thresholds_met": [], "thresholds_missed": [] },
+    "testing":         { "score": "pass", "rationale": "r", "thresholds_met": [], "thresholds_missed": [] },
+    "maintainability": { "score": "pass", "rationale": "r", "thresholds_met": [], "thresholds_missed": [] },
+    "scope":           { "score": "pass", "rationale": "r", "thresholds_met": [], "thresholds_missed": [] }
+  }
+}
+EOF
+rm -f "$(issue_dir ENG-9205001)/verdict-review.json"
+export PIPELINE_DISPATCH_ID=ENG-9205001-d0001
+_rev_os1_rc=0
+_merge_review_payload_envelope ENG-9205001 2>/dev/null || _rev_os1_rc=$?
+_rev_os1_validator_rc=0
+if (( _rev_os1_rc == 0 )); then
+  _validate_review_payload ENG-9205001 >/dev/null 2>&1 || _rev_os1_validator_rc=$?
+fi
+_rev_os1_canonical="$(issue_dir ENG-9205001)/verdict-review.json"
+if (( _rev_os1_rc == 0 )) && (( _rev_os1_validator_rc == 0 )) \
+  && [[ -f "$_rev_os1_canonical" ]] \
+  && jq -e '.review_schema_version == 1 and .issue_id == "ENG-9205001" and .dispatch_id == "ENG-9205001-d0001" and .verdict == "approve" and .sha == "deadbeef" and (.dimensions.correctness.score == "pass")' "$_rev_os1_canonical" >/dev/null 2>&1; then
+  pass_at "ENG-205 REV-OS-1: clean body → merged canonical has all keys + _validate_review_payload rc=0"
+else
+  fail_at "ENG-205 REV-OS-1: clean body merge + validator roundtrip" \
+    "merge-rc=$_rev_os1_rc validator-rc=$_rev_os1_validator_rc canonical-exists=$([[ -f "$_rev_os1_canonical" ]] && echo yes || echo no)"
+fi
+unset PIPELINE_DISPATCH_ID _rev_os1_rc _rev_os1_validator_rc _rev_os1_canonical
+
+# REV-OS-2: body file absent → merge rc=38 (caller-side remap of helper
+# rc=41) → halt comment with reason review-payload-missing.
+mkdir -p "$(issue_dir ENG-205REV2)"
+rm -f "$(issue_dir ENG-205REV2)/verdict-review.body.json"
+rm -f "$(issue_dir ENG-205REV2)/verdict-review.json"
+reset_capture
+export PIPELINE_DISPATCH_ID=ENG-205REV2-d0001
+_rev_os2_rc=0
+_merge_review_payload_envelope ENG-205REV2 2>/dev/null || _rev_os2_rc=$?
+_rev_os2_body="$(captured_body)"
+if (( _rev_os2_rc == 38 )) \
+  && [[ "$_rev_os2_body" == *'verdict result=halt reason=review-payload-invalid'* ]] \
+  && [[ "$_rev_os2_body" == *'review-payload-missing'* ]]; then
+  pass_at "ENG-205 REV-OS-2: body absent → rc=38 (remap from 41) + review-payload-missing halt comment"
+else
+  fail_at "ENG-205 REV-OS-2: body absent" \
+    "rc=$_rev_os2_rc body-head=${_rev_os2_body:0:240}"
+fi
+unset PIPELINE_DISPATCH_ID _rev_os2_rc _rev_os2_body
+
+# REV-OS-3: body file is JSON parse error → merge rc=36 (caller-side remap
+# of helper rc=39) → halt reason review-payload-malformed.
+mkdir -p "$(issue_dir ENG-205REV3)"
+printf '{not json\n' > "$(issue_dir ENG-205REV3)/verdict-review.body.json"
+rm -f "$(issue_dir ENG-205REV3)/verdict-review.json"
+reset_capture
+export PIPELINE_DISPATCH_ID=ENG-205REV3-d0001
+_rev_os3_rc=0
+_merge_review_payload_envelope ENG-205REV3 2>/dev/null || _rev_os3_rc=$?
+_rev_os3_body="$(captured_body)"
+if (( _rev_os3_rc == 36 )) \
+  && [[ "$_rev_os3_body" == *'verdict result=halt reason=review-payload-invalid'* ]] \
+  && [[ "$_rev_os3_body" == *'review-payload-malformed'* ]]; then
+  pass_at "ENG-205 REV-OS-3: body parse error → rc=36 (remap from 39) + review-payload-malformed halt comment"
+else
+  fail_at "ENG-205 REV-OS-3: body malformed" \
+    "rc=$_rev_os3_rc body-head=${_rev_os3_body:0:240}"
+fi
+unset PIPELINE_DISPATCH_ID _rev_os3_rc _rev_os3_body
+
+# REV-OS-4: pre-seed both verdict-review.json + verdict-review.body.json +
+# an unrelated verdict-qa.json; call _clear_current_stage_slots reviewing;
+# assert both review files absent post-clear AND verdict-qa.json preserved.
+_rev_os4_d="$(issue_dir ENG-205REV4)"
+mkdir -p "$_rev_os4_d"
+printf '{}\n' > "$_rev_os4_d/verdict-review.json"
+printf '{}\n' > "$_rev_os4_d/verdict-review.body.json"
+printf '{}\n' > "$_rev_os4_d/verdict-qa.json"
+_clear_current_stage_slots ENG-205REV4 reviewing
+if [[ ! -e "$_rev_os4_d/verdict-review.json" ]] \
+  && [[ ! -e "$_rev_os4_d/verdict-review.body.json" ]] \
+  && [[ -e "$_rev_os4_d/verdict-qa.json" ]]; then
+  pass_at "ENG-205 REV-OS-4: reviewing-stage clear removes both review files; verdict-qa.json preserved"
+else
+  fail_at "ENG-205 REV-OS-4: reviewing-stage clear" \
+    "verdict-review=$([[ -e "$_rev_os4_d/verdict-review.json" ]] && echo present || echo absent) verdict-review.body=$([[ -e "$_rev_os4_d/verdict-review.body.json" ]] && echo present || echo absent) verdict-qa=$([[ -e "$_rev_os4_d/verdict-qa.json" ]] && echo present || echo absent)"
+fi
+unset _rev_os4_d
+
+# REV-OS-5: caller-side envelope-keyset discipline. Stub merge_artifact_envelope
+# to capture $2 (env_json) into a temp file. Call _merge_review_payload_envelope.
+# Assert captured keys = {dispatch_id, issue_id, review_schema_version}.
+_rev_os5_capture="$PROJECT_STATE_DIR/.rev-os5-envjson-capture"
+rm -f "$_rev_os5_capture"
+_rev_os5_real_def="$(declare -f merge_artifact_envelope)"
+merge_artifact_envelope() {
+  printf '%s' "$2" > "$_rev_os5_capture"
+  return 0
+}
+mkdir -p "$(issue_dir ENG-205REV5)"
+printf '{"sha":"abc","verdict":"approve","dimensions":{}}\n' \
+  > "$(issue_dir ENG-205REV5)/verdict-review.body.json"
+export PIPELINE_DISPATCH_ID=ENG-205REV5-d0001
+_merge_review_payload_envelope ENG-205REV5 >/dev/null 2>&1 || true
+unset PIPELINE_DISPATCH_ID
+eval "$_rev_os5_real_def"
+export -f merge_artifact_envelope
+_rev_os5_keys=""
+if [[ -s "$_rev_os5_capture" ]]; then
+  _rev_os5_keys="$(jq -r 'keys | sort | join(",")' < "$_rev_os5_capture" 2>/dev/null || printf '')"
+fi
+if [[ "$_rev_os5_keys" == "dispatch_id,issue_id,review_schema_version" ]]; then
+  pass_at "ENG-205 REV-OS-5: _merge_review_payload_envelope envelope keys = {review_schema_version, issue_id, dispatch_id}"
+else
+  fail_at "ENG-205 REV-OS-5: caller-side review-payload envelope keyset" \
+    "captured keys='$_rev_os5_keys' (expected 'dispatch_id,issue_id,review_schema_version')"
+fi
+rm -f "$_rev_os5_capture"
+unset _rev_os5_capture _rev_os5_real_def _rev_os5_keys
+
 echo
 echo "run-stage-test: passed=$PASS failed=$FAIL"
 (( FAIL == 0 )) || exit 1
