@@ -1576,7 +1576,7 @@ from the dispatch transcript and from the Linear
 Dimension scoring payload (MANDATORY — ENG-119):
 After merging findings and emitting the count-tuple line, hold the
 per-dimension `score`/`rationale`/`thresholds_*[]` data in memory. You
-will Write this as JSON to `{verdict_review_path}` at the end of the
+will Write this as JSON to `{review_payload_body_path}` at the end of the
 Output sequence (see Output section below). Score mapping:
   - `pass`   — no findings worse than `minor` for this dimension.
   - `concern` — at least one `major` finding (no `critical`).
@@ -1762,7 +1762,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
        Do NOT post the deferred-majors comment yourself; the orchestrator owns that write.
      - Write the stage summary file at `{stage_summary_path}` per the
        Stage summary comment format contract.
-     - Write the dimension-scoring payload at `{verdict_review_path}`
+     - Write the dimension-scoring payload at `{review_payload_body_path}`
        (verdict="approve" — same as path C; the selective exit IS a pass).
      - Append one row per finding to `{review_ledger_path}` via `Edit`
        with the seed-header line as the anchor. On every row whose
@@ -1785,7 +1785,7 @@ exhaust the implementer's `review_rejection` budget — see path B′ below.
        plateau would exhaust the implement-rejection cap before reaching
        path D.
      - Post the consolidated COMMENTED-state review + Linear summary +
-       stage-summary file + ledger rows + verdict-review.json EXACTLY as
+       stage-summary file + ledger rows + verdict-review.body.json EXACTLY as
        in path B.
      - Same verdict marker shape as path B: `bash bin/pipeline.sh event
        {issue_id} verdict fail --target implementing`.
@@ -1817,15 +1817,16 @@ Output:
   this file — the orchestrator kept posting the iter-5 stale body to Linear,
   the implement agent kept reading the stale body, and no new feedback
   reached the next iteration. Do not repeat.
-- **Write the dimension-scoring payload** at `{verdict_review_path}` as
+- **Write the dimension-scoring payload** at `{review_payload_body_path}` as
   the LAST step BEFORE the verdict marker. Emit on all three Decision
   paths (A premise-failure, B request-changes, C clean). Schema source-
   of-truth: header comment in `bin/review-payload-schema.sh`. **Required
-  top-level fields:** `review_schema_version: 1`, `issue_id` (must equal
-  `{issue_id}`), `dispatch_id` (must equal `{dispatch_id}`), `sha` (the
-  PR HEAD SHA you reviewed against), `verdict` (`approve` on path C,
-  `request-changes` on path B, `premise-failure` on path A, `halt` if
-  you exit via agent-blocked). **Required dimensions** under `dimensions{}`:
+  top-level fields:** `sha` (the PR HEAD SHA you reviewed against),
+  `verdict` (`approve` on path C, `request-changes` on path B,
+  `premise-failure` on path A, `halt` if you exit via agent-blocked).
+  The orchestrator merges the schema envelope (`review_schema_version`,
+  `issue_id`, `dispatch_id`) onto your body before validation; do not
+  emit those keys yourself. **Required dimensions** under `dimensions{}`:
   `correctness`, `testing`, `maintainability`, `scope` — each carries
   `score` ∈ {`pass`,`concern`,`fail`}, non-empty `rationale`,
   `thresholds_met[]`, `thresholds_missed[]`. **Optional dimensions** (emit
@@ -1878,7 +1879,7 @@ Output:
   this-dispatch row with `blocks_ship != true`.
   **NEVER use the `Write` tool on `{review_ledger_path}` — truncating the
   cumulative ledger destroys prior-dispatch records.** This is the OPPOSITE
-  lifecycle from the stage-summary file and `verdict-review.json` (which
+  lifecycle from the stage-summary file and `verdict-review.body.json` (which
   ARE overwrite-on-every-dispatch — see §0). The orchestrator's post-
   dispatch validator halts the dispatch with `review-ledger-invalid`
   (rc=48/49/50) on any malformed row, critical-floor violation, or
