@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.twinning.main-green-check.__PROJECT_SLUG__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HARNESS_ROOT__/bin/main-green-check.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__TARGET_REPO__</string>
+
+  <!-- Fire every 30 minutes. Independent of the main pipeline plist. Steady
+       state is just a git fetch + SHA compare; the (expensive) pre-commit
+       suite re-runs only when origin/<default-branch> actually moves. -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <!-- Do not fire at load: wait for the first scheduled interval. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Don't flood the system if the check script fails in a loop. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/main-green-check-launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HARNESS_STATE_DIR__/__PROJECT_SLUG__/logs/main-green-check-launchd.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>TARGET_REPO</key>
+    <string>__TARGET_REPO__</string>
+    <key>HARNESS_STATE_DIR</key>
+    <string>__HARNESS_STATE_DIR__</string>
+    <key>PROJECT_SLUG</key>
+    <string>__PROJECT_SLUG__</string>
+  </dict>
+</dict>
+</plist>

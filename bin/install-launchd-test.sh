@@ -97,6 +97,14 @@ grep -q 'bootstrap.*com.twinning.stuck-tick-alarm.foo' "$LAUNCHCTL_LOG" \
   && pass_at "stuck-tick-alarm: launchctl bootstrap invoked" \
   || fail_at "stuck-tick-alarm: launchctl bootstrap" "missing in LAUNCHCTL_LOG"
 
+[[ -f "$HOME/Library/LaunchAgents/com.twinning.main-green-check.foo.plist" ]] \
+  && pass_at "main-green-check plist rendered with slug 'foo'" \
+  || fail_at "main-green-check plist rendered" "missing"
+
+grep -q 'bootstrap.*com.twinning.main-green-check.foo' "$LAUNCHCTL_LOG" \
+  && pass_at "main-green-check: launchctl bootstrap invoked" \
+  || fail_at "main-green-check: launchctl bootstrap" "missing in LAUNCHCTL_LOG"
+
 grep -q 'com.twinning.pipeline.foo' "$HOME/Library/LaunchAgents/com.twinning.pipeline.foo.plist" \
   && pass_at "Label substitution correct" \
   || fail_at "Label substitution" "missing in plist body"
@@ -128,6 +136,11 @@ bash "$HARNESS_DIR/uninstall-launchd.sh" "$TGT" >/dev/null 2>&1
    && -f "$HOME/Library/LaunchAgents/com.twinning.stuck-tick-alarm.bar.plist" ]] \
   && pass_at "uninstall surgical: stuck-tick-alarm.foo gone, bar intact" \
   || fail_at "uninstall surgical (stuck-tick-alarm)" "wrong files removed"
+
+[[ ! -f "$HOME/Library/LaunchAgents/com.twinning.main-green-check.foo.plist" \
+   && -f "$HOME/Library/LaunchAgents/com.twinning.main-green-check.bar.plist" ]] \
+  && pass_at "uninstall surgical: main-green-check.foo gone, bar intact" \
+  || fail_at "uninstall surgical (main-green-check)" "wrong files removed"
 
 printf '\n  passed: %d\n  failed: %d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
