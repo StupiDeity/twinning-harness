@@ -573,6 +573,21 @@ for badflag in --body --md --ident; do
     || fail_at "P-17: $badflag flag-value rc" "expected rc=34, got rc=$rc"
 done
 
+# P-18: --md whose parent directory does not exist → rc=33. The realpath
+# fence (`cd "$md_dir" && pwd -P`) fires before the canonical derivation;
+# unlike --body, there is no `[[ -f ]]` pre-check so this path is reachable
+# in normal operation (agent passes a fresh plan path in a missing dir).
+p_prepare_case "18_md_no_parent"
+p_body="$P_STATE/plan.body.json"; p_write_valid_body "$p_body"
+rc=0
+( cd "$P_WT" && bash "$VALIDATOR" prepare \
+    --body "$p_body" \
+    --md "docs/plans/no-such-dir/2026-06-17-eng-1-foo.md" \
+    --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+(( rc == 33 )) \
+  && pass_at "P-18: --md parent dir not exist → rc=33 (realpath fence)" \
+  || fail_at "P-18: --md parent dir not exist rc" "expected rc=33, got rc=$rc"
+
 # Restore PROJECT_STATE_DIR for any tests after P-cases that may have
 # globals to set.
 unset PROJECT_STATE_DIR

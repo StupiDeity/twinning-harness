@@ -1166,11 +1166,12 @@ fi
 # PROMPT_RESOLVERS entry without updating the writer fails loudly here.
 printf '\n--- ENG-156: _write_rendered_paths_sidecar ---\n'
 
-# Case 156-W1: all eight path-shaped resolver values bound → sidecar has
-# exactly eight TSV lines, one per path-shaped resolver. ENG-27 added
+# Case 156-W1: all nine path-shaped resolver values bound → sidecar has
+# exactly nine TSV lines, one per path-shaped resolver. ENG-27 added
 # artifacts_dir as the seventh; ENG-190 added review_ledger_path as the
-# eighth; this fixture binds both so a deletion of either printf line in
-# _write_rendered_paths_sidecar fails loudly.
+# eighth; ENG-204 added plan_body_path as the ninth; this fixture binds
+# all nine so a deletion of any printf line in _write_rendered_paths_sidecar
+# fails loudly.
 eng156_w1_sidecar="$sandbox/eng156-w1.tsv"
 # Pre-create the plan.json so the writer's [[ -f "$_pj_path" ]] guard
 # passes for the plan_json line.
@@ -1184,17 +1185,18 @@ run_resolver_body '
   _RENDER_PROGRESS_MD_PATH="/tmp/state/ENG-156W1/progress.md"
   _RENDER_ARTIFACTS_DIR="/tmp/state/ENG-156W1/artifacts/"
   _RENDER_REVIEW_LEDGER_PATH="/tmp/state/ENG-156W1/review-findings-ledger.jsonl"
+  _RENDER_PLAN_BODY_PATH="/tmp/state/ENG-156W1/plan.body.json"
   _write_rendered_paths_sidecar "'"$eng156_w1_sidecar"'"
 ' 2>/dev/null
 if [[ -s "$eng156_w1_sidecar" ]] \
-  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "8" ]]; then
-  pass_at "ENG-156 W1: sidecar has exactly eight TSV lines for the eight path-shaped resolvers"
+  && [[ "$(wc -l <"$eng156_w1_sidecar" | awk '{print $1}')" == "9" ]]; then
+  pass_at "ENG-156 W1: sidecar has exactly nine TSV lines for the nine path-shaped resolvers"
 else
   fail_at "ENG-156 W1: sidecar line count" \
-    "expected 8 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
+    "expected 9 lines, got $(wc -l <"$eng156_w1_sidecar" 2>/dev/null) — contents: $(cat "$eng156_w1_sidecar" 2>/dev/null)"
 fi
 _eng156_w1_ok=1
-for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json artifacts_dir review_ledger_path; do
+for tok in brainstorm_file plan_file stage_summary_path learned_rules_dir progress_md_path plan_json artifacts_dir review_ledger_path plan_body_path; do
   if ! grep -qE "^${tok}"$'\t' "$eng156_w1_sidecar"; then
     _eng156_w1_ok=0
     break
