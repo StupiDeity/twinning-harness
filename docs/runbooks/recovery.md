@@ -1242,3 +1242,76 @@ can grep for these:
 jq -c 'select(.event == "envelope-overwrite")' \
   "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl"
 ```
+
+## 16. review-payload merge failure (ENG-205)
+
+**Symptom.** Issue halts at `stage:reviewing` with a verdict comment
+`<!-- pipeline: verdict result=halt reason=review-payload-invalid -->` and
+a defect string starting with one of:
+
+| Defect | rc | Trigger |
+|---|---|---|
+| `review-payload-missing` | 38 | Agent did not Write `verdict-review.body.json` (helper rc=41 remapped) |
+| `review-payload-malformed` | 36 | Body is JSON parse error / array top-level / oversize (>64 KiB), or is a symlink, or canonical write target unwritable (helper rc=39/42/50 remapped) |
+
+The rc remap keeps the operator-visible halt-reason string in the
+`review-payload-*` taxonomy (review codes 36/38) and prevents confusion
+with the raw merge-helper codes (39/41/42/50). The halt comment's `Defect:`
+line names the underlying subcode regardless of mapping.
+
+**Diagnosis.** The orchestrator-side `_merge_review_payload_envelope` runs
+post-dispatch on the reviewing stage, splices a fresh schema envelope
+(`review_schema_version`, `issue_id`, `dispatch_id`) onto the agent's
+content-only body at `$(issue_dir <ident>)/verdict-review.body.json`,
+and writes the merged canonical at `$(issue_dir <ident>)/verdict-review.json`
+before `_validate_review_payload` runs. A merge failure means the agent's
+body sidecar was missing or malformed, or the orchestrator could not write
+the canonical.
+
+Inspect the agent's body sidecar (NOT the canonical — the canonical was
+either never written, or was atomically replaced before the validator saw it):
+
+```bash
+cat "$PROJECT_STATE_DIR/<slug>/<ENG-N>/verdict-review.body.json"
+```
+
+For the rc=50 write-failure case, check disk space and permissions:
+
+```bash
+df -h "$PROJECT_STATE_DIR"
+ls -la "$PROJECT_STATE_DIR/<slug>/<ENG-N>/"
+```
+
+**Recovery.** Standard `--action continue` reset:
+
+```bash
+bash bin/pipeline.sh decide <ENG-N> --action continue
+```
+
+> ⚠️ `_clear_current_stage_slots` pre-cleans **both** reviewing-stage
+> payload files at the next reviewing dispatch's start:
+> `verdict-review.json` and `verdict-review.body.json`. A hand-edit on
+> the body file BEFORE resume is therefore erased. Operators wanting to
+> repair the body must instead edit the canonical `verdict-review.json`
+> and emit the verdict marker themselves with
+> `bash bin/pipeline.sh event <ENG-N> verdict pass --stage reviewing`
+> (see §11 for the manual-repair recipe — the same shape applies).
+
+**Deploy-cutover edge case.** An issue already in `stage:reviewing` when
+an operator rolls out ENG-205 will halt on its next post-dispatch with
+`review-payload-invalid: review-payload-missing` because the in-flight
+agent ran under the OLD §5 prompt and never wrote `verdict-review.body.json`.
+Recovery is the same `--action continue`: the next reviewing dispatch runs
+the new prompt, the agent writes the body, and the merge succeeds.
+The blast radius is bounded to one issue per project (whichever was in
+`stage:reviewing` at deploy time).
+
+**Forensic signal.** When the helper merges successfully but the agent's
+body collided with one or more envelope keys (e.g. the agent typed
+`review_schema_version` despite the §5 instruction not to), the helper
+emits an `envelope-overwrite` metric to `events.jsonl`. Inspect with:
+
+```bash
+jq -c 'select(.event == "envelope-overwrite")' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl"
+```
