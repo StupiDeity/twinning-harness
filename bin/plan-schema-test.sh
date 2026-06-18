@@ -552,6 +552,27 @@ else
   pass_at "P-16: SKIP (running as root; chmod 0500 does not gate writes)"
 fi
 
+# P-17: --X flag-value guard — passing `--body --md /x/y.md --ident ENG-1`
+# must reject at the parser, not silently set ARG_BODY="--md" and surface
+# a misleading rc=35 downstream. Mirrors brainstorm D-003 + sibling
+# verify-qa.sh:89-114's `[[ "$2" == --* ]]` guard. rc=34 (incomplete).
+for badflag in --body --md --ident; do
+  p_prepare_case "17_${badflag#--}"
+  p_body="$P_STATE/plan.body.json"; p_md="$P_DOCS/2026-06-17-eng-1-foo.md"
+  p_write_valid_body "$p_body"; printf '# md\n' > "$p_md"
+  rc=0
+  if [[ "$badflag" == "--body" ]]; then
+    ( cd "$P_WT" && bash "$VALIDATOR" prepare --body --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+  elif [[ "$badflag" == "--md" ]]; then
+    ( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md --ident ENG-1 ) >/dev/null 2>&1 || rc=$?
+  else
+    ( cd "$P_WT" && bash "$VALIDATOR" prepare --body "$p_body" --md "docs/plans/2026-06-17-eng-1-foo.md" --ident ) >/dev/null 2>&1 || rc=$?
+  fi
+  (( rc == 34 )) \
+    && pass_at "P-17: $badflag with flag-shaped value → rc=34 (non-flag-value guard)" \
+    || fail_at "P-17: $badflag flag-value rc" "expected rc=34, got rc=$rc"
+done
+
 # Restore PROJECT_STATE_DIR for any tests after P-cases that may have
 # globals to set.
 unset PROJECT_STATE_DIR
