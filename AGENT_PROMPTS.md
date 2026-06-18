@@ -450,15 +450,19 @@ Assumption Inventory):
 
 Your task:
 - Produce a plan at docs/plans/{date}-{issue_id_lower}-{slug}.md
-- Additionally produce a sibling structured contract at docs/plans/{date}-{issue_id_lower}-{slug}.json
-  containing schema-v1 fields. The file MUST validate against `bin/plan-schema.sh validate`
-  (schema source-of-truth: the file's header comment; inline reference below for convenience —
-  `bin/plan-schema-test.sh::T_schema_doc_sync` asserts top-level field-set equality between this block and the validator; per-kind field shapes are defined in `bin/plan-schema.sh`'s header comment):
+- Additionally produce a content-only body sidecar at `{plan_body_path}` containing the JSON
+  shape below (`features[]` only — `plan_schema_version` and `issue_id` are MERGED ONTO THE
+  BODY BY THE ORCHESTRATOR; do not emit those keys yourself). After writing the body, run
+  `bash bin/plan-schema.sh prepare --body {plan_body_path} --md docs/plans/{date}-{issue_id_lower}-{slug}.md --ident {issue_id}`
+  to materialize the canonical `docs/plans/{date}-{issue_id_lower}-{slug}.json` in your
+  worktree. The `prepare` command exits with rc=33/34/35 (plan-contract-malformed /
+  -incomplete / -missing) if the body is malformed; on success its stdout prints
+  `plan-contract-prepared: <path>`.
+  (Schema source-of-truth: `bin/plan-schema.sh`'s header comment; `bin/plan-schema-test.sh::T_schema_doc_sync`
+  asserts the body keyset equals the single key `features` and the validator keyset equals body ∪ envelope):
 
   ```plan-schema-v1
   {
-    "plan_schema_version": 1,
-    "issue_id": "{issue_id}",
     "features": [
       {
         "id": "F-1",
@@ -473,12 +477,15 @@ Your task:
   }
   ```
 
-  Required: `plan_schema_version` (integer 1), `issue_id` (matches `^ENG-[0-9]+$`), `features[]`
-  (len≥1). Per-feature: `id`, `summary`, `pass_criteria[]` (len≥1). Per-criterion: `kind` in
-  `{smoke, file_exists, grep}` plus kind-specific fields. Unknown fields: permitted (warning only).
-  Missing or malformed JSON halts the dispatch with `plan-contract-invalid` (detected in
-  `bin/run-stage.sh::_validate_plan_contract`); recovery: `bash bin/pipeline.sh decide
-  {issue_id} --action continue`.
+  Required body keys: `features[]` (len≥1). Per-feature: `id`, `summary`, `pass_criteria[]`
+  (len≥1). Per-criterion: `kind` in `{smoke, file_exists, grep}` plus kind-specific fields. The
+  orchestrator-merged canonical adds `plan_schema_version: 1` and `issue_id: "{issue_id}"`.
+  Unknown fields: permitted (warning only). Missing or malformed body halts the dispatch via
+  `prepare`'s rc; the post-dispatch `bin/run-stage.sh::_validate_plan_contract` continues to
+  gate the merged canonical against the full schema.
+- If `bash bin/plan-schema.sh prepare …` exits non-zero, do NOT `git add` / `git commit` —
+  instead run `bash bin/pipeline.sh event {issue_id} stage-completion-claim halt --reason agent-blocked`
+  and post a one-line follow-up comment naming `prepare`'s stderr, then exit.
 - Also produce `{init_sh_path}` — a per-issue smoke-discipline script.
   Required shape (column-0 markers; any of the four invocations may be
   a one-liner or a multi-line block, but the marker MUST appear

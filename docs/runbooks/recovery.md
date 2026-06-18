@@ -1242,3 +1242,69 @@ can grep for these:
 jq -c 'select(.event == "envelope-overwrite")' \
   "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl"
 ```
+
+## 16. plan-contract merge failure (ENG-204)
+
+**Symptom.** Issue halts at `stage:planning` with a verdict comment
+`<!-- pipeline: verdict result=halt reason=plan-contract-invalid -->` and
+a defect string starting with one of:
+
+| Defect | rc | Trigger |
+|---|---|---|
+| `plan-contract-missing` | 35 | Agent did not Write `{plan_body_path}`, OR `cmd_prepare` body path not found |
+| `plan-contract-malformed` | 33 | Body is JSON parse error / array top-level / oversize (>64 KiB) / symlink / outside `$PROJECT_STATE_DIR` |
+| `plan-contract-incomplete` | 34 | Required flag missing or `--ident` regex mismatch |
+
+These map to the existing `failure_outcome_for_exit` entries (33 →
+`plan-contract-malformed`, 34 → `plan-contract-incomplete`, 35 →
+`plan-contract-missing`) unchanged from ENG-122.
+
+**Diagnosis.** The planning agent is now responsible for calling
+`bash bin/plan-schema.sh prepare --body {plan_body_path} --md docs/plans/...md --ident {issue_id}`
+to merge the schema envelope (`plan_schema_version: 1`, `issue_id`)
+onto the content-only body sidecar. Two failure modes:
+
+1. **Agent missed the `prepare` call.** The body sidecar exists but the
+   canonical `.json` was never written → `_validate_plan_contract`
+   halts with `plan-contract-missing`. Check whether the body is
+   present:
+   ```bash
+   cat "$PROJECT_STATE_DIR/<slug>/<ENG-N>/plan.body.json"
+   ```
+
+2. **`prepare` returned non-zero.** Inspect the planning dispatch log
+   for the `prepare` stderr (lines after the `bash bin/plan-schema.sh
+   prepare` invocation):
+   ```bash
+   grep -A5 'plan-schema.sh prepare' \
+     "$PROJECT_STATE_DIR/<slug>/logs/<ENG-N>-planning-*.log"
+   ```
+
+**Recovery.** Standard `--action continue` reset:
+
+```bash
+bash bin/pipeline.sh decide <ENG-N> --action continue
+```
+
+> ⚠️ `_clear_current_stage_slots` pre-cleans `plan.body.json` at the
+> next planning dispatch's start. A hand-edit on the body file BEFORE
+> resume is therefore erased. Operators wanting to repair the body must
+> instead write the merged canonical `docs/plans/...json` by hand on
+> the feature branch and commit it, then emit the verdict marker:
+> `bash bin/pipeline.sh event <ENG-N> verdict pass --stage planning`.
+
+**Deploy-cutover edge case.** An issue already in `stage:planning`
+when an operator rolls out ENG-204 will halt on its next post-dispatch
+with `plan-contract-invalid: plan-contract-missing` because the
+in-flight agent ran under the OLD §2 prompt and never wrote the body
+sidecar or called `prepare`. Recovery is the same `--action continue`:
+the next planning dispatch runs the new prompt and succeeds.
+
+**Forensic signal.** Same `envelope-overwrite` metric as ENG-203 — if
+the agent's body accidentally included `plan_schema_version` or
+`issue_id`, the helper overwrites those and emits the metric:
+
+```bash
+jq -c 'select(.event == "envelope-overwrite" and .stage == "planning")' \
+  "$PROJECT_STATE_DIR/<slug>/metrics/events.jsonl"
+```

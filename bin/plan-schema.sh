@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # bin/plan-schema.sh — plan.json schema-v1 validator CLI (ENG-122) +
-# plan.md System-invariants section validator (ENG-157).
+# plan.md System-invariants section validator (ENG-157) +
+# content-body → canonical merge subcommand (ENG-204).
 #
 # Usage:
 #   bash bin/plan-schema.sh validate <file> [--ident <ENG-N>]
 #   bash bin/plan-schema.sh validate-md <file>
+#   bash bin/plan-schema.sh prepare --body <body> --md <md> --ident <ENG-N>
 #
 # Exit codes (validate — JSON):
 #   0  — valid schema-v1 document
 #   33 — malformed: JSON parse error or top-level not an object
 #   34 — incomplete: required field missing, wrong type, or unknown kind
 #   35 — missing-file: the JSON file does not exist at the given path
+#
+# Exit codes (prepare — ENG-204 in-agent merge):
+#   0  — merged OK; prints `plan-contract-prepared: <canonical-path>` to stdout
+#   33 — body parse/symlink/realpath/write-fail (malformed)
+#   34 — required flag missing or --ident regex mismatch
+#   35 — --body file not found (missing)
 #
 # Exit codes (validate-md — MD System-invariants section):
 #   0  — valid: `## System invariants` H2 section present with ≥1 bullet
@@ -368,14 +376,124 @@ cmd_validate_md() {
   return 0
 }
 
+# cmd_prepare --body <body> --md <md> --ident <ENG-N>
+# ENG-204: in-agent merge subcommand. Reads the content-only body sidecar
+# at <body>, merges schema envelope {plan_schema_version: 1, issue_id: <ENG-N>}
+# via merge_artifact_envelope, and atomically writes the canonical plan JSON
+# at <${md%.md}.json> in the worktree. The agent then git add + git commit
+# both the .md and the .json; _validate_plan_contract gates the merged
+# canonical post-dispatch unchanged.
+#
+# Fences: --body must resolve under $PROJECT_STATE_DIR (not a symlink);
+# --md must end in .md, must not be a symlink, and its realpath must resolve
+# under cwd (prevents ../escape paths). The canonical destination is derived
+# from the POST-realpath --md path so a future ln/mv attack on the argv
+# literal cannot redirect the write.
+cmd_prepare() {
+  local ARG_BODY="" ARG_MD="" ARG_IDENT=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --body)
+        [[ $# -lt 2 ]] && { printf 'plan-schema.sh: --body requires a value\n' >&2; return 33; }
+        ARG_BODY="$2"; shift 2 ;;
+      --md)
+        [[ $# -lt 2 ]] && { printf 'plan-schema.sh: --md requires a value\n' >&2; return 33; }
+        ARG_MD="$2"; shift 2 ;;
+      --ident)
+        [[ $# -lt 2 ]] && { printf 'plan-schema.sh: --ident requires a value\n' >&2; return 33; }
+        ARG_IDENT="$2"; shift 2 ;;
+      --*) printf 'plan-schema.sh: unknown flag %s\n' "$1" >&2; return 33 ;;
+      *)   printf 'plan-schema.sh: unexpected argument %s\n' "$1" >&2; return 33 ;;
+    esac
+  done
+
+  # (a) All three required.
+  if [[ -z "$ARG_BODY" || -z "$ARG_MD" || -z "$ARG_IDENT" ]]; then
+    printf 'plan-schema.sh: prepare: --body, --md, and --ident are all required\n' >&2
+    return 34
+  fi
+
+  # (b) --ident must match ^ENG-[0-9]+$.
+  if ! [[ "$ARG_IDENT" =~ ^ENG-[0-9]+$ ]]; then
+    printf 'plan-schema.sh: --ident must match ^ENG-[0-9]+$, got: %s\n' "$ARG_IDENT" >&2
+    return 34
+  fi
+
+  # (c) --md must end in .md.
+  if [[ "$ARG_MD" != *.md ]]; then
+    printf 'plan-schema.sh: --md must end in .md, got: %s\n' "$ARG_MD" >&2
+    return 33
+  fi
+
+  # (d) --body fence: not symlink; must exist; realpath must resolve under $PROJECT_STATE_DIR.
+  if [[ -L "$ARG_BODY" ]]; then
+    printf 'plan-contract-malformed: --body must not be a symlink: %s\n' "$ARG_BODY" >&2
+    return 33
+  fi
+  if [[ ! -f "$ARG_BODY" ]]; then
+    printf 'plan-contract-missing: --body file not found: %s\n' "$ARG_BODY"
+    return 35
+  fi
+  local body_dir body_parent_real body_real psd_real
+  body_dir="$(dirname "$ARG_BODY")"
+  if ! body_parent_real="$(cd "$body_dir" 2>/dev/null && pwd -P)"; then
+    printf 'plan-contract-malformed: cannot resolve realpath of --body parent: %s\n' "$body_dir" >&2
+    return 33
+  fi
+  body_real="$body_parent_real/$(basename "$ARG_BODY")"
+  psd_real="$(cd "$PROJECT_STATE_DIR" 2>/dev/null && pwd -P)" || {
+    printf 'plan-contract-malformed: cannot resolve realpath of $PROJECT_STATE_DIR\n' >&2
+    return 33
+  }
+  if [[ "$body_real" != "$psd_real"/* ]]; then
+    printf 'plan-contract-malformed: --body must resolve under $PROJECT_STATE_DIR; got %s\n' "$body_real" >&2
+    return 33
+  fi
+
+  # (e) --md fence: not symlink; parent dir must resolve; realpath must resolve under cwd.
+  if [[ -L "$ARG_MD" ]]; then
+    printf 'plan-contract-malformed: --md must not be a symlink: %s\n' "$ARG_MD" >&2
+    return 33
+  fi
+  local md_dir md_parent_real md_real cwd_real
+  md_dir="$(dirname "$ARG_MD")"
+  if ! md_parent_real="$(cd "$md_dir" 2>/dev/null && pwd -P)"; then
+    printf 'plan-contract-malformed: cannot resolve realpath of --md parent: %s\n' "$md_dir" >&2
+    return 33
+  fi
+  md_real="$md_parent_real/$(basename "$ARG_MD")"
+  cwd_real="$(pwd -P)"
+  if [[ "$md_real" != "$cwd_real"/* ]]; then
+    printf 'plan-contract-malformed: --md must resolve under cwd; got %s\n' "$md_real" >&2
+    return 33
+  fi
+
+  # Derive canonical destination from post-realpath --md path.
+  local canonical env_json merge_rc=0
+  canonical="${md_real%.md}.json"
+  env_json="$(jq -nc --arg ii "$ARG_IDENT" '{plan_schema_version: 1, issue_id: $ii}')"
+
+  PIPELINE_ISSUE_ID="$ARG_IDENT" PIPELINE_STAGE=planning \
+    merge_artifact_envelope "$ARG_BODY" "$env_json" "$canonical" \
+    || merge_rc=$?
+
+  case "$merge_rc" in
+    0)  printf 'plan-contract-prepared: %s\n' "$canonical"; return 0 ;;
+    41) return 35 ;;
+    39|42|50) return 33 ;;
+    *)  return 33 ;;
+  esac
+}
+
 main() {
   local subcmd="${1:-}"
   shift || true
   case "$subcmd" in
     validate)    cmd_validate "$@" ;;
     validate-md) cmd_validate_md "$@" ;;
+    prepare)     cmd_prepare "$@" ;;
     *)
-      printf 'Usage: bash bin/plan-schema.sh {validate <file> [--ident <ENG-N>] | validate-md <file>}\n' >&2
+      printf 'Usage: bash bin/plan-schema.sh {validate <file> [--ident <ENG-N>] | validate-md <file> | prepare --body <body> --md <md> --ident <ENG-N>}\n' >&2
       exit 33
       ;;
   esac

@@ -1018,6 +1018,13 @@ _clear_current_stage_slots() {
     rm -f "$d/qa-predicate-${ident}.json"           2>/dev/null || true
     rm -f "$d/qa-predicate-${ident}.body.json"      2>/dev/null || true
   fi
+  # ENG-204: clear plan body sidecar on planning-stage dispatch start.
+  # Stage-gated to planning for the same reason as the qa/reviewing
+  # branches: the file is planning-specific; clearing on other stages
+  # would erase the sidecar an agent wrote for a loopback re-plan.
+  if [[ "$stage" == "planning" ]]; then
+    rm -f "$d/plan.body.json" 2>/dev/null || true
+  fi
   return 0
 }
 
