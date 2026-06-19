@@ -104,6 +104,11 @@ effect** and the effect is **idempotent** (universal write-ahead discipline):
 A crash between (1) and (3) leaves `status='running'` with a known `idempotency_key` — the sole
 signal `recover()` needs (§6.1).
 
+> **Idempotency keys are globally unique BY CONSTRUCTION** — `K` is built by prefixing the
+> `dispatch_id` (e.g. `ENG-5-d0003-push`), so the schema's *global* `UNIQUE` on `idempotency_key`
+> **is** the dedup mechanism. (Don't scope the constraint to a ticket — that would weaken the
+> exactly-once guarantee an effect key exists to provide.)
+
 ---
 
 ## 3a. Structured output: act through a validated interface, never parse a free-form blob `[CL-FROZEN]`
@@ -252,8 +257,9 @@ GOAL-INSTALL touchpoint; replaces the legacy `header-missing-inputs`).
 - **Guard:** `wuN.status='verifying'`; `<check> ∈ wuN.verify_check_types`; profile declares a command
   for it.
 - **Input:** the profile command for this check-type (F4); worktree at wuN's SHA.
-- **Output:** a **`ground_truth_signal`** row (`result ∈ pass|fail|error`, `detail_json` = counts /
-  failing tests / changed paths). All of wuN's checks pass → `wuN.status='verified'`.
+- **Output:** a **`ground_truth_signal`** row (`signal_type` = the declared check-type, `result ∈
+  pass|fail|error`, `detail_json` = counts / failing tests / changed paths). All of wuN's checks
+  pass → `wuN.status='verified'`.
 - **Commands/Capability:** **only** the profile's declared command for this check-type, run under a
   timeout — never arbitrary shell.
 - **Behavioral gate (A1), deterministic:** when `wuN.behavioral=1`, the test check requires *the
@@ -653,6 +659,15 @@ CL-POSTCOND (per-step postconditions) · CL-PROFILE (pre-dispatch profile-comple
 P5 loopback scope (unit/ticket/plan); failure-signature + counter-hierarchy + post-escalation
 lifecycle pinned; §8.5 records the ~35 reasons the substrate deletes (audited against the current
 harness).
+
+**Coherence pass (2026-06-19) → schema v2.** Cross-referenced this doc against `schema.sql` and
+realigned the schema to the frozen loop model: dropped the ticket skip-policy block + `status=halted`
+(P1); `pipeline_event` → lean **`event_log`** (transition/loopback/escalated/resumed — verdicts are
+derived, not stored); **`review_finding` realigned** (single severity + category + factors +
+`deferral_candidate` + daemon-computed `blocks_ship` + `review_kind` plan|code, with a critical-floor
+CHECK); added `ticket.needs_docs`, `project.checks_system`, `workflow_step.pid`; `ground_truth_signal.
+signal_type` = the open check-type; signal vocab (`external_checks`/`external_pr_result`). Idempotency
+keys stay globally-unique-by-construction (§3). Re-verified: loads clean, all invariants smoke-tested.
 
 **Still open (don't block #2):** the per-ticket budget numbers (K_DISTINCT, token/wall-clock caps);
 the needs-you inbox surface (D3) — specify with the projector artifact.
