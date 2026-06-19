@@ -1,6 +1,6 @@
 # Twinning Harness — Redesign Brainstorm (running scratchpad)
 
-> **▶ RESUME HERE (2026-06-19):** the substrate spec is CLOSED (§10) and **the SQLite schema is DONE** → `docs/redesign/schema.sql` (16 tables, loads clean, invariants smoke-tested; see §12). **Next artifact = the durable control-loop / step-journal semantics** (§9.4 checklist #2 — replay-returns-recorded-result, idempotency-key effects, crash-resume) — i.e. the daemon (B1) that drives the schema. Then #3 state-import mapping (issue-state.json + labels → rows) and #4 the Linear one-way projector (drain `projection_outbox`). Only open spec item is **E2** (`decision_class`/`action_surface` vocabularies), post-cutover (UGL). Read §12 → §10 → §9 first.
+> **▶ RESUME HERE (2026-06-19):** substrate spec CLOSED (§10); **SQLite schema DONE** → `docs/redesign/schema.sql` (§12); **durable control-loop semantics DRAFTED** → `docs/redesign/control-loop.md` (§9.4 #2 — daemon + event loop, a **step catalog** with per-step guards/inputs/outputs, all-external-effects-via-outbox, re-attempt+probe reconciliation, crash-resume; forks CL-2/CL-3 resolved; `GOAL-INSTALL` added). **Next artifact = §9.4 #3** the one-time state-import mapping (issue-state.json + labels + marker history → rows), then #4 the Linear one-way projector (drain `projection_outbox`). Only open spec item is **E2** (`decision_class`/`action_surface` vocabularies), post-cutover (UGL). Read control-loop.md → §12 → §10 → §9.
 >
 > **Status:** living doc. Started 2026-06-18.
 > **Purpose:** capture the evolving hypothesis for re-architecting the autonomous SDLC
@@ -67,6 +67,7 @@ Each transition has ≥1 halt-to-human gate. The default response to *any* anoma
 - `[DECIDED]` **Self-report verdicts (dimensional thresholds) are discarded**, replaced by ground truth (CI/tests/scope-diff/independent review). ENG-39 already called them uncalibrated theater.
 - `[DECIDED]` **Cheapest highest-leverage isolation = remove the ambient `LINEAR_API_KEY` from the agent env** and route all Linear writes through the orchestrator. Kills the worst blast-radius class (ENG-217) without containers. Per-task containers are the second increment (OS-level write boundary → kills self-leak).
 - `[DECIDED]` **Stage count scales with ticket size** (the existing sizing rubric already knows 1-subsystem tickets don't need full ceremony); fuse brainstorm+plan into "design", implement+verify into one test-running loop.
+- `[DECIDED — operator 2026-06-19]` **Trivial installation is a first-class goal (`GOAL-INSTALL`).** A new operator must reach first-ticket with **one command, no server setup**. Drives concrete substrate choices: a single self-contained binary (no global npm/runtime dance, escapes bash-3.2), embedded zero-ops SQLite, a self-bootstrapping schema migration, and one idempotent `setup` command that renders + bootstraps the launchd plist. Spec'd in [`control-loop.md`](control-loop.md) §10.
 
 ### Stack `[DECIDED 2026-06-18 — full rationale in §9.2]`
 - TypeScript (not bash — bash 3.2 is a large fraction of fragility: UTF-8 hang, locale-masked tests, untyped state). Go defensible but loses on zod + Agent-SDK-optionality; viable only because we keep the CLI leaf.
@@ -285,6 +286,7 @@ Ground truth records `outcome` → `confidence` updates → reweights future ret
 - **Dispatches / shipped ticket** (today ~27). Target: → near the stage floor.
 - **Halt/resume cycles** (today 747/29d). Target: ↓↓ (most become silent auto-recovers).
 - **Learning-loop rule promotions / month** (today: 0 — loop is dead). Target: > 0 and rising then plateauing.
+- **Time-to-first-ticket for a new operator** (`GOAL-INSTALL`). Today: a multi-step bash + launchd + secrets setup. Target: **one command, minutes** — single binary + embedded SQLite + self-bootstrapping schema (control-loop.md §10).
 
 ---
 
@@ -411,6 +413,7 @@ Status legend: **DECIDED** (confirmed by operator) · **RATIFIED** (proposed, no
 
 ## 11. Changelog
 - **2026-06-19** — **SQLite schema shipped** → `docs/redesign/schema.sql` (§9.4 checklist #1). 16 tables grounded in a field-level inventory of the current state (issue-state.json, dispatch_history.jsonl, wait/verdict payloads, pipeline-events.json marker vocab, linear-ids.json). Loads clean (`PRAGMA integrity_check=ok`, `foreign_key_check` clean); invariants smoke-tested (idempotency-key uniqueness, step_key replay anchor, rejection-counter derivation, signal-parking). Memory/UGL tables deferred to post-cutover (commented stub). Added §12. Decisions logged there (DS-1…DS-7); none block the next artifact.
+- **2026-06-19** — **durable control-loop semantics drafted** → `docs/redesign/control-loop.md` (§9.4 #2). Daemon (B1) + event loop; a step catalog with per-step **guards / inputs / outputs** (S1–S10); write-ahead-intent step contract; all external effects via the outbox (CL-2); re-attempt + probe reconciliation (CL-3); durable signals; deterministic failure→escalate-as-wait; crash-resume discharged. Operator added **`GOAL-INSTALL`** (trivial one-command install) as a first-class goal → §3 decision + §6 metric + control-loop.md §10. Forks resolved: CL-2/CL-3 + step granularity. Open: CL-1 (one daemon/all projects).
 - **2026-06-19** — **operator review of the DS-# decisions.** DS-3/4/5/6/7 approved as-is. **DS-2 revised → clean break:** `ticket.stage` now carries the new C1 vocab (`design/implement/verify/review/merge/released`), not the legacy gerund stages — migration surface is tiny (only In-Progress / In-Review tickets hand-mapped; Backlog has no harness stage). §9.4 #5 annotated accordingly (cutover loop drives the new machine). **DS-1 revised:** store UTC + **display in the operator's local timezone everywhere** (status/Slack/logs); tz lives only at the display edge. Schema re-verified (loads clean; new vocab accepted, legacy rejected).
 - **2026-06-18** — doc created. Captured diagnosis, 6 design moves, DBOS→build-minimal decision, §4 gate taxonomy, §5 supervisor design.
 - **2026-06-18** — added §5.6 memory-backed decision system (operator suggestion); added §8 (Claude Code permission pipeline as the unified-gate spec, claude-code-guide verified). Seeded north-star metrics + OQs.
