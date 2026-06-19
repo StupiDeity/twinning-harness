@@ -157,6 +157,10 @@ flip back (§9.4 #7).
   supervisor, no memory/RAG, no learned deferral — those are post-cutover (§9.5 I-C/I-D).
 - **The KEEP↻ gates** are the four irreducible ground-truth gates (builds / tests / diff-⊆-scope via
   the reviewer / independent reviewer) looping with feedback — nothing more.
+- **Human gates wired = MERGE only** (`human_merge_approval`) + escalations (`human_resume`). The
+  schema also defines `human_plan_approval` (the *optional large-ticket plan-approval* gate, D1 /
+  control-loop §7) — **defined but not wired at cutover**; the minimal loop's design phase ends at
+  the agent plan-review (S1c), and human plan-approval is added later for large tickets if wanted.
 - **Increments after the flip** (§9.5): I-A forced-schema structured steps · I-B ground-truth
   deepening · I-C the UGL · I-D supervisor + memory on the clean trace.
 

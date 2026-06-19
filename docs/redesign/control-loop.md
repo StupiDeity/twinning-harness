@@ -669,8 +669,10 @@ CHECK); added `ticket.needs_docs`, `project.checks_system`, `workflow_step.pid`;
 signal_type` = the open check-type; signal vocab (`external_checks`/`external_pr_result`). Idempotency
 keys stay globally-unique-by-construction (§3). Re-verified: loads clean, all invariants smoke-tested.
 
-**Still open (don't block #2):** the per-ticket budget numbers (K_DISTINCT, token/wall-clock caps);
-the needs-you inbox surface (D3) — specify with the projector artifact.
+**Resolved downstream:** the per-ticket budget numbers (K_DISTINCT, the P3 cost/time ceiling) and
+the needs-you inbox surface (D3) are now pinned in [`minimal-loop.md`](minimal-loop.md) §4/§5.
 
-**Next artifact:** §9.4 #3 — the one-time state-import mapping (`issue-state.json` + labels + marker
-history → rows), then #4 the Linear/GitHub one-way projector (the outbox drainer's adapters).
+**Substrate spec status:** §9.4 #1 schema(v2) · #2 (this) · **#3 dropped** (no state-import mechanism
+— the in-flight tickets were obsolete and were abandoned) · #4 [`projector.md`](projector.md) ·
+#5 [`minimal-loop.md`](minimal-loop.md). All five drafted and mutually coherent; what remains is
+operational (build + verify in the downtime window).
