@@ -11,8 +11,8 @@
 
 ### Rule Bld-001: post-merge dispatches must short-circuit on `state == MERGED`
 **Added:** 2026-05-06
-**Expires:** 2026-07-05
-**Last verified:** 2026-05-06
+**Expires:** 2026-09-04
+**Last verified:** 2026-07-06
 **Source:** ENG-62 — five wasted dispatches per merged PR observed on
             ENG-43 (PR #41) and ENG-58 (PR #42), 2026-05-02. Agent
             emitted `verdict wait --reason awaiting-approval` post-merge
