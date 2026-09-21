@@ -11,8 +11,22 @@
 
 ### Rule Bld-001: post-merge dispatches must short-circuit on `state == MERGED`
 **Added:** 2026-05-06
-**Expires:** 2026-07-05
-**Last verified:** 2026-05-06
+**Expires:** 2026-11-20
+**Last verified:** 2026-09-21
+**Verification note (2026-09-21 retrospective, expiry-verification shape):**
+Renewed, not auto-renewed. The post-merge-dispatch condition DID recur
+after `Added:` — `events.jsonl` carries a paired
+`stage-start`/`stage-end` with `outcome=merged-pre-dispatch` for ENG-155
+on 2026-05-19, i.e. a build dispatch was attempted against an
+already-MERGED PR 13 days after this rule was written. That instance was
+absorbed by the orchestrator-side gate
+(`bin/run-stage.sh::_pre_dispatch_merge_gate`, still present and covered
+by ~20 cases in `bin/run-stage-test.sh`), so the agent-side belt was not
+itself exercised — consistent with its stated defense-in-depth role.
+Caveat on the negative signal: `events.jsonl` contains ZERO rows dated
+after 2026-07-19, so the 2026-08-22 → 2026-09-21 analysis window has no
+dispatch telemetry at all. Absence of recurrence in that window is
+uninformative and was NOT treated as evidence for removal.
 **Source:** ENG-62 — five wasted dispatches per merged PR observed on
             ENG-43 (PR #41) and ENG-58 (PR #42), 2026-05-02. Agent
             emitted `verdict wait --reason awaiting-approval` post-merge
